@@ -5,7 +5,7 @@ import type { Diagnostic } from "./diagnostics.ts";
 import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { RESERVED, builtinType, isGenName } from "./builtins.ts";
 import {
-  ERROR, GEN_ARITY, NULL, VOID, assignable, bindTParams, demand, fn, isTaggedUnion, hasAuthority, kindOf, layerOk, movesLike, needOk, ownedInside, CONTAINERS, newTParam, nonNull, record, result, show, subst, union,
+  ERROR, GEN_ARITY, NULL, VOID, assignable, bindTParams, demand, fn, isTaggedUnion, hasAuthority, kindOf, layerOk, movesLike, needOk, ownedDeep, CONTAINERS, newTParam, nonNull, record, result, show, subst, union,
   type ClassSym, type Field, type FnType, type IfaceSym, type TParam, type Type,
 } from "./types.ts";
 
@@ -138,6 +138,7 @@ export class Program {
   readonly rep: Reporter;
   /** Q127: every instantiation of a user type parameter, checked against its conditions once all bodies are checked. */
   readonly insts: { mod: Module; node: Node; p: TParam; arg: Type }[] = [];
+  readonly substInsts: { mod: Module; node: Node; t: Type; args: Type[] }[] = [];
 
   constructor(files: ParsedFile[], display: (p: string) => string, rep: Reporter) {
     this.rep = rep;
@@ -286,7 +287,19 @@ export class Program {
   }
 
   /** Q127: propagates conditions through type parameters instantiated by type parameters, then checks the rest. */
+  /**
+   * Q174 (D092): an alias / class / interface instantiation that holds a container of owned values only through the
+   * substitution (`Bx<Vec<f32>>` for `type Bx<T> = { readonly xs: Array<T> }`) is E3007 at the written instantiation.
+   * An argument that already holds one was reported where it is written.
+   */
+  private checkSubstInsts(): void {
+    for (const { mod, node, t, args } of this.substInsts) {
+      if (!args.some((a) => ownedDeep(a)) && ownedDeep(t)) this.rep.at(mod, "E3007", node, `'${show(t)}' holds a managed container of an owned type`);
+    }
+  }
+
   checkInsts(): void {
+    this.checkSubstInsts();
     for (let changed = true; changed;) {
       changed = false;
       for (const { p, arg } of this.insts) {
@@ -403,11 +416,12 @@ export class Program {
       ps.forEach((p, i) => this.insts.push({ mod: e.mod, node: argNodes![i]!, p, arg: args[i]! })); // Q127
       if (body) {
         const r = subst(body, bindTParams(ps, args));
-        const i = ownedInside(r) ? args.findIndex(movesLike) : -1; // Q174: `Bx<Vec<f32>>` for `type Bx<T> = Array<T>`
-        if (i >= 0) this.rep.at(e.mod, "E3007", argNodes![i]!, `'${show(r)}' is a managed container holding an owned type`);
+        this.substInsts.push({ mod: e.mod, node: whole, t: r, args }); // Q174
         return r;
       }
-      return sym.k === "iface" ? { k: "iface", iface: sym.iface, args } : { k: "class", cls: (sym as Extract<TypeSym, { k: "class" }>).cls, args };
+      const t: Type = sym.k === "iface" ? { k: "iface", iface: sym.iface, args } : { k: "class", cls: (sym as Extract<TypeSym, { k: "class" }>).cls, args };
+      this.substInsts.push({ mod: e.mod, node: whole, t, args }); // Q174
+      return t;
     }
     if (name === "Struct") {
       const a = argNodes?.[0];

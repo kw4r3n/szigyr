@@ -7,7 +7,7 @@ import { BUILTIN_FUNCTIONS, GLOBAL_AUTHORITIES, NAMESPACES, RESERVED, genMember,
 import { isDeterministic } from "./determinism.ts";
 import {
   BOOL, ERROR, ERROR_RECORD, F64, NEVER, NULL, NUM_NAMES, STR, UNKNOWN, USIZE, VOID, assignable, bindTParams, field, fn, gen, hasTParam,
-  isBool, isInt, isNull, isNum, isOwned, isStr, movesLike, isTaggedUnion, kindOf, literalFits, nonNull, nullable, num, opaque, result, resultParts,
+  isBool, isInt, isNull, isNum, isOwned, isStr, movesLike, ownedDeep, isTaggedUnion, kindOf, literalFits, nonNull, nullable, num, opaque, result, resultParts,
   same, show, subst, unify, union, unref, castable, demand, layerOk, type FnType, type NumName, type Type,
 } from "./types.ts";
 
@@ -783,7 +783,7 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
       else if (want) t = resultParts(want)?.ok;
       checkTo(c, args[0]!, UNKNOWN);
       if (!t) { c.at("E2006", callee, "cannot infer the type argument of 'cast'"); return ERROR; }
-      if (!isErr(t) && !castable(t)) { c.at("E2002", e.typeArguments?.[0] ?? callee, `'${show(t)}' cannot be checked at run time`); return ERROR; } // Q084
+      if (!isErr(t) && !castable(t) && !ownedDeep(t)) { c.at("E2002", e.typeArguments?.[0] ?? callee, `'${show(t)}' cannot be checked at run time`); return ERROR; } // Q084
       return result(t, ERROR_RECORD);
     }
     case "requires": case "invariant": case "ensures": {

@@ -2,7 +2,7 @@
 import { SyntaxKind as K, type Node, type ts } from "./parse.ts";
 import type { LocalSym, Module, Program } from "./modules.ts";
 import { assignTarget, callSigs, exprTypes, localOf } from "./expr.ts";
-import { movesLike, ownedInside, show, unref, type Type } from "./types.ts";
+import { movesLike, ownedDeep, show, unref, type Type } from "./types.ts";
 
 /** Moved locals (by id) and the expression that moved each; null on a path that cannot be reached. */
 type State = Map<number, Node> | null;
@@ -500,7 +500,8 @@ class Flow {
     this.callMark = outerMark;
     const recv = callee.kind === K.PropertyAccessExpression ? exprTypes.get((callee as ts.PropertyAccessExpression).expression) : undefined;
     // Q174 (案2): an inferred container-of-owned type (a written one is P2's); a receiver of such a type was reported where it came from
-    if (ownedInside(exprTypes.get(e)) && !ownedInside(recv)) {
+    const res = exprTypes.get(e);
+    if (res && ownedDeep(res) && !(recv && ownedDeep(recv))) {
       const targ = e.typeArguments?.find((a) => this.m.prog.insts.some((x) => x.node === a && movesLike(x.arg)));
       this.m.at("E3007", targ ?? (e.kind === K.NewExpression && e.typeArguments ? e.typeArguments[e.typeArguments.length - 1]! : isId(callee) ? callee : callee.kind === K.PropertyAccessExpression ? (callee as ts.PropertyAccessExpression).name : callee), "this expression has a managed container type that holds an owned value (Q174)");
     }
