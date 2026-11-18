@@ -14,7 +14,10 @@ export type ElemKind = NumType | "other";
 
 export class Slice<T = unknown> {
   /** Only Vec.slice and Vec.view construct these. */
-  constructor(private readonly buf: Buf<T>, private readonly off: number, readonly length: number) {}
+  private readonly buf: Buf<T>;
+  private readonly off: number;
+  readonly length: number;
+  constructor(buf: Buf<T>, off: number, length: number) { this.buf = buf; this.off = off; this.length = length; }
   get(i: number, pos?: Pos): T {
     if (!inBounds(i, this.length)) trap("T002", `index ${i} out of range (length ${this.length})`, pos);
     return this.buf[this.off + i] as T;
@@ -33,7 +36,9 @@ export class Slice<T = unknown> {
 
 export class Vec<T = unknown> {
   private len = 0;
-  private constructor(private buf: Buf<T>, private readonly elem: ElemKind) {}
+  private buf: Buf<T>;
+  private readonly elem: ElemKind;
+  private constructor(buf: Buf<T>, elem: ElemKind) { this.buf = buf; this.elem = elem; }
   /** `alloc` is accepted for the signature only. */
   static create<T>(_alloc: unknown, capacity: number, elem: ElemKind = "other"): Vec<T> {
     return new Vec<T>(elem === "other" ? [] : new TYPED[elem](Math.max(capacity, 4)), elem);
@@ -83,7 +88,9 @@ export function setAt<T>(a: T[] | Vec<T> | Slice<T>, i: number, x: T, pos?: Pos)
 }
 
 export class OwnedCell<T> {
-  private constructor(private value: T | undefined, private full: boolean) {}
+  private value: T | undefined;
+  private full: boolean;
+  private constructor(value: T | undefined, full: boolean) { this.value = value; this.full = full; }
   static create<T>(v: T): OwnedCell<T> { return new OwnedCell<T>(v, true); }
   take(pos?: Pos): T {
     if (!this.full) trap("T008", "take from empty OwnedCell", pos);

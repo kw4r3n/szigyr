@@ -97,3 +97,31 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - 文は「正常に完了しうるか」を返し、Q023（非 `void` 関数の末尾）と早期脱出の絞り込みに使う。
 - 公開 API: `check(entry)` に加えて、`deterministicFunctions(entry)` が入口ファイルのモジュール直下の関数ごとに決定性を返す（§7.3、Q062）。
 - 性能: 起動後の P1+P2 は適合テストの accept / run の 60 ファイルで平均 0.3ms、最大 0.7ms。
+
+## D013: 型の位置の検査と呼び出し条件の置き場所
+
+- 型の位置の規則（union の合法性、`Map` / `Set` / `Vec` / `Slice` の型引数、`Struct` のフィールド、`void`、再帰する別名、制約）は `modules.ts` の `typeOf` / `typeRef` / `recordOf` にある。`typeOf` の第 3 引数 `voidOk` は、戻り値型の位置だけが `true`（`Promise` の型引数も `typeRef` が許す）。
+- クラスと interface の型パラメータの制約は、シグネチャを解決する前に全モジュールで先に解決する（`classIfaceConstraints`）。型参照の側で `Box<X>` の制約を検査できる（以前は宣言より後ろで解決される制約を飛ばしていた）。別名の制約も同じ検査を通る。
+- 呼び出し側の条件は `FnType.tcheck` で組み込みの署名に印を付ける: `cast`（`cast` / `js.decode` / `JSON.stringify` の `T`）、`eq`（`t.eq`）、`copy`（`Vec.create`）は `callSig` が推論後の第 1 型引数を検査し、`trap`（`t.traps`）は `call` が第 1 引数のリテラルを検査する。`cast<T>` は特別扱いの組み込みなので `builtinCall` が同じ `castable` を使う。
+- 同名の宣言（Q087）は P1（`syntax.ts`）が持つ。スコープの集合を積んで、関数（引数と本体の最上位）、ブロック、`for`、`switch` の case ブロックごとに 1 つにする。E1000 は P1 のコードなので、P2 では検査しない。P2 の `switch` は case ブロックを 1 つのスコープにする（以前は内側の宣言が `switch` の外へ漏れていた）。
+
+## D030: JS への変換（§10）の構成と型の受け渡し
+
+- `packages/compiler/src/emit.ts` の `emitFile(file, displayPath, tests)` が 1 ファイルを変換する。プリンタは書かず、ソースの文字列を継ぎはぎする: 各ノードは自分のテキストで、子を子の変換結果に置き換え、型の構文（`: T`、`<T>`、`type`、`interface`、`implements`、`readonly` / `private` などの修飾子、`as const`）を消す。§10 の書き換えが要るノード（二項・単項演算、数値リテラル、添字、`?.`、呼び出し、契約のある関数本体）だけを個別に組み立てる。生成コードは読みやすさを目標にしない。
+- 型は P2 から受け取る。`expr.ts` の `expr()` を、型を `exprTypes`（`WeakMap<Node, Type>`）に記録する処理で包んだ（検査の規則は変えていない）。複合代入の型は BinaryExpression のノード、メソッド呼び出しの受け手の型は `p.expression` のノードから引く。`Vec.create<T>` の要素型、`cast<T>` / `js.decode<T>` の `T` は、呼び出し式の型（`Vec<T>`、`Result<T, …>`）から取り出す。
+- ランタイムは 1 つの識別子 `RUNTIME_GLOBAL`（`names.ts`、`__sts_rt`）の下に置き、ユーザーの関数名（`add`、`at`、`shl` など）と衝突しない。`Vec`、`OwnedCell`、偽の権限は予約名（§1）なので、そのままの名前で束縛する。位置（`{file, line, col}`）はモジュールごとの表に置き、トラップしうる呼び出しの末尾の引数で渡す（Q091）。アンカーは DIAGNOSTICS のトラップ表どおり。
+- `Vec` は `get` / `set` / `length` / `slice` / `fill` を持つので、`Slice` の仮引数にそのまま渡す（`view()` を挟まない）。
+- `ensures` は、最後の `ensures` より後の本体を即時実行のアロー関数（`async` 関数なら `await` する async アロー）で包み、その結果を全部の `ensures` で検査してから返す。入れ子の関数の `return` は対象にならない。
+- 複合代入の左辺が添字かプロパティのときは、受け手と添字を 1 回だけ評価するため、アロー関数に渡して書く。右辺もそのアローの中で評価される（JS と同じ順序）ので、右辺に `await` を書くと生成コードが不正になる（`shortcut:` の印。適合テストに例がない）。
+- §10 の 11（ソースマップ）: トラップの位置を呼び出しに直接埋め込む方式（Q091）で「ソース上の位置で報告する」を満たすので、`.map` ファイルは生成しない（未実装）。JS の例外のスタックトレースは生成コードの行を指す。
+- 性能: 起動後の変換と評価は、`check` との差が測れない程度（`run` 全体で約 57ms のうち、tsgo の起動が大半。D005）。
+
+## D031: 生成した JS の実行（`run` と `runTestFile`）
+
+- 生成した JS はファイルごとに `new Function(RUNTIME_GLOBAL, IMP, body)` のファクトリにして、メモリ上で評価する。ファイルにも一時ディレクトリにも書かない。`import { a } from "./b.ts"` は `const { a } = IMP("<絶対パス>")`、`export` は本体の末尾で返すオブジェクトにする。依存先は初回の `IMP` で評価する（循環は Q100）。
+- ランタイムは、`run` / `runTestFile` が使う `@sts/runtime-js` と `@sts/std` の同じインスタンスをファクトリに渡す。生成コードがパスで import すると別のインスタンスになり、`instanceof Trap` が効かなくなるため。
+- `npm:x` は、ホストが import するファイルの位置から `createRequire(file).resolve(x)` で解決し、`import()` した名前空間を `IMP("npm:x")` で渡す（解決できなければコンパイラの位置から `import(x)`）。
+- `run(entry)`: 検査に診断があれば返す。なければ全ファイルを変換し、入口の `main` を `runMain` で起動する。`main` がなければ例外（Q061 の CLI のエラー）。トラップに位置がない（スタックの枯渇。Q035）ときは、`file: ""`、`line: 0`、`col: 0` で返す（Q035 のアンカーは未実装）。
+- `runTestFile(entry)`（`sts test` の中身）: 入口ファイルの `test(...)` だけを残して変換し、`runTests` の結果を返す（Q101）。前後で `clearTests` を呼ぶ。`run` では `test(...)` を除く（§10 の 10）。
+- `@sts/runtime-js` と `@sts/std` のクラスのパラメータプロパティを、明示的なフィールドに書き換えた。`node scripts/update-passing.mjs` がコンパイラ経由でこれらを素の Node（型の除去だけのモード）で読み込むため。
+- `pnpm conformance:update-passing` の対象に `run/` を足した（D008 の「run は載せない」を改める）。

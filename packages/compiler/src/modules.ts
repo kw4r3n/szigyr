@@ -5,7 +5,7 @@ import type { Diagnostic } from "./diagnostics.ts";
 import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { RESERVED, builtinType, isGenName } from "./builtins.ts";
 import {
-  ERROR, GEN_ARITY, NULL, VOID, assignable, bindTParams, fn, isOwned, newTParam, record, result, show, subst, union,
+  ERROR, GEN_ARITY, NULL, VOID, assignable, bindTParams, fn, isCopy, isOwned, isTaggedUnion, keyOk, kindOf, newTParam, nonNull, record, result, show, structField, subst, union,
   type ClassSym, type Field, type FnType, type IfaceSym, type TParam, type Type,
 } from "./types.ts";
 
@@ -142,6 +142,7 @@ export class Program {
       this.byPath.set(pf.path, mod);
     }
     for (const mod of this.mods) this.shells(mod);
+    for (const mod of this.mods) this.classIfaceConstraints(mod); // before any type reference is resolved (D013)
     for (const mod of this.mods) this.signatures(mod);
   }
 
@@ -186,6 +187,15 @@ export class Program {
     }
   }
 
+  /** Constraints of class and interface type parameters, so that every `Box<X>` reference can be checked (§3.2). */
+  private classIfaceConstraints(mod: Module): void {
+    for (const t of mod.types.values()) {
+      if (t.mod !== mod || t.k === "alias") continue;
+      const [decl, ps] = t.k === "iface" ? [t.decl, t.iface.tparams] : [t.cls.decl, t.cls.tparams];
+      this.constraints(decl.typeParameters, ps, { mod, tparams: new Map(ps.map((p) => [p.name, p])) });
+    }
+  }
+
   private signatures(mod: Module): void {
     const env = (tps: TParam[] = []): TypeEnv => ({ mod, tparams: new Map(tps.map((p) => [p.name, p])) });
     for (const t of mod.types.values()) {
@@ -193,7 +203,6 @@ export class Program {
       if (t.k === "alias") this.aliasBody(t);
       else if (t.k === "iface") {
         const e = env(t.iface.tparams);
-        this.constraints(t.decl.typeParameters, t.iface.tparams, e);
         for (const m of t.decl.members) {
           const ms = m as ts.MethodSignatureDeclaration;
           t.iface.methods.set((ms.name as ts.Identifier).text, this.signature(ms, ms.name, e));
@@ -212,7 +221,6 @@ export class Program {
 
   private classMembers(cls: ClassSym, e: TypeEnv): void {
     const mod = e.mod;
-    this.constraints(cls.decl.typeParameters, cls.tparams, e);
     for (const h of cls.decl.heritageClauses ?? []) for (const t of h.types) cls.implements.push(this.typeRef(t.expression as ts.Identifier, t.typeArguments, t, e));
     for (const m of cls.decl.members) {
       if (m.kind === K.PropertyDeclaration) {
@@ -242,7 +250,7 @@ export class Program {
       return this.typeOf(p.type, e);
     });
     let ret: Type = VOID;
-    if (d.type) ret = this.typeOf(d.type, e);
+    if (d.type) ret = this.typeOf(d.type, e, true);
     else if (name && requireRet) { this.rep.at(e.mod, "E2006", name, "return type annotation is required"); ret = ERROR; }
     return { ...fn(params, ret, tparams) };
   }
@@ -258,7 +266,7 @@ export class Program {
 
   private aliasBody(a: Extract<TypeSym, { k: "alias" }>): Type {
     if (a.body) return a.body;
-    if (a.busy) return ERROR; // shortcut: recursive aliases are not supported (no case needs them); upgrade with a lazy alias type
+    if (a.busy) return ERROR; // typeRef reports the cycle (Q085); shortcut: recursive aliases stay unsupported, upgrade with a lazy alias type
     a.busy = true;
     a.tparams ??= tparamShells(a.decl.typeParameters);
     const e: TypeEnv = { mod: a.mod, tparams: new Map(a.tparams.map((p) => [p.name, p])) };
@@ -286,12 +294,16 @@ export class Program {
   }
 
   /** Resolves a type node (§3, §12). Unknown names are E2000; errors become ERROR (Q003 cascade). */
-  typeOf(t: ts.TypeNode, e: TypeEnv): Type {
+  /** `voidOk`: the node is a return type, where `void` may be written (Q028). */
+  typeOf(t: ts.TypeNode, e: TypeEnv, voidOk = false): Type {
     switch (t.kind) {
       case K.BooleanKeyword: return builtinType("boolean")!;
       case K.StringKeyword: return builtinType("string")!;
       case K.NumberKeyword: return builtinType("number")!;
-      case K.VoidKeyword: return VOID;
+      case K.VoidKeyword:
+        if (voidOk) return VOID;
+        this.rep.at(e.mod, "E2002", t, "'void' can only be a return type"); // Q028
+        return ERROR;
       case K.UnknownKeyword: return builtinType("unknown")!;
       case K.NeverKeyword: return builtinType("never")!;
       case K.BigIntKeyword: case K.UndefinedKeyword:
@@ -301,10 +313,12 @@ export class Program {
         const l = (t as ts.LiteralTypeNode).literal;
         return l.kind === K.NullKeyword ? NULL : { k: "lit", value: (l as ts.StringLiteral).text };
       }
-      case K.ParenthesizedType: return this.typeOf((t as ts.ParenthesizedTypeNode).type, e);
-      case K.UnionType: {
-        const ms = (t as ts.UnionTypeNode).types.map((x) => this.typeOf(x, e));
-        return ms.some((m) => m.k === "error") ? ERROR : union(ms);
+      case K.ParenthesizedType: return this.typeOf((t as ts.ParenthesizedTypeNode).type, e, voidOk);
+      case K.UnionType: { // §3.2: tagged unions, string-literal unions and `T | null` only (Q080)
+        const u = union((t as ts.UnionTypeNode).types.map((x) => this.typeOf(x, e)));
+        if (u.k === "union" && u.members.some((m) => m.k === "error")) return ERROR;
+        if (!legalUnion(u)) { this.rep.at(e.mod, "E2002", t, `'${show(u)}' is not a tagged union, a string-literal union or 'T | null'`); return ERROR; }
+        return u;
       }
       case K.TypeLiteral: return this.recordOf(t as ts.TypeLiteralNode, e, false);
       case K.FunctionType: {
@@ -324,14 +338,17 @@ export class Program {
     for (const m of t.members) {
       const p = m as ts.PropertySignatureDeclaration;
       if (!p.type) { this.rep.at(e.mod, "E2006", p.name, "property needs a type annotation"); return ERROR; }
-      fields.push({ name: (p.name as ts.Identifier).text, type: this.typeOf(p.type, e), readonly: hasMod(p, K.ReadonlyKeyword) });
+      const name = (p.name as ts.Identifier).text;
+      const type = this.typeOf(p.type, e);
+      if (struct && !structField(type)) this.rep.at(e.mod, "E2002", p.type, `a Struct field is a number, boolean, Struct or Vec, not '${show(type)}'`); // Q086
+      fields.push({ name, type, readonly: hasMod(p, K.ReadonlyKeyword) });
     }
     return record(fields, struct);
   }
 
   typeRef(id: ts.Identifier, argNodes: ts.NodeArray<ts.TypeNode> | undefined, whole: Node, e: TypeEnv): Type {
     const name = id.text;
-    const args = (argNodes ?? []).map((a) => (name === "Struct" ? ERROR : this.typeOf(a, e)));
+    const args = (argNodes ?? []).map((a) => (name === "Struct" ? ERROR : this.typeOf(a, e, name === "Promise"))); // `Promise<void>` (Q028)
     const arity = (n: number): boolean => {
       if (args.length === n) return true;
       this.rep.at(e.mod, "E2002", whole, `'${name}' takes ${n} type argument(s)`);
@@ -341,16 +358,14 @@ export class Program {
     if (tp) return arity(0) ? { k: "tparam", p: tp } : ERROR;
     const sym = this.lookupType(e.mod, name);
     if (sym) {
-      if (sym.k === "alias") {
-        const body = this.aliasBody(sym);
-        return arity(sym.tparams!.length) ? subst(body, bindTParams(sym.tparams!, args)) : ERROR;
-      }
-      const ps = sym.k === "class" ? sym.cls.tparams : sym.iface.tparams;
+      if (sym.k === "alias" && sym.busy) { this.rep.at(e.mod, "E2002", whole, `type alias '${name}' refers to itself`); return ERROR; } // Q085
+      const body = sym.k === "alias" ? this.aliasBody(sym) : undefined;
+      const ps = sym.k === "alias" ? sym.tparams! : sym.k === "class" ? sym.cls.tparams : sym.iface.tparams;
       if (!arity(ps.length)) return ERROR;
-      // shortcut: a constraint resolved later in the signatures pass is not checked here; upgrade by resolving constraints first
       const bad = ps.findIndex((p, i) => p.constraint && args[i]!.k !== "error" && !assignable(args[i]!, subst(p.constraint, bindTParams(ps, args))));
       if (bad >= 0) { this.rep.at(e.mod, "E2002", argNodes![bad]!, `type argument does not implement '${show(ps[bad]!.constraint!)}'`); return ERROR; }
-      return sym.k === "class" ? { k: "class", cls: sym.cls, args } : { k: "iface", iface: sym.iface, args };
+      if (body) return subst(body, bindTParams(ps, args));
+      return sym.k === "iface" ? { k: "iface", iface: sym.iface, args } : { k: "class", cls: (sym as Extract<TypeSym, { k: "class" }>).cls, args };
     }
     if (name === "Struct") {
       const a = argNodes?.[0];
@@ -367,13 +382,29 @@ export class Program {
           return ERROR;
         }
       }
-      return args.some((a) => a.k === "error") ? ERROR : { k: "gen", name, args };
+      if (args.some((a) => a.k === "error")) return ERROR;
+      if ((name === "Map" || name === "Set") && !keyOk(args[0]!)) { // §3.2, Q081
+        this.rep.at(e.mod, "E2002", argNodes![0]!, `a ${name} ${name === "Map" ? "key" : "element"} is a string, number or boolean, not '${show(args[0]!)}'`);
+        return ERROR;
+      }
+      if ((name === "Vec" || name === "Slice") && args[0]!.k !== "tparam" && !isCopy(args[0]!)) { // §3.3, Q086
+        this.rep.at(e.mod, "E2002", argNodes![0]!, `${name}<T> needs a Copy element type, not '${show(args[0]!)}'`);
+        return ERROR;
+      }
+      return { k: "gen", name, args };
     }
     const b = !RESERVED.has(name) ? builtinType(name) : undefined;
     if (b) return arity(0) ? b : ERROR;
     this.rep.at(e.mod, "E2000", id, `unknown type '${name}'`);
     return ERROR;
   }
+}
+
+/** §3.2 (Q080): after removing `null`, a union is a tagged union with distinct `kind` literals or all string literals. */
+function legalUnion(u: Type): boolean {
+  const rest = u.k === "union" ? nonNull(u) ?? u : u;
+  if (rest.k !== "union" || rest.members.every((m) => m.k === "lit")) return true;
+  return isTaggedUnion(rest) && new Set(rest.members.map(kindOf)).size === rest.members.length;
 }
 
 export interface TypeEnv { mod: Module; tparams: Map<string, TParam> }

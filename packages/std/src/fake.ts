@@ -3,7 +3,8 @@ import type { Alloc, Clock, Fs, Log, Random } from "./types.ts";
 import { ALLOC } from "./node.ts";
 
 export class FakeClock implements Clock {
-  private constructor(private ms: number) {}
+  private ms: number;
+  private constructor(ms: number) { this.ms = ms; }
   static create(startMs: number): FakeClock { return new FakeClock(startMs); }
   nowMs(): number { return this.ms; }
   advance(ms: number): void { this.ms += ms; }
@@ -11,7 +12,8 @@ export class FakeClock implements Clock {
 
 /** mulberry32 (D020). Output is a function of the seed only. */
 export class SeededRandom implements Random {
-  private constructor(private state: number) {}
+  private state: number;
+  private constructor(state: number) { this.state = state; }
   static create(seed: number): SeededRandom { return new SeededRandom(seed >>> 0); }
   nextU32(): number {
     this.state = (this.state + 0x6d2b79f5) >>> 0;

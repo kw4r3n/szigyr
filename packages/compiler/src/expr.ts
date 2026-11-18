@@ -8,7 +8,7 @@ import { isDeterministic } from "./determinism.ts";
 import {
   BOOL, ERROR, ERROR_RECORD, F64, NEVER, NULL, NUM_NAMES, STR, UNKNOWN, USIZE, VOID, assignable, bindTParams, field, fn, gen, hasTParam,
   isBool, isInt, isNull, isNum, isOwned, isStr, isTaggedUnion, kindOf, literalFits, nonNull, nullable, num, opaque, result, resultParts,
-  same, show, subst, unify, union, unref, type FnType, type NumName, type Type,
+  same, show, subst, unify, union, unref, castable, comparable, isCopy, keyOk, type FnType, type NumName, type Type,
 } from "./types.ts";
 
 const isId = (n: Node | undefined): n is ts.Identifier => n?.kind === K.Identifier;
@@ -59,7 +59,14 @@ export function cond(c: Checker, e: ts.Expression): void {
   if (!isBool(t) && !isErr(t)) c.at("E2004", e, `condition must be boolean, got '${show(t)}'`);
 }
 
+/** The type P2 gave each checked expression (last check wins), read by the JS emitter (§10, D030). */
+export const exprTypes = new WeakMap<Node, Type>();
 export function expr(c: Checker, e: ts.Expression, want?: Type): Type {
+  const t = exprUnrecorded(c, e, want);
+  exprTypes.set(e, t);
+  return t;
+}
+function exprUnrecorded(c: Checker, e: ts.Expression, want?: Type): Type {
   switch (e.kind) {
     case K.Identifier: return ident(c, e as ts.Identifier);
     case K.NumericLiteral: return numLit(c, e, numValue(e as ts.NumericLiteral), want);
@@ -237,7 +244,14 @@ function lookupMember(c: Checker, t: Type, name: ts.Identifier, inCall: boolean)
       return { kind: "value", type: union(fs.map((f) => f!.type)), readonly: fs.every((f) => f!.readonly) };
     }
     case "tparam": return t.p.constraint ? lookupMember(c, t.p.constraint, name, inCall) : missing("E2002");
-    case "gen": { const m = genMember(t, n); return m ? fromMember(c, m, name, inCall) : missing("E2001"); }
+    case "gen": {
+      if ((t.name === "Array" || t.name === "ReadonlyArray") && (n === "includes" || n === "indexOf") && !isErr(t.args[0]!) && !eqable(t.args[0]!)) { // Q032
+        c.at("E2002", name, `'${n}' needs an element type that supports '===', not '${show(t.args[0]!)}'`);
+        return MERR;
+      }
+      const m = genMember(t, n);
+      return m ? fromMember(c, m, name, inCall) : missing("E2001");
+    }
     case "opaque": { const m = opaqueMember(t.name, n); return m ? fromMember(c, m, name, inCall) : missing("E2001"); }
     case "num": return missing("E2001");
     case "prim": if (t.name === "boolean") return missing("E2001"); break;
@@ -387,6 +401,18 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
   return ERROR;
 }
 
+/** Q017: element types for which `===` works (the `T` of `T | null` counts). */
+function eqable(t: Type): boolean {
+  const a = nonNull(t) ?? t;
+  return isNum(a) || isBool(a) || isStr(a) || a.k === "class";
+}
+
+/** Q058: the first argument of `t.traps` is a string literal naming a trap (T001 - T010). */
+function trapCode(c: Checker, a: ts.Expression): void {
+  const ok = (a.kind === K.StringLiteral || a.kind === K.NoSubstitutionTemplateLiteral) && /^T(00[1-9]|010)$/.test((a as ts.StringLiteral).text);
+  if (!ok) c.at("E2002", a, "the first argument of 'traps' must be a trap code literal \"T001\" - \"T010\"");
+}
+
 /** Q017: which types `===` / `!==` accept. */
 function equality(c: Checker, op: Node, lt: Type, rt: Type): void {
   if (isNull(lt) || isNull(rt)) {
@@ -520,7 +546,7 @@ export function checkArrow(c: Checker, e: ts.ArrowFunction | ts.FunctionExpressi
     if (!p.type) { c.at("E2006", p.name, "parameter needs a type annotation"); return ERROR; }
     return c.typeOf(p.type);
   });
-  let ret = e.type ? c.typeOf(e.type) : undefined;
+  let ret = e.type ? c.typeOf(e.type, true) : undefined;
   c.fx.tparams = outerTps;
   if (!ret && want && !inferRet) ret = want.ret;
   const sig = fn(params, ret ?? ERROR, tps);
@@ -553,6 +579,7 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
     }
     if (m.kind === "method") {
       if ((m.managedOnly || m.layer === "managed") && !c.callAllowed("managed")) c.at("E4001", p.name, `'${p.name.text}' is managed-only`); // Q044
+      if (m.sig.tcheck === "trap" && e.arguments[0]) trapCode(c, e.arguments[0]);
       return callSig(c, m.sig, e, p.name, want);
     }
     if (m.type.k === "fn") return callSig(c, m.type, e, p.name, want);
@@ -613,6 +640,14 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
       return ERROR;
     }
   }
+  const tc = sig.tcheck;
+  if ((tc === "cast" || tc === "eq" || tc === "copy") && sig.tparams[0]) { // Q084, Q086
+    const b = m.get(sig.tparams[0].id)!;
+    if (!isErr(b) && !(tc === "cast" ? castable(b) : tc === "eq" ? comparable(b) : b.k === "tparam" || isCopy(b))) {
+      c.at("E2002", e.typeArguments?.[0] ?? anchor, `'${show(b)}' is not allowed as the type argument here`);
+      return ERROR;
+    }
+  }
   args.forEach((a, i) => {
     const t = later[i];
     if (!t || isErr(t)) return;
@@ -664,6 +699,7 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
       else if (want) t = resultParts(want)?.ok;
       checkTo(c, args[0]!, UNKNOWN);
       if (!t) { c.at("E2006", callee, "cannot infer the type argument of 'cast'"); return ERROR; }
+      if (!isErr(t) && !castable(t)) { c.at("E2002", e.typeArguments?.[0] ?? callee, `'${show(t)}' cannot be checked at run time`); return ERROR; } // Q084
       return result(t, ERROR_RECORD);
     }
     case "requires": case "invariant": case "ensures": {
@@ -709,7 +745,9 @@ function newExpr(c: Checker, e: ts.NewExpression, want: Type | undefined): Type 
     const n = id.text === "Map" ? 2 : 1;
     if (e.typeArguments) {
       if (e.typeArguments.length !== n) { c.at("E2002", id, `'${id.text}' takes ${n} type argument(s)`); return ERROR; }
-      return gen(id.text, ...e.typeArguments.map((t) => c.typeOf(t)));
+      const targs = e.typeArguments.map((t) => c.typeOf(t));
+      if (!keyOk(targs[0]!)) { c.at("E2002", e.typeArguments[0]!, `a ${id.text} ${id.text === "Map" ? "key" : "element"} is a string, number or boolean`); return ERROR; } // Q081
+      return gen(id.text, ...targs);
     }
     const w = want && (nonNull(want) ?? want);
     if (w?.k === "gen" && w.name === id.text) return w;

@@ -12,7 +12,7 @@ export interface TestResult {
   readonly pos?: Pos;
 }
 
-class Failure extends Error { constructor(msg: string, readonly pos?: Pos) { super(msg); } }
+class Failure extends Error { readonly pos?: Pos; constructor(msg: string, pos?: Pos) { super(msg); this.pos = pos; } }
 
 /** SameValueZero for numbers; structural for arrays, plain objects, Map, Set (Q058). */
 export function deepEq(a: unknown, b: unknown): boolean {

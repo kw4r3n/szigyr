@@ -74,6 +74,15 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     }
   };
 
+  // ---- same-name declarations in one scope (Q004 declaration merging, Q087)
+  const scopes: Set<string>[] = [];
+  const claim = (seen: Set<string>, id: ts.Identifier): void => {
+    if (seen.has(id.text)) at("E1000", id, `declaration merging ('${id.text}' declared twice)`);
+    seen.add(id.text);
+  };
+  const bind = (id: ts.Identifier): void => { const s = scopes.at(-1); if (s) claim(s, id); };
+  const scoped = (f: () => void): void => { scopes.push(new Set()); try { f(); } finally { scopes.pop(); } };
+
   // ---- module level (§1, Q054)
   const topNames = new Set<string>();
   const topName = (id: ts.Identifier | undefined): void => {
@@ -164,6 +173,9 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
 
   // ---- declarations
   function fn(n: ts.FunctionDeclaration | ts.MethodDeclaration | ts.ArrowFunction | ts.FunctionExpression | ts.ConstructorDeclaration, kind: FnKind): void {
+    scoped(() => fn0(n, kind)); // parameters and the top level of the body share one scope
+  }
+  function fn0(n: ts.FunctionDeclaration | ts.MethodDeclaration | ts.ArrowFunction | ts.FunctionExpression | ts.ConstructorDeclaration, kind: FnKind): void {
     const isAsync = !!n.modifiers?.some((m) => m.kind === K.AsyncKeyword);
     if (n.kind === K.FunctionDeclaration || n.kind === K.FunctionExpression) {
       if (n.kind === K.FunctionDeclaration) { mods(n, [K.ExportKeyword, K.AsyncKeyword]); if (n.name) declName(n.name); }
@@ -179,6 +191,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     else if (n.kind === K.Constructor) mods(n, []);
     typeParams(n.typeParameters);
     params(n.parameters);
+    for (const p of n.parameters) if (isId(p.name)) bind(p.name);
     if (n.type) type(n.type);
     const body = n.body;
     if (!body) { e1000(n, "function overload or declaration without body"); return; }
@@ -199,7 +212,9 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
   }
 
   function typeParams(list: ts.NodeArray<ts.TypeParameterDeclaration> | undefined): void {
+    const seen = new Set<string>();
     for (const p of list ?? []) {
+      claim(seen, p.name);
       mods(p, []);
       declName(p.name);
       if (p.constraint) { if (p.constraint.kind === K.TypeReference) type(p.constraint); else e1000(p.constraint, "this type parameter constraint"); }
@@ -238,7 +253,9 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       }
     }
     classDepth++;
+    const members = new Set<string>();
     for (const m of c.members) {
+      if ((m.kind === K.PropertyDeclaration || m.kind === K.MethodDeclaration) && isId((m as ts.PropertyDeclaration).name)) claim(members, (m as ts.PropertyDeclaration).name as ts.Identifier);
       switch (m.kind) {
         case K.PropertyDeclaration: {
           const p = m as ts.PropertyDeclaration;
@@ -297,7 +314,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     if (isLet && where === "for-of") { e1000(list, "'for (let ... of ...)'"); return; }
     for (const d of list.declarations) {
       if (d.exclamationToken) e1000(d.exclamationToken, "definite assignment assertion");
-      if (isId(d.name)) declName(d.name);
+      if (isId(d.name)) { declName(d.name); bind(d.name); }
       else if (d.name.kind === K.ObjectBindingPattern && !isLet && where !== "for-of") bindingPattern(d.name as ts.ObjectBindingPattern);
       else e1000(d.name, "this destructuring");
       if (d.type) type(d.type);
@@ -313,6 +330,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       if (el.propertyName && !isId(el.propertyName)) { e1000(el.propertyName, "this property name"); continue; }
       if (!isId(el.name)) { e1000(el.name ?? el, "nested destructuring"); continue; }
       declName(el.name);
+      bind(el.name);
       if (el.initializer) at("E1008", el.name, "destructuring default is not allowed");
     }
   }
@@ -360,7 +378,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
 
   function stmt(s: ts.Statement): void {
     switch (s.kind) {
-      case K.Block: for (const b of (s as ts.Block).statements) stmt(b); return;
+      case K.Block: scoped(() => { for (const b of (s as ts.Block).statements) stmt(b); }); return;
       case K.VariableStatement: mods(s, []); varList((s as ts.VariableStatement).declarationList, "local"); return;
       case K.ExpressionStatement: expr((s as ts.ExpressionStatement).expression); return;
       case K.IfStatement: {
@@ -370,31 +388,31 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       }
       case K.WhileStatement: expr((s as ts.WhileStatement).expression); loopBody((s as ts.WhileStatement).statement); return;
       case K.DoStatement: loopBody((s as ts.DoStatement).statement); expr((s as ts.DoStatement).expression); return;
-      case K.ForStatement: {
+      case K.ForStatement: scoped(() => {
         const x = s as ts.ForStatement;
         if (x.initializer?.kind === K.VariableDeclarationList) varList(x.initializer as ts.VariableDeclarationList, "local");
         else if (x.initializer) expr(x.initializer as ts.Expression);
         if (x.condition) expr(x.condition);
         if (x.incrementor) expr(x.incrementor);
         loopBody(x.statement);
-        return;
-      }
-      case K.ForOfStatement: {
+      }); return;
+      case K.ForOfStatement: scoped(() => {
         const x = s as ts.ForOfStatement;
         if (x.awaitModifier) e1000(x.awaitModifier, "'for await'");
         if (x.initializer.kind === K.VariableDeclarationList) varList(x.initializer as ts.VariableDeclarationList, "for-of");
         else e1000(x.initializer, "for-of without 'const'");
         expr(x.expression);
         loopBody(x.statement);
-        return;
-      }
+      }); return;
       case K.SwitchStatement: {
         const x = s as ts.SwitchStatement;
         expr(x.expression);
-        for (const c of x.caseBlock.clauses) {
-          if (c.kind === K.CaseClause) expr((c as ts.CaseClause).expression);
-          for (const b of c.statements) stmt(b);
-        }
+        scoped(() => { // the case block is one scope
+          for (const c of x.caseBlock.clauses) {
+            if (c.kind === K.CaseClause) expr((c as ts.CaseClause).expression);
+            for (const b of c.statements) stmt(b);
+          }
+        });
         return;
       }
       case K.BreakStatement: case K.ContinueStatement: {
@@ -552,11 +570,13 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       case K.TypeLiteral: {
         const ms = (t as ts.TypeLiteralNode).members;
         if (!ms.length) { e1000(t, "'{}' type"); return; }
+        const names = new Set<string>();
         for (const m of ms) {
           if (m.kind !== K.PropertySignature) { e1000(m, "this record member"); continue; }
           const p = m as ts.PropertySignatureDeclaration;
           mods(p, [K.ReadonlyKeyword]);
           memberName(p);
+          if (isId(p.name)) claim(names, p.name);
           if (p.type) type(p.type);
         }
         return;

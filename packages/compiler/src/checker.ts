@@ -59,7 +59,7 @@ export class Checker {
     return sym;
   }
   value(name: string): ValueSym | undefined { return this.scope.lookup(name) ?? this.prog.lookupValue(this.fx.mod, name); }
-  typeOf(t: ts.TypeNode): Type { return this.prog.typeOf(t, { mod: this.fx.mod, tparams: this.fx.tparams }); }
+  typeOf(t: ts.TypeNode, voidOk = false): Type { return this.prog.typeOf(t, { mod: this.fx.mod, tparams: this.fx.tparams }, voidOk); }
 
   // ---- narrowing (Q025): keys are `<local id>` or `this`, then `.field` for readonly fields
   keyOf(e: ts.Expression): { key: string; type: Type } | undefined {
@@ -404,6 +404,8 @@ export class Checker {
     let fall: string[] = [];
     const caseLits = new Set(clauses.flatMap((c) => (c.kind === K.CaseClause && (c as ts.CaseClause).expression.kind === K.StringLiteral ? [((c as ts.CaseClause).expression as ts.StringLiteral).text] : [])));
     const saved = this.narrow;
+    const savedScope = this.scope;
+    this.scope = new Scope(savedScope); // the case block is one scope
     clauses.forEach((c, i) => {
       if (c.kind === K.DefaultClause) {
         hasDefault = true;
@@ -429,6 +431,7 @@ export class Checker {
       if (i === clauses.length - 1) reachEnd = r;
     });
     this.narrow = saved;
+    this.scope = savedScope;
     const exhaustive = hasDefault || (!!labels && labels.every((l) => l.k === "lit" && seen.has(l.value)));
     if (!exhaustive && t.k !== "error") this.report("E2005", kw, kw + "switch".length, "switch is not exhaustive");
     return !exhaustive || reachEnd || clauses.length === 0 || hasBreak(x.caseBlock, true);

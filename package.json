@@ -9,7 +9,7 @@
     "conformance": "vitest run --config vitest.conformance.config.ts",
     "typecheck": "tsc --noEmit",
     "verify:conformance": "node scripts/verify-conformance.mjs",
-    "conformance:update-passing": "node scripts/update-passing.mjs reject/E1 reject/E2 reject/E4001 reject/E5001 reject/E5002 reject/E6001 reject/E6002 reject/E6003 reject/E7001 accept/0 accept/1 accept/20- accept/21- accept/22-"
+    "conformance:update-passing": "node scripts/update-passing.mjs reject/E1 reject/E2 reject/E4001 reject/E5001 reject/E5002 reject/E6001 reject/E6002 reject/E6003 reject/E7001 accept/0 accept/1 accept/20- accept/21- accept/22- accept/35 run/"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

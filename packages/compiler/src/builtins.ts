@@ -67,16 +67,16 @@ function opaqueMember(name: string, member: string): Member | undefined {
       const T = newTParam("T"), U = newTParam("T");
       return {
         call: m([J, gen("Array", J)], jr), get: m([J, STR], jr), await: m([J], gen("Promise", jr)),
-        decode: m([J], result({ k: "tparam", p: T }, ERROR_RECORD), { tparams: [T] }), encode: m([{ k: "tparam", p: U }], J, { tparams: [U] }),
+        decode: m([J], result({ k: "tparam", p: T }, ERROR_RECORD), { tparams: [T], tcheck: "cast" }), encode: m([{ k: "tparam", p: U }], J, { tparams: [U] }),
       };
     },
     Test: () => {
       const T = newTParam("T"), U = newTParam("T");
       const tT: Type = { k: "tparam", p: T }, tU: Type = { k: "tparam", p: U };
       return mapValues({
-        ok: m([BOOL], VOID), eq: m([tT, tT], VOID, { tparams: [T] }),
+        ok: m([BOOL], VOID), eq: m([tT, tT], VOID, { tparams: [T], tcheck: "eq" }),
         eqSlice: m([gen("Ref", gen("Slice", tU)), gen("Ref", gen("Slice", tU))], VOID, { tparams: [U] }),
-        traps: m([STR, fn([], VOID)], VOID),
+        traps: m([STR, fn([], VOID)], VOID, { tcheck: "trap" }),
       }, mo);
     },
     FakeClock: () => ({ nowMs: m([], F64), advance: m([F64], VOID) }),
@@ -186,11 +186,11 @@ export function nsMember(ns: string, name: string): Member | "variadic" | undefi
     }
     case "JSON":
       if (name === "parse") return mo(m([STR], UNKNOWN));
-      if (name === "stringify") return mo(m([tT], STR, { tparams: [T] }));
+      if (name === "stringify") return mo(m([tT], STR, { tparams: [T], tcheck: "cast" }));
       return undefined;
     case "String": return name === "fromCodePoint" ? mo(m([num("u32")], STR)) : undefined;
     case "Promise": return name === "all" ? mo(m([gen("Array", gen("Promise", tT))], gen("Promise", gen("Array", tT)), { tparams: [T] })) : undefined;
-    case "Vec": return name === "create" ? m([opaque("Alloc"), USIZE], gen("Vec", tT), { tparams: [T] }) : undefined;
+    case "Vec": return name === "create" ? m([opaque("Alloc"), USIZE], gen("Vec", tT), { tparams: [T], tcheck: "copy" }) : undefined;
     case "OwnedCell": return name === "create" ? m([tT], gen("OwnedCell", tT), { tparams: [T] }) : undefined;
     case "FakeClock": return name === "create" ? mo(m([F64], opaque("FakeClock"))) : undefined;
     case "SeededRandom": return name === "create" ? mo(m([num("u32")], opaque("SeededRandom"))) : undefined;

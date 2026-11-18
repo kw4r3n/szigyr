@@ -5,6 +5,11 @@ import { checkSyntax } from "./syntax.ts";
 import { Program as Decls, Reporter, checkImportNames } from "./modules.ts";
 import { Checker } from "./checker.ts";
 import { isDeterministic } from "./determinism.ts";
+import { emitFile, IMP, RT } from "./emit.ts";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
+import * as rt from "../../runtime-js/src/index.ts";
+import { FakeClock, FakeFs, MemoryLog, SeededRandom, TestAlloc, runMain } from "../../std/src/index.ts";
 export * from "./diagnostics.ts";
 export * from "./names.ts";
 
@@ -66,13 +71,18 @@ const displayPath = (p: string): string => relative(process.cwd(), p) || p;
 
 /** Phases run in order P1 -> P2 -> P3 and stop at the first phase with an error (Q003). P3 does not exist yet. */
 export function check(entryFile: string): Diagnostic[] {
+  return analyze(entryFile).diagnostics;
+}
+
+/** P1 + P2 over the program; on success the expression types are in `exprTypes` for the emitter. */
+function analyze(entryFile: string): { files: ParsedFile[]; diagnostics: Diagnostic[] } {
   const prog = loadProgram(entryFile);
   const p1 = [...prog.missing, ...prog.files.flatMap((f) => checkSyntax(f, displayPath(f.path)))];
   if (!p1.length) p1.push(...checkImportNames(prog.files, displayPath));
-  if (p1.length) return p1;
+  if (p1.length) return { files: prog.files, diagnostics: p1 };
   const rep = new Reporter();
   new Checker(new Decls(prog.files, displayPath, rep)).run();
-  return rep.out;
+  return { files: prog.files, diagnostics: rep.out };
 }
 
 /** §7.3 query (Q062): for each top-level function of the entry file, whether it is deterministic. Assumes P1 passes. */
@@ -83,6 +93,54 @@ export function deterministicFunctions(entryFile: string): Record<string, boolea
   return Object.fromEntries(decls.fns.filter((f) => f.mod === entry).map((f) => [f.name, isDeterministic(f.sig)]));
 }
 
-export async function run(_entryFile: string): Promise<RunResult> {
-  throw new NotImplementedError("run");
+/** Emits every file and evaluates them as module factories in memory (D031). Returns the entry's exports. */
+async function load(files: ParsedFile[], entryFile: string, tests: boolean): Promise<Record<string, unknown>> {
+  const entry = resolve(entryFile);
+  const emitted = new Map(files.map((f) => [f.path, emitFile(f, displayPath(f.path), tests && f.path === entry)]));
+  const npm = new Map<string, unknown>();
+  for (const [path, e] of emitted) {
+    for (const spec of e.imports) {
+      if (!spec.startsWith("npm:") || npm.has(spec)) continue;
+      const name = spec.slice(4);
+      let url = name;
+      try { url = pathToFileURL(createRequire(path).resolve(name)).href; } catch { /* shortcut: fall back to Node's own resolution from the compiler */ }
+      npm.set(spec, await import(url));
+    }
+  }
+  const done = new Map<string, Record<string, unknown>>();
+  const instantiate = (path: string): Record<string, unknown> => {
+    let ex = done.get(path);
+    if (ex) return ex;
+    // shortcut: an import cycle sees an empty exports object; no case has one (Q100).
+    done.set(path, {});
+    const f = new Function(RT, IMP, emitted.get(path)!.js) as (rt: unknown, imp: (k: string) => unknown) => Record<string, unknown>;
+    ex = f(RUNTIME, (k) => (k.startsWith("npm:") ? npm.get(k) : instantiate(k)));
+    done.set(path, ex);
+    return ex;
+  };
+  return instantiate(entry);
+}
+
+/** The runtime object generated code receives: runtime-js plus the std fakes. */
+const RUNTIME = { ...rt, FakeClock, SeededRandom, MemoryLog, FakeFs, TestAlloc };
+
+/** Checks, emits and runs `main(sys)` of the entry file with a real System (Q059, Q061). */
+export async function run(entryFile: string): Promise<RunResult> {
+  const a = analyze(entryFile);
+  if (a.diagnostics.length) return { diagnostics: a.diagnostics, stdout: "", trap: null };
+  const main = (await load(a.files, entryFile, false)).main;
+  if (typeof main !== "function") throw new Error(`${entryFile}: no exported function 'main'`); // Q061: a CLI error, not a diagnostic
+  const r = await runMain(main as Parameters<typeof runMain>[0]);
+  // A trap without a position is stack exhaustion (Q035), which has no anchor yet (D031).
+  const trap = r.trap ? { code: r.trap.code, file: r.trap.pos?.file ?? "", line: r.trap.pos?.line ?? 0, col: r.trap.pos?.col ?? 0 } : null;
+  return { diagnostics: [], stdout: r.stdout, trap };
+}
+
+/** `sts test`: checks, emits the entry file's `test(...)` calls and runs them in order (§9.2, D022). */
+export async function runTestFile(entryFile: string): Promise<{ diagnostics: Diagnostic[]; results: rt.TestResult[] }> {
+  const a = analyze(entryFile);
+  if (a.diagnostics.length) return { diagnostics: a.diagnostics, results: [] };
+  rt.clearTests();
+  await load(a.files, entryFile, true);
+  try { return { diagnostics: [], results: await rt.runTests() }; } finally { rt.clearTests(); }
 }

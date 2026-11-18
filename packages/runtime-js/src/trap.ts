@@ -5,8 +5,12 @@ export type TrapCode = "T001" | "T002" | "T003" | "T004" | "T005" | "T006" | "T0
 
 /** Not catchable from STS code; only hosts (test runner, main caller) see it. */
 export class Trap extends Error {
-  constructor(readonly code: TrapCode, message: string, readonly pos?: Pos) {
+  readonly code: TrapCode;
+  readonly pos?: Pos;
+  constructor(code: TrapCode, message: string, pos?: Pos) {
     super(`${code}: ${message}`);
+    this.code = code;
+    this.pos = pos;
     this.name = "Trap";
   }
 }

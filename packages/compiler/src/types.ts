@@ -16,7 +16,11 @@ export const OPAQUE_NAMES = new Set<string>([...AUTHORITIES, "JsRef", "Test", "F
 export interface Field { name: string; type: Type; readonly: boolean }
 export interface TParam { name: string; id: number; constraint?: Type }
 /** `min`: builtin optional trailing parameters (Q032). `prefix`: a builtin callback may take a prefix of the parameters. */
-export interface FnType { k: "fn"; tparams: TParam[]; params: Type[]; ret: Type; min?: number; prefix?: boolean }
+export interface FnType {
+  k: "fn"; tparams: TParam[]; params: Type[]; ret: Type; min?: number; prefix?: boolean;
+  /** Builtin call-site conditions: `cast` / `eq` / `copy` constrain the first type argument (Q084, Q086); `trap` checks the code literal (Q058). */
+  tcheck?: "cast" | "eq" | "copy" | "trap";
+}
 
 export interface ClassSym {
   name: string;
@@ -245,6 +249,35 @@ export function show(t: Type): string {
     case "iter": return `Iterator<${show(t.elem)}>`;
   }
 }
+
+/** `Map` key / `Set` element types (§3.2, Q081). Type parameters cannot be checked here. */
+export const keyOk = (t: Type): boolean => t.k === "error" || t.k === "tparam" || t.k === "num" || (t.k === "prim" && (t.name === "string" || t.name === "boolean"));
+
+/** Types `cast<T>`, `js.decode<T>` and `JSON.stringify<T>` accept (§3.2 `unknown`, Q084): primitives, closed records, tagged / literal unions, `Array`, `T | null`. */
+export function castable(t: Type): boolean {
+  switch (t.k) {
+    case "num": case "lit": return true;
+    case "prim": return t.name === "boolean" || t.name === "string" || t.name === "null";
+    case "record": return !t.struct && t.fields.every((f) => castable(f.type));
+    case "union": return t.members.every(castable);
+    case "gen": return t.name === "Array" && castable(t.args[0]!);
+    default: return false;
+  }
+}
+
+/** `Test.eq` operands (§9.2, Q086): no owned values, function values or authorities anywhere inside. */
+export function comparable(t: Type): boolean {
+  switch (t.k) {
+    case "fn": case "opaque": case "ns": case "iter": return false;
+    case "record": return !isOwned(t) && t.fields.every((f) => comparable(f.type));
+    case "union": return t.members.every(comparable);
+    case "gen": return t.name !== "Vec" && t.name !== "Slice" && t.name !== "OwnedCell" && t.name !== "Promise" && t.args.every(comparable);
+    default: return true;
+  }
+}
+
+/** Struct field types (§3.3, Q086): numbers, boolean, Struct, Vec. */
+export const structField = (t: Type): boolean => t.k === "error" || t.k === "tparam" || t.k === "num" || isBool(t) || (t.k === "record" && t.struct) || (t.k === "gen" && t.name === "Vec");
 
 /** Integer ranges (§3.1). */
 export const INT_RANGE: Partial<Record<NumName, [number, number]>> = {
