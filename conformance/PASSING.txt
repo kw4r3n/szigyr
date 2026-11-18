@@ -142,6 +142,7 @@ reject/E2002-integer-modulo.ts
 reject/E2002-interface-structural-conformance.ts
 reject/E2002-js-encode-authority.ts
 reject/E2002-js-encode-function.ts
+reject/E2002-json-parse-unwrapped.ts
 reject/E2002-map-key-array.ts
 reject/E2002-map-key-mixed-union.ts
 reject/E2002-missing-return-path.ts
@@ -412,3 +413,4 @@ run/40-trap-ensures-void.ts
 run/47-map-literal-key.ts
 run/48-rem-min-neg1.ts
 run/49-await-conditional.ts
+run/50-json-parse-result.ts

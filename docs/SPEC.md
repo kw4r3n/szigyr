@@ -404,7 +404,7 @@ strict の規則に加えて、次を禁止する。
   - managed のみ: `sin`、`cos`、`tan`、`asin`、`acos`、`atan`、`atan2`、`exp`、`log`、`log2`、`log10`、`pow`、`hypot`、`cbrt`。
   - `random` は使えない。
 - **`Number`**: `isFinite`、`isNaN`、`isInteger`、`parseFloat`、`MAX_SAFE_INTEGER`、`EPSILON`。
-- **`JSON`**: `parse`（戻り値は `unknown`）、`stringify`。
+- **`JSON`**: `parse`（戻り値は `Result<unknown, JsError>`。構文エラーは `err` で、`error.code` は `"SyntaxError"`）、`stringify`。JS の例外を投げるほかの組み込みとスタックの枯渇は T006（Q035）。
 - **`string` のメンバ**: `length`、`slice`、`indexOf`、`includes`、`startsWith`、`endsWith`、`split`、`trim`、`toUpperCase`、`toLowerCase`、`padStart`、`padEnd`、`replaceAll`（文字列の引数のみ）、`charCodeAt`、`codePointAt`。`String.fromCodePoint`。
 - **`Array` のメンバ**: `length`、`push`、`pop`、`slice`、`map`、`filter`、`reduce`（初期値必須）、`forEach`、`find`、`findIndex`、`some`、`every`、`includes`、`indexOf`、`join`、`concat`、`reverse`、`sort`（比較関数必須）、`fill`。
 - **`Map` のメンバ**: `get`（`V | null`）、`set`、`has`、`delete`、`size`、`clear`、`keys`、`values`、`forEach`。反復の順序は挿入順。

@@ -140,7 +140,7 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 
 ## D032: JS の例外を投げる組み込みとスタックの枯渇（Q035）
 
-- §12 の許可リストのうち、JS の例外を投げうるメンバは次のとおり。`JSON.parse`（構文エラー）、`JSON.stringify`（文字列の長さの上限）、`String.fromCodePoint`（範囲外の符号位置）、string の `padStart` / `padEnd` / `replaceAll` / `toUpperCase` / `toLowerCase`（文字列の長さの上限）、`Array` の `push` / `concat` / `join`（配列と文字列の長さの上限。`ReadonlyArray` は `concat` / `join`）、`Map.set` / `Set.add`（要素数の上限）。これらの呼び出しは `guarded(受け手, 名前, 実引数, 位置)` にし、トラップ以外の例外を `panic`（T006）にする。位置はメンバ名（DIAGNOSTICS の T006 の行）。実引数は呼び出しの前に評価する。受け手が `?.` の呼び出しは包まない（`shortcut:` の印）。
+- §12 の許可リストのうち、JS の例外を投げうるメンバは次のとおり。`JSON.parse`（構文エラーは `err` で返す。D082）、`JSON.stringify`（文字列の長さの上限）、`String.fromCodePoint`（範囲外の符号位置）、string の `padStart` / `padEnd` / `replaceAll` / `toUpperCase` / `toLowerCase`（文字列の長さの上限）、`Array` の `push` / `concat` / `join`（配列と文字列の長さの上限。`ReadonlyArray` は `concat` / `join`）、`Map.set` / `Set.add`（要素数の上限）。これらの呼び出しは `guarded(受け手, 名前, 実引数, 位置)` にし、トラップ以外の例外を `panic`（T006）にする。位置はメンバ名（DIAGNOSTICS の T006 の行）。実引数は呼び出しの前に評価する。受け手が `?.` の呼び出しは包まない（`shortcut:` の印）。
 - 包まないもの: テンプレートリテラルと配列のスプレッドは組み込みではなく構文なので、長さの上限の `RangeError` はそのまま JS の例外になる。ランタイムの `Vec.push` の確保の失敗も同じ。
 - スタックの枯渇: `asTrap`（runtime-js）が `RangeError: Maximum call stack size exceeded` を T006 にする。`runMain`、`runTests`、`t.traps` が使う。位置は Q035 の既定案のとおり、枯渇が起きた呼び出しの名前にする。生成コードは呼び出しの名前の直前（`new` は `new` の直前）に `/*__sts_rt@N*/` の注釈を残し、末尾に `//# sourceURL=sts:<絶対パス>` を付ける。V8 のスタックフレームの `行:列` が注釈の直後に当たるものを、上のフレームから探す。`new Function` は本体の前に 2 行を足すので、本体の 1 行目を 3 行目として数える。見つからなければ位置なし（D031）。
 - ロケータはプロセスに 1 つ（`setStackLocator`）。同じプロセスで同時に走る 2 つの `run` は互いのロケータを上書きする（`shortcut:` の印）。
@@ -224,3 +224,9 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - 実装を変える項目: Q081（文字列リテラルの union をキーに許す）、Q128（`js.callback`、D081）、Q026（`as const` を E1005 にする）、Q035（`JSON.parse` が `Result` を返す、D082）、Q130（`await` のオペランドの条件式）、Q090（SPEC の文面を実装に合わせる）。
 - Q049 / Q068 は案2に決めたが、実装は所有権の検査の担当が別に行う。ここでは記録だけ。
 - `docs/PENDING_DECISIONS.md` は、内容を `docs/OPEN_QUESTIONS.md` に移して削除した。
+
+## D082: `JSON.parse` は `Result` を返す（Q035）
+
+- 型は `JSON.parse(s: string): Result<unknown, JsError>`。構文エラー（JS の `SyntaxError`）は `err({ code: "SyntaxError", message })` で、`code` は Q036 のとおり JS の例外の名前。エラー型は `IoError` / `CastError` と同じ形の `JsError`。
+- 実行時は `runtime-js` の `jsonParse(text, pos)`。`SyntaxError` 以外の例外（スタックの枯渇など）は T006（位置は `parse` の名前）。`JSON.stringify` とほかの組み込みは今までどおり `guarded` で T006。
+- `cast<T>(x)` は `unknown` を受け取るので、`Result` をそのまま渡しても型検査は通る（実行時は `err`）。`unknown` を取り出して渡すこと。これは `cast` の引数の規則の問題で、今回は変えていない。

@@ -27,7 +27,7 @@ const COMPOUND: Partial<Record<K, string>> = {
 };
 /** §12 members that can throw a JS exception (Q035): parse errors, out-of-range code points, string / array / Map / Set size limits. */
 const THROWING: Record<string, readonly string[]> = {
-  JSON: ["parse", "stringify"], String: ["fromCodePoint"],
+  JSON: ["stringify"], String: ["fromCodePoint"],
   string: ["padStart", "padEnd", "replaceAll", "toUpperCase", "toLowerCase"],
   Array: ["push", "concat", "join"], ReadonlyArray: ["concat", "join"], Map: ["set"], Set: ["add"],
 };
@@ -213,6 +213,7 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean): Emitted 
     const r0 = typeOf(recv);
     const r = r0 && (nonNull(r0) ?? r0);
     const ns = recv.kind === K.Identifier && !r0 ? (recv as ts.Identifier).text : undefined;
+    if (ns === "JSON" && m === "parse") return `${RT}.jsonParse(${args[0]}, ${at(p.name)})`; // Q035: a syntax error is an `err`, other exceptions are T006
     // Q035: builtins that can throw a JS exception panic (T006) at their name.
     const throws = ns ? THROWING[ns] : r?.k === "gen" ? THROWING[r.name] : r && isStr(r) ? THROWING.string : undefined;
     if (throws?.includes(m)) {

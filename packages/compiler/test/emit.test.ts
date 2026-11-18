@@ -123,9 +123,6 @@ describe("Q035: JS exceptions and stack exhaustion are T006 at the callee name",
       "main.ts": `function deep(n: f64): f64 {
   return deep(n + 1) + 1;
 }
-test("parse", (t: Test) => {
-  const v: unknown = JSON.parse("{");
-});
 test("fromCodePoint", (t: Test) => {
   const s: string = String.fromCodePoint(1114112);
 });
@@ -140,15 +137,15 @@ test("traps sees T006", (t: Test) => {
     deep(0);
   });
   t.eq(JSON.parse("1"), JSON.parse("1"));
+  t.eq(JSON.parse("{").kind, "err");
 });
 `,
     });
     const r = await runTestFile(main);
     expect(r.diagnostics).toEqual([]);
     expect(r.results.map((x) => [x.name, x.ok, x.trap?.code, x.trap?.pos?.line, x.trap?.pos?.col])).toEqual([
-      ["parse", false, "T006", 5, 27],
-      ["fromCodePoint", false, "T006", 8, 28],
-      ["padStart", false, "T006", 11, 25],
+      ["fromCodePoint", false, "T006", 5, 28],
+      ["padStart", false, "T006", 8, 25],
       ["deep", false, "T006", 2, 10],
       ["traps sees T006", true, undefined, undefined, undefined],
     ]);
@@ -260,8 +257,11 @@ export function main(sys: System): void {
   const z: i32 = -0;
   const f: f64 = -0;
   sys.log.info(\`\${1 / f64(z)} \${1 / f}\`);
-  const c = cast<i32>(JSON.parse("-0"));
-  sys.log.info(c.kind);
+  const p = JSON.parse("-0");
+  if (p.kind === "ok") {
+    const c = cast<i32>(p.value);
+    sys.log.info(c.kind);
+  }
 }
 `,
     });

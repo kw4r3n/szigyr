@@ -1,10 +1,31 @@
 // expect: ok
 // stage: 1
 // open-question: Q032
+// open-question: Q035
 type Config = { readonly name: string; readonly retries: u32; readonly tags: Array<string> };
 
 export function load(text: string): Result<Config, CastError> {
-  return cast<Config>(JSON.parse(text));
+  const p = JSON.parse(text);
+  if (p.kind === "err") {
+    return err(p.error);
+  }
+  return cast<Config>(p.value);
+}
+
+function countOf(text: string): u32 {
+  const p = JSON.parse(text);
+  if (p.kind === "err") {
+    return 0;
+  }
+  return asCount(p.value);
+}
+
+function nameOf(text: string): string {
+  const p = JSON.parse(text);
+  if (p.kind === "err") {
+    return "?";
+  }
+  return asName(p.value);
 }
 
 export function asCount(x: unknown): u32 {
@@ -37,9 +58,10 @@ test("cast", (t: Test) => {
   }
   const bad = load("{\"name\":1}");
   t.ok(bad.kind === "err");
-  t.eq(asCount(JSON.parse("7")), 7);
-  t.eq(asCount(JSON.parse("-1")), 0);
-  t.eq(asName(JSON.parse("null")), "null");
+  t.eq(countOf("7"), 7);
+  t.eq(countOf("-1"), 0);
+  t.eq(nameOf("null"), "null");
+  t.eq(nameOf("{"), "?");
   const c: Config = { name: "a", retries: 1, tags: [] };
   t.ok(dump(c).includes("\"retries\":1"));
 });

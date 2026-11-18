@@ -1,4 +1,5 @@
 import { RANGE, type NumType, type IntType } from "./num.ts";
+import { Trap, trap, type Pos } from "./trap.ts";
 
 export type Result<T, E> = { readonly kind: "ok"; readonly value: T } | { readonly kind: "err"; readonly error: E };
 export const ok = <T>(value: T): Result<T, never> => ({ kind: "ok", value });
@@ -60,4 +61,15 @@ function check(d: TypeDesc, x: unknown, path: string): string | null {
 export function cast<T>(x: unknown, desc: TypeDesc): Result<T, CastError> {
   const e = check(desc, x, "$");
   return e === null ? ok(x as T) : err({ code: "cast", message: e });
+}
+
+/** JSON.parse (Q035): a syntax error is `err({ code: "SyntaxError", message })`; any other exception (stack exhaustion) is a panic (T006). */
+export function jsonParse(text: string, pos?: Pos): Result<unknown, { readonly code: string; readonly message: string }> {
+  try {
+    return ok(JSON.parse(text));
+  } catch (e) {
+    if (e instanceof Trap) throw e;
+    if (e instanceof SyntaxError) return err({ code: e.name, message: e.message });
+    return trap("T006", `parse: ${e instanceof Error ? e.message : String(e)}`, pos);
+  }
 }

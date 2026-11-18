@@ -185,7 +185,7 @@ export function nsMember(ns: string, name: string): Member | "variadic" | undefi
       return Object.hasOwn(sigs, name) ? mo(sigs[name]!) : undefined;
     }
     case "JSON":
-      if (name === "parse") return mo(m([STR], UNKNOWN));
+      if (name === "parse") return mo(m([STR], result(UNKNOWN, ERROR_RECORD))); // Q035
       if (name === "stringify") return mo(m([tT], STR, { tparams: [T], tcheck: "cast" }));
       return undefined;
     case "String": return name === "fromCodePoint" ? mo(m([num("u32")], STR)) : undefined;
