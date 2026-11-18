@@ -1,0 +1,71 @@
+// expect-output: 6 4 7
+// expect-output: 29 5 6 0.5
+// expect-output: 0.20000000298023224 0.4000000059604645 1.100000023841858
+// expect-output: 16
+// stage: 2
+// open-question: Q040
+// open-question: Q086
+type V2 = Struct<{ readonly x: f32; readonly y: f32 }>;
+type Body = Struct<{ pos: V2; vel: V2; mass: f32 }>;
+type World = Struct<{ bodies: Vec<V2>; count: u32; readonly tag: i32 }>;
+
+function makeWorld(alloc: Alloc, n: usize): World {
+  "use owned";
+  const bodies = Vec.create<V2>(alloc, n);
+  for (let i: usize = 0; i < n; i += 1) {
+    const f = f32(i);
+    bodies.push({ x: f, y: f * 0.5 });
+  }
+  const w: World = { bodies, count: u32(n), tag: 7 };
+  return w;
+}
+
+function step(b: Mut<Body>, dt: f32): void {
+  "use rt";
+  b.pos = { x: b.pos.x + b.vel.x * dt, y: b.pos.y + b.vel.y * dt };
+  b.mass += 0.1;
+}
+
+function sumX(w: Ref<World>): f32 {
+  "use rt";
+  let acc: f32 = 0;
+  for (let i: usize = 0; i < w.bodies.length; i += 1) {
+    acc += w.bodies[i].x;
+  }
+  return acc;
+}
+
+function shift(s: Mut<Slice<V2>>, d: f32): void {
+  "use rt";
+  for (let i: usize = 0; i < s.length; i += 1) {
+    const p = s[i];
+    s[i] = { x: p.x + d, y: p.y };
+  }
+}
+
+function bump(w: Mut<World>): void {
+  "use owned";
+  w.count += 1;
+  shift(w.bodies.slice(1, 3), 10);
+  const last = w.bodies.pop();
+  if (last !== null) {
+    w.bodies.push({ x: last.x * 2, y: last.y });
+  }
+}
+
+function consume(w: World): u32 {
+  "use owned";
+  const { bodies, count, tag } = w;
+  return count + u32(bodies.length) + u32(tag);
+}
+
+export function main(sys: System): void {
+  const w = makeWorld(sys.alloc, 4);
+  sys.log.info(`${sumX(w)} ${w.count} ${w.tag}`);
+  bump(w);
+  sys.log.info(`${sumX(w)} ${w.count} ${w.bodies[3].x} ${w.bodies[1].y}`);
+  const b: Body = { pos: { x: 0.1, y: 0.2 }, vel: { x: 1, y: 2 }, mass: 1 };
+  step(b, 0.1);
+  sys.log.info(`${b.pos.x} ${b.pos.y} ${b.mass}`);
+  sys.log.info(`${consume(w)}`);
+}

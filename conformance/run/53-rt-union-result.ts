@@ -1,0 +1,73 @@
+// expect-output: -20
+// expect-output: ok -7 err 7
+// expect-output: -5 null
+// expect-output: 2 5 200
+// stage: 2
+// open-question: Q043
+// open-question: Q090
+type Op = { readonly kind: "add"; readonly n: i32 } | { readonly kind: "mul"; readonly n: i32 };
+type Flag = Struct<{ readonly on: boolean; readonly level: u8 }>;
+
+function apply(acc: i32, op: Op): i32 {
+  "use rt";
+  switch (op.kind) {
+    case "add": return acc + op.n;
+    case "mul": return acc * op.n;
+  }
+}
+
+function checkedHalf(x: i32): Result<i32, i32> {
+  "use rt";
+  if (rem(x, 2) !== 0) return err(x);
+  return ok(divTrunc(x, 2));
+}
+
+function firstNeg(s: Ref<Slice<i32>>): i32 | null {
+  "use rt";
+  for (let i: usize = 0; i < s.length; i += 1) {
+    if (s[i] < 0) return s[i];
+  }
+  return null;
+}
+
+function count(fs: Ref<Vec<Flag>>, min: u8): u32 {
+  "use rt";
+  let n: u32 = 0;
+  for (let i: usize = 0; i < fs.length; i += 1) {
+    const f = fs[i];
+    if (f.on && f.level >= min) n += 1;
+  }
+  return n;
+}
+
+function flags(alloc: Alloc): Vec<Flag> {
+  "use owned";
+  const v = Vec.create<Flag>(alloc, 2);
+  for (let i: u8 = 0; i < 5; i += 1) {
+    v.push({ on: rem(i, 2) === 0, level: i * 50 });
+  }
+  return v;
+}
+
+function show(r: Result<i32, i32>): string {
+  switch (r.kind) {
+    case "ok": return `ok ${r.value}`;
+    case "err": return `err ${r.error}`;
+  }
+}
+
+function showN(x: i32 | null): string {
+  return x === null ? "null" : `${x}`;
+}
+
+export function main(sys: System): void {
+  sys.log.info(`${apply(apply(2, { kind: "add", n: 3 }), { kind: "mul", n: -4 })}`);
+  sys.log.info(`${show(checkedHalf(-14))} ${show(checkedHalf(7))}`);
+  const v = Vec.create<i32>(sys.alloc, 3);
+  v.push(4);
+  v.push(-5);
+  v.push(-2);
+  sys.log.info(`${showN(firstNeg(v))} ${showN(firstNeg(v.slice(0, 1)))}`);
+  const fs = flags(sys.alloc);
+  sys.log.info(`${count(fs, 100)} ${fs.length} ${fs[4].level}`);
+}

@@ -1,0 +1,44 @@
+// expect-output: 10 0.9000000357627869
+// expect-output: 0.10000000149011612 0.800000011920929 2 0.6000000238418579
+// expect-output: 8.699999809265137 10 7 3
+// stage: 2
+// open-question: Q040
+type Acc = Struct<{ total: f32; count: u32; hist: Vec<u32> }>;
+
+function fill(v: Mut<Vec<f32>>, n: u32): void {
+  "use owned";
+  for (let i: u32 = 0; i < n; i += 1) {
+    v.push(f32(i) * 0.1);
+  }
+}
+
+function scale(s: Mut<Slice<f32>>, k: f32): void {
+  "use rt";
+  for (let i: usize = 0; i < s.length; i += 1) {
+    s[i] *= k;
+  }
+}
+
+function absorb(a: Mut<Acc>, s: Ref<Slice<f32>>): void {
+  "use rt";
+  for (let i: usize = 0; i < s.length; i += 1) {
+    a.total += s[i];
+    a.count += 1;
+    const b: usize = s[i] >= 1 ? 1 : 0;
+    a.hist[b] += 1;
+  }
+}
+
+export function main(sys: System): void {
+  const v = Vec.create<f32>(sys.alloc, 1);
+  fill(v, 10);
+  sys.log.info(`${v.length} ${v[9]}`);
+  scale(v.slice(2, 6), 4);
+  sys.log.info(`${v[1]} ${v[2]} ${v[5]} ${v[6]}`);
+  const hist = Vec.create<u32>(sys.alloc, 2);
+  hist.push(0);
+  hist.push(0);
+  const a: Acc = { total: 0, count: 0, hist };
+  absorb(a, v);
+  sys.log.info(`${a.total} ${a.count} ${a.hist[0]} ${a.hist[1]}`);
+}

@@ -67,10 +67,10 @@
 
 ## 段階 2: strict / rt 層と C バックエンド（Linux）
 
-- [ ] `Struct`、`Vec`、`Slice`、`Ref`、`Mut`、`OwnedCell` の型検査。
+- [x] `Struct`、`Vec`、`Slice`、`Ref`、`Mut`、`OwnedCell` の型検査。
 - [x] 所有権と借用の検査（E3xxx）。
 - [x] strict / rt の層の検査（E4002 〜 E4006）。rt 関数ごとのトラップ箇所の一覧。
-- [ ] strict / rt の JS への変換（TypedArray による表現）。
+- [x] strict / rt の JS への変換（TypedArray による表現）。
 - [ ] strict / rt の C への変換。評価順、浮動小数点、トラップ位置を JS 側と一致させる（SPEC §10.1）。
 - [ ] C のビルド。`zig cc` か clang。ネイティブアドオンとして Node から読み込む。
 - [ ] managed と strict の境界。`Vec` はコピーせず、共有メモリ上の型つき配列として渡す。
@@ -84,6 +84,12 @@
 - Q068 の決定（案2）を実装した（D090）。managed のジェネリックを所有型で具体化すると E3007 になる。strict / rt の関数の型引数は §3.3 で検査する（E4002、rt の権限は E4006）。
 - 独立レビューが見つけた穴を塞いだ（D091、Q170〜Q176）。入れ子の実引数・添字・代入先の途中の移動、式の中の代入、`async` の借用パラメータ、所有型を要素に持つコンテナを作る呼び出し、契約の中の移動と `Mut` の借用が対象。
 - 計測: `pnpm typecheck` 成功、`pnpm test` 184 通過、`pnpm verify:conformance` accept=51 reject=363 run=36、`pnpm conformance` 451 通過。
+
+### 途中の記録（2026-11-19、型検査の監査と JS への変換）
+- 型検査: SPEC §3.3、§5、§5.6 に照らしたプローブ約 110 本で、欠けていたのは strict / rt の `**` だけだった（Q180、E4001）。`OwnedCell<T>` の `T` の条件は SPEC にないので付けない（Q181）。拒否例 14 本と受理例 1 本を足した。
+- JS への変換: 変換器は層によらず同じで、strict / rt はすでに動いていた。表現と C との対応、評価順の決め方は D100。実行例 15 本（`run/52`〜`run/66`）を足した。出力 3 本、strict / rt でのトラップ（T001〜T007、T009、T010）、トラップで観測する評価順 4 本。期待値は実装とは別に、Node の `Math.fround` と手計算で求めた。トラップの位置は DIAGNOSTICS のアンカー規則から求めた。どのケースも最初の実行から通ったので、テストが先に失敗するのは確認できていない。
+- 計測: `pnpm typecheck` 成功、`pnpm test` 184 通過、`pnpm verify:conformance` accept=52 reject=377 run=51、`pnpm conformance` 481 通過。
+- 残り: 共有メモリでの境界（項目「managed と strict の境界」）は C バックエンドと一緒に進めるので未着手。
 
 完了条件: strict / rt を使う適合テストがすべて通る。差分テストで両バックエンドが一致する。数値カーネルが手書き C の 1.5 倍以内の時間で動く（目標）。
 

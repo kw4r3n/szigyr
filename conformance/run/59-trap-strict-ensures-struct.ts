@@ -1,0 +1,19 @@
+// expect-output: 1 2
+// expect-trap: T005 @ 9:3
+// stage: 2
+// open-question: Q002
+type P = Struct<{ readonly a: i32; readonly b: i32 }>;
+
+function ordered(x: i32, y: i32): P {
+  "use owned";
+  ensures((r: P) => r.a <= r.b);
+  if (x < 0) return { a: y, b: x };
+  return { a: x, b: y };
+}
+
+export function main(sys: System): void {
+  const p = ordered(1, 2);
+  sys.log.info(`${p.a} ${p.b}`);
+  const q = ordered(-1, 2);
+  sys.log.info(`${q.a} ${q.b}`);
+}
