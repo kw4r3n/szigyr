@@ -103,7 +103,7 @@
 - 独立レビューの指摘（評価順、スタックの上限、`Vec` の伸長の桁あふれ、確保の失敗、無限大のリテラル）を直した（D106、`run/78`〜`run/80`）。
 - stage 2 の実行例 34 本がすべて JS と C で同じ結果になる（適合テストで両方を実行。`C_PENDING` は空）。
 - まだ C にならない、仕様上は書けるもの: 浮動小数点の値の `switch`、managed のジェネリック関数の中で作った `Vec` の `Slice` を C に渡すこと（D105）。このため「C への変換」と「境界」はまだ完了にしない。
-- ベンチマーク（`pnpm bench`。Ryzen 9 5900X、Node 24、gcc、C のバックエンドと同じフラグ `-std=gnu11 -O2 -ffp-contract=off -fno-fast-math -fwrapv -fexcess-precision=standard`。要素数 2^20、50 回の呼び出しの平均。チェックサムは 3 つとも一致）:
+- ベンチマークの結果は次の表のとおり（`pnpm bench`。Ryzen 9 5900X、Node 24、gcc、C のバックエンドと同じフラグ `-std=gnu11 -O2 -ffp-contract=off -fno-fast-math -fwrapv -fexcess-precision=standard`。要素数 2^20、50 回の呼び出しの平均。チェックサムは 3 つとも一致。`Clock.nowMs` の分解能は 1 ms で、C の 1 回の計測は 15〜125 ms なので、数 % の揺れがある。saxpy は実行ごとに 0.32〜0.38 ms だった）。
 
   | カーネル | 手書き C (ms) | STS-C (ms) | STS-JS (ms) | STS-C / 手書き C |
   | --- | ---: | ---: | ---: | ---: |
