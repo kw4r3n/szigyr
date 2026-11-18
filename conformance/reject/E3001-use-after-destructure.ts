@@ -1,0 +1,9 @@
+// expect: E3001 @ 8:10
+// stage: 2
+// open-question: Q052
+type Buf = Struct<{ data: Vec<f32>; readonly rate: u32 }>;
+function f(s: Buf): u32 {
+  "use owned";
+  const { data } = s;
+  return s.rate;
+}

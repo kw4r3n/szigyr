@@ -4,6 +4,8 @@ import { createParser, SyntaxKind, type ParsedFile, type ts } from "./parse.ts";
 import { checkSyntax } from "./syntax.ts";
 import { Program as Decls, Reporter, checkImportNames } from "./modules.ts";
 import { Checker } from "./checker.ts";
+import { checkOwnership } from "./ownership.ts";
+import { trapSites, type TrapSite } from "./traps.ts";
 import { isDeterministic } from "./determinism.ts";
 import { emitFile, EXPORTS, IMP, RT, SOURCE_URL } from "./emit.ts";
 import { createRequire } from "node:module";
@@ -69,19 +71,21 @@ function loadProgram(entryFile: string): Program {
 
 const displayPath = (p: string): string => relative(process.cwd(), p) || p;
 
-/** Phases run in order P1 -> P2 -> P3 and stop at the first phase with an error (Q003). P3 does not exist yet. */
+/** Phases run in order P1 -> P2 -> P3 and stop at the first phase with an error (Q003). */
 export function check(entryFile: string): Diagnostic[] {
   return analyze(entryFile).diagnostics;
 }
 
-/** P1 + P2 over the program; on success the expression types are in `exprTypes` for the emitter. */
+/** P1 + P2 + P3 over the program; on success the expression types are in `exprTypes` for the emitter. */
 function analyze(entryFile: string): { files: ParsedFile[]; diagnostics: Diagnostic[] } {
   const prog = loadProgram(entryFile);
   const p1 = [...prog.missing, ...prog.files.flatMap((f) => checkSyntax(f, displayPath(f.path)))];
   if (!p1.length) p1.push(...checkImportNames(prog.files, displayPath));
   if (p1.length) return { files: prog.files, diagnostics: p1 };
   const rep = new Reporter();
-  new Checker(new Decls(prog.files, displayPath, rep)).run();
+  const decls = new Decls(prog.files, displayPath, rep);
+  new Checker(decls).run();
+  if (!rep.out.length) checkOwnership(decls);
   return { files: prog.files, diagnostics: rep.out };
 }
 
@@ -91,6 +95,13 @@ export function deterministicFunctions(entryFile: string): Record<string, boolea
   const decls = new Decls(prog.files, displayPath, new Reporter());
   const entry = decls.mods.find((m) => m.pf.path === resolve(entryFile))!;
   return Object.fromEntries(decls.fns.filter((f) => f.mod === entry).map((f) => [f.name, isDeterministic(f.sig)]));
+}
+
+/** §6 (stage 2): for each rt function of the entry file, where it can trap. Throws if the program does not check. */
+export function rtTrapSites(entryFile: string): Record<string, TrapSite[]> {
+  const a = analyze(entryFile);
+  if (a.diagnostics.length) throw new Error(`${entryFile}: the program has diagnostics`);
+  return trapSites(a.files.find((f) => f.path === resolve(entryFile))!);
 }
 
 /** Emits every file and evaluates them as module factories in memory (D031). Returns the entry's exports. */

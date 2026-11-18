@@ -237,6 +237,30 @@ export function isCopy(t: Type): boolean {
 }
 /** Owned types (§5.1): non-Copy Structs and Vec. */
 export const isOwned = (t: Type): boolean => (t.k === "gen" && t.name === "Vec") || (t.k === "record" && t.struct && !isCopy(t));
+/**
+ * P3: values that move. Owned types, unions holding one, and type parameters (Q049) unless their instantiations cannot
+ * be owned: an interface constraint (only classes implement one), or a `key` / `copy` / `eq` condition (Q153).
+ */
+export function movesLike(t: Type): boolean {
+  if (t.k === "tparam") return !t.p.constraint && !["key", "copy", "eq"].some((n) => t.p.need?.has(n as Need));
+  return isOwned(t) || (t.k === "union" && t.members.some(movesLike));
+}
+
+const isAuthority = (t: Type): boolean => t.k === "opaque" && (AUTHORITIES as readonly string[]).includes(t.name);
+/** An authority anywhere in `t` (E4006 in rt, §6). */
+export const hasAuthority = (t: Type): boolean => isAuthority(t) || (t.k === "union" && t.members.some(hasAuthority)) || (t.k === "gen" && t.args.some(hasAuthority));
+/** §3.3 (Q040 - Q043): the types strict / rt code may use. Authorities are strict-only (rt: E4006). */
+export function layerOk(t: Type): boolean {
+  switch (t.k) {
+    case "error": case "num": case "lit": case "tparam": return true;
+    case "prim": return t.name === "boolean" || t.name === "null" || t.name === "void" || t.name === "never";
+    case "record": return t.struct ? t.fields.every((f) => layerOk(f.type)) : isCopy(t); // Q043
+    case "union": return t.members.every((m) => isCopy(m) && layerOk(m));
+    case "gen": return t.name === "Vec" || t.name === "Slice" || ((t.name === "Ref" || t.name === "Mut") && layerOk(t.args[0]!));
+    case "opaque": return isAuthority(t);
+    default: return false;
+  }
+}
 
 export function show(t: Type): string {
   switch (t.k) {

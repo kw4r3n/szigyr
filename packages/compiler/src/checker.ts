@@ -1,9 +1,9 @@
 // P2 checker (D012): declarations, statements, control flow, narrowing. Expressions live in expr.ts.
 import { NodeFlags, SyntaxKind as K, type Node, type ts } from "./parse.ts";
-import { Program, legalUnion, type ClassValueSym, type Layer, type LocalSym, type Module, type ValueSym } from "./modules.ts";
-import { PROMISE_CONTAINERS, assignTarget, checkTo, exprTypes, hasPromise, cond, expr, isLitOnly, promiseOk } from "./expr.ts";
+import { Program, legalUnion, type ClassValueSym, type FnSym, type Layer, type LocalSym, type Module, type ValueSym } from "./modules.ts";
+import { PROMISE_CONTAINERS, assignTarget, checkTo, exprTypes, hasPromise, cond, expr, isLitOnly, localOf, promiseOk } from "./expr.ts";
 import {
-  ERROR, NEVER, NULL, STR, VOID, assignable, field, isErr, isNull, isTaggedUnion, kindOf, nonNull, same, show, subst, bindTParams, unref, union,
+  ERROR, NEVER, NULL, STR, VOID, assignable, hasAuthority, layerOk, field, isErr, isNull, isTaggedUnion, kindOf, nonNull, same, show, subst, bindTParams, unref, union,
   type ClassSym, type FnType, type TParam, type Type,
 } from "./types.ts";
 
@@ -48,6 +48,9 @@ export class Checker {
   /** Q122: per function node, the names of its locals that are captured by a nested function and assigned. */
   unstable = new Map<Node, Set<string>>();
   fx!: FnCtx;
+  /** The module-level function being checked, and the rt -> rt calls seen (E4005, Q046). */
+  fn: FnSym | undefined;
+  readonly rtCalls: { from: FnSym; to: FnSym; node: Node; mod: Module }[] = [];
 
   readonly prog: Program;
   constructor(prog: Program) { this.prog = prog; }
@@ -62,6 +65,7 @@ export class Checker {
   firstError: { node: Node; mod: Module } | undefined;
   run(): void {
     for (const mod of this.prog.mods) this.module(mod);
+    this.rtRecursion();
     this.prog.checkInsts();
     // Fail closed: an error type without any diagnostic would accept anything (D050).
     if (this.firstError && this.prog.rep.out.length === 0) { // any diagnostic, signatures included
@@ -74,6 +78,7 @@ export class Checker {
     const sym: LocalSym = { k: "local", id: ++localId, name: name.text, type, declared: opts.declared ?? type, mutable: !!opts.mutable, param: !!opts.param, fnDepth: this.fx.depth };
     if (this.fx.node && this.unstable.get(this.fx.node)?.has(name.text)) sym.unstable = true;
     this.scope.vars.set(name.text, sym);
+    localOf.set(name, sym);
     return sym;
   }
   value(name: string): ValueSym | undefined { return this.scope.lookup(name) ?? this.prog.lookupValue(this.fx.mod, name); }
@@ -189,7 +194,11 @@ export class Checker {
       switch (s.kind) {
         case K.FunctionDeclaration: {
           const sym = mod.values.get((s as ts.FunctionDeclaration).name!.text);
-          if (sym?.k === "fn") this.fnBody(s as ts.FunctionDeclaration, sym.sig, { layer: sym.layer, params: (s as ts.FunctionDeclaration).parameters });
+          if (sym?.k !== "fn") break;
+          this.fn = sym;
+          if (sym.layer !== "managed") this.layerSig(sym);
+          this.fnBody(s as ts.FunctionDeclaration, sym.sig, { layer: sym.layer, params: (s as ts.FunctionDeclaration).parameters });
+          this.fn = undefined;
           break;
         }
         case K.ClassDeclaration: this.classBody(mod.values.get((s as ts.ClassDeclaration).name!.text) as ClassValueSym); break;
@@ -204,6 +213,31 @@ export class Checker {
         case K.InterfaceDeclaration: this.ifaceMethods(s as ts.InterfaceDeclaration); break;
       }
     }
+  }
+
+  /** §3.3, §6: a strict / rt signature uses §3.3 types (E4002); rt takes no authority (E4006); `async` is managed-only (Q069). */
+  private layerSig(f: FnSym): void {
+    const d = f.decl;
+    const kw = (d.modifiers ?? []).find((m) => m.kind === K.AsyncKeyword);
+    if (kw) this.at("E4002", kw, `${f.layer} functions cannot be async`);
+    d.parameters.forEach((p, i) => { if (p.type) this.layerType(f.sig.params[i] ?? ERROR, p.type, f.layer); });
+    if (d.type) this.layerType(f.sig.ret, d.type, f.layer);
+  }
+  layerType(t: Type, node: Node, layer: Layer): void {
+    if (layer === "rt" && hasAuthority(t)) this.at("E4006", node, "rt functions cannot take authorities");
+    else if (!layerOk(t)) this.at("E4002", node, `'${show(t)}' cannot be used in ${layer} code`);
+  }
+
+  /** E4005 (Q046): an rt -> rt call whose callee can reach the caller again. */
+  private rtRecursion(): void {
+    const next = new Map<FnSym, FnSym[]>();
+    for (const e of this.rtCalls) next.set(e.from, [...next.get(e.from) ?? [], e.to]);
+    const reaches = (from: FnSym, to: FnSym): boolean => {
+      const seen = new Set<FnSym>(), todo = [from];
+      while (todo.length) { const f = todo.pop()!; if (f === to) return true; if (seen.has(f)) continue; seen.add(f); todo.push(...next.get(f) ?? []); }
+      return false;
+    };
+    for (const e of this.rtCalls) if (reaches(e.to, e.from)) this.prog.rep.at(e.mod, "E4005", e.node, `recursive call to '${e.to.name}' in rt code`);
   }
 
   private ifaceMethods(_d: ts.InterfaceDeclaration): void { /* signatures were resolved in Program */ }
@@ -569,6 +603,7 @@ export class Checker {
       let t: Type;
       if (d.type) {
         const declared = this.typeOf(d.type);
+        if (this.fx.layer !== "managed") this.layerType(declared, d.type, this.fx.layer);
         checkTo(this, init, unref(declared));
         t = unref(declared);
       } else if ((init.kind === K.ObjectLiteralExpression || (init.kind === K.ArrayLiteralExpression && !(init as ts.ArrayLiteralExpression).elements.length)) && isId(d.name)) {
@@ -576,6 +611,7 @@ export class Checker {
         t = ERROR;
       } else if (init.kind === K.StringLiteral && !mutableDecl) {
         t = { k: "lit", value: (init as ts.StringLiteral).text }; // Q016
+        if (this.fx.layer !== "managed") this.at("E4002", init, `strings cannot be used in ${this.fx.layer} code`); // Q042
       } else {
         t = expr(this, init);
         if (t.k === "lit" || (t.k === "union" && t.members.every((m) => m.k === "lit") && mutableDecl)) t = mutableDecl ? STR : t;

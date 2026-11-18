@@ -8,7 +8,7 @@ import { isDeterministic } from "./determinism.ts";
 import {
   BOOL, ERROR, ERROR_RECORD, F64, NEVER, NULL, NUM_NAMES, STR, UNKNOWN, USIZE, VOID, assignable, bindTParams, field, fn, gen, hasTParam,
   isBool, isInt, isNull, isNum, isOwned, isStr, isTaggedUnion, kindOf, literalFits, nonNull, nullable, num, opaque, result, resultParts,
-  same, show, subst, unify, union, unref, castable, demand, type FnType, type NumName, type Type,
+  same, show, subst, unify, union, unref, castable, demand, layerOk, type FnType, type NumName, type Type,
 } from "./types.ts";
 
 const isId = (n: Node | undefined): n is ts.Identifier => n?.kind === K.Identifier;
@@ -71,9 +71,17 @@ export function hasPromise(t: Type): boolean {
   if (t.k === "gen") return t.name === "Promise" || ((t.name === "Array" || t.name === "ReadonlyArray") && hasPromise(t.args[0]!));
   return t.k === "union" && t.members.some(hasPromise);
 }
+/** P3 inputs (D070): the local each identifier names, and the signature each call was checked against. */
+export const localOf = new WeakMap<Node, LocalSym>();
+export const callSigs = new WeakMap<Node, FnType>();
+/** Q042: `panic("...")` literals, the one string strict / rt code may write. Q012: `ensures` arguments, the one function expression. */
+const panicLits = new WeakSet<Node>();
+const ensuresArgs = new WeakSet<Node>();
 export function expr(c: Checker, e: ts.Expression, want?: Type): Type {
   const t = exprUnrecorded(c, e, want);
   exprTypes.set(e, t);
+  // E4002 for a value without an annotation (Q027, Q042, Q053); function values are E4003's
+  if (c.fx.layer !== "managed" && t.k !== "fn" && !layerOk(t) && !panicLits.has(e)) c.at("E4002", e, `'${show(t)}' cannot be used in ${c.fx.layer} code`);
   if (!promiseOk.has(e) && !PROMISE_CONTAINERS.has(e.kind) && hasPromise(t)) c.at("E2002", e, "a Promise can only be awaited or returned");
   if (t.k === "error") c.firstError ??= { node: e, mod: c.mod };
   return t;
@@ -140,12 +148,13 @@ function strLit(value: string, want: Type | undefined): Type {
 function ident(c: Checker, id: ts.Identifier): Type {
   const name = id.text;
   const local = c.scope.lookup(name);
-  if (local) { contractLocal(c, id, local); return c.narrow.get(`${local.id}`) ?? local.type; }
+  if (local) { localOf.set(id, local); contractLocal(c, id, local); return c.narrow.get(`${local.id}`) ?? local.type; }
   const sym = c.prog.lookupValue(c.mod, name);
   if (sym) {
     switch (sym.k) {
       case "const": return sym.type;
-      case "fn":
+      case "fn": // reached only in value position (calls resolve the callee themselves)
+        if (c.fx.layer !== "managed" || sym.layer !== "managed") c.at("E4003", id, `the function '${name}' cannot be used as a value here`); // §2, Q045
         if (c.fx.contract) c.at("E6002", id, `a contract cannot refer to the function value '${name}'`);
         return sym.sig;
       case "class": c.at("E2002", id, `class '${name}' is not a value`); return ERROR;
@@ -314,6 +323,7 @@ function lvalue(c: Checker, e0: ts.Expression): Type {
   if (isId(e)) {
     const s = c.scope.lookup(e.text);
     if (s) {
+      localOf.set(e, s);
       if (!s.mutable) c.at("E2002", e, `'${e.text}' is const`);
       c.forget(`${s.id}`); // an unstable local has no key above, but is logged all the same
       return s.mutable ? s.type : ERROR;
@@ -585,6 +595,7 @@ function arrLit(c: Checker, e: ts.ArrayLiteralExpression, want: Type | undefined
 
 /** Arrow functions and function expressions (Q022: parameters annotated, return inferred when not annotated). */
 export function checkArrow(c: Checker, e: ts.ArrowFunction | ts.FunctionExpression, want: FnType | undefined, inferRet: boolean): FnType {
+  if (c.fx.layer !== "managed" && !ensuresArgs.has(e)) c.at("E4003", e, `a function expression cannot be written in ${c.fx.layer} code`); // §2, Q012
   const tps = tparamShells(e.typeParameters);
   const outerTps = c.fx.tparams;
   c.fx.tparams = new Map([...outerTps, ...tps.map((p) => [p.name, p] as const)]);
@@ -612,6 +623,7 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
     if (sym?.k === "fn") {
       if (!c.callAllowed(sym.layer)) c.at("E4001", callee, `a ${c.fx.layer} function cannot call the ${sym.layer} function '${sym.name}'`);
       if (c.fx.contract && !isDeterministic(sym.sig)) c.at("E6002", callee, `a contract can only call deterministic functions ('${sym.name}' is not)`);
+      if (c.fx.layer === "rt" && sym.layer === "rt" && c.fn) c.rtCalls.push({ from: c.fn, to: sym, node: callee, mod: c.mod }); // E4005 (Q046)
       return callSig(c, sym.sig, e, callee, want);
     }
     if (sym?.k === "class") { c.at("E2002", callee, `use 'new ${callee.text}(...)'`); return ERROR; }
@@ -625,6 +637,11 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
       if (a0.kind === K.ArrayLiteralExpression) for (const x of (a0 as ts.ArrayLiteralExpression).elements) promiseOk.add(x);
     }
     const m = member(c, p, true);
+    if (c.fx.layer === "rt") { // E4004: the allocating operations of §3.3
+      const rt = exprTypes.get(p.expression);
+      const vec = isId(p.expression) && p.expression.text === "Vec" && isNamespace(c, p.expression);
+      if ((vec && p.name.text === "create") || (rt && unref(rt).k === "gen" && (unref(rt) as { name: string }).name === "Vec" && p.name.text === "push")) c.at("E4004", p.name, `'${p.name.text}' allocates`);
+    }
     if (m.kind === "error") return ERROR;
     if (m.kind === "variadic") { // Math.min / Math.max (Q033)
       if (!e.arguments.length) c.at("E2002", p.name, "expects at least one argument");
@@ -649,6 +666,7 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
 /** A call against a signature, inferring type arguments (Q014, Q030): plain arguments, then arrows, then the context, then literals. */
 function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpression, anchor: Node, want: Type | undefined): Type {
   const args = e.arguments ?? ([] as unknown as ts.NodeArray<ts.Expression>);
+  callSigs.set(e, sig);
   const min = sig.min ?? sig.params.length;
   if (args.length < min || args.length > sig.params.length) {
     c.at("E2002", anchor, `expects ${min === sig.params.length ? min : `${min}-${sig.params.length}`} argument(s), got ${args.length}`);
@@ -744,6 +762,7 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
       return nonNull(want) ?? want;
     }
     case "panic":
+      if (args[0]?.kind === K.StringLiteral || args[0]?.kind === K.NoSubstitutionTemplateLiteral) panicLits.add(args[0]); // Q042
       if (arity(1)) checkTo(c, args[0]!, STR);
       return NEVER;
     case "cast": { // §3.2
@@ -767,6 +786,7 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
         const pred = r.k === "prim" && r.name === "void" ? fn([], BOOL) : fn([r], BOOL); // Q129: a void function's ensures takes no argument
         if (!isFnExpr(a)) c.at("E2002", a, `ensures takes '${show(pred)}'`);
         else {
+          ensuresArgs.add(a);
           const t = checkArrow(c, a, pred, false);
           if (!assignable(t, pred)) c.at("E2002", a, `expected '${show(pred)}'`);
         }

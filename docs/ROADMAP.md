@@ -68,8 +68,8 @@
 ## 段階 2: strict / rt 層と C バックエンド（Linux）
 
 - [ ] `Struct`、`Vec`、`Slice`、`Ref`、`Mut`、`OwnedCell` の型検査。
-- [ ] 所有権と借用の検査（E3xxx）。
-- [ ] strict / rt の層の検査（E4002 〜 E4006）。rt 関数ごとのトラップ箇所の一覧。
+- [x] 所有権と借用の検査（E3xxx）。
+- [x] strict / rt の層の検査（E4002 〜 E4006）。rt 関数ごとのトラップ箇所の一覧。
 - [ ] strict / rt の JS への変換（TypedArray による表現）。
 - [ ] strict / rt の C への変換。評価順、浮動小数点、トラップ位置を JS 側と一致させる（SPEC §10.1）。
 - [ ] C のビルド。`zig cc` か clang。ネイティブアドオンとして Node から読み込む。

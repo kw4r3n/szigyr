@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
-import { check, CLI_NAME, deterministicFunctions } from "../src/index.ts";
+import { check, CLI_NAME, deterministicFunctions, rtTrapSites } from "../src/index.ts";
 
 /** Writes the files to a fresh directory and checks `main.ts`. */
 function run(files: Record<string, string>): string[] {
@@ -72,7 +72,7 @@ const forms: [string, string, string[]][] = [
   ["narrowing by early return", "function f(x: f64 | null): f64 { if (x === null) { return 0; } return x + 1; }", []],
   ["narrowing by kind", "type S = { readonly kind: \"a\"; readonly x: f64 } | { readonly kind: \"b\"; readonly y: f64 };\nfunction f(s: S): f64 { if (s.kind === \"a\") { return s.x; } return s.y; }", []],
   ["ReadonlyArray has no push (Q032)", "function f(xs: ReadonlyArray<i32>): void { xs.push(1); }", ["E2001 1:47"]],
-  ["generic class inferred from the constructor", "class B<T> { readonly v: T; constructor(v: T) { this.v = v; } get(): T { return this.v; } }\nfunction f(x: i32): i32 { return new B(x).get(); }", []],
+  ["generic class inferred from the constructor", "class B<T> { readonly v: T; constructor(v: T) { this.v = v; } get(): T { return this.v; } }\nfunction f(x: i32): i32 { return new B(x).get(); }", ["E3003 1:81", "E3007 1:58"]], // P3 under Q049 / Q068 (a): T may be owned (Q153)
   ["implements with a different signature", "interface I { m(): i32; }\nclass A implements I { m(): f64 { return 1; } }", ["E2002 2:20"]],
   ["while (true) with break reaches the end (Q023)", "function f(b: boolean): i32 { while (true) { if (b) { break; } } }", ["E2002 1:10"]],
   ["strict calls a managed-only Math function (Q044)", "function f(x: f64): f64 { \"use owned\"; return Math.sin(x); }", ["E4001 1:52"]],
@@ -97,4 +97,23 @@ it("the D050 fallback stays silent when a signature already reported", () => {
 
 it("one diagnostic per code and position (Q133)", () => {
   expect(run({ "main.ts": "async function g(): Promise<void> {}\nfunction f(): void { const a = [g()]; }\n" })).toEqual(["E2002 main.ts 2:33"]);
+});
+
+it("lists the trap sites of rt functions (§6)", () => {
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-`));
+  writeFileSync(join(dir, "main.ts"), [
+    "function k(v: Mut<Slice<i32>>, n: i32): i32 {",
+    '  "use rt";',
+    "  requires(n > 0);",
+    "  v[0] = divTrunc(n, 2) + i32(f64(n) * 0.5);",
+    "  n += 1;",
+    "  return -n << 1;",
+    "}",
+    "function m(x: f64): f64 { return x + 1; }",
+    "",
+  ].join("\n"));
+  const at = (code: string, line: number, col: number): { code: string; line: number; col: number } => ({ code, line, col });
+  expect(rtTrapSites(join(dir, "main.ts"))).toEqual({
+    k: [at("T004", 3, 3), at("T002", 4, 5), at("T001", 4, 10), at("T007", 4, 10), at("T001", 4, 25), at("T003", 4, 27), at("T001", 5, 5), at("T001", 6, 10), at("T009", 6, 13)],
+  });
 });
