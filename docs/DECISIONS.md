@@ -112,7 +112,7 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - ランタイムは 1 つの識別子 `RUNTIME_GLOBAL`（`names.ts`、`__sts_rt`）の下に置き、ユーザーの関数名（`add`、`at`、`shl` など）と衝突しない。`Vec`、`OwnedCell`、偽の権限は予約名（§1）なので、そのままの名前で束縛する。位置（`{file, line, col}`）はモジュールごとの表に置き、トラップしうる呼び出しの末尾の引数で渡す（Q091）。アンカーは DIAGNOSTICS のトラップ表どおり。
 - `Vec` は `get` / `set` / `length` / `slice` / `fill` を持つので、`Slice` の仮引数にそのまま渡す（`view()` を挟まない）。
 - `ensures` は、最後の `ensures` より後の本体を即時実行のアロー関数（`async` 関数なら `await` する async アロー）で包み、その結果を全部の `ensures` で検査してから返す。入れ子の関数の `return` は対象にならない。
-- 複合代入の左辺が添字かプロパティのときは、受け手と添字を 1 回だけ評価するため、アロー関数に渡して書く。右辺もそのアローの中で評価される（JS と同じ順序）ので、右辺に `await` を書くと生成コードが不正になる（`shortcut:` の印。適合テストに例がない）。
+- 複合代入の左辺が添字かプロパティのときは、受け手と添字を 1 回だけ評価するため、アロー関数に渡して書く。右辺もそのアローの中で、元の値を読んだあとに評価される（JS と同じ順序）。右辺に `await` があるときは、アローを async にしてその結果を `await` する（入れ子の関数の中の `await` は数えない）。
 - §10 の 11（ソースマップ）: トラップの位置を呼び出しに直接埋め込む方式（Q091）で「ソース上の位置で報告する」を満たすので、`.map` ファイルは生成しない（未実装）。JS の例外のスタックトレースは生成コードの行を指す。
 - 性能: 起動後の変換と評価は、`check` との差が測れない程度（`run` 全体で約 57ms のうち、tsgo の起動が大半。D005）。
 
@@ -121,7 +121,26 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - 生成した JS はファイルごとに `new Function(RUNTIME_GLOBAL, IMP, body)` のファクトリにして、メモリ上で評価する。ファイルにも一時ディレクトリにも書かない。`import { a } from "./b.ts"` は `const { a } = IMP("<絶対パス>")`、`export` は本体の末尾で返すオブジェクトにする。依存先は初回の `IMP` で評価する（循環は Q100）。
 - ランタイムは、`run` / `runTestFile` が使う `@sts/runtime-js` と `@sts/std` の同じインスタンスをファクトリに渡す。生成コードがパスで import すると別のインスタンスになり、`instanceof Trap` が効かなくなるため。
 - `npm:x` は、ホストが import するファイルの位置から `createRequire(file).resolve(x)` で解決し、`import()` した名前空間を `IMP("npm:x")` で渡す（解決できなければコンパイラの位置から `import(x)`）。
-- `run(entry)`: 検査に診断があれば返す。なければ全ファイルを変換し、入口の `main` を `runMain` で起動する。`main` がなければ例外（Q061 の CLI のエラー）。トラップに位置がない（スタックの枯渇。Q035）ときは、`file: ""`、`line: 0`、`col: 0` で返す（Q035 のアンカーは未実装）。
+- `run(entry)`: 検査に診断があれば返す。なければ全ファイルを変換し、入口の `main` を `runMain` で起動する。`main` がなければ例外（Q061 の CLI のエラー）。トラップに位置がないとき（D032 でソースの呼び出しを見つけられなかったスタックの枯渇）は、`file: ""`、`line: 0`、`col: 0` で返す。
 - `runTestFile(entry)`（`sts test` の中身）: 入口ファイルの `test(...)` だけを残して変換し、`runTests` の結果を返す（Q101）。前後で `clearTests` を呼ぶ。`run` では `test(...)` を除く（§10 の 10）。
 - `@sts/runtime-js` と `@sts/std` のクラスのパラメータプロパティを、明示的なフィールドに書き換えた。`node scripts/update-passing.mjs` がコンパイラ経由でこれらを素の Node（型の除去だけのモード）で読み込むため。
 - `pnpm conformance:update-passing` の対象に `run/` を足した（D008 の「run は載せない」を改める）。
+
+## D040: CLI の構成
+
+- `packages/compiler/src/cli.ts`。Node 24 の型除去でそのまま動く（ビルドなし）。`package.json` の `bin` は `{ "sts": "src/cli.ts" }` で、キーが `CLI_NAME` と一致することを `names.test.ts` が検査する。使用文と接頭辞は `CLI_NAME` から導く。
+- 引数解析は `node:util` の `parseArgs`。依存は足していない。`main(argv, out, err)` を export し、テストは子プロセスで起動する。
+- 出力と終了コードは Q110。人間向けの出力は 1 行 1 件の最小限。
+
+## D041: 診断の fixes
+
+- `syntax.ts` の `fix()` が直前の診断に 1 編集の修正候補を付ける。対象: E1001（`var` → `let`、モジュール直下と `for-of` は `const`）、E1002（`===` / `!==`）、`T[]` → `Array<T>`（E1000）、値を使わない文位置と `for` の更新式の `x++` / `x--` → `x += 1` / `x -= 1`（E1000）。
+- E2003: `expr.ts` の `numFix` が、注釈なしで数値リテラルから初期化した変数（`Checker.litLets`）が片側のオペランドで、もう一方が別の数値型のとき、変数名の直後に `: <相手の型>` を挿入する候補を付ける（SPEC §11 の例）。二項演算、複合代入、比較、`===` が対象。
+- 推測が要るものには付けない（`.length` と比べる `let` 以外の E2003、E2002 など）。
+
+## D032: JS の例外を投げる組み込みとスタックの枯渇（Q035）
+
+- §12 の許可リストのうち、JS の例外を投げうるメンバは次のとおり。`JSON.parse`（構文エラー）、`JSON.stringify`（文字列の長さの上限）、`String.fromCodePoint`（範囲外の符号位置）、string の `padStart` / `padEnd` / `replaceAll` / `toUpperCase` / `toLowerCase`（文字列の長さの上限）、`Array` の `push` / `concat` / `join`（配列と文字列の長さの上限。`ReadonlyArray` は `concat` / `join`）、`Map.set` / `Set.add`（要素数の上限）。これらの呼び出しは `guarded(受け手, 名前, 実引数, 位置)` にし、トラップ以外の例外を `panic`（T006）にする。位置はメンバ名（DIAGNOSTICS の T006 の行）。実引数は呼び出しの前に評価する。受け手が `?.` の呼び出しは包まない（`shortcut:` の印）。
+- 包まないもの: テンプレートリテラルと配列のスプレッドは組み込みではなく構文なので、長さの上限の `RangeError` はそのまま JS の例外になる。ランタイムの `Vec.push` の確保の失敗も同じ。
+- スタックの枯渇: `asTrap`（runtime-js）が `RangeError: Maximum call stack size exceeded` を T006 にする。`runMain`、`runTests`、`t.traps` が使う。位置は Q035 の既定案のとおり、枯渇が起きた呼び出しの名前にする。生成コードは呼び出しの名前の直前（`new` は `new` の直前）に `/*__sts_rt@N*/` の注釈を残し、末尾に `//# sourceURL=sts:<絶対パス>` を付ける。V8 のスタックフレームの `行:列` が注釈の直後に当たるものを、上のフレームから探す。`new Function` は本体の前に 2 行を足すので、本体の 1 行目を 3 行目として数える。見つからなければ位置なし（D031）。
+- ロケータはプロセスに 1 つ（`setStackLocator`）。同じプロセスで同時に走る 2 つの `run` は互いのロケータを上書きする（`shortcut:` の印）。

@@ -1,4 +1,4 @@
-import { Trap, type Pos } from "../../runtime-js/src/index.ts";
+import { asTrap, type Pos } from "../../runtime-js/src/index.ts";
 import type { System } from "./types.ts";
 import { createSystem } from "./node.ts";
 
@@ -18,8 +18,8 @@ export async function runMain(main: (sys: System) => void | Promise<void>): Prom
     await main(sys);
     return { stdout, stderr };
   } catch (e) {
-    if (e instanceof Trap) return { stdout, stderr, trap: { code: e.code, message: e.message, pos: e.pos } };
-    if (e instanceof RangeError && /call stack/i.test(e.message)) return { stdout, stderr, trap: { code: "T006", message: e.message } };
+    const t = asTrap(e); // stack exhaustion is T006 (Q035)
+    if (t) return { stdout, stderr, trap: { code: t.code, message: t.message, pos: t.pos } };
     throw e;
   }
 }

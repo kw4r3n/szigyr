@@ -5,7 +5,7 @@ import { checkSyntax } from "./syntax.ts";
 import { Program as Decls, Reporter, checkImportNames } from "./modules.ts";
 import { Checker } from "./checker.ts";
 import { isDeterministic } from "./determinism.ts";
-import { emitFile, IMP, RT } from "./emit.ts";
+import { emitFile, IMP, RT, SOURCE_URL } from "./emit.ts";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import * as rt from "../../runtime-js/src/index.ts";
@@ -107,6 +107,16 @@ async function load(files: ParsedFile[], entryFile: string, tests: boolean): Pro
       npm.set(spec, await import(url));
     }
   }
+  // Q035: stack exhaustion is reported at the innermost source call found in the JS stack.
+  // shortcut: one locator per process; concurrent runs in one process would overwrite each other's.
+  const frame = new RegExp(`${SOURCE_URL}(.+?):(\\d+):(\\d+)\\)?$`, "gm");
+  rt.setStackLocator((e) => {
+    for (const m of (e.stack ?? "").matchAll(frame)) {
+      const p = emitted.get(m[1]!)?.calls.get(`${m[2]}:${m[3]}`);
+      if (p) return p;
+    }
+    return undefined;
+  });
   const done = new Map<string, Record<string, unknown>>();
   const instantiate = (path: string): Record<string, unknown> => {
     let ex = done.get(path);
@@ -131,7 +141,7 @@ export async function run(entryFile: string): Promise<RunResult> {
   const main = (await load(a.files, entryFile, false)).main;
   if (typeof main !== "function") throw new Error(`${entryFile}: no exported function 'main'`); // Q061: a CLI error, not a diagnostic
   const r = await runMain(main as Parameters<typeof runMain>[0]);
-  // A trap without a position is stack exhaustion (Q035), which has no anchor yet (D031).
+  // Only stack exhaustion outside any source call (Q035) has no position.
   const trap = r.trap ? { code: r.trap.code, file: r.trap.pos?.file ?? "", line: r.trap.pos?.line ?? 0, col: r.trap.pos?.col ?? 0 } : null;
   return { diagnostics: [], stdout: r.stdout, trap };
 }

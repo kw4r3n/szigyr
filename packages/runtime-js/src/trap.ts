@@ -19,6 +19,25 @@ export function trap(code: TrapCode, message: string, pos?: Pos): never {
   throw new Trap(code, message, pos);
 }
 
+let stackLocator: ((e: Error) => Pos | undefined) | undefined;
+/** The host maps a JS stack-overflow error to the source call where it happened (Q035, D032). */
+export function setStackLocator(f: ((e: Error) => Pos | undefined) | undefined): void { stackLocator = f; }
+/** `e` as a trap: a Trap itself, or JS stack exhaustion as T006 (Q035). Anything else is undefined. */
+export function asTrap(e: unknown): Trap | undefined {
+  if (e instanceof Trap) return e;
+  if (e instanceof RangeError && /call stack/i.test(e.message)) return new Trap("T006", e.message, stackLocator?.(e));
+  return undefined;
+}
+/** A builtin that may throw a JS exception (Q035): the exception is a panic (T006) at the builtin's name. */
+export function guarded(recv: unknown, name: string, args: unknown[], pos?: Pos): unknown {
+  try {
+    return (recv as Record<string, (...a: unknown[]) => unknown>)[name]!(...args);
+  } catch (e) {
+    if (e instanceof Trap) throw e;
+    return trap("T006", `${name}: ${e instanceof Error ? e.message : String(e)}`, pos);
+  }
+}
+
 // Contracts (SPEC 9.1). `ensures` takes the predicate and the return value: the translator calls it on every return path.
 export function requires(cond: boolean, pos?: Pos): void { if (!cond) trap("T004", "requires violated", pos); }
 export function ensures<R>(pred: (r: R) => boolean, r: R, pos?: Pos): void { if (!pred(r)) trap("T005", "ensures violated", pos); }

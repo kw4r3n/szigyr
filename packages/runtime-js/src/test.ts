@@ -1,4 +1,4 @@
-import { Trap, type Pos, type TrapCode } from "./trap.ts";
+import { asTrap, type Pos, type TrapCode } from "./trap.ts";
 import type { Slice } from "./collections.ts";
 
 export interface TestResult {
@@ -39,8 +39,9 @@ export class Test {
   }
   /** Fails unless `f` traps with exactly `code`. Other exceptions propagate. */
   traps(code: string, f: () => void, pos?: Pos): void {
-    try { f(); } catch (e) {
-      if (!(e instanceof Trap)) throw e;
+    try { f(); } catch (x) {
+      const e = asTrap(x);
+      if (!e) throw x;
       if (e.code === code) return;
       throw new Failure(`t.traps: expected ${code}, got ${e.code}`, pos);
     }
@@ -60,10 +61,11 @@ export async function runTests(): Promise<TestResult[]> {
   const out: TestResult[] = [];
   for (const { name, fn } of [...registry]) {
     try { await fn(new Test()); out.push({ name, ok: true }); }
-    catch (e) {
-      if (e instanceof Failure) out.push({ name, ok: false, failure: e.message, pos: e.pos });
-      else if (e instanceof Trap) out.push({ name, ok: false, failure: e.message, trap: { code: e.code, pos: e.pos }, pos: e.pos });
-      else throw e; // internal error: do not hide it
+    catch (x) {
+      const e = asTrap(x);
+      if (x instanceof Failure) out.push({ name, ok: false, failure: x.message, pos: x.pos });
+      else if (e) out.push({ name, ok: false, failure: e.message, trap: { code: e.code, pos: e.pos }, pos: e.pos });
+      else throw x; // internal error: do not hide it
     }
   }
   return out;

@@ -81,6 +81,99 @@ export function bump(o: Box, v: i32): void {
   });
 });
 
+describe("run: await and JS exceptions", () => {
+  it("compound assignment to an element or property with await on the right, left to right", async () => {
+    const main = project({
+      "main.ts": `class Acc {
+  n: i32;
+  constructor(n: i32) {
+    this.n = n;
+  }
+}
+async function g(log: Log, x: i32): Promise<i32> {
+  log.info(\`g\${x}\`);
+  return x;
+}
+function idx(log: Log): usize {
+  log.info("idx");
+  return 0;
+}
+export async function main(sys: System): Promise<void> {
+  const xs: Array<i32> = [1, 2];
+  xs[idx(sys.log)] += await g(sys.log, 5);
+  const a = new Acc(10);
+  a.n += await g(sys.log, 7);
+  const fs: Array<f32> = [0.5];
+  fs[0] *= f32(await g(sys.log, 3));
+  sys.log.info(\`\${xs[0]} \${a.n} \${fs[0]}\`);
+  xs[1] += await g(sys.log, 2147483647);
+}
+`,
+    });
+    const r = await run(main);
+    expect(r.diagnostics).toEqual([]);
+    expect(r.stdout).toBe("idx\ng5\ng7\ng3\n6 17 1.5\ng2147483647\n");
+    expect(r.trap).toMatchObject({ code: "T001", line: 23, col: 9 });
+  });
+});
+
+describe("Q035: JS exceptions and stack exhaustion are T006 at the callee name", () => {
+  it("in tests", async () => {
+    const main = project({
+      "main.ts": `function deep(n: f64): f64 {
+  return deep(n + 1) + 1;
+}
+test("parse", (t: Test) => {
+  const v: unknown = JSON.parse("{");
+});
+test("fromCodePoint", (t: Test) => {
+  const s: string = String.fromCodePoint(1114112);
+});
+test("padStart", (t: Test) => {
+  const s: string = "x".padStart(4294967295, "y");
+});
+test("deep", (t: Test) => {
+  t.eq(deep(0), 0);
+});
+test("traps sees T006", (t: Test) => {
+  t.traps("T006", () => {
+    deep(0);
+  });
+  t.eq(JSON.parse("1"), JSON.parse("1"));
+});
+`,
+    });
+    const r = await runTestFile(main);
+    expect(r.diagnostics).toEqual([]);
+    expect(r.results.map((x) => [x.name, x.ok, x.trap?.code, x.trap?.pos?.line, x.trap?.pos?.col])).toEqual([
+      ["parse", false, "T006", 5, 27],
+      ["fromCodePoint", false, "T006", 8, 28],
+      ["padStart", false, "T006", 11, 25],
+      ["deep", false, "T006", 2, 10],
+      ["traps sees T006", true, undefined, undefined, undefined],
+    ]);
+  });
+
+  it("in run: stack exhaustion through a method", async () => {
+    const main = project({
+      "main.ts": `class R {
+  down(n: f64): f64 {
+    return this.down(n + 1);
+  }
+}
+export function main(sys: System): void {
+  sys.log.info("before");
+  const r = new R();
+  sys.log.info(\`\${r.down(0)}\`);
+}
+`,
+    });
+    const r = await run(main);
+    expect(r.stdout).toBe("before\n");
+    expect(r.trap).toMatchObject({ code: "T006", line: 3, col: 17 });
+  });
+});
+
 describe("runTestFile", () => {
   it("reports passing, failing and trapping tests", async () => {
     const main = project({

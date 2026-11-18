@@ -44,6 +44,12 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     out.push({ code, severity: "error", message, file, range: { start: pf.position(start), end: pf.position(end) } });
   };
   const at = (code: string, n: Node, message: string): void => report(code, n.getStart(sf), n.end, message);
+  /** Attaches a single-edit fix to the diagnostic just reported. */
+  const fix = (title: string, start: number, end: number, newText: string): void => {
+    out.at(-1)!.fixes = [{ title, edits: [{ range: { start: pf.position(start), end: pf.position(end) }, newText }] }];
+  };
+  /** `x++` / `x--` whose value is unused (statement or for-incrementor): `x += 1` is an exact rewrite. */
+  const unusedIncs = new Set<Node>();
   const e1000 = (n: Node, what: string): void => at("E1000", n, `${what} is not allowed`);
 
   // Q070: a parse error is E1000 at the error; the file's AST is not walked further.
@@ -299,6 +305,11 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     }
   }
 
+  function incFix(u: Node, op: K, operand: ts.Expression): void {
+    if ((op !== K.PlusPlusToken && op !== K.MinusMinusToken) || !unusedIncs.has(u)) return;
+    fix(`use '${op === K.PlusPlusToken ? "+=" : "-="} 1'`, u.getStart(sf), u.end, `${sf.text.slice(operand.getStart(sf), operand.end)} ${op === K.PlusPlusToken ? "+=" : "-="} 1`);
+  }
+
   function typeAlias(d: ts.TypeAliasDeclaration): void {
     mods(d, [K.ExportKeyword]);
     declName(d.name);
@@ -309,7 +320,12 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
   function varList(list: ts.VariableDeclarationList, where: "module" | "local" | "for-of"): void {
     if (list.flags & NodeFlags.Using) { e1000(list, "'using'"); return; }
     const isLet = !!(list.flags & NodeFlags.Let);
-    if (!isLet && !(list.flags & NodeFlags.Const)) { at("E1001", list, "'var' is not allowed"); return; }
+    if (!isLet && !(list.flags & NodeFlags.Const)) {
+      const s = list.getStart(sf);
+      at("E1001", list, "'var' is not allowed");
+      fix(`use '${where === "local" ? "let" : "const"}'`, s, s + 3, where === "local" ? "let" : "const"); // 'let' is not allowed at module level or in for-of
+      return;
+    }
     if (isLet && where === "module") { at("E5002", list, "module-level 'let' is not allowed"); return; }
     if (isLet && where === "for-of") { e1000(list, "'for (let ... of ...)'"); return; }
     for (const d of list.declarations) {
@@ -380,7 +396,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     switch (s.kind) {
       case K.Block: scoped(() => { for (const b of (s as ts.Block).statements) stmt(b); }); return;
       case K.VariableStatement: mods(s, []); varList((s as ts.VariableStatement).declarationList, "local"); return;
-      case K.ExpressionStatement: expr((s as ts.ExpressionStatement).expression); return;
+      case K.ExpressionStatement: unusedIncs.add((s as ts.ExpressionStatement).expression); expr((s as ts.ExpressionStatement).expression); return;
       case K.IfStatement: {
         const x = s as ts.IfStatement;
         expr(x.expression); stmt(x.thenStatement); if (x.elseStatement) stmt(x.elseStatement);
@@ -393,7 +409,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         if (x.initializer?.kind === K.VariableDeclarationList) varList(x.initializer as ts.VariableDeclarationList, "local");
         else if (x.initializer) expr(x.initializer as ts.Expression);
         if (x.condition) expr(x.condition);
-        if (x.incrementor) expr(x.incrementor);
+        if (x.incrementor) { unusedIncs.add(x.incrementor); expr(x.incrementor); }
         loopBody(x.statement);
       }); return;
       case K.ForOfStatement: scoped(() => {
@@ -454,7 +470,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       case K.BinaryExpression: {
         const b = e as ts.BinaryExpression;
         const op = b.operatorToken;
-        if (op.kind === K.EqualsEqualsToken || op.kind === K.ExclamationEqualsToken) at("E1002", op, "use '===' / '!=='");
+        if (op.kind === K.EqualsEqualsToken || op.kind === K.ExclamationEqualsToken) { at("E1002", op, "use '===' / '!=='"); fix(`use '${op.kind === K.EqualsEqualsToken ? "===" : "!=="}'`, op.getStart(sf), op.end, op.kind === K.EqualsEqualsToken ? "===" : "!=="); }
         else if (!BINARY_OPS.has(op.kind)) e1000(op, "this operator");
         if (op.kind === K.EqualsToken && (b.left.kind === K.ArrayLiteralExpression || b.left.kind === K.ObjectLiteralExpression)) e1000(b.left, "destructuring assignment");
         else expr(b.left);
@@ -463,7 +479,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       }
       case K.PrefixUnaryExpression: {
         const u = e as ts.PrefixUnaryExpression;
-        if (!PREFIX_OPS.has(u.operator)) e1000(u, "this unary operator");
+        if (!PREFIX_OPS.has(u.operator)) { e1000(u, "this unary operator"); incFix(u, u.operator, u.operand); }
         expr(u.operand);
         return;
       }
@@ -542,6 +558,12 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         report("E1006", e.end - 1, e.end, "non-null assertion is not allowed");
         expr((e as ts.NonNullExpression).expression);
         return;
+      case K.PostfixUnaryExpression: {
+        const u = e as ts.PostfixUnaryExpression;
+        e1000(e, "this expression");
+        incFix(u, u.operator, u.operand);
+        return;
+      }
       default: e1000(e, "this expression"); // typeof, void, delete, yield, ++/--, tagged templates, regex, bigint, super, ...
     }
   }
@@ -584,6 +606,12 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       case K.FunctionType: {
         const f = t as ts.FunctionTypeNode;
         typeParams(f.typeParameters); params(f.parameters); if (f.type) type(f.type);
+        return;
+      }
+      case K.ArrayType: {
+        const el = (t as ts.ArrayTypeNode).elementType;
+        e1000(t, "this type");
+        fix("use 'Array<T>'", t.getStart(sf), t.end, `Array<${sf.text.slice(el.getStart(sf), el.end)}>`);
         return;
       }
       default: e1000(t, "this type"); // T[], tuples, intersections, keyof, typeof, conditional, mapped, indexed, object, symbol, ...

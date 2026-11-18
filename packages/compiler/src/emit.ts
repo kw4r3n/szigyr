@@ -5,10 +5,14 @@ import { resolve, dirname } from "node:path";
 import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { exprTypes } from "./expr.ts";
 import { NUM_NAMES, isInt, isStr, nonNull, resultParts, unref, type Type } from "./types.ts";
-import { RUNTIME_GLOBAL } from "./names.ts";
+import { CLI_NAME, RUNTIME_GLOBAL } from "./names.ts";
+import type { Pos } from "../../runtime-js/src/index.ts";
 
 export const RT = RUNTIME_GLOBAL;
 export const IMP = `${RUNTIME_GLOBAL}_imp`;
+/** `//# sourceURL` prefix of generated modules, so stack frames name the source file. */
+export const SOURCE_URL = `${CLI_NAME}:`;
+const MARK = `${RUNTIME_GLOBAL}@`;
 const P = `${RUNTIME_GLOBAL}_P`, AP = `${RUNTIME_GLOBAL}_ap`, ENS = `${RUNTIME_GLOBAL}_ens`;
 // Synthetic parameters: user code inside the right side / ensures predicates must not see them.
 const O = `${RUNTIME_GLOBAL}_o`, KEY = `${RUNTIME_GLOBAL}_k`, V = `${RUNTIME_GLOBAL}_v`, R = `${RUNTIME_GLOBAL}_r`;
@@ -19,6 +23,12 @@ const COMPOUND: Partial<Record<K, string>> = {
   [K.PlusEqualsToken]: "+", [K.MinusEqualsToken]: "-", [K.AsteriskEqualsToken]: "*",
   [K.SlashEqualsToken]: "/", [K.PercentEqualsToken]: "%", [K.AsteriskAsteriskEqualsToken]: "**",
 };
+/** §12 members that can throw a JS exception (Q035): parse errors, out-of-range code points, string / array / Map / Set size limits. */
+const THROWING: Record<string, readonly string[]> = {
+  JSON: ["parse", "stringify"], String: ["fromCodePoint"],
+  string: ["padStart", "padEnd", "replaceAll", "toUpperCase", "toLowerCase"],
+  Array: ["push", "concat", "join"], ReadonlyArray: ["concat", "join"], Map: ["set"], Set: ["add"],
+};
 const INT_OP: Record<string, string> = { "+": "add", "-": "sub", "*": "mul" };
 
 export interface Emitted {
@@ -26,6 +36,8 @@ export interface Emitted {
   js: string;
   /** Relative imports (absolute paths) and npm specifiers (`npm:x`) that `IMP` is called with. */
   imports: string[];
+  /** Generated `line:col` of each call's name (as V8 reports frames under SOURCE_URL) -> source position (Q035). */
+  calls: Map<string, Pos>;
 }
 
 type AnyNode = Node & Record<string, unknown>;
@@ -34,6 +46,9 @@ type AnyNode = Node & Record<string, unknown>;
 export function emitFile(pf: ParsedFile, file: string, tests: boolean): Emitted {
   const sf = pf.sourceFile, text = sf.text;
   const poss: string[] = [];
+  const marks: Pos[] = [];
+  /** A comment the generated code keeps in front of a call; its generated line:col maps a JS stack frame back to `n` (D032). */
+  const mark = (n: Node): string => { const p = pf.position(n.getStart(sf)); marks.push({ file, line: p.line, col: p.col }); return `/*${MARK}${marks.length - 1}*/`; };
   const imports: string[] = [];
   const exported: string[] = [];
   let needAp = false;
@@ -89,6 +104,11 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean): Emitted 
         return p.questionDotToken && !callee ? `${RT}.nn(${splice(n)})` : splice(n); // §10.7
       }
       case K.CallExpression: return call(n as ts.CallExpression);
+      case K.NewExpression: return mark(n) + splice(n);
+      case K.Identifier: { // the name of a called function or method: where stack exhaustion is reported (Q035)
+        const pa = n.parent, called = (c: Node | undefined, x: Node): boolean => c?.kind === K.CallExpression && (c as ts.CallExpression).expression === x;
+        return called(pa, n) || (pa?.kind === K.PropertyAccessExpression && (pa as ts.PropertyAccessExpression).name === n && called(pa.parent, pa)) ? mark(n) + splice(n) : splice(n);
+      }
       case K.Block: return block(n as ts.Block);
     }
     return splice(n);
@@ -126,17 +146,19 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean): Emitted 
       const t = numName(b);
       const rhs = gen(b.right);
       const plain = !(t && (t === "f32" || (isInt(typeOf(b)!) && INT_OP[base])));
-      // shortcut: element / property targets evaluate the right side inside an arrow, so `await` there is unsupported (no case needs it).
+      // Element / property targets evaluate the receiver (and index) once by passing them to an arrow; the right side runs inside it,
+      // after the read, as in JS. With `await` on the right the arrow is async and awaited (§10.1 order unchanged).
+      const aw = hasAwait(b.right), fa = aw ? "async " : "", call = aw ? `(await ${AP}` : AP, close = aw ? ")" : "";
       if (b.left.kind === K.ElementAccessExpression) {
         needAp = true;
         const e = b.left as ts.ElementAccessExpression, ip = at(e.argumentExpression);
-        return `${AP}((${O}, ${KEY}) => { const ${V} = ${op(t, base, `${RT}.at(${O}, ${KEY}, ${ip})`, rhs, anchor())}; ${RT}.setAt(${O}, ${KEY}, ${V}, ${ip}); return ${V}; }, ${gen(e.expression)}, ${gen(e.argumentExpression)})`;
+        return `${call}(${fa}(${O}, ${KEY}) => { const ${V} = ${op(t, base, `${RT}.at(${O}, ${KEY}, ${ip})`, rhs, anchor())}; ${RT}.setAt(${O}, ${KEY}, ${V}, ${ip}); return ${V}; }, ${gen(e.expression)}, ${gen(e.argumentExpression)})${close}`;
       }
       if (plain) return splice(b);
       if (b.left.kind === K.PropertyAccessExpression) {
         needAp = true;
         const p = b.left as ts.PropertyAccessExpression, f = p.name.text;
-        return `${AP}((${O}) => ${O}.${f} = ${op(t, base, `${O}.${f}`, rhs, anchor())}, ${gen(p.expression)})`;
+        return `${call}(${fa}(${O}) => ${O}.${f} = ${op(t, base, `${O}.${f}`, rhs, anchor())}, ${gen(p.expression)})${close}`;
       }
       const l = gen(b.left);
       return `${l} = ${op(t, base, l, rhs, anchor())}`;
@@ -177,6 +199,10 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean): Emitted 
     }
     const r0 = typeOf(recv);
     const r = r0 && (nonNull(r0) ?? r0);
+    const ns = recv.kind === K.Identifier && !r0 ? (recv as ts.Identifier).text : undefined;
+    // Q035: builtins that can throw a JS exception panic (T006) at their name. shortcut: not on `?.` receivers (none can be nullable here in the cases).
+    const throws = ns ? THROWING[ns] : r?.k === "gen" ? THROWING[r.name] : r && isStr(r) ? THROWING.string : undefined;
+    if (throws?.includes(m) && !p.questionDotToken) return `${RT}.guarded(${ns ?? gen(recv)}, ${q(m)}, [${args.join(", ")}], ${at(p.name)})`;
     if (r?.k === "gen") {
       if ((r.name === "Array" || r.name === "ReadonlyArray") && (m === "pop" || m === "find")) return nn(`${RT}.nn(${withArgs([])})`);
       if ((r.name === "Array" || r.name === "ReadonlyArray") && (m === "indexOf" || m === "findIndex")) return nn(`${RT}.idxOrNull(${withArgs([])})`);
@@ -255,7 +281,22 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean): Emitted 
     `const ${P} = [${poss.join(",")}];`,
     ...(needAp ? [`const ${AP} = (f, ...a) => f(...a);`] : []),
   ];
-  return { js: `${prelude.join("\n")}\n${body.join("\n")}\nreturn { ${exported.join(", ")} };\n`, imports };
+  const js = `${prelude.join("\n")}\n${body.join("\n")}\nreturn { ${exported.join(", ")} };\n//# sourceURL=${SOURCE_URL}${pf.path}`;
+  // new Function puts the body after a 2-line header, so body line 1 is line 3 of the frames.
+  const calls = new Map<string, Pos>();
+  let line = 3, ls = 0;
+  for (const m of js.matchAll(new RegExp(`/\\*${MARK}(\\d+)\\*/`, "g"))) {
+    for (let i = js.indexOf("\n", ls); i !== -1 && i < m.index; i = js.indexOf("\n", i + 1)) { line++; ls = i + 1; }
+    calls.set(`${line}:${m.index + m[0].length - ls + 1}`, marks[+m[1]!]!);
+  }
+  return { js, imports, calls };
+}
+
+/** `await` in `e`, not counting nested functions. */
+function hasAwait(e: Node): boolean {
+  if (e.kind === K.AwaitExpression) return true;
+  if (e.kind === K.ArrowFunction || e.kind === K.FunctionExpression) return false;
+  return !!e.forEachChild((c) => (hasAwait(c) ? true : undefined));
 }
 
 /** TypeDesc (runtime-js result.ts) of a `cast` / `js.decode` target type (§3.2). */

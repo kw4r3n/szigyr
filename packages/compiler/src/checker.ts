@@ -38,6 +38,8 @@ const hasMod = (n: Node, k: K): boolean => !!(n as Node & { modifiers?: ts.NodeA
 
 export class Checker {
   scope = new Scope();
+  /** Untyped `let x = <numeric literal>` locals by id, for the E2003 fix (SPEC §11). */
+  litLets = new Map<number, ts.Identifier>();
   narrow = new Map<string, Type>();
   fx!: FnCtx;
 
@@ -461,8 +463,10 @@ export class Checker {
         if (t.k === "lit" || (t.k === "union" && t.members.every((m) => m.k === "lit") && mutableDecl)) t = mutableDecl ? STR : t;
         if (t.k === "iter") { this.at("E2002", init, "keys() / values() can only be iterated"); t = ERROR; }
       }
-      if (isId(d.name)) this.declare(d.name, t, { mutable: mutableDecl });
-      else this.destructure(d.name as ts.ObjectBindingPattern, t);
+      if (isId(d.name)) {
+        const sym = this.declare(d.name, t, { mutable: mutableDecl });
+        if (!d.type && t.k === "num" && isLitOnly(init)) this.litLets.set(sym.id, d.name);
+      } else this.destructure(d.name as ts.ObjectBindingPattern, t);
     }
   }
 

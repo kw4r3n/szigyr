@@ -321,6 +321,20 @@ function operands(c: Checker, l: ts.Expression, r: ts.Expression, want: Type | u
   return [expr(c, l), expr(c, r)];
 }
 
+/** SPEC §11 fix for an E2003 just reported at `op`: an operand that is an untyped `let x = 0` gets the other side's type. */
+function numFix(c: Checker, op: Node, l: ts.Expression, r: ts.Expression, lt: Type, rt: Type): void {
+  const d = c.prog.rep.out.at(-1);
+  if (d?.code !== "E2003" || d.range.start.line !== c.fx.mod.pf.position(op.getStart(c.fx.mod.sf)).line || d.range.start.col !== c.fx.mod.pf.position(op.getStart(c.fx.mod.sf)).col) return;
+  for (const [side, other] of [[l, rt], [r, lt]] as const) {
+    if (!isId(side) || other.k !== "num") continue;
+    const sym = c.scope.lookup(side.text);
+    const name = sym && c.litLets.get(sym.id);
+    if (!name || sym.type.k !== "num" || sym.type.name === other.name) continue;
+    const pos = c.fx.mod.pf.position(name.end);
+    (d.fixes ??= []).push({ title: `declare '${name.text}' as '${other.name}'`, edits: [{ range: { start: pos, end: pos }, newText: `: ${other.name}` }] });
+  }
+}
+
 function arith(c: Checker, op: Node, kind: K, lt: Type, rt: Type): Type {
   if (isErr(lt) || isErr(rt)) return ERROR;
   if (isNum(lt) && isNum(rt)) {
@@ -346,7 +360,9 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
   if (base !== undefined) {
     const lt = lvalue(c, b.left);
     const rt = expr(c, b.right, isNum(lt) ? lt : undefined);
-    return arith(c, op, base, lt, rt);
+    const r = arith(c, op, base, lt, rt);
+    numFix(c, op, b.left, b.right, lt, rt);
+    return r;
   }
   switch (k) {
     case K.AmpersandAmpersandToken: case K.BarBarToken: {
@@ -374,6 +390,7 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
       const [lt, rt] = operands(c, b.left, b.right, undefined);
       if (isErr(lt) || isErr(rt)) return BOOL;
       equality(c, op, lt, rt);
+      numFix(c, op, b.left, b.right, lt, rt);
       return BOOL;
     }
     case K.LessThanToken: case K.LessThanEqualsToken: case K.GreaterThanToken: case K.GreaterThanEqualsToken: {
@@ -381,6 +398,7 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
       if (isErr(lt) || isErr(rt)) return BOOL;
       if (isNum(lt) && isNum(rt)) { if (lt.name !== rt.name) c.at("E2003", op, `cannot compare '${lt.name}' and '${rt.name}'`); }
       else c.at("E2002", op, "relational operators need numbers of the same type"); // Q018
+      numFix(c, op, b.left, b.right, lt, rt);
       return BOOL;
     }
     case K.AmpersandToken: case K.BarToken: case K.CaretToken:
@@ -396,7 +414,9 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
   if (ARITH.has(k)) {
     const [lt, rt] = operands(c, b.left, b.right, want);
     if (k === K.PlusToken && isStr(lt) && isStr(rt)) { c.at("E2002", op, "use a template literal to concatenate strings"); return ERROR; } // Q019
-    return arith(c, op, k, lt, rt);
+    const r = arith(c, op, k, lt, rt);
+    numFix(c, op, b.left, b.right, lt, rt);
+    return r;
   }
   return ERROR;
 }

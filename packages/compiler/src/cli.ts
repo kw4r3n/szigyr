@@ -1,0 +1,61 @@
+#!/usr/bin/env node
+// CLI (Q060, Q061, Q110). Exit codes: 0 ok, 1 compile errors or failed tests, 2 usage / CLI error, 3 trap.
+import { existsSync } from "node:fs";
+import { parseArgs } from "node:util";
+import { check, CLI_NAME, run, runTestFile, type Diagnostic } from "./index.ts";
+
+const USAGE = `usage: ${CLI_NAME} <check|run|test> [--json] <file...>`;
+
+class CliError extends Error {}
+
+export async function main(argv: string[], out: (s: string) => void, err: (s: string) => void): Promise<number> {
+  let args;
+  try {
+    args = parseArgs({ args: argv, allowPositionals: true, options: { json: { type: "boolean" } } });
+  } catch (e) { err(`${(e as Error).message}\n${USAGE}\n`); return 2; }
+  const [cmd, ...files] = args.positionals;
+  const json = !!args.values.json;
+  const line = (o: unknown): string => `${JSON.stringify(o)}\n`;
+  const diags = (ds: Diagnostic[]): string => ds.map((d) => json ? line(d) : `${d.file}:${d.range.start.line}:${d.range.start.col}: ${d.severity} ${d.code}: ${d.message}\n`).join("");
+  try {
+    if (cmd !== "check" && cmd !== "run" && cmd !== "test") throw new CliError(cmd ? `unknown command '${cmd}'\n${USAGE}` : USAGE);
+    if (!files.length || (cmd === "run" && files.length > 1)) throw new CliError(`${cmd}: ${cmd === "run" ? "exactly one" : "at least one"} file required\n${USAGE}`);
+    for (const f of files) if (!existsSync(f)) throw new CliError(`no such file: ${f}`);
+
+    if (cmd === "check") {
+      const ds = files.flatMap((f) => check(f));
+      out(diags(ds));
+      return ds.some((d) => d.severity === "error") ? 1 : 0;
+    }
+    if (cmd === "run") {
+      const r = await run(files[0]!); // diagnostics go to stderr: stdout is the program's (Q060)
+      if (r.diagnostics.length) { err(diags(r.diagnostics)); return 1; }
+      out(r.stdout);
+      if (!r.trap) return 0;
+      const { code, file, line: l, col } = r.trap;
+      err(json ? line({ kind: "trap", code, file, range: { start: { line: l, col }, end: { line: l, col } } }) : `trap ${code} at ${file}:${l}:${col}\n`);
+      return 3;
+    }
+    let failed = 0, passed = 0, bad = false;
+    for (const f of files) {
+      const r = await runTestFile(f);
+      if (r.diagnostics.length) { out(diags(r.diagnostics)); bad = true; continue; }
+      for (const t of r.results) {
+        if (t.ok) passed++; else failed++;
+        const pos = t.pos ? { file: t.pos.file, line: t.pos.line, col: t.pos.col } : undefined;
+        out(json ? line({ kind: "test", file: f, name: t.name, ok: t.ok, ...(t.failure ? { failure: t.failure } : {}), ...(t.trap ? { trap: t.trap.code } : {}), ...(pos ? { pos } : {}) })
+          : `${t.ok ? "ok" : "FAIL"} ${t.name}${t.ok ? "" : `: ${t.failure ?? ""}${pos ? ` (${pos.file}:${pos.line}:${pos.col})` : ""}`}\n`);
+      }
+    }
+    out(json ? line({ kind: "summary", passed, failed }) : `${passed} passed, ${failed} failed\n`);
+    return failed || bad ? 1 : 0;
+  } catch (e) {
+    if (!(e instanceof CliError) && !(e instanceof Error && /no exported function 'main'/.test(e.message))) throw e; // internal errors keep their stack
+    err(`${CLI_NAME}: ${e.message}\n`);
+    return 2;
+  }
+}
+
+if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+  process.exitCode = await main(process.argv.slice(2), (s) => process.stdout.write(s), (s) => process.stderr.write(s));
+}
