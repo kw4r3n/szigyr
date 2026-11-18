@@ -76,7 +76,7 @@ const forms: [string, string, string[]][] = [
   ["public method", "class A { public m(): void {} }", ["E1000@1:11"]],
   ["override method", "class A { override m(): void {} }", ["E1000@1:11"]],
   ["regex literal", "function f(): void { const r = /a/; }", ["E1000@1:32"]],
-  ["as const is accepted (Q026)", "function f(): i32 { const x: i32 = 1 as const; return x; }", []],
+  ["as const is rejected (Q026)", "function f(): i32 { const x: i32 = 1 as const; return x; }", ["E1005@1:38"]],
 ];
 
 it.each(forms)("%s", (_name, src, want) => {

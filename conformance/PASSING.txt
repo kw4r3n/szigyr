@@ -91,6 +91,7 @@ reject/E1002-loose-equality.ts
 reject/E1003-default-export.ts
 reject/E1004-any-param.ts
 reject/E1005-as-assertion.ts
+reject/E1005-as-const.ts
 reject/E1006-non-null-assertion.ts
 reject/E1007-throw.ts
 reject/E1007-try-catch.ts

@@ -562,9 +562,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       case K.FunctionExpression: fn(e as ts.FunctionExpression, "other"); return;
       case K.AsExpression: {
         const a = e as ts.AsExpression;
-        const t = a.type;
-        const isConst = t.kind === K.TypeReference && isId((t as ts.TypeReferenceNode).typeName) && ((t as ts.TypeReferenceNode).typeName as ts.Identifier).text === "const";
-        if (!isConst) { const s = pf.tokenAfter(a.expression.end); report("E1005", s, s + 2, "'as' is not allowed"); }
+        const s = pf.tokenAfter(a.expression.end); report("E1005", s, s + 2, "'as' is not allowed"); // including `as const` (Q026)
         expr(a.expression);
         return;
       }

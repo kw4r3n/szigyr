@@ -53,7 +53,7 @@
 - 状況: §3.2 は「E1004 〜、なければ E1000」と言うだけで、個別コードがあるのは一部しかない。`object` や `Partial` などは、§12 の型一覧にない名前でもあるため、E2000 とも読める。
 - 選択肢: (a) §3.2 に列挙された機能は E1000 とする、(b) 名前の形をとるものは E2000 とする。
 - 既定案: 個別コードがあればそれを使う。§3.2 と §4 に列挙された機能で個別コードのないものは、名前の形をとるものでも E1000 にする。対応は次のとおり（閉じたリスト）。
-  - 個別コード: `any` → E1004。`as`（`as const` を除く。Q026）→ E1005。後置 `!` → E1006。`throw`、`try`（`catch` / `finally` を含む）→ E1007。省略可能なプロパティと引数（`?`）、既定引数 → E1008（Q005）。`var` → E1001。`==`、`!=` → E1002。
+  - 個別コード: `any` → E1004。`as`（`as const` を含む。Q026）→ E1005。後置 `!` → E1006。`throw`、`try`（`catch` / `finally` を含む）→ E1007。省略可能なプロパティと引数（`?`）、既定引数 → E1008（Q005）。`var` → E1001。`==`、`!=` → E1002。
   - E1000: `object`、`Function`、型としての `{}`、`symbol`、`enum`、`namespace` / `module`、`satisfies`、型述語 `x is T`、`asserts`、関数オーバーロード、宣言のマージ（同名の宣言が 2 つ）、`declare`、conditional 型、mapped 型、template literal 型、indexed access 型、`keyof`、型の `typeof`、`unique symbol`、残余引数 `...x`、タプル型、`T[]` と `readonly T[]`、数値リテラル型、`true` / `false` 型、配列の分割代入、ラベル、`with`、`eval`、`delete`、`in`、`instanceof`、値の `typeof`、`void` 演算子、カンマ演算子、`arguments`、ジェネレータ（`function*`、`yield`）、`for...in`、`++`、`--`、単項 `+`、正規表現リテラル、BigInt リテラル、タグつきテンプレート、class の `extends`・getter / setter・index signature・`abstract`・`#private`・パラメータプロパティ、interface の `extends` とプロパティシグネチャ、既定の型引数、`T extends I` 以外の制約、`using`、デコレータ、`import.meta`、`new.target`、クラス外の `this`、`let` / `for (let x of …)` の分割代入、ネストした分割代入パターン、計算プロパティ名と文字列リテラルのプロパティ名、`x?.[i]`、`f?.()`、`"use strict"` などの未知の指示子、`"use unsafe"`、アロー関数内の指示子。
   - 追記（ジェネレータのアンカー）: `function*` 宣言と `function*` 式は `function` キーワードの先頭を指す。ジェネレータのメソッド `*m()` は `*` を指す。ジェネレータの外にある `yield` は `yield` キーワードを指す。ジェネレータの中の `yield` はジェネレータ自体の E1000 だけを出す（Q003 のカスケード抑止）。
   - ユーティリティ型として E1000 にする名前: `Partial`、`Required`、`Readonly`、`Record`、`Pick`、`Omit`、`Exclude`、`Extract`、`NonNullable`、`Parameters`、`ConstructorParameters`、`ReturnType`、`InstanceType`、`ThisParameterType`、`OmitThisParameter`、`ThisType`、`Awaited`、`Uppercase`、`Lowercase`、`Capitalize`、`Uncapitalize`、`NoInfer`。これ以外の未知の型名は E2000。
@@ -261,7 +261,7 @@
 - 関連: §3.2
 - 状況: `as const` は E1005 の例外とされている。しかし TS での効果（readonly タプル型、リテラル型）は STS の型の規則（タプル禁止）と合わない。
 - 選択肢: (a) 型に影響しない no-op として受理、(b) 例外を取り消して E1005。
-- 既定案: (a)。式の型は `as const` がない場合と同じにする（文脈型付けもそのまま）。`as const` 以外の `as` はすべて E1005。
+- 既定案: (b)（2026-11-19 に決定）。`as const` を含む `as` はすべて E1005。
 
 ### Q027 テンプレートリテラルの埋め込み式の型
 - 関連: §4

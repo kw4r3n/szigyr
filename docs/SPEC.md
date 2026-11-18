@@ -94,7 +94,7 @@ STS は仮称。この文書が言語の唯一の規範である。
 - **文字列**: JS の文字列そのまま（`length` は UTF-16 の符号単位数）。strict / rt 層に文字列型はない。
 
 禁止する型機能（E1004 〜、なければ E1000）:
-`any`、`object`、`Function`、`{}`、`symbol`、`enum`、`namespace`、`as`（`as const` を除く）、非 null 表明 `!`、`satisfies`、型述語（`x is T`）、関数オーバーロード、宣言のマージ、`declare`、conditional / mapped / template literal / indexed access 型、`keyof`、型の `typeof`、ユーティリティ型（`Partial` など）、省略可能引数、既定引数、残余引数。
+`any`、`object`、`Function`、`{}`、`symbol`、`enum`、`namespace`、`as`（`as const` を含む）、非 null 表明 `!`、`satisfies`、型述語（`x is T`）、関数オーバーロード、宣言のマージ、`declare`、conditional / mapped / template literal / indexed access 型、`keyof`、型の `typeof`、ユーティリティ型（`Partial` など）、省略可能引数、既定引数、残余引数。
 
 ### 3.3 strict / rt の型
 
