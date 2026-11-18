@@ -22,11 +22,31 @@ export function trap(code: TrapCode, message: string, pos?: Pos): never {
 let stackLocator: ((e: Error) => Pos | undefined) | undefined;
 /** The host maps a JS stack-overflow error to the source call where it happened (Q035, D032). */
 export function setStackLocator(f: ((e: Error) => Pos | undefined) | undefined): void { stackLocator = f; }
-/** `e` as a trap: a Trap itself, or JS stack exhaustion as T006 (Q035). Anything else is undefined. */
+/** A Trap, or JS stack exhaustion: what the Js boundary must pass through instead of turning it into a JsError (§8). */
+export const isTrap = (e: unknown): boolean => e instanceof Trap || (e instanceof RangeError && /call stack/i.test(e.message));
+/** `e` as a trap: a Trap itself, or any RangeError (stack exhaustion, string / array / Map length limits: syntax that no builtin wraps) as T006 (Q035). Anything else is undefined. */
 export function asTrap(e: unknown): Trap | undefined {
   if (e instanceof Trap) return e;
-  if (e instanceof RangeError && /call stack/i.test(e.message)) return new Trap("T006", e.message, stackLocator?.(e));
+  if (e instanceof RangeError) return new Trap("T006", e.message, stackLocator?.(e));
   return undefined;
+}
+
+// Q140: a Promise nobody awaits can reject after its caller finished. Node reports that as `unhandledRejection` once the microtask queue drains.
+const sinks: unknown[][] = [];
+const onRejection = (e: unknown): void => { sinks.at(-1)?.push(e); };
+/** Runs `f` and, after it settles, lets pending rejections surface; returns those that nobody handled (the innermost caller collects them). */
+export async function capturing(f: () => unknown): Promise<unknown[]> {
+  const sink: unknown[] = [];
+  if (!sinks.length) process.on("unhandledRejection", onRejection);
+  sinks.push(sink);
+  try {
+    await f();
+    await new Promise<void>((r) => setImmediate(r));
+    return sink;
+  } finally {
+    sinks.pop();
+    if (!sinks.length) process.off("unhandledRejection", onRejection);
+  }
 }
 /** A builtin that may throw a JS exception (Q035): the exception is a panic (T006) at the builtin's name. */
 export function guarded(recv: unknown, name: string, args: unknown[], pos?: Pos): unknown {

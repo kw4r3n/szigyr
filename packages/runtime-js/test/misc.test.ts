@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { Trap, requires, ensures, invariant, panic, ok, err, cast, test, runTests, clearTests, Vec, trap, type TypeDesc, type Pos } from "../src/index.ts";
+import { Trap, asTrap, requires, ensures, invariant, panic, ok, err, cast, test, runTests, clearTests, Vec, trap, type TypeDesc, type Pos } from "../src/index.ts";
 
 const pos: Pos = { file: "a.ts", line: 9, col: 1 };
 const code = (f: () => unknown): string | undefined => { try { f(); } catch (e) { if (e instanceof Trap) return e.code; throw e; } return undefined; };
@@ -28,6 +28,14 @@ describe("cast", () => {
     { k: "rec", f: { kind: { k: "lit", v: ["circle"] }, r: { k: "num", t: "f64" } } },
     { k: "rec", f: { kind: { k: "lit", v: ["rect"] }, w: { k: "num", t: "f64" } } },
   ] };
+  it("an integer is never -0, a float may be (Q090)", () => {
+    expect(cast(-0, { k: "num", t: "i32" }).kind).toBe("err");
+    expect(cast(-0, { k: "num", t: "f64" }).kind).toBe("ok");
+  });
+  it("any RangeError is T006 (Q035)", () => {
+    expect(asTrap(new RangeError("Invalid string length"))).toMatchObject({ code: "T006" });
+    expect(asTrap(new TypeError("x"))).toBeUndefined();
+  });
   it("numbers", () => {
     expect(cast<number>(5, { k: "num", t: "u8" })).toEqual(ok(5));
     expect(cast(256, { k: "num", t: "u8" }).kind).toBe("err");

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { requires, type Pos } from "../../runtime-js/src/index.ts";
+import { Trap, panic, requires, type Pos } from "../../runtime-js/src/index.ts";
 import { FakeClock, SeededRandom, MemoryLog, FakeFs, TestAlloc, createSystem, nodeFs, nodeJs, runMain } from "../src/index.ts";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -49,6 +49,14 @@ describe("node authorities", () => {
     expect(nodeFs.readText(p)).toEqual({ kind: "ok", value: "héllo" });
     expect(nodeFs.readText(p + ".missing")).toEqual({ kind: "err", error: { code: "ENOENT", message: expect.any(String) } });
     expect(nodeFs.writeText("/nonexistent-dir-sts/x", "")).toMatchObject({ kind: "err" });
+  });
+  it("Js: traps and stack exhaustion pass through (§8)", async () => {
+    const boom = (): never => panic("x");
+    expect(() => nodeJs.call(boom, [])).toThrow(Trap);
+    expect(() => nodeJs.get({ get a(): number { return panic("y"); } }, "a")).toThrow(Trap);
+    await expect(nodeJs.await(Promise.reject(new Trap("T006", "z")))).rejects.toBeInstanceOf(Trap);
+    const deep = (): number => deep() + 1;
+    expect(() => nodeJs.call(deep, [])).toThrow(RangeError);
   });
   it("Js: exceptions become JsError (code = name)", async () => {
     expect(nodeJs.call(Math.max, [1, 3])).toEqual({ kind: "ok", value: 3 });

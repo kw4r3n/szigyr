@@ -14,7 +14,9 @@ export const AUTHORITIES = ["System", "Alloc", "Fs", "Clock", "Random", "Log", "
 export const OPAQUE_NAMES = new Set<string>([...AUTHORITIES, "JsRef", "Test", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs"]);
 
 export interface Field { name: string; type: Type; readonly: boolean }
-export interface TParam { name: string; id: number; constraint?: Type }
+/** Q127: conditions a type parameter takes on from the positions it is used in, checked on every instantiation. */
+export type Need = "key" | "copy" | "field" | "borrow" | "eq";
+export interface TParam { name: string; id: number; constraint?: Type; need?: Set<Need> }
 /** `min`: builtin optional trailing parameters (Q032). `prefix`: a builtin callback may take a prefix of the parameters. */
 export interface FnType {
   k: "fn"; tparams: TParam[]; params: Type[]; ret: Type; min?: number; prefix?: boolean;
@@ -149,7 +151,8 @@ export function assignable(s: Type, t: Type, arg = false): boolean {
   }
   if (s.k === "fn" && t.k === "fn") {
     if (s.params.length > t.params.length || (!t.prefix && s.params.length !== t.params.length)) return false;
-    return s.params.every((p, i) => assignable(t.params[i]!, p)) && (assignable(s.ret, t.ret) || (t.ret.k === "prim" && t.ret.name === "void" && !!t.prefix));
+    // a builtin void callback drops the result; a dropped Promise would lose its trap (Q125)
+    return s.params.every((p, i) => assignable(t.params[i]!, p)) && (assignable(s.ret, t.ret) || (t.ret.k === "prim" && t.ret.name === "void" && !!t.prefix && !(s.ret.k === "gen" && s.ret.name === "Promise")));
   }
   if (s.k === "class" && t.k === "iface") return s.cls.implements.some((i) => same(substClass(i, s), t));
   if (s.k === "tparam" && s.p.constraint) return assignable(s.p.constraint, t, arg);
@@ -289,5 +292,22 @@ export function literalFits(value: number, t: NumName): boolean {
   const r = INT_RANGE[t];
   if (r) return Number.isInteger(value) && value >= r[0] && value <= r[1];
   if (t === "f32") return !Number.isFinite(value) || Number.isFinite(Math.fround(value));
+  return true;
+}
+
+/** Q127: whether a type that is not a type parameter meets a condition. */
+export function needOk(n: Need, t: Type): boolean {
+  switch (n) {
+    case "key": return keyOk(t);
+    case "copy": return t.k === "error" || isCopy(t);
+    case "field": return structField(t);
+    case "borrow": return t.k === "error" || isOwned(t) || (t.k === "gen" && t.name === "Slice");
+    case "eq": return comparable(t);
+  }
+}
+/** `t` meets `n`, or is a type parameter, which then requires `n` of whatever instantiates it (Q127). */
+export function demand(t: Type, n: Need): boolean {
+  if (t.k !== "tparam") return needOk(n, t);
+  (t.p.need ??= new Set()).add(n);
   return true;
 }

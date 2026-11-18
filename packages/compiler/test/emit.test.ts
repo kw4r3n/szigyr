@@ -1,4 +1,5 @@
 // JS backend (SPEC §10) and the run / test entries, beyond what conformance/run covers.
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -210,5 +211,190 @@ test("traps", (t: Test) => {
     expect(r.diagnostics).toEqual([]);
     expect(r.results.length).toBeGreaterThan(0);
     expect(r.results.filter((x) => !x.ok)).toEqual([]);
+  });
+});
+
+describe("D060: Js boundary, optional chains, cycles, JS limits, concurrent runs", () => {
+  it("js.encode refuses a function, so no STS code can run inside js.call (Q128); the boundary guard is tested in std", async () => {
+    const main = project({
+      "main.ts": `export function main(sys: System): void {
+  const f = sys.js.encode<() => void>((): void => {
+    panic("x");
+  });
+  sys.log.info(sys.js.call(f, []).kind);
+}
+`,
+    });
+    const r = await run(main);
+    expect(r.diagnostics.map((d) => d.code)).toContain("E2002");
+    expect(r.trap).toBeNull();
+  });
+
+  it("`?.` on rewritten member calls short-circuits on null", async () => {
+    const main = project({
+      "main.ts": `function show(x: u16 | null): string {
+  return x === null ? "null" : \`\${x}\`;
+}
+function showS(x: string | null): string {
+  return x === null ? "null" : "str";
+}
+function go(sys: System, n: string | null, s: string | null): void {
+  sys.log.info(show(n?.charCodeAt(0)));
+  sys.log.info(show(s?.charCodeAt(1)));
+  sys.log.info(showS(n?.padStart(4294967295, "y")));
+  sys.log.info(showS(s?.padStart(4294967295, "y")));
+}
+export function main(sys: System): void {
+  go(sys, null, "ab");
+}
+`,
+    });
+    const r = await run(main);
+    expect(r.diagnostics).toEqual([]);
+    expect(r.stdout).toBe("null\n98\nnull\n");
+    expect(r.trap).toMatchObject({ code: "T006", line: 11 });
+  });
+
+  it("a negative zero literal of an integer type is +0 (Q090)", async () => {
+    const main = project({
+      "main.ts": `export function main(sys: System): void {
+  const z: i32 = -0;
+  const f: f64 = -0;
+  sys.log.info(\`\${1 / f64(z)} \${1 / f}\`);
+  const c = cast<i32>(JSON.parse("-0"));
+  sys.log.info(c.kind);
+}
+`,
+    });
+    const r = await run(main);
+    expect(r.diagnostics).toEqual([]);
+    expect(r.stdout).toBe("Infinity -Infinity\nerr\n");
+  });
+
+  it("-0 is +0 in every integer context (Q090)", async () => {
+    const main = project({
+      "main.ts": `type Box = { v: u32 };
+function inv(x: f64): f64 {
+  return 1 / x;
+}
+function invU(x: u32): f64 {
+  return 1 / f64(x);
+}
+function ret(): usize {
+  return -0;
+}
+function pick(c: boolean): u8 {
+  return c ? -0 : 1;
+}
+export function main(sys: System): void {
+  const u: u32 = -0;
+  const s: usize = -0;
+  const b: u8 = -0;
+  const h: i16 = -0x0;
+  const box: Box = { v: -0 };
+  const xs: Array<u16> = [-0];
+  const out: Array<f64> = [invU(u), inv(f64(s)), inv(f64(b)), inv(f64(h)), invU(box.v), inv(f64(xs[0])), invU(-0), inv(f64(ret())), inv(f64(pick(true)))];
+  sys.log.info(out.join(","));
+}
+`,
+    });
+    const r = await run(main);
+    expect(r.diagnostics).toEqual([]);
+    expect(r.stdout).toBe("Infinity,Infinity,Infinity,Infinity,Infinity,Infinity,Infinity,Infinity,Infinity\n");
+  });
+
+  it("an import cycle sees the function declarations of the other module (Q100)", async () => {
+    const main = project({
+      "main.ts": `import { isEven } from "./even.ts";
+export function main(sys: System): void {
+  sys.log.info(\`\${isEven(10)} \${isEven(7)}\`);
+}
+`,
+      "even.ts": `import { isOdd } from "./odd.ts";
+export function isEven(n: i32): boolean {
+  return n === 0 ? true : isOdd(n - 1);
+}
+`,
+      "odd.ts": `import { isEven } from "./even.ts";
+export function isOdd(n: i32): boolean {
+  return n === 0 ? false : isEven(n - 1);
+}
+`,
+    });
+    const r = await run(main);
+    expect(r.diagnostics).toEqual([]);
+    expect(r.stdout).toBe("true false\n");
+  });
+
+  it("JS RangeErrors from syntax no builtin wraps are T006 (Q035)", async () => {
+    const main = project({
+      "main.ts": `function grow(s: string, n: i32): string {
+  return n === 0 ? s : grow(\`\${s}\${s}\`, n - 1);
+}
+export function main(sys: System): void {
+  sys.log.info("start");
+  const big: string = grow("ab", 40);
+  sys.log.info(\`\${big}!\`);
+}
+`,
+    });
+    const r = await run(main);
+    expect(r.diagnostics).toEqual([]);
+    expect(r.stdout).toBe("start\n");
+    expect(r.trap).toMatchObject({ code: "T006" });
+  });
+
+  it("runs started together do not mix their traps or output", async () => {
+    const mk = (n: number) => project({
+      "main.ts": `export function main(sys: System): void {
+  sys.log.info("${n}");
+${"\n".repeat(n)}  panic("x");
+}
+`,
+    });
+    const [a, b, c] = await Promise.all([run(mk(1)), run(mk(5)), run(mk(9))]);
+    expect([a, b, c].map((r) => [r.stdout, r.trap?.code, r.trap?.line])).toEqual([["1\n", "T006", 4], ["5\n", "T006", 8], ["9\n", "T006", 12]]);
+  });
+});
+
+describe("Q140: a Promise nobody awaits (separate process: vitest reports unhandled rejections itself)", () => {
+  const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+  const sts = (...a: string[]) => { const r = spawnSync("node", [cli, ...a], { encoding: "utf8" }); return { code: r.status, out: r.stdout, err: r.stderr }; };
+
+  it("run reports the trap of a floating Promise instead of crashing", () => {
+    const main = project({
+      "main.ts": `async function g(): Promise<void> {
+  panic("late");
+}
+export function main(sys: System): void {
+  const p: Promise<void> = g();
+  sys.log.info("done");
+}
+`,
+    });
+    const r = sts("run", main);
+    expect(r.out).toBe("done\n");
+    expect(r.code).toBe(3);
+    expect(r.err).toContain("T006");
+  });
+
+  it("test reports the test that left the Promise, and the next test still runs", () => {
+    const main = project({
+      "main.ts": `async function h(): Promise<void> {
+  panic("x");
+}
+test("floating", (t: Test) => {
+  const p: Promise<void> = h();
+  t.ok(true);
+});
+test("after", (t: Test) => {
+  t.ok(true);
+});
+`,
+    });
+    const r = sts("test", "--json", main);
+    const lines = r.out.trim().split("\n").map((l) => JSON.parse(l));
+    expect(lines.slice(0, 2)).toMatchObject([{ name: "floating", ok: false, trap: "T006" }, { name: "after", ok: true }]);
+    expect(r.code).toBe(1);
   });
 });

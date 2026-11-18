@@ -5,7 +5,7 @@ import { checkSyntax } from "./syntax.ts";
 import { Program as Decls, Reporter, checkImportNames } from "./modules.ts";
 import { Checker } from "./checker.ts";
 import { isDeterministic } from "./determinism.ts";
-import { emitFile, IMP, RT, SOURCE_URL } from "./emit.ts";
+import { emitFile, EXPORTS, IMP, RT, SOURCE_URL } from "./emit.ts";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import * as rt from "../../runtime-js/src/index.ts";
@@ -108,7 +108,6 @@ async function load(files: ParsedFile[], entryFile: string, tests: boolean): Pro
     }
   }
   // Q035: stack exhaustion is reported at the innermost source call found in the JS stack.
-  // shortcut: one locator per process; concurrent runs in one process would overwrite each other's.
   const frame = new RegExp(`${SOURCE_URL}(.+?):(\\d+):(\\d+)\\)?$`, "gm");
   rt.setStackLocator((e) => {
     for (const m of (e.stack ?? "").matchAll(frame)) {
@@ -121,11 +120,11 @@ async function load(files: ParsedFile[], entryFile: string, tests: boolean): Pro
   const instantiate = (path: string): Record<string, unknown> => {
     let ex = done.get(path);
     if (ex) return ex;
-    // shortcut: an import cycle sees an empty exports object; no case has one (Q100).
-    done.set(path, {});
-    const f = new Function(RT, IMP, emitted.get(path)!.js) as (rt: unknown, imp: (k: string) => unknown) => Record<string, unknown>;
-    ex = f(RUNTIME, (k) => (k.startsWith("npm:") ? npm.get(k) : instantiate(k)));
+    // Q100: the module fills `ex` with its function declarations before its imports run, so an import cycle sees them.
+    ex = {};
     done.set(path, ex);
+    const f = new Function(RT, IMP, EXPORTS, emitted.get(path)!.js) as (rt: unknown, imp: (k: string) => unknown, ex: Record<string, unknown>) => Record<string, unknown>;
+    f(RUNTIME, (k) => (k.startsWith("npm:") ? npm.get(k) : instantiate(k)), ex);
     return ex;
   };
   return instantiate(entry);
@@ -134,11 +133,28 @@ async function load(files: ParsedFile[], entryFile: string, tests: boolean): Pro
 /** The runtime object generated code receives: runtime-js plus the std fakes. */
 const RUNTIME = { ...rt, FakeClock, SeededRandom, MemoryLog, FakeFs, TestAlloc };
 
+/** D060: the stack locator, the test registry and the unhandled-rejection sink are per process, so runs in one process are queued. */
+let queue: Promise<unknown> = Promise.resolve();
+function exclusive<T>(f: () => Promise<T>): Promise<T> {
+  const r = queue.then(f);
+  queue = r.catch(() => undefined);
+  return r;
+}
+
+/** `load`, then rethrows an unhandled rejection of the module bodies (Q140). */
+async function loadChecked(files: ParsedFile[], entryFile: string, tests: boolean): Promise<Record<string, unknown>> {
+  let ex: Record<string, unknown> = {};
+  const rejected = await rt.capturing(async () => { ex = await load(files, entryFile, tests); });
+  if (rejected.length) throw rejected[0];
+  return ex;
+}
+
 /** Checks, emits and runs `main(sys)` of the entry file with a real System (Q059, Q061). */
-export async function run(entryFile: string): Promise<RunResult> {
+export const run = (entryFile: string): Promise<RunResult> => exclusive(() => runNow(entryFile));
+async function runNow(entryFile: string): Promise<RunResult> {
   const a = analyze(entryFile);
   if (a.diagnostics.length) return { diagnostics: a.diagnostics, stdout: "", trap: null };
-  const main = (await load(a.files, entryFile, false)).main;
+  const main = (await loadChecked(a.files, entryFile, false)).main;
   if (typeof main !== "function") throw new Error(`${entryFile}: no exported function 'main'`); // Q061: a CLI error, not a diagnostic
   const r = await runMain(main as Parameters<typeof runMain>[0]);
   // Only stack exhaustion outside any source call (Q035) has no position.
@@ -147,10 +163,11 @@ export async function run(entryFile: string): Promise<RunResult> {
 }
 
 /** `sts test`: checks, emits the entry file's `test(...)` calls and runs them in order (§9.2, D022). */
-export async function runTestFile(entryFile: string): Promise<{ diagnostics: Diagnostic[]; results: rt.TestResult[] }> {
+export const runTestFile = (entryFile: string): Promise<{ diagnostics: Diagnostic[]; results: rt.TestResult[] }> => exclusive(() => runTestFileNow(entryFile));
+async function runTestFileNow(entryFile: string): Promise<{ diagnostics: Diagnostic[]; results: rt.TestResult[] }> {
   const a = analyze(entryFile);
   if (a.diagnostics.length) return { diagnostics: a.diagnostics, results: [] };
   rt.clearTests();
-  await load(a.files, entryFile, true);
+  await loadChecked(a.files, entryFile, true);
   try { return { diagnostics: [], results: await rt.runTests() }; } finally { rt.clearTests(); }
 }

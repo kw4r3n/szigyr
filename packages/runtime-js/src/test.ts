@@ -1,4 +1,4 @@
-import { asTrap, type Pos, type TrapCode } from "./trap.ts";
+import { asTrap, capturing, type Pos, type TrapCode } from "./trap.ts";
 import type { Slice } from "./collections.ts";
 
 export interface TestResult {
@@ -60,7 +60,7 @@ export function clearTests(): void { registry.length = 0; }
 export async function runTests(): Promise<TestResult[]> {
   const out: TestResult[] = [];
   for (const { name, fn } of [...registry]) {
-    try { await fn(new Test()); out.push({ name, ok: true }); }
+    try { const rejected = await capturing(() => fn(new Test())); if (rejected.length) throw rejected[0]; out.push({ name, ok: true }); }
     catch (x) {
       const e = asTrap(x);
       if (x instanceof Failure) out.push({ name, ok: false, failure: x.message, pos: x.pos });

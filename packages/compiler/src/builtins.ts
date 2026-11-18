@@ -67,7 +67,7 @@ function opaqueMember(name: string, member: string): Member | undefined {
       const T = newTParam("T"), U = newTParam("T");
       return {
         call: m([J, gen("Array", J)], jr), get: m([J, STR], jr), await: m([J], gen("Promise", jr)),
-        decode: m([J], result({ k: "tparam", p: T }, ERROR_RECORD), { tparams: [T], tcheck: "cast" }), encode: m([{ k: "tparam", p: U }], J, { tparams: [U] }),
+        decode: m([J], result({ k: "tparam", p: T }, ERROR_RECORD), { tparams: [T], tcheck: "cast" }), encode: m([{ k: "tparam", p: U }], J, { tparams: [U], tcheck: "cast" }), // Q128
       };
     },
     Test: () => {

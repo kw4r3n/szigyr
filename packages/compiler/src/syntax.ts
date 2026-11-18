@@ -2,6 +2,7 @@
 // anything else falls to a default branch that reports E1000. Anchors follow docs/DIAGNOSTICS.md.
 import type { Diagnostic } from "./diagnostics.ts";
 import { NodeFlags, SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
+import { RUNTIME_GLOBAL } from "./names.ts";
 
 /** §12 global names; declaring any of them is E1000 (Q010). */
 const BUILTIN_NAMES = new Set([
@@ -17,6 +18,10 @@ const E1000_TYPE_NAMES = new Set([
   "ConstructorParameters", "ReturnType", "InstanceType", "ThisParameterType", "OmitThisParameter", "ThisType", "Awaited",
   "Uppercase", "Lowercase", "Capitalize", "Uncapitalize", "NoInfer",
 ]);
+/** Q123: names the emitted strict-mode ESM cannot bind (reserved words, `eval` / `arguments`). */
+const RESERVED_WORDS = new Set(["implements", "interface", "let", "package", "private", "protected", "public", "static", "yield", "await", "enum", "eval", "arguments"]);
+/** Q123: member names with a special meaning on JS objects and classes. */
+const SPECIAL_MEMBERS = new Set(["__proto__", "constructor", "prototype", "then"]);
 const DIRECTIVES = new Set(["use owned", "use rt"]);
 const CONTRACTS = new Set(["requires", "ensures", "invariant"]);
 /** Q054: annotation heads that make a module-level const mutable. */
@@ -60,7 +65,8 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
 
   /** Contract and `test` calls that sit in an allowed position (E6001 / E6003 otherwise). */
   const allowedCalls = new Set<Node>();
-  let classDepth = 0;
+  /** Q120 / Q124: what the enclosing function allows. Each function resets it; arrows inherit `thisOk`. */
+  let fc = { thisOk: false, async: false, loops: 0, breaks: 0 };
 
   const isId = (n: Node | undefined): n is ts.Identifier => n?.kind === K.Identifier;
   const calleeName = (s: Node): { call: ts.CallExpression; name: string } | undefined => {
@@ -71,6 +77,8 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
   };
   const declName = (id: ts.Identifier): void => {
     if (BUILTIN_NAMES.has(id.text)) at("E1000", id, `'${id.text}' is a builtin name`);
+    else if (RESERVED_WORDS.has(id.text)) at("E1000", id, `'${id.text}' is a reserved word`);
+    else if (id.text.startsWith(RUNTIME_GLOBAL)) at("E1000", id, `names starting with '${RUNTIME_GLOBAL}' are reserved`);
   };
   const mods = (n: Node, allowed: K[]): void => {
     const ms = (n as Node & { modifiers?: ts.NodeArray<ts.ModifierLike> }).modifiers;
@@ -179,13 +187,16 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
 
   // ---- declarations
   function fn(n: ts.FunctionDeclaration | ts.MethodDeclaration | ts.ArrowFunction | ts.FunctionExpression | ts.ConstructorDeclaration, kind: FnKind): void {
-    scoped(() => fn0(n, kind)); // parameters and the top level of the body share one scope
+    const saved = fc;
+    const thisOk = n.kind === K.ArrowFunction ? fc.thisOk : n.kind === K.Constructor || (n.kind === K.MethodDeclaration && !n.modifiers?.some((m) => m.kind === K.StaticKeyword));
+    fc = { thisOk, async: !!n.modifiers?.some((m) => m.kind === K.AsyncKeyword), loops: 0, breaks: 0 };
+    try { scoped(() => fn0(n, kind)); } finally { fc = saved; } // parameters and the top level of the body share one scope
   }
   function fn0(n: ts.FunctionDeclaration | ts.MethodDeclaration | ts.ArrowFunction | ts.FunctionExpression | ts.ConstructorDeclaration, kind: FnKind): void {
     const isAsync = !!n.modifiers?.some((m) => m.kind === K.AsyncKeyword);
     if (n.kind === K.FunctionDeclaration || n.kind === K.FunctionExpression) {
       if (n.kind === K.FunctionDeclaration) { mods(n, [K.ExportKeyword, K.AsyncKeyword]); if (n.name) declName(n.name); }
-      else mods(n, [K.AsyncKeyword]);
+      else { mods(n, [K.AsyncKeyword]); if (n.name) declName(n.name); }
       if (n.asteriskToken) { // Q004: anchor `function`; the body is not walked (no cascade from `yield`)
         const m = n.modifiers;
         const kw = m?.length ? pf.tokenAfter(m[m.length - 1]!.end) : n.getStart(sf);
@@ -243,6 +254,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
 
   function memberName(n: Node & { name: ts.PropertyName; postfixToken?: Node }): void {
     if (!isId(n.name)) e1000(n.name, "this member name");
+    else if (SPECIAL_MEMBERS.has(n.name.text) || n.name.text.startsWith(RUNTIME_GLOBAL)) e1000(n.name, `member name '${n.name.text}'`); // Q123
     if (n.postfixToken?.kind === K.QuestionToken) at("E1008", n.name, "optional member is not allowed");
     else if (n.postfixToken) e1000(n.postfixToken, "definite assignment assertion");
   }
@@ -258,7 +270,6 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         for (const a of t.typeArguments ?? []) type(a);
       }
     }
-    classDepth++;
     const members = new Set<string>();
     for (const m of c.members) {
       if ((m.kind === K.PropertyDeclaration || m.kind === K.MethodDeclaration) && isId((m as ts.PropertyDeclaration).name)) claim(members, (m as ts.PropertyDeclaration).name as ts.Identifier);
@@ -286,7 +297,6 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         default: e1000(m, "this class member");
       }
     }
-    classDepth--;
   }
 
   function interfaceDecl(d: ts.InterfaceDeclaration): void {
@@ -382,6 +392,10 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
 
   // ---- statements inside functions (§4)
   function loopBody(s: ts.Statement): void {
+    fc.loops++; fc.breaks++;
+    try { loopBody0(s); } finally { fc.loops--; fc.breaks--; }
+  }
+  function loopBody0(s: ts.Statement): void {
     if (s.kind === K.Block) {
       for (const b of (s as ts.Block).statements) {
         const c = calleeName(b);
@@ -423,17 +437,20 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       case K.SwitchStatement: {
         const x = s as ts.SwitchStatement;
         expr(x.expression);
+        fc.breaks++;
         scoped(() => { // the case block is one scope
           for (const c of x.caseBlock.clauses) {
             if (c.kind === K.CaseClause) expr((c as ts.CaseClause).expression);
             for (const b of c.statements) stmt(b);
           }
         });
+        fc.breaks--;
         return;
       }
       case K.BreakStatement: case K.ContinueStatement: {
         const l = (s as ts.BreakStatement).label;
         if (l) e1000(l, "label");
+        else if (!(s.kind === K.BreakStatement ? fc.breaks : fc.loops)) e1000(s, `'${s.kind === K.BreakStatement ? "break" : "continue"}' outside a loop`); // Q124
         return;
       }
       case K.ReturnStatement: { const e = (s as ts.ReturnStatement).expression; if (e) expr(e); return; }
@@ -458,10 +475,13 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       case K.NumericLiteral: case K.StringLiteral: case K.NoSubstitutionTemplateLiteral:
       case K.TrueKeyword: case K.FalseKeyword: case K.NullKeyword:
         return;
-      case K.ThisKeyword: if (!classDepth) e1000(e, "'this' outside a class"); return;
+      case K.ThisKeyword: if (!fc.thisOk) e1000(e, "'this' outside an instance method or constructor"); return; // Q120
       case K.TemplateExpression: for (const sp of (e as ts.TemplateExpression).templateSpans) expr(sp.expression); return;
       case K.ParenthesizedExpression: expr((e as ts.ParenthesizedExpression).expression); return;
-      case K.AwaitExpression: expr((e as ts.AwaitExpression).expression); return;
+      case K.AwaitExpression:
+        if (!fc.async) e1000(e, "'await' outside an async function"); // Q124
+        expr((e as ts.AwaitExpression).expression);
+        return;
       case K.ConditionalExpression: {
         const c = e as ts.ConditionalExpression;
         expr(c.condition); expr(c.whenTrue); expr(c.whenFalse);
@@ -522,6 +542,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
           if (p.kind === K.PropertyAssignment) {
             const pa = p as ts.PropertyAssignment;
             if (!isId(pa.name)) e1000(pa.name, "this property name");
+            else if (pa.name.text === "__proto__") e1000(pa.name, "property name '__proto__'"); // Q123
             expr(pa.initializer);
           } else if (p.kind === K.ShorthandPropertyAssignment) {
             const sp = p as ts.ShorthandPropertyAssignment;

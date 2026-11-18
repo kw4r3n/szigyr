@@ -1,4 +1,4 @@
-import { asTrap, type Pos } from "../../runtime-js/src/index.ts";
+import { asTrap, capturing, type Pos } from "../../runtime-js/src/index.ts";
 import type { System } from "./types.ts";
 import { createSystem } from "./node.ts";
 
@@ -15,7 +15,8 @@ export async function runMain(main: (sys: System) => void | Promise<void>): Prom
   let stderr = "";
   const sys = createSystem((s) => (stdout += s), (s) => (stderr += s));
   try {
-    await main(sys);
+    const rejected = await capturing(() => main(sys)); // Q140
+    if (rejected.length) throw rejected[0];
     return { stdout, stderr };
   } catch (e) {
     const t = asTrap(e); // stack exhaustion is T006 (Q035)

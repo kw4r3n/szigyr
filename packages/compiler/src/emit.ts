@@ -10,6 +10,8 @@ import type { Pos } from "../../runtime-js/src/index.ts";
 
 export const RT = RUNTIME_GLOBAL;
 export const IMP = `${RUNTIME_GLOBAL}_imp`;
+/** The module's exports object, created by the host so that an import cycle can see it early (Q100). */
+export const EXPORTS = `${RUNTIME_GLOBAL}_ex`;
 /** `//# sourceURL` prefix of generated modules, so stack frames name the source file. */
 export const SOURCE_URL = `${CLI_NAME}:`;
 const MARK = `${RUNTIME_GLOBAL}@`;
@@ -96,7 +98,7 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean): Emitted 
       case K.BinaryExpression: return binary(n as ts.BinaryExpression);
       case K.ElementAccessExpression: {
         const e = n as ts.ElementAccessExpression;
-        return `${RT}.at(${gen(e.expression)}, ${gen(e.argumentExpression)}, ${at(e.argumentExpression)})`;
+        return `${RT}.at(${gen(e.expression)}, ${gen(e.argumentExpression)}, ${at(e.argumentExpression)})`; // `?.[]` is not in the language (E1000)
       }
       case K.PropertyAccessExpression: {
         const p = n as ts.PropertyAccessExpression;
@@ -114,9 +116,19 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean): Emitted 
     return splice(n);
   }
 
+  /** `body(o)` with `o` bound to the receiver of a `?.`: null short-circuits before the arguments are evaluated (§10.7). */
+  function optional(recv: string, awaited: boolean, body: (o: string) => string): string {
+    needAp = true;
+    const f = `(${O}) => ${O} == null ? null : ${body(O)}`;
+    return awaited ? `(await ${AP}(async ${f}, ${recv}))` : `${AP}(${f}, ${recv})`;
+  }
+
   function prefix(u: ts.PrefixUnaryExpression): string {
     const t = numName(u);
-    if (u.operator === K.MinusToken && u.operand.kind === K.NumericLiteral) return t === "f32" ? `${RT}.f32(${splice(u)})` : splice(u); // negative literal (Q015)
+    if (u.operator === K.MinusToken && u.operand.kind === K.NumericLiteral) { // negative literal (Q015); `-0` of an integer type is +0 (Q090)
+      if (t === "f32") return `${RT}.f32(${splice(u)})`;
+      return t && isInt(typeOf(u)!) ? `(${splice(u)} + 0)` : splice(u);
+    }
     if (u.operator === K.MinusToken && t && isInt(typeOf(u)!)) return `${RT}.neg(${JSON.stringify(t)}, ${gen(u.operand)}, ${at(u)})`;
     if (u.operator === K.TildeToken && t === "u32") return `${RT}.toU32(${splice(u)})`;
     return splice(u);
@@ -193,6 +205,7 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean): Emitted 
     const recv = p.expression;
     const withArgs = (extra: string[]): string => `${gen(callee)}(${[...args, ...extra].join(", ")})`;
     const nn = (s: string): string => (p.questionDotToken ? `${RT}.nn(${s})` : s);
+    const awaited = e.arguments.some(hasAwait);
     if (recv.kind === K.Identifier && (recv as ts.Identifier).text === "Vec" && m === "create" && !typeOf(recv)) {
       const el = self?.k === "gen" ? self.args[0] : undefined;
       return withArgs([q(el?.k === "num" ? el.name : "other")]);
@@ -200,9 +213,12 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean): Emitted 
     const r0 = typeOf(recv);
     const r = r0 && (nonNull(r0) ?? r0);
     const ns = recv.kind === K.Identifier && !r0 ? (recv as ts.Identifier).text : undefined;
-    // Q035: builtins that can throw a JS exception panic (T006) at their name. shortcut: not on `?.` receivers (none can be nullable here in the cases).
+    // Q035: builtins that can throw a JS exception panic (T006) at their name.
     const throws = ns ? THROWING[ns] : r?.k === "gen" ? THROWING[r.name] : r && isStr(r) ? THROWING.string : undefined;
-    if (throws?.includes(m) && !p.questionDotToken) return `${RT}.guarded(${ns ?? gen(recv)}, ${q(m)}, [${args.join(", ")}], ${at(p.name)})`;
+    if (throws?.includes(m)) {
+      const guarded = (o: string): string => `${RT}.guarded(${o}, ${q(m)}, [${args.join(", ")}], ${at(p.name)})`;
+      return p.questionDotToken ? optional(gen(recv), awaited, guarded) : guarded(ns ?? gen(recv));
+    }
     if (r?.k === "gen") {
       if ((r.name === "Array" || r.name === "ReadonlyArray") && (m === "pop" || m === "find")) return nn(`${RT}.nn(${withArgs([])})`);
       if ((r.name === "Array" || r.name === "ReadonlyArray") && (m === "indexOf" || m === "findIndex")) return nn(`${RT}.idxOrNull(${withArgs([])})`);
@@ -212,7 +228,7 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean): Emitted 
     } else if (r && isStr(r)) {
       if (m === "indexOf") return nn(`${RT}.idxOrNull(${withArgs([])})`);
       if (m === "codePointAt") return nn(`${RT}.nn(${withArgs([])})`);
-      if (m === "charCodeAt") return nn(`${RT}.charCodeAt(${gen(recv)}, ${args[0]}, ${at(p.name)})`);
+      if (m === "charCodeAt") { const f = (o: string): string => `${RT}.charCodeAt(${o}, ${args[0]}, ${at(p.name)})`; return p.questionDotToken ? optional(gen(recv), awaited, f) : f(gen(recv)); }
     } else if (r?.k === "opaque") {
       if (r.name === "Js" && m === "decode") return nn(withArgs([desc(resultParts(self!)!.ok)]));
       if (r.name === "Test") return nn(withArgs([at(p.name)]));
@@ -242,9 +258,12 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean): Emitted 
 
   // ---- module level (§1): imports become calls of IMP, `export` becomes the returned object.
   const body: string[] = [];
-  const values = new Set<string>();
+  const values = new Set<string>(), fns = new Set<string>();
   for (const s of sf.statements) {
-    if (s.kind === K.FunctionDeclaration || s.kind === K.ClassDeclaration) values.add((s as ts.FunctionDeclaration).name!.text);
+    if (s.kind === K.FunctionDeclaration || s.kind === K.ClassDeclaration) {
+      values.add((s as ts.FunctionDeclaration).name!.text);
+      if (s.kind === K.FunctionDeclaration) fns.add((s as ts.FunctionDeclaration).name!.text);
+    }
     else if (s.kind === K.VariableStatement) for (const d of (s as ts.VariableStatement).declarationList.declarations) values.add((d.name as ts.Identifier).text);
     else if (s.kind === K.ImportDeclaration) for (const x of ((s as ts.ImportDeclaration).importClause!.namedBindings as ts.NamedImports).elements) values.add(x.name.text);
   }
@@ -279,9 +298,11 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean): Emitted 
     `"use strict";`,
     `const { ${RT_NAMESPACES.join(", ")} } = ${RT};`,
     `const ${P} = [${poss.join(",")}];`,
+    // Q100: function declarations are hoisted, so they are exported before the imports run and an import cycle can use them.
+    `Object.assign(${EXPORTS}, { ${exported.filter((x) => fns.has(x.split(": ").at(-1)!)).join(", ")} });`,
     ...(needAp ? [`const ${AP} = (f, ...a) => f(...a);`] : []),
   ];
-  const js = `${prelude.join("\n")}\n${body.join("\n")}\nreturn { ${exported.join(", ")} };\n//# sourceURL=${SOURCE_URL}${pf.path}`;
+  const js = `${prelude.join("\n")}\n${body.join("\n")}\nreturn Object.assign(${EXPORTS}, { ${exported.join(", ")} });\n//# sourceURL=${SOURCE_URL}${pf.path}`;
   // new Function puts the body after a 2-line header, so body line 1 is line 3 of the frames.
   const calls = new Map<string, Pos>();
   let line = 3, ls = 0;

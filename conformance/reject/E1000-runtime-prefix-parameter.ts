@@ -1,0 +1,6 @@
+// expect: E1000 @ 4:12
+// stage: 1
+// open-question: Q123
+function f(__sts_rt: i32, a: i32): i32 {
+  return a + a;
+}

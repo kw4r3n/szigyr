@@ -28,7 +28,7 @@ function check(d: TypeDesc, x: unknown, path: string): string | null {
       if (d.t === "f64") return null;
       if (d.t === "f32") return Number.isNaN(x) || Math.fround(x) === x ? null : bad("f32");
       const [lo, hi] = RANGE[d.t as IntType];
-      return Number.isInteger(x) && x >= lo && x <= hi ? null : bad(d.t);
+      return Number.isInteger(x) && x >= lo && x <= hi && !Object.is(x, -0) ? null : bad(d.t); // -0 is not an integer value (Q090, Q141)
     }
     case "lit": return typeof x === "string" && d.v.includes(x) ? null : bad(d.v.map((s) => JSON.stringify(s)).join(" | "));
     case "arr": {

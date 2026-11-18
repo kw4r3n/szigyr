@@ -8,7 +8,7 @@ import { isDeterministic } from "./determinism.ts";
 import {
   BOOL, ERROR, ERROR_RECORD, F64, NEVER, NULL, NUM_NAMES, STR, UNKNOWN, USIZE, VOID, assignable, bindTParams, field, fn, gen, hasTParam,
   isBool, isInt, isNull, isNum, isOwned, isStr, isTaggedUnion, kindOf, literalFits, nonNull, nullable, num, opaque, result, resultParts,
-  same, show, subst, unify, union, unref, castable, comparable, isCopy, keyOk, type FnType, type NumName, type Type,
+  same, show, subst, unify, union, unref, castable, demand, type FnType, type NumName, type Type,
 } from "./types.ts";
 
 const isId = (n: Node | undefined): n is ts.Identifier => n?.kind === K.Identifier;
@@ -64,6 +64,7 @@ export const exprTypes = new WeakMap<Node, Type>();
 export function expr(c: Checker, e: ts.Expression, want?: Type): Type {
   const t = exprUnrecorded(c, e, want);
   exprTypes.set(e, t);
+  if (t.k === "error") c.firstError ??= { node: e, mod: c.mod };
   return t;
 }
 function exprUnrecorded(c: Checker, e: ts.Expression, want?: Type): Type {
@@ -73,7 +74,9 @@ function exprUnrecorded(c: Checker, e: ts.Expression, want?: Type): Type {
     case K.StringLiteral: case K.NoSubstitutionTemplateLiteral: return strLit((e as ts.StringLiteral).text, want);
     case K.TrueKeyword: case K.FalseKeyword: return BOOL;
     case K.NullKeyword: return NULL;
-    case K.ThisKeyword: return c.fx.thisType ?? ERROR;
+    case K.ThisKeyword:
+      if (!c.fx.thisType) throw new Error("P2: 'this' without an instance type"); // P1 allows it only where there is one (Q120)
+      return c.fx.thisType;
     case K.ParenthesizedExpression: return expr(c, (e as ts.ParenthesizedExpression).expression, want);
     case K.AsExpression: return expr(c, (e as ts.AsExpression).expression, want); // `as const` is a no-op (Q026)
     case K.TemplateExpression:
@@ -135,7 +138,7 @@ function ident(c: Checker, id: ts.Identifier): Type {
       case "jsref":
         if (c.fx.contract) c.at("E6002", id, `a contract cannot refer to '${name}'`);
         return opaque("JsRef");
-      default: return ERROR;
+      default: throw new Error(`P2: unexpected symbol kind for '${name}'`);
     }
   }
   unresolved(c, id);
@@ -241,7 +244,8 @@ function lookupMember(c: Checker, t: Type, name: ts.Identifier, inCall: boolean)
     case "union": { // a field common to every member of a tagged union (`kind`, §3.2)
       const fs = t.members.map((m) => field(m, n));
       if (!isTaggedUnion(t) || fs.some((f) => !f)) return missing("E2002");
-      return { kind: "value", type: union(fs.map((f) => f!.type)), readonly: fs.every((f) => f!.readonly) };
+      // writing the tag through the union could flip it under a caller's narrowing (Q122)
+      return { kind: "value", type: union(fs.map((f) => f!.type)), readonly: n === "kind" || fs.every((f) => f!.readonly) };
     }
     case "tparam": return t.p.constraint ? lookupMember(c, t.p.constraint, name, inCall) : missing("E2002");
     case "gen": {
@@ -302,7 +306,7 @@ function lvalue(c: Checker, e: ts.Expression): Type {
     const p = e as ts.PropertyAccessExpression;
     const r = member(c, p, false);
     if (r.kind !== "value") return ERROR;
-    const ctorThis = c.fx.inCtor && p.expression.kind === K.ThisKeyword;
+    const ctorThis = c.fx.inCtor && c.ctorInits.has(p); // Q121
     if (r.readonly && !ctorThis) { c.at("E2002", p.name, `'${p.name.text}' is readonly`); return ERROR; }
     return r.type;
   }
@@ -366,12 +370,13 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
   }
   switch (k) {
     case K.AmpersandAmpersandToken: case K.BarBarToken: {
+      const m0 = c.mark();
       const lt = expr(c, b.left);
       if (!isBool(lt) && !isErr(lt)) c.at("E2004", b.left, "operand must be boolean");
-      const saved = c.narrow;
-      c.narrow = new Map(saved); c.withFacts(c.facts(b.left, k === K.AmpersandAmpersandToken));
+      const saved = c.narrow, m1 = c.mark();
+      c.narrow = new Map(saved); c.withFacts(c.facts(b.left, k === K.AmpersandAmpersandToken), m0);
       const rt = expr(c, b.right);
-      c.narrow = saved;
+      c.restore(saved, m1); // the right side may not run, but its assignments may have (Q122)
       if (!isBool(rt) && !isErr(rt)) c.at("E2004", b.right, "operand must be boolean");
       return BOOL;
     }
@@ -418,7 +423,7 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
     numFix(c, op, b.left, b.right, lt, rt);
     return r;
   }
-  return ERROR;
+  throw new Error(`P2: unhandled binary operator ${k}`); // P1 allows only the operators above
 }
 
 /** Q017: element types for which `===` works (the `T` of `T | null` counts). */
@@ -471,13 +476,14 @@ function negate(c: Checker, u: Node, t: Type): Type {
 }
 
 function conditional(c: Checker, e: ts.ConditionalExpression, want: Type | undefined): Type {
+  const m0 = c.mark();
   cond(c, e.condition);
-  const saved = c.narrow;
-  c.narrow = new Map(saved); c.withFacts(c.facts(e.condition, true));
+  const saved = c.narrow, m1 = c.mark();
+  c.narrow = new Map(saved); c.withFacts(c.facts(e.condition, true), m0, m1);
   const a = want ? checkTo(c, e.whenTrue, want) : expr(c, e.whenTrue);
-  c.narrow = new Map(saved); c.withFacts(c.facts(e.condition, false));
+  c.narrow = new Map(saved); c.withFacts(c.facts(e.condition, false), m0, m1);
   const b = want ? checkTo(c, e.whenFalse, want) : expr(c, e.whenFalse, deferrable(e.whenFalse) ? sideCtx(a) : undefined);
-  c.narrow = saved;
+  c.restore(saved, m1);
   if (want) return isErr(a) || isErr(b) ? ERROR : want;
   if (isErr(a) || isErr(b)) return ERROR;
   if (assignable(a, b)) return b;
@@ -542,7 +548,12 @@ function arrLit(c: Checker, e: ts.ArrayLiteralExpression, want: Type | undefined
     if (first) elem = expr(c, first);
     else if (e.elements.every((x) => isLitOnly(x))) elem = F64;
     else if (e.elements.every((x) => x.kind === K.StringLiteral || x.kind === K.NoSubstitutionTemplateLiteral)) elem = STR;
-    else { const sp = e.elements.find((x) => x.kind === K.SpreadElement) as ts.SpreadElement | undefined; const st = sp && expr(c, sp.expression); elem = st?.k === "gen" ? st.args[0]! : ERROR; }
+    else { // only spreads: the element type comes from the first spread (arrays only, like the loop below)
+      const sp = e.elements.find((x) => x.kind === K.SpreadElement) as ts.SpreadElement;
+      const st = expr(c, sp.expression);
+      if (st.k === "gen" && (st.name === "Array" || st.name === "ReadonlyArray")) elem = st.args[0]!;
+      else { if (!isErr(st)) c.at("E2002", sp.expression, `cannot spread '${show(st)}' into an array`); return ERROR; }
+    }
     if (elem.k === "lit") elem = STR;
     if (isErr(elem)) return ERROR;
   }
@@ -663,7 +674,7 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
   const tc = sig.tcheck;
   if ((tc === "cast" || tc === "eq" || tc === "copy") && sig.tparams[0]) { // Q084, Q086
     const b = m.get(sig.tparams[0].id)!;
-    if (!isErr(b) && !(tc === "cast" ? castable(b) : tc === "eq" ? comparable(b) : b.k === "tparam" || isCopy(b))) {
+    if (!isErr(b) && !(tc === "cast" ? castable(b) : demand(b, tc))) {
       c.at("E2002", e.typeArguments?.[0] ?? anchor, `'${show(b)}' is not allowed as the type argument here`);
       return ERROR;
     }
@@ -674,6 +685,7 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
     const p = unref(subst(sig.params[i]!, m));
     if (!assignable(t, p, true)) c.at("E2002", a, `expected '${show(p)}', got '${show(t)}'`);
   });
+  sig.tparams.forEach((p, i) => c.prog.insts.push({ mod: c.mod, node: e.typeArguments?.[i] ?? anchor, p, arg: m.get(p.id)! })); // Q127
   return subst(sig.ret, m);
 }
 
@@ -729,10 +741,11 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
       if (name === "ensures") {
         const a = args[0]!;
         const r = c.fx.ret ?? ERROR;
-        if (!isFnExpr(a)) c.at("E2002", a, "ensures takes '(r: R) => boolean'");
+        const pred = r.k === "prim" && r.name === "void" ? fn([], BOOL) : fn([r], BOOL); // Q129: a void function's ensures takes no argument
+        if (!isFnExpr(a)) c.at("E2002", a, `ensures takes '${show(pred)}'`);
         else {
-          const t = checkArrow(c, a, fn([r], BOOL), false);
-          if (!assignable(t, fn([r], BOOL))) c.at("E2002", a, `expected '(r: ${show(r)}) => boolean'`);
+          const t = checkArrow(c, a, pred, false);
+          if (!assignable(t, pred)) c.at("E2002", a, `expected '${show(pred)}'`);
         }
       } else checkTo(c, args[0]!, BOOL);
       c.fx.contract = saved;
@@ -748,7 +761,7 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
       return VOID;
     }
   }
-  return ERROR;
+  throw new Error(`P2: unhandled builtin '${name}'`);
 }
 
 function newExpr(c: Checker, e: ts.NewExpression, want: Type | undefined): Type {
@@ -766,7 +779,7 @@ function newExpr(c: Checker, e: ts.NewExpression, want: Type | undefined): Type 
     if (e.typeArguments) {
       if (e.typeArguments.length !== n) { c.at("E2002", id, `'${id.text}' takes ${n} type argument(s)`); return ERROR; }
       const targs = e.typeArguments.map((t) => c.typeOf(t));
-      if (!keyOk(targs[0]!)) { c.at("E2002", e.typeArguments[0]!, `a ${id.text} ${id.text === "Map" ? "key" : "element"} is a string, number or boolean`); return ERROR; } // Q081
+      if (!demand(targs[0]!, "key")) { c.at("E2002", e.typeArguments[0]!, `a ${id.text} ${id.text === "Map" ? "key" : "element"} is a string, number or boolean`); return ERROR; } // Q081
       return gen(id.text, ...targs);
     }
     const w = want && (nonNull(want) ?? want);

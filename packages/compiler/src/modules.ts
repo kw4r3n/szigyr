@@ -5,7 +5,7 @@ import type { Diagnostic } from "./diagnostics.ts";
 import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { RESERVED, builtinType, isGenName } from "./builtins.ts";
 import {
-  ERROR, GEN_ARITY, NULL, VOID, assignable, bindTParams, fn, isCopy, isOwned, isTaggedUnion, keyOk, kindOf, newTParam, nonNull, record, result, show, structField, subst, union,
+  ERROR, GEN_ARITY, NULL, VOID, assignable, bindTParams, demand, fn, isTaggedUnion, kindOf, needOk, newTParam, nonNull, record, result, show, subst, union,
   type ClassSym, type Field, type FnType, type IfaceSym, type TParam, type Type,
 } from "./types.ts";
 
@@ -15,7 +15,11 @@ export interface FnSym { k: "fn"; name: string; decl: ts.FunctionDeclaration; mo
 export interface ConstSym { k: "const"; decl: ts.VariableDeclaration; mod: Module; type: Type }
 export interface ClassValueSym { k: "class"; cls: ClassSym; mod: Module }
 /** `declared`: the annotated type before Ref / Mut are read through (contracts, Q056). */
-export interface LocalSym { k: "local"; id: number; name: string; type: Type; declared: Type; mutable: boolean; param: boolean; fnDepth: number }
+export interface LocalSym {
+  k: "local"; id: number; name: string; type: Type; declared: Type; mutable: boolean; param: boolean; fnDepth: number;
+  /** Captured by a nested function and assigned after its declaration: never narrowed (Q122). */
+  unstable?: boolean;
+}
 export type ValueSym = FnSym | ConstSym | ClassValueSym | { k: "jsref" } | LocalSym;
 
 export type TypeSym =
@@ -129,6 +133,8 @@ export class Program {
   readonly fns: FnSym[] = [];
   private readonly byPath = new Map<string, Module>();
   readonly rep: Reporter;
+  /** Q127: every instantiation of a user type parameter, checked against its conditions once all bodies are checked. */
+  readonly insts: { mod: Module; node: Node; p: TParam; arg: Type }[] = [];
 
   constructor(files: ParsedFile[], display: (p: string) => string, rep: Reporter) {
     this.rep = rep;
@@ -276,6 +282,25 @@ export class Program {
     return a.body;
   }
 
+  /** Q127: propagates conditions through type parameters instantiated by type parameters, then checks the rest. */
+  checkInsts(): void {
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const { p, arg } of this.insts) {
+        if (arg.k !== "tparam" || !p.need) continue;
+        for (const n of p.need) if (!arg.p.need?.has(n)) { (arg.p.need ??= new Set()).add(n); changed = true; }
+      }
+    }
+    const seen = new Set<string>();
+    for (const { mod, node, p, arg } of this.insts) {
+      const bad = arg.k === "tparam" ? undefined : [...p.need ?? []].find((n) => !needOk(n, arg));
+      const key = `${mod.file}:${node.pos}:${p.id}`;
+      if (!bad || seen.has(key)) continue;
+      seen.add(key);
+      this.rep.at(mod, "E2002", node, `'${show(arg)}' cannot instantiate '${p.name}' (${bad} condition)`);
+    }
+  }
+
   lookupType(mod: Module, name: string, depth = 0): TypeSym | undefined {
     const own = mod.types.get(name);
     if (own || depth > 8) return own;
@@ -340,7 +365,7 @@ export class Program {
       if (!p.type) { this.rep.at(e.mod, "E2006", p.name, "property needs a type annotation"); return ERROR; }
       const name = (p.name as ts.Identifier).text;
       const type = this.typeOf(p.type, e);
-      if (struct && !structField(type)) this.rep.at(e.mod, "E2002", p.type, `a Struct field is a number, boolean, Struct or Vec, not '${show(type)}'`); // Q086
+      if (struct && !demand(type, "field")) this.rep.at(e.mod, "E2002", p.type, `a Struct field is a number, boolean, Struct or Vec, not '${show(type)}'`); // Q086
       fields.push({ name, type, readonly: hasMod(p, K.ReadonlyKeyword) });
     }
     return record(fields, struct);
@@ -364,6 +389,7 @@ export class Program {
       if (!arity(ps.length)) return ERROR;
       const bad = ps.findIndex((p, i) => p.constraint && args[i]!.k !== "error" && !assignable(args[i]!, subst(p.constraint, bindTParams(ps, args))));
       if (bad >= 0) { this.rep.at(e.mod, "E2002", argNodes![bad]!, `type argument does not implement '${show(ps[bad]!.constraint!)}'`); return ERROR; }
+      ps.forEach((p, i) => this.insts.push({ mod: e.mod, node: argNodes![i]!, p, arg: args[i]! })); // Q127
       if (body) return subst(body, bindTParams(ps, args));
       return sym.k === "iface" ? { k: "iface", iface: sym.iface, args } : { k: "class", cls: (sym as Extract<TypeSym, { k: "class" }>).cls, args };
     }
@@ -377,17 +403,17 @@ export class Program {
       if (!arity(GEN_ARITY[name])) return ERROR;
       if ((name === "Ref" || name === "Mut")) { // Q051
         const a = args[0]!;
-        if (!(isOwned(a) || a.k === "error" || a.k === "tparam" || (a.k === "gen" && a.name === "Slice"))) {
+        if (!demand(a, "borrow")) {
           this.rep.at(e.mod, "E2002", argNodes![0]!, `${name}<T> needs an owned type or Slice`);
           return ERROR;
         }
       }
       if (args.some((a) => a.k === "error")) return ERROR;
-      if ((name === "Map" || name === "Set") && !keyOk(args[0]!)) { // §3.2, Q081
+      if ((name === "Map" || name === "Set") && !demand(args[0]!, "key")) { // §3.2, Q081, Q127
         this.rep.at(e.mod, "E2002", argNodes![0]!, `a ${name} ${name === "Map" ? "key" : "element"} is a string, number or boolean, not '${show(args[0]!)}'`);
         return ERROR;
       }
-      if ((name === "Vec" || name === "Slice") && args[0]!.k !== "tparam" && !isCopy(args[0]!)) { // §3.3, Q086
+      if ((name === "Vec" || name === "Slice") && !demand(args[0]!, "copy")) { // §3.3, Q086, Q127
         this.rep.at(e.mod, "E2002", argNodes![0]!, `${name}<T> needs a Copy element type, not '${show(args[0]!)}'`);
         return ERROR;
       }
@@ -401,7 +427,7 @@ export class Program {
 }
 
 /** §3.2 (Q080): after removing `null`, a union is a tagged union with distinct `kind` literals or all string literals. */
-function legalUnion(u: Type): boolean {
+export function legalUnion(u: Type): boolean {
   const rest = u.k === "union" ? nonNull(u) ?? u : u;
   if (rest.k !== "union" || rest.members.every((m) => m.k === "lit")) return true;
   return isTaggedUnion(rest) && new Set(rest.members.map(kindOf)).size === rest.members.length;

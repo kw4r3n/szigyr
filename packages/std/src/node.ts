@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync } from "node:fs";
-import { cast, err, ok, type Result } from "../../runtime-js/src/index.ts";
+import { cast, err, isTrap, ok, type Result } from "../../runtime-js/src/index.ts";
 import type { Alloc, Clock, Fs, IoError, Js, JsError, JsRef, Log, Random, System } from "./types.ts";
 
 export const ALLOC: Alloc = { kind: "alloc" };
@@ -28,12 +28,13 @@ const jsError = (e: unknown): JsError => ({
   code: e instanceof Error ? e.name : "Error",
   message: e instanceof Error ? e.message : String(e),
 });
-const guard = <T>(f: () => T): Result<T, JsError> => { try { return ok(f()); } catch (e) { return err(jsError(e)); } };
+// Traps are not catchable from STS code (§8): they pass through the Js boundary.
+const guard = <T>(f: () => T): Result<T, JsError> => { try { return ok(f()); } catch (e) { if (isTrap(e)) throw e; return err(jsError(e)); } };
 
 export const nodeJs: Js = {
   call: (f, args) => guard(() => (f as (...a: JsRef[]) => JsRef)(...args)),
   get: (obj, key) => guard(() => (obj as Record<string, JsRef>)[key]),
-  await: async (v) => { try { return ok(await v); } catch (e) { return err(jsError(e)); } },
+  await: async (v) => { try { return ok(await v); } catch (e) { if (isTrap(e)) throw e; return err(jsError(e)); } },
   decode: (v, desc) => cast(v, desc),
   encode: (v) => v,
 };

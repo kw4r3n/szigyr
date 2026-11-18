@@ -1,9 +1,9 @@
 // P2 checker (D012): declarations, statements, control flow, narrowing. Expressions live in expr.ts.
 import { NodeFlags, SyntaxKind as K, type Node, type ts } from "./parse.ts";
-import { Program, type ClassValueSym, type Layer, type LocalSym, type Module, type ValueSym } from "./modules.ts";
+import { Program, legalUnion, type ClassValueSym, type Layer, type LocalSym, type Module, type ValueSym } from "./modules.ts";
 import { checkTo, cond, expr, isLitOnly } from "./expr.ts";
 import {
-  ERROR, NULL, STR, VOID, assignable, field, isTaggedUnion, kindOf, nonNull, same, show, subst, bindTParams, unref, union,
+  ERROR, NEVER, NULL, STR, VOID, assignable, field, isTaggedUnion, kindOf, nonNull, same, show, subst, bindTParams, unref, union,
   type ClassSym, type FnType, type TParam, type Type,
 } from "./types.ts";
 
@@ -23,6 +23,8 @@ export interface FnCtx {
   contract?: { kind: "requires" | "ensures"; depth: number };
   /** The enclosing named function's parameter list (E5001 fixes, Q073). */
   params?: ts.NodeArray<ts.ParameterDeclaration>;
+  /** The function-like node being checked (Q122). */
+  node?: Node;
 }
 
 export class Scope {
@@ -41,6 +43,10 @@ export class Checker {
   /** Untyped `let x = <numeric literal>` locals by id, for the E2003 fix (SPEC §11). */
   litLets = new Map<number, ts.Identifier>();
   narrow = new Map<string, Type>();
+  /** Q122: every local id whose narrowings were dropped, in order. A mark is an index into it. */
+  kills: number[] = [];
+  /** Q122: per function node, the names of its locals that are captured by a nested function and assigned. */
+  unstable = new Map<Node, Set<string>>();
   fx!: FnCtx;
 
   readonly prog: Program;
@@ -50,13 +56,24 @@ export class Checker {
   at(code: string, n: Node, message: string, data?: Record<string, unknown>): void { this.prog.rep.at(this.fx.mod, code, n, message, data); }
   report(code: string, start: number, end: number, message: string): void { this.prog.rep.report(this.fx.mod, code, start, end, message); }
 
+  /** Q121: the `this.f` targets of the constructor's initializing statements (readonly fields may be assigned there only). */
+  ctorInits = new Set<Node>();
+  /** The first expression typed as the error type (D009: only after a diagnostic). */
+  firstError: { node: Node; mod: Module } | undefined;
   run(): void {
+    const before = this.prog.rep.out.length;
     for (const mod of this.prog.mods) this.module(mod);
+    this.prog.checkInsts();
+    // Fail closed: an error type without any diagnostic would accept anything (D050).
+    if (this.firstError && this.prog.rep.out.length === before) {
+      this.prog.rep.at(this.firstError.mod, "E2002", this.firstError.node, "internal: expression has no type");
+    }
   }
 
   // ---- symbols
   declare(name: ts.Identifier, type: Type, opts: { mutable?: boolean; param?: boolean; declared?: Type } = {}): LocalSym {
     const sym: LocalSym = { k: "local", id: ++localId, name: name.text, type, declared: opts.declared ?? type, mutable: !!opts.mutable, param: !!opts.param, fnDepth: this.fx.depth };
+    if (this.fx.node && this.unstable.get(this.fx.node)?.has(name.text)) sym.unstable = true;
     this.scope.vars.set(name.text, sym);
     return sym;
   }
@@ -68,7 +85,7 @@ export class Checker {
     if (e.kind === K.ParenthesizedExpression) return this.keyOf((e as ts.ParenthesizedExpression).expression);
     if (isId(e)) {
       const s = this.scope.lookup(e.text);
-      return s ? { key: `${s.id}`, type: this.narrow.get(`${s.id}`) ?? s.type } : undefined;
+      return s && !s.unstable ? { key: `${s.id}`, type: this.narrow.get(`${s.id}`) ?? s.type } : undefined;
     }
     if (e.kind === K.ThisKeyword) return this.fx.thisType ? { key: "this", type: this.fx.thisType } : undefined;
     if (e.kind !== K.PropertyAccessExpression || (e as ts.PropertyAccessExpression).questionDotToken) return undefined;
@@ -125,14 +142,28 @@ export class Checker {
     }
     return out;
   }
-  withFacts(f: Map<string, Type>): void { if (f.size) this.narrow = new Map([...this.narrow, ...f]); }
-  /** An assignment to local `id` ends its narrowings (Q025). */
+  /** Adds facts, except those about locals assigned since `mark` (Q122). */
+  withFacts(f: Map<string, Type>, mark?: number, end?: number): void {
+    const dead = mark === undefined ? undefined : this.killedSince(mark, end);
+    const add = [...f].filter(([k]) => !dead?.has(k.split(".")[0]!));
+    if (add.length) this.narrow = new Map([...this.narrow, ...add]);
+  }
+  /** An assignment to local `id` ends its narrowings (Q025) and is logged so that saved states drop them too (Q122). */
   forget(id: number): void {
+    this.kills.push(id);
     for (const k of [...this.narrow.keys()]) if (k === `${id}` || k.startsWith(`${id}.`)) this.narrow.delete(k);
+  }
+  mark(): number { return this.kills.length; }
+  killedSince(mark: number, end?: number): Set<string> { return new Set(this.kills.slice(mark, end).map(String)); }
+  /** `saved` without the narrowings of locals assigned since `mark`: the state after code that may have run (Q122). */
+  restore(saved: Map<string, Type>, mark: number): void {
+    const dead = this.killedSince(mark);
+    this.narrow = dead.size ? new Map([...saved].filter(([k]) => !dead.has(k.split(".")[0]!))) : saved;
   }
 
   // ---- modules
   private module(mod: Module): void {
+    this.unstable = capturedAssigned(mod.sf);
     for (const s of mod.sf.statements) {
       this.fx = { mod, layer: "managed", ret: undefined, returns: [], async: false, inCtor: false, tparams: new Map(), depth: 0 };
       this.scope = new Scope();
@@ -183,10 +214,11 @@ export class Checker {
       layer: o.layer ?? (nested ? outer.fx.layer : "managed"),
       ret, returns: [], async: isAsync,
       inCtor: !!o.inCtor, tparams, depth: nested ? outer.fx.depth + 1 : 0,
-      ...(o.thisType ? { thisType: o.thisType } : nested && outer.fx.thisType ? { thisType: outer.fx.thisType } : {}),
+      ...(o.thisType ? { thisType: o.thisType } : d.kind === K.ArrowFunction && outer.fx.thisType ? { thisType: outer.fx.thisType } : {}), // Q120
       ...(o.cls ? { cls: o.cls } : nested && outer.fx.cls ? { cls: outer.fx.cls } : {}),
       ...(o.params ? { params: o.params } : nested && outer.fx.params ? { params: outer.fx.params } : {}),
       ...(nested && outer.fx.contract ? { contract: outer.fx.contract } : {}),
+      node: d,
     };
     this.scope = new Scope(nested ? outer.scope : undefined);
     this.narrow = nested ? new Map(outer.narrow) : new Map();
@@ -198,7 +230,7 @@ export class Checker {
     if (body.kind !== K.Block) {
       // a void callback's expression body is evaluated for effect (Q074)
       const r = this.fx.ret;
-      const t = r && !isVoidish(r) ? checkTo(this, body as ts.Expression, r) : expr(this, body as ts.Expression);
+      const t = r && !isVoidish(r) ? checkTo(this, body as ts.Expression, r) : r ? this.discard(body as ts.Expression) : expr(this, body as ts.Expression);
       result = t;
     } else {
       const reach = this.block((body as ts.Block).statements, true);
@@ -207,7 +239,15 @@ export class Checker {
         const anchor = d.kind === K.ArrowFunction ? (d as ts.ArrowFunction).equalsGreaterThanToken : (d as { name?: Node }).name ?? d;
         this.at("E2002", anchor, "function can reach its end without returning a value");
       }
-      if (!r) result = this.fx.returns.length ? union(this.fx.returns) : VOID;
+      if (!r) {
+        const rs = this.fx.returns.filter((t) => !(t.k === "prim" && t.name === "never"));
+        result = rs.length ? union(rs) : this.fx.returns.length ? NEVER : VOID;
+        if (result.k === "union" && !legalUnion(result) && !rs.some((t) => t.k === "error")) { // Q126
+          const anchor = d.kind === K.ArrowFunction ? (d as ts.ArrowFunction).equalsGreaterThanToken : (d as { name?: Node }).name ?? d;
+          this.at("E2002", anchor, `the inferred return type '${show(result)}' is not an allowed union; annotate the return type`);
+          result = ERROR;
+        }
+      }
     }
     this.fx = outer.fx; this.scope = outer.scope; this.narrow = outer.narrow;
     return isAsync && o.inferRet ? { k: "gen", name: "Promise", args: [result] } : result;
@@ -220,7 +260,29 @@ export class Checker {
     const tparams = new Map(cls.tparams.map((p) => [p.name, p]));
     this.fx = { ...this.fx, tparams };
     for (const h of cls.decl.heritageClauses ?? []) h.types.forEach((t, i) => this.implementsCheck(cls, cls.implements[i] ?? ERROR, t));
-    let ctor: ts.ConstructorDeclaration | undefined;
+    const ctor = cls.decl.members.find((m) => m.kind === K.Constructor) as ts.ConstructorDeclaration | undefined;
+    // Q029: `this.f = ...` as a top-level constructor statement. Q121: up to the last of them, `this` is only such a target.
+    const stmts = ctor?.body?.statements ?? [];
+    const initOf = (s: ts.Statement): ts.PropertyAccessExpression | undefined => {
+      if (s.kind !== K.ExpressionStatement) return undefined;
+      const b = (s as ts.ExpressionStatement).expression;
+      if (b.kind !== K.BinaryExpression || (b as ts.BinaryExpression).operatorToken.kind !== K.EqualsToken) return undefined;
+      const l = (b as ts.BinaryExpression).left;
+      return l.kind === K.PropertyAccessExpression && (l as ts.PropertyAccessExpression).expression.kind === K.ThisKeyword ? l as ts.PropertyAccessExpression : undefined;
+    };
+    const inits = stmts.map(initOf);
+    // the prefix ends where every field without an initializer has been assigned (or at the last assignment if some never is)
+    const need = new Set([...cls.fields].filter(([, f]) => !f.static && !f.node.initializer).map(([n]) => n));
+    let end = need.size ? inits.findIndex((x) => x && need.delete(x.name.text) && !need.size) : -1;
+    if (need.size) end = inits.findLastIndex((x) => x !== undefined);
+    const prefix = stmts.slice(0, end + 1);
+    this.ctorInits = new Set(inits.slice(0, end + 1).filter((x) => x !== undefined));
+    const walk = (n: Node): void => {
+      if (n.kind === K.ThisKeyword) this.at("E2002", n, "'this' is used before every field is initialized");
+      else if (n.kind === K.ReturnStatement) this.at("E2002", n, "'return' before every field is initialized");
+      n.forEachChild(walk);
+    };
+    prefix.forEach((st, i) => walk(inits[i] ? ((st as ts.ExpressionStatement).expression as ts.BinaryExpression).right : st));
     for (const m of cls.decl.members) {
       if (m.kind === K.PropertyDeclaration) {
         const p = m as ts.PropertyDeclaration;
@@ -234,19 +296,12 @@ export class Checker {
         const me = cls.methods.get((md.name as ts.Identifier).text)!;
         this.fnBody(md, me.sig, { layer: "managed", ...(me.static ? {} : { thisType }), cls, params: md.parameters });
       } else if (m.kind === K.Constructor) {
-        ctor = m as ts.ConstructorDeclaration;
-        this.fnBody(ctor, cls.ctor, { layer: "managed", thisType, cls, inCtor: true, params: ctor.parameters });
+        this.fnBody(ctor!, cls.ctor, { layer: "managed", thisType, cls, inCtor: true, params: ctor!.parameters });
       }
     }
+    this.ctorInits = new Set();
     // Q029: every instance field without an initializer is assigned by a top-level `this.f = ...` in the constructor
-    const assigned = new Set<string>();
-    for (const s of ctor?.body?.statements ?? []) {
-      if (s.kind !== K.ExpressionStatement) continue;
-      const b = (s as ts.ExpressionStatement).expression;
-      if (b.kind !== K.BinaryExpression || (b as ts.BinaryExpression).operatorToken.kind !== K.EqualsToken) continue;
-      const l = (b as ts.BinaryExpression).left;
-      if (l.kind === K.PropertyAccessExpression && (l as ts.PropertyAccessExpression).expression.kind === K.ThisKeyword) assigned.add((l as ts.PropertyAccessExpression).name.text);
-    }
+    const assigned = new Set(inits.flatMap((x) => (x ? [x.name.text] : [])));
     for (const [name, f] of cls.fields) {
       if (!f.static && !f.node.initializer && !assigned.has(name)) this.at("E2002", f.node.name, `field '${name}' is not initialized`);
     }
@@ -283,35 +338,39 @@ export class Checker {
       case K.Block: return this.block((s as ts.Block).statements);
       case K.VariableStatement: this.varList((s as ts.VariableStatement).declarationList); return true;
       case K.ExpressionStatement: {
-        const t = expr(this, (s as ts.ExpressionStatement).expression);
+        const t = this.discard((s as ts.ExpressionStatement).expression);
         return !(t.k === "prim" && t.name === "never");
       }
       case K.IfStatement: {
         const x = s as ts.IfStatement;
+        const m0 = this.mark();
         cond(this, x.expression);
         const yes = this.facts(x.expression, true), no = this.facts(x.expression, false);
-        const saved = this.narrow;
-        this.narrow = new Map(saved); this.withFacts(yes);
+        const saved = this.narrow, m1 = this.mark();
+        this.narrow = new Map(saved); this.withFacts(yes, m0, m1);
         const a = this.stmt(x.thenStatement);
-        this.narrow = new Map(saved); this.withFacts(no);
+        const endA = this.narrow;
+        this.narrow = new Map(saved); this.withFacts(no, m0, m1);
         const b = x.elseStatement ? this.stmt(x.elseStatement) : true;
-        this.narrow = saved;
-        if (!a && b) this.withFacts(no);
-        else if (a && !b) this.withFacts(yes);
+        // Q122: only the branch that completes reaches here; if both do, an assignment in either ends the narrowing
+        if (a && b) this.restore(saved, m1);
+        else if (a) this.narrow = endA;
         return a || b;
       }
       case K.WhileStatement: {
         const x = s as ts.WhileStatement;
-        this.loopEntry(x.statement);
+        this.loopEntry(x.statement, x.expression);
+        const m0 = this.mark();
         cond(this, x.expression);
-        this.loopBody(x.statement, this.facts(x.expression, true));
+        const m1 = this.mark();
+        this.loopBody(x.statement, this.facts(x.expression, true), undefined, m0);
         if (isTrue(x.expression)) return hasBreak(x.statement);
-        this.withFacts(this.facts(x.expression, false));
+        if (!hasBreak(x.statement)) this.withFacts(this.facts(x.expression, false), m0, m1); // Q122: a break exits without the condition
         return true;
       }
       case K.DoStatement: {
         const x = s as ts.DoStatement;
-        this.loopEntry(x.statement);
+        this.loopEntry(x.statement, x.expression);
         const r = this.loopBody(x.statement, new Map());
         cond(this, x.expression);
         return (r && !isTrue(x.expression)) || hasBreak(x.statement);
@@ -321,12 +380,13 @@ export class Checker {
         const saved = this.scope;
         this.scope = new Scope(saved);
         if (x.initializer?.kind === K.VariableDeclarationList) this.varList(x.initializer as ts.VariableDeclarationList);
-        else if (x.initializer) expr(this, x.initializer as ts.Expression);
-        this.loopEntry(x.statement, x.incrementor);
+        else if (x.initializer) this.discard(x.initializer as ts.Expression);
+        this.loopEntry(x.statement, x.incrementor, x.condition);
+        const m0 = this.mark();
         if (x.condition) cond(this, x.condition);
-        const outer = this.narrow;
-        this.loopBody(x.statement, x.condition ? this.facts(x.condition, true) : new Map(), () => { if (x.incrementor) expr(this, x.incrementor); });
-        this.narrow = outer;
+        const outer = this.narrow, m1 = this.mark();
+        this.loopBody(x.statement, x.condition ? this.facts(x.condition, true) : new Map(), () => { if (x.incrementor) this.discard(x.incrementor); }, m0);
+        this.restore(outer, m1);
         this.scope = saved;
         return (!x.condition || isTrue(x.condition)) ? hasBreak(x.statement) : true;
       }
@@ -354,23 +414,30 @@ export class Checker {
     throw new Error(`P2: unhandled statement kind ${s.kind}`); // P1 rejects every other kind
   }
 
+  /** An expression whose value is dropped. Q125: a dropped Promise would lose its trap, so it is an error. */
+  discard(e: ts.Expression): Type {
+    const t = expr(this, e);
+    if (isPromise(t)) this.at("E2002", e, "a Promise must be awaited or returned");
+    return t;
+  }
+
   /** Drops narrowings of locals assigned inside a loop: they do not hold on later iterations (Q025). */
-  private loopEntry(body: Node, extra?: Node): void {
+  private loopEntry(body: Node, ...extra: (Node | undefined)[]): void {
     const names = new Set<string>();
     const walk = (n: Node): void => {
       if (n.kind === K.BinaryExpression && isAssignOp((n as ts.BinaryExpression).operatorToken.kind) && isId((n as ts.BinaryExpression).left)) names.add(((n as ts.BinaryExpression).left as ts.Identifier).text);
       n.forEachChild(walk);
     };
     walk(body);
-    if (extra) walk(extra);
+    for (const x of extra) if (x) walk(x);
     for (const n of names) { const s = this.scope.lookup(n); if (s) this.forget(s.id); }
   }
-  private loopBody(body: ts.Statement, f: Map<string, Type>, after?: () => void): boolean {
-    const saved = this.narrow;
-    this.narrow = new Map(saved); this.withFacts(f);
+  private loopBody(body: ts.Statement, f: Map<string, Type>, after?: () => void, factsMark?: number): boolean {
+    const saved = this.narrow, m = this.mark();
+    this.narrow = new Map(saved); this.withFacts(f, factsMark, m);
     const r = this.stmt(body);
     after?.();
-    this.narrow = saved;
+    this.restore(saved, m);
     return r;
   }
 
@@ -405,7 +472,7 @@ export class Checker {
     const clauses = x.caseBlock.clauses;
     let fall: string[] = [];
     const caseLits = new Set(clauses.flatMap((c) => (c.kind === K.CaseClause && (c as ts.CaseClause).expression.kind === K.StringLiteral ? [((c as ts.CaseClause).expression as ts.StringLiteral).text] : [])));
-    const saved = this.narrow;
+    const saved = this.narrow, m0 = this.mark();
     const savedScope = this.scope;
     this.scope = new Scope(savedScope); // the case block is one scope
     clauses.forEach((c, i) => {
@@ -423,8 +490,9 @@ export class Checker {
         }
         if (lit !== undefined) { seen.add(lit); fall.push(lit); }
       }
-      this.narrow = new Map(saved);
-      if (tagged) {
+      this.restore(saved, m0); // Q122: a previous case may fall through after an assignment
+      this.narrow = new Map(this.narrow);
+      if (tagged && !this.killedSince(m0).has(tagged.key.split(".")[0]!)) {
         const ms = tagged.members.filter((m) => fall.includes(kindOf(m)!));
         if (ms.length) this.narrow.set(tagged.key, union(ms));
       }
@@ -432,7 +500,7 @@ export class Checker {
       if (!r) fall = [];
       if (i === clauses.length - 1) reachEnd = r;
     });
-    this.narrow = saved;
+    this.restore(saved, m0);
     this.scope = savedScope;
     const exhaustive = hasDefault || (!!labels && labels.every((l) => l.k === "lit" && seen.has(l.value)));
     if (!exhaustive && t.k !== "error") this.report("E2005", kw, kw + "switch".length, "switch is not exhaustive");
@@ -509,6 +577,8 @@ function isAssignOp(k: K): boolean {
 const isStringStmt = (s: ts.Statement): boolean => s.kind === K.ExpressionStatement && (s as ts.ExpressionStatement).expression.kind === K.StringLiteral;
 const isTrue = (e: ts.Expression): boolean => e.kind === K.TrueKeyword;
 const isVoidish = (t: Type): boolean => t.k === "prim" && t.name === "void";
+/** Q125: a Promise, also inside `| null` or an array (`c ? g() : null`, `xs.map(g)`). */
+const isPromise = (t: Type): boolean => t.k === "gen" ? t.name === "Promise" || ((t.name === "Array" || t.name === "ReadonlyArray") && isPromise(t.args[0]!)) : t.k === "union" && t.members.some(isPromise);
 
 /** Whether a `break` inside `n` targets `n` (not a nested loop or switch). */
 function hasBreak(n: Node, isSwitch = false): boolean {
@@ -537,4 +607,48 @@ export function mutable(t: Type): boolean {
     case "class": return true;
     default: return false;
   }
+}
+
+const FN_KINDS = new Set<K>([K.FunctionDeclaration, K.MethodDeclaration, K.Constructor, K.ArrowFunction, K.FunctionExpression]);
+/**
+ * Q122: per function-like node, the names of its own locals (parameters included) that a nested function refers to
+ * and that some code assigns after the declaration. Name-based within a function (shadowing in inner blocks only adds names).
+ */
+export function capturedAssigned(root: Node): Map<Node, Set<string>> {
+  const decls = new Map<Node, Set<string>>();
+  const collect = (n: Node, f: Node | undefined): void => {
+    if (FN_KINDS.has(n.kind)) {
+      f = n;
+      decls.set(n, new Set((n as ts.FunctionLikeDeclaration).parameters.flatMap((p) => (isId(p.name) ? [p.name.text] : []))));
+    } else if (f && (n.kind === K.VariableDeclaration || n.kind === K.BindingElement) && isId((n as ts.VariableDeclaration).name)) {
+      decls.get(f)!.add(((n as ts.VariableDeclaration).name as ts.Identifier).text);
+    }
+    n.forEachChild((ch) => collect(ch, f));
+  };
+  collect(root, undefined);
+  const captured = new Map<Node, Set<string>>(), assigned = new Map<Node, Set<string>>();
+  const note = (m: Map<Node, Set<string>>, f: Node, name: string): void => { let s = m.get(f); if (!s) m.set(f, s = new Set()); s.add(name); };
+  const owner = (name: string, stack: Node[]): number => { let i = stack.length - 1; while (i >= 0 && !decls.get(stack[i]!)!.has(name)) i--; return i; };
+  const walk = (n: Node, stack: Node[]): void => {
+    if (FN_KINDS.has(n.kind)) stack = [...stack, n];
+    else if (n.kind === K.Identifier) {
+      const i = owner((n as ts.Identifier).text, stack);
+      if (i >= 0 && i < stack.length - 1) note(captured, stack[i]!, (n as ts.Identifier).text);
+    } else if (n.kind === K.PropertyAccessExpression) { walk((n as ts.PropertyAccessExpression).expression, stack); return; }
+    else if (n.kind === K.BinaryExpression && isAssignOp((n as ts.BinaryExpression).operatorToken.kind)) {
+      let l = (n as ts.BinaryExpression).left;
+      while (l.kind === K.ParenthesizedExpression) l = (l as ts.ParenthesizedExpression).expression;
+      const i = isId(l) ? owner(l.text, stack) : -1;
+      if (i >= 0) note(assigned, stack[i]!, (l as ts.Identifier).text);
+    }
+    n.forEachChild((ch) => walk(ch, stack));
+  };
+  walk(root, []);
+  const out = new Map<Node, Set<string>>();
+  for (const [f, names] of captured) {
+    const a = assigned.get(f);
+    const both = [...names].filter((x) => a?.has(x));
+    if (both.length) out.set(f, new Set(both));
+  }
+  return out;
 }
