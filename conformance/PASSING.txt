@@ -347,9 +347,12 @@ reject/E3006-write-index-through-ref.ts
 reject/E3007-alias-instantiation-inside-array.ts
 reject/E3007-alias-record-field-container-of-owned.ts
 reject/E3007-async-returns-owned.ts
+reject/E3007-cast-target-holds-owned.ts
 reject/E3007-container-alias-of-owned.ts
+reject/E3007-explicit-generic-call-type-argument-holds-owned.ts
 reject/E3007-generic-class-field-container-of-owned.ts
 reject/E3007-generic-interface-promise-of-owned.ts
+reject/E3007-inferred-generic-call-result-holds-owned.ts
 reject/E3007-managed-generic-class-owned-type-argument.ts
 reject/E3007-managed-generic-explicit-owned-type-argument.ts
 reject/E3007-managed-generic-inferred-owned-type-argument.ts
@@ -357,6 +360,7 @@ reject/E3007-map-over-nested-container.ts
 reject/E3007-map-returns-owned.ts
 reject/E3007-nested-alias-map-of-owned.ts
 reject/E3007-nested-container-of-owned-parameter.ts
+reject/E3007-new-generic-class-holds-owned.ts
 reject/E3007-owned-captured-by-closure.ts
 reject/E3007-owned-in-array-literal.ts
 reject/E3007-owned-in-class-field.ts
