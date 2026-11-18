@@ -5,7 +5,7 @@ Put it in `accept/`, `reject/` or `run/`. The header lives in the entry file, fr
 
 1. Expectation (by directory):
    - accept: `// expect: ok` (zero diagnostics)
-   - reject: `// expect: E3001 @ 12:9` (the first diagnostic has this code and `range.start`;
+   - reject: `// expect: E3001 @ 12:9` (the first diagnostic, i.e. the head of all diagnostics sorted by (line, col, code), has this code and `range.start`;
      line and column are 1-based, line 1 is the header line itself; the position must be the first character of a token)
    - run: one or more consecutive `// expect-output: <text>` lines (stdout lines, in order, exact; one space after the colon is dropped),
      or `// expect-no-output`; optionally followed by `// expect-trap: T001 @ 8:14`

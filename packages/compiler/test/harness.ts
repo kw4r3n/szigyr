@@ -111,7 +111,9 @@ export async function runCase(spec: CaseSpec, compiler: Compiler): Promise<strin
       return compiler.check(spec.entry).map((d) => `unexpected ${d.code} @ ${d.range.start.line}:${d.range.start.col}`);
     }
     if (spec.kind === "reject") {
-      const d = compiler.check(spec.entry)[0];
+      const d = [...compiler.check(spec.entry)].sort(
+        (a, b) => a.range.start.line - b.range.start.line || a.range.start.col - b.range.start.col || (a.code < b.code ? -1 : a.code > b.code ? 1 : 0),
+      )[0];
       const want = spec.at!;
       if (!d) return [`expected ${want.code} @ ${want.line}:${want.col}, got no diagnostics`];
       const s = d.range.start;

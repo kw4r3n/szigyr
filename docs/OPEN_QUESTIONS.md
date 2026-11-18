@@ -469,7 +469,7 @@
   - `sts run` は、本物の `System` で `main` を実行する。
   - `log.info(msg)` は `msg + "\n"` を stdout に書く（接頭辞なし）。`warn` と `error` は同じ書式で stderr に書く。
   - 比べるのは stdout だけ。`// expect-output: <text>` の 1 行が stdout の 1 行に対応する（`: ` の直後から行末まで。末尾の空白は保持する）。stdout は、それらを `"\n"` でつなぎ、末尾に `"\n"` を付けたものと完全に一致すること。
-  - `expect-output` を書かないファイルは、出力が空であることを期待する。
+  - 出力が空であることを期待するときは、`// expect-no-output` と明示する（`expect-output` を 0 行にはできない）。`expect-trap` だけを書いたときは、stdout を比べない。
   - `expect-trap` と併記すると、トラップより前の stdout も比べる。
 
 ### Q060 トラップの報告形式と位置

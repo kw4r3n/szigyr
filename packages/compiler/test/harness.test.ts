@@ -54,10 +54,13 @@ describe("runCase", () => {
   });
   it("reject compares code and start of first diagnostic", async () => {
     const c = byName("reject/rej.ts");
-    expect(await runCase(c, fake([diag("E3001", 4, 5), diag("E9", 1, 1)]))).toEqual([]);
+    expect(await runCase(c, fake([diag("E3001", 4, 5), diag("E9", 5, 1)]))).toEqual([]);
     expect(await runCase(c, fake([diag("E3002", 4, 5)]))).toHaveLength(1);
     expect(await runCase(c, fake([diag("E3001", 4, 6)]))).toHaveLength(1);
     expect(await runCase(c, fake([]))).toHaveLength(1);
+  });
+  it("reject takes the first diagnostic after sorting by (line, col, code)", async () => {
+    expect(await runCase(byName("reject/rej.ts"), fake([diag("E9000", 9, 1), diag("E3001", 4, 5), diag("E2000", 4, 6)]))).toEqual([]);
   });
   it("run output", async () => {
     const c = byName("run/out.ts");
