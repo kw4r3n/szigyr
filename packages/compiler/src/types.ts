@@ -1,0 +1,260 @@
+// P2 type representation (D009). Plain objects compared structurally; class / interface by symbol identity.
+import type { ts } from "./parse.ts";
+
+export type NumName = "f64" | "f32" | "i8" | "i16" | "i32" | "u8" | "u16" | "u32" | "usize";
+export const NUM_NAMES: readonly NumName[] = ["f64", "f32", "i8", "i16", "i32", "u8", "u16", "u32", "usize"];
+export type PrimName = "boolean" | "string" | "null" | "void" | "unknown" | "never";
+/** Builtin generic types (§3.2, §3.3). */
+export type GenName = "Array" | "ReadonlyArray" | "Map" | "Set" | "Promise" | "Vec" | "Slice" | "Ref" | "Mut" | "OwnedCell";
+export const GEN_ARITY: Record<GenName, number> = {
+  Array: 1, ReadonlyArray: 1, Map: 2, Set: 1, Promise: 1, Vec: 1, Slice: 1, Ref: 1, Mut: 1, OwnedCell: 1,
+};
+/** Opaque builtin types: authorities (§7.1), Test, JsRef, the fakes (Q038). */
+export const AUTHORITIES = ["System", "Alloc", "Fs", "Clock", "Random", "Log", "Js"] as const;
+export const OPAQUE_NAMES = new Set<string>([...AUTHORITIES, "JsRef", "Test", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs"]);
+
+export interface Field { name: string; type: Type; readonly: boolean }
+export interface TParam { name: string; id: number; constraint?: Type }
+/** `min`: builtin optional trailing parameters (Q032). `prefix`: a builtin callback may take a prefix of the parameters. */
+export interface FnType { k: "fn"; tparams: TParam[]; params: Type[]; ret: Type; min?: number; prefix?: boolean }
+
+export interface ClassSym {
+  name: string;
+  decl: ts.ClassDeclaration;
+  tparams: TParam[];
+  fields: Map<string, { type: Type; readonly: boolean; private: boolean; static: boolean; node: ts.PropertyDeclaration }>;
+  methods: Map<string, { sig: FnType; private: boolean; static: boolean; node: ts.MethodDeclaration }>;
+  ctor: FnType;
+  implements: Type[];
+}
+export interface IfaceSym { name: string; tparams: TParam[]; methods: Map<string, FnType> }
+
+export type Type =
+  | { k: "error" }
+  | { k: "prim"; name: PrimName }
+  | { k: "num"; name: NumName }
+  | { k: "lit"; value: string }
+  | { k: "record"; fields: Field[]; struct: boolean } // fields sorted by name
+  | { k: "union"; members: Type[] }
+  | FnType
+  | { k: "class"; cls: ClassSym; args: Type[] }
+  | { k: "iface"; iface: IfaceSym; args: Type[] }
+  | { k: "tparam"; p: TParam }
+  | { k: "gen"; name: GenName; args: Type[] }
+  | { k: "opaque"; name: string }
+  /** Namespace objects (Q034): only usable as the receiver of a member access. */
+  | { k: "ns"; name: string }
+  /** `keys()` / `values()` results: only usable as a for-of target (Q032). */
+  | { k: "iter"; elem: Type };
+
+export const ERROR: Type = { k: "error" };
+const prims = new Map<PrimName, Type>();
+export const prim = (name: PrimName): Type => { let t = prims.get(name); if (!t) prims.set(name, t = { k: "prim", name }); return t; };
+const nums = new Map<NumName, Type>();
+export const num = (name: NumName): Type => { let t = nums.get(name); if (!t) nums.set(name, t = { k: "num", name }); return t; };
+export const BOOL = prim("boolean"), STR = prim("string"), NULL = prim("null"), VOID = prim("void"), UNKNOWN = prim("unknown"), NEVER = prim("never");
+export const F64 = num("f64"), USIZE = num("usize");
+export const gen = (name: GenName, ...args: Type[]): Type => ({ k: "gen", name, args });
+export const opaque = (name: string): Type => ({ k: "opaque", name });
+export const fn = (params: Type[], ret: Type, tparams: TParam[] = []): FnType => ({ k: "fn", tparams, params, ret });
+export const record = (fields: Field[], struct = false): Type => ({ k: "record", fields: [...fields].sort((a, b) => (a.name < b.name ? -1 : 1)), struct });
+export const ro = (name: string, type: Type): Field => ({ name, type, readonly: true });
+
+let tpId = 0;
+export const newTParam = (name: string, constraint?: Type): TParam => ({ name, id: ++tpId, ...(constraint ? { constraint } : {}) });
+
+/** Flattened union; a single member collapses. Duplicates (by identity) are dropped. */
+export function union(ts: Type[]): Type {
+  const out: Type[] = [];
+  for (const t of ts.flatMap((x) => (x.k === "union" ? x.members : [x]))) if (!out.some((o) => same(o, t))) out.push(t);
+  return out.length === 1 ? out[0]! : { k: "union", members: out };
+}
+export const nullable = (t: Type): Type => union([t, NULL]);
+/** `T | null` -> T; otherwise undefined. */
+export function nonNull(t: Type): Type | undefined {
+  if (t.k !== "union" || !t.members.some(isNull)) return undefined;
+  return union(t.members.filter((m) => !isNull(m)));
+}
+export const isNull = (t: Type): boolean => t.k === "prim" && t.name === "null";
+export const isNum = (t: Type): t is { k: "num"; name: NumName } => t.k === "num";
+export const isInt = (t: Type): boolean => t.k === "num" && t.name !== "f64" && t.name !== "f32";
+export const isBool = (t: Type): boolean => t.k === "prim" && t.name === "boolean";
+export const isStr = (t: Type): boolean => (t.k === "prim" && t.name === "string") || t.k === "lit" || (t.k === "union" && t.members.every((m) => m.k === "lit"));
+export const isErr = (t: Type): boolean => t.k === "error";
+/** Ref<X> / Mut<X> read as X in P2 (Q020 addendum, Q064). */
+export const unref = (t: Type): Type => (t.k === "gen" && (t.name === "Ref" || t.name === "Mut") ? t.args[0]! : t);
+
+export function field(t: Type, name: string): Field | undefined {
+  return t.k === "record" ? t.fields.find((f) => f.name === name) : undefined;
+}
+/** The `kind` literal of a tagged-union member. */
+export function kindOf(t: Type): string | undefined {
+  const f = field(t, "kind");
+  return f?.type.k === "lit" ? f.type.value : undefined;
+}
+export const isTaggedUnion = (t: Type): t is { k: "union"; members: Type[] } => t.k === "union" && t.members.length > 1 && t.members.every((m) => kindOf(m) !== undefined);
+/** Result<T, E> (§8) -> its T and E. */
+export function resultParts(t: Type): { ok: Type; err: Type } | undefined {
+  if (t.k !== "union" || t.members.length !== 2) return;
+  const ok = t.members.find((m) => kindOf(m) === "ok"), er = t.members.find((m) => kindOf(m) === "err");
+  const v = ok && field(ok, "value"), e = er && field(er, "error");
+  return v && e ? { ok: v.type, err: e.type } : undefined;
+}
+export const result = (ok: Type, err: Type): Type => union([
+  record([ro("kind", { k: "lit", value: "ok" }), ro("value", ok)]),
+  record([ro("kind", { k: "lit", value: "err" }), ro("error", err)]),
+]);
+export const ERROR_RECORD = record([ro("code", STR), ro("message", STR)]); // IoError, CastError, JsError (§7.1, Q036)
+
+export function same(a: Type, b: Type): boolean {
+  if (a === b) return true;
+  switch (a.k) {
+    case "error": return b.k === "error";
+    case "prim": return b.k === "prim" && a.name === b.name;
+    case "num": return b.k === "num" && a.name === b.name;
+    case "lit": return b.k === "lit" && a.value === b.value;
+    case "record":
+      return b.k === "record" && a.struct === b.struct && a.fields.length === b.fields.length &&
+        a.fields.every((f, i) => { const g = b.fields[i]!; return f.name === g.name && f.readonly === g.readonly && same(f.type, g.type); });
+    case "union": return b.k === "union" && a.members.length === b.members.length && a.members.every((m) => b.members.some((n) => same(m, n)));
+    case "fn": return b.k === "fn" && a.params.length === b.params.length && a.params.every((p, i) => same(p, b.params[i]!)) && same(a.ret, b.ret);
+    case "class": return b.k === "class" && a.cls === b.cls && sameArgs(a.args, b.args);
+    case "iface": return b.k === "iface" && a.iface === b.iface && sameArgs(a.args, b.args);
+    case "tparam": return b.k === "tparam" && a.p.id === b.p.id;
+    case "gen": return b.k === "gen" && a.name === b.name && sameArgs(a.args, b.args);
+    case "opaque": case "ns": return b.k === a.k && a.name === b.name;
+    case "iter": return b.k === "iter" && same(a.elem, b.elem);
+  }
+}
+const sameArgs = (a: Type[], b: Type[]): boolean => a.length === b.length && a.every((x, i) => same(x, b[i]!));
+
+/** Fakes assignable to their authority (Q020-10, Q038). */
+const FAKE_OF: Record<string, string> = { FakeClock: "Clock", SeededRandom: "Random", MemoryLog: "Log", FakeFs: "Fs" };
+
+/** Q020. `arg` enables the argument-position conversions (Vec -> Slice). */
+export function assignable(s: Type, t: Type, arg = false): boolean {
+  if (s.k === "error" || t.k === "error" || same(s, t)) return true;
+  if (s.k === "prim" && s.name === "never") return true;
+  if (s.k === "union") return s.members.every((m) => assignable(m, t, arg));
+  if (t.k === "union") return t.members.some((m) => assignable(s, m, arg));
+  if (s.k === "lit" && t.k === "prim" && t.name === "string") return true;
+  if (s.k === "gen" && t.k === "gen") {
+    if (t.name === "ReadonlyArray" && (s.name === "Array" || s.name === "ReadonlyArray")) return assignable(s.args[0]!, t.args[0]!);
+    if (arg && t.name === "Slice" && s.name === "Vec") return same(s.args[0]!, t.args[0]!);
+    return false;
+  }
+  if (s.k === "fn" && t.k === "fn") {
+    if (s.params.length > t.params.length || (!t.prefix && s.params.length !== t.params.length)) return false;
+    return s.params.every((p, i) => assignable(t.params[i]!, p)) && (assignable(s.ret, t.ret) || (t.ret.k === "prim" && t.ret.name === "void" && !!t.prefix));
+  }
+  if (s.k === "class" && t.k === "iface") return s.cls.implements.some((i) => same(substClass(i, s), t));
+  if (s.k === "tparam" && s.p.constraint) return assignable(s.p.constraint, t, arg);
+  if (s.k === "opaque" && t.k === "opaque") return FAKE_OF[s.name] === t.name;
+  return false;
+}
+/** An `implements` clause type, with the class's own type parameters replaced by the instance's arguments. */
+export const substClass = (t: Type, inst: { cls: ClassSym; args: Type[] }): Type => subst(t, bindTParams(inst.cls.tparams, inst.args));
+
+export const bindTParams = (ps: TParam[], args: Type[]): Map<number, Type> => new Map(ps.map((p, i) => [p.id, args[i] ?? ERROR]));
+
+export function subst(t: Type, m: Map<number, Type>): Type {
+  if (!m.size) return t;
+  switch (t.k) {
+    case "tparam": return m.get(t.p.id) ?? t;
+    case "record": return { ...t, fields: t.fields.map((f) => ({ ...f, type: subst(f.type, m) })) };
+    case "union": return union(t.members.map((x) => subst(x, m)));
+    case "fn": return { ...t, params: t.params.map((x) => subst(x, m)), ret: subst(t.ret, m) };
+    case "class": case "iface": case "gen": return { ...t, args: t.args.map((x) => subst(x, m)) } as Type;
+    case "iter": return { k: "iter", elem: subst(t.elem, m) };
+    default: return t;
+  }
+}
+
+export function hasTParam(t: Type, ids: Set<number>): boolean {
+  switch (t.k) {
+    case "tparam": return ids.has(t.p.id);
+    case "record": return t.fields.some((f) => hasTParam(f.type, ids));
+    case "union": return t.members.some((x) => hasTParam(x, ids));
+    case "fn": return t.params.some((x) => hasTParam(x, ids)) || hasTParam(t.ret, ids);
+    case "class": case "iface": case "gen": return t.args.some((x) => hasTParam(x, ids));
+    case "iter": return hasTParam(t.elem, ids);
+    default: return false;
+  }
+}
+
+/** Binds type parameters in `p` from the argument type `a` (first binding wins). */
+export function unify(p: Type, a: Type, m: Map<number, Type>, ids: Set<number>): void {
+  if (a.k === "error") return;
+  switch (p.k) {
+    case "tparam":
+      if (ids.has(p.p.id) && !m.has(p.p.id) && !(a.k === "prim" && a.name === "never")) m.set(p.p.id, a);
+      return;
+    case "union": {
+      const inner = nonNull(p);
+      if (inner) { unify(inner, nonNull(a) ?? a, m, ids); return; } // T | null
+      const as = a.k === "union" ? a.members : [a]; // tagged unions (Result): match members by kind
+      for (const pm of p.members) {
+        const k = kindOf(pm);
+        const am = k === undefined ? undefined : as.find((x) => kindOf(x) === k);
+        if (am) unify(pm, am, m, ids);
+      }
+      return;
+    }
+    case "gen":
+      if (a.k === "gen" && (a.name === p.name || (p.name === "ReadonlyArray" && a.name === "Array") || (p.name === "Slice" && a.name === "Vec"))) p.args.forEach((x, i) => unify(x, a.args[i]!, m, ids));
+      return;
+    case "fn":
+      if (a.k === "fn") { p.params.forEach((x, i) => { if (a.params[i]) unify(x, a.params[i]!, m, ids); }); unify(p.ret, a.ret, m, ids); }
+      return;
+    case "record":
+      if (a.k === "record") for (const f of p.fields) { const g = field(a, f.name); if (g) unify(f.type, g.type, m, ids); }
+      return;
+    case "class": case "iface":
+      if (a.k === p.k && (a as { args: Type[] }).args.length === p.args.length) p.args.forEach((x, i) => unify(x, (a as { args: Type[] }).args[i]!, m, ids));
+      else if (p.k === "iface" && a.k === "class") for (const i of a.cls.implements) { const it = substClass(i, a); if (it.k === "iface" && it.iface === p.iface) unify(p, it, m, ids); }
+      return;
+    default:
+  }
+}
+
+/** Copy types (§5.1): numbers, boolean, Copy Structs, unions of Copy types. Plain records count when all-readonly (Q043). */
+export function isCopy(t: Type): boolean {
+  switch (t.k) {
+    case "num": case "lit": return true;
+    case "prim": return t.name === "boolean" || t.name === "null";
+    case "record": return t.fields.every((f) => f.readonly && isCopy(f.type));
+    case "union": return t.members.every(isCopy);
+    default: return false;
+  }
+}
+/** Owned types (§5.1): non-Copy Structs and Vec. */
+export const isOwned = (t: Type): boolean => (t.k === "gen" && t.name === "Vec") || (t.k === "record" && t.struct && !isCopy(t));
+
+export function show(t: Type): string {
+  switch (t.k) {
+    case "error": return "<error>";
+    case "prim": case "num": case "opaque": case "ns": return t.name;
+    case "lit": return JSON.stringify(t.value);
+    case "record": return `${t.struct ? "Struct<" : ""}{ ${t.fields.map((f) => `${f.readonly ? "readonly " : ""}${f.name}: ${show(f.type)}`).join("; ")} }${t.struct ? ">" : ""}`;
+    case "union": return t.members.map(show).join(" | ");
+    case "fn": return `(${t.params.map(show).join(", ")}) => ${show(t.ret)}`;
+    case "class": return t.cls.name + (t.args.length ? `<${t.args.map(show).join(", ")}>` : "");
+    case "iface": return t.iface.name + (t.args.length ? `<${t.args.map(show).join(", ")}>` : "");
+    case "tparam": return t.p.name;
+    case "gen": return `${t.name}<${t.args.map(show).join(", ")}>`;
+    case "iter": return `Iterator<${show(t.elem)}>`;
+  }
+}
+
+/** Integer ranges (§3.1). */
+export const INT_RANGE: Partial<Record<NumName, [number, number]>> = {
+  i8: [-128, 127], i16: [-32768, 32767], i32: [-2147483648, 2147483647],
+  u8: [0, 255], u16: [0, 65535], u32: [0, 4294967295], usize: [0, 4294967295],
+};
+/** Whether a literal value fits the numeric type (E2008, Q015). */
+export function literalFits(value: number, t: NumName): boolean {
+  const r = INT_RANGE[t];
+  if (r) return Number.isInteger(value) && value >= r[0] && value <= r[1];
+  if (t === "f32") return !Number.isFinite(value) || Number.isFinite(Math.fround(value));
+  return true;
+}

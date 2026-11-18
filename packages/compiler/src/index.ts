@@ -2,6 +2,9 @@ import { dirname, relative, resolve } from "node:path";
 import type { Diagnostic, RunResult } from "./diagnostics.ts";
 import { createParser, SyntaxKind, type ParsedFile, type ts } from "./parse.ts";
 import { checkSyntax } from "./syntax.ts";
+import { Program as Decls, Reporter, checkImportNames } from "./modules.ts";
+import { Checker } from "./checker.ts";
+import { isDeterministic } from "./determinism.ts";
 export * from "./diagnostics.ts";
 export * from "./names.ts";
 
@@ -61,11 +64,23 @@ function loadProgram(entryFile: string): Program {
 
 const displayPath = (p: string): string => relative(process.cwd(), p) || p;
 
-/** Phases run in order P1 -> P2 -> P3 and stop at the first phase with an error (Q003). Only P1 exists so far. */
+/** Phases run in order P1 -> P2 -> P3 and stop at the first phase with an error (Q003). P3 does not exist yet. */
 export function check(entryFile: string): Diagnostic[] {
   const prog = loadProgram(entryFile);
   const p1 = [...prog.missing, ...prog.files.flatMap((f) => checkSyntax(f, displayPath(f.path)))];
-  return p1;
+  if (!p1.length) p1.push(...checkImportNames(prog.files, displayPath));
+  if (p1.length) return p1;
+  const rep = new Reporter();
+  new Checker(new Decls(prog.files, displayPath, rep)).run();
+  return rep.out;
+}
+
+/** §7.3 query (Q062): for each top-level function of the entry file, whether it is deterministic. Assumes P1 passes. */
+export function deterministicFunctions(entryFile: string): Record<string, boolean> {
+  const prog = loadProgram(entryFile);
+  const decls = new Decls(prog.files, displayPath, new Reporter());
+  const entry = decls.mods.find((m) => m.pf.path === resolve(entryFile))!;
+  return Object.fromEntries(decls.fns.filter((f) => f.mod === entry).map((f) => [f.name, isDeterministic(f.sig)]));
 }
 
 export async function run(_entryFile: string): Promise<RunResult> {

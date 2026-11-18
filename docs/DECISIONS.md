@@ -52,4 +52,48 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 
 ## D008: 退行検出の PASSING.txt
 
-`conformance/PASSING.txt` は、検査が実装済みで、今通っているケースの一覧（1 行 1 ケース、ソート済み）。`pnpm conformance:update-passing` が、`package.json` に書いたケース名の接頭辞（今は `reject/E1`、`reject/E5002`、`reject/E6001`、`reject/E6003`、`reject/E7001`）に合うケースを実行して書き直す。`pnpm test` の `passing.test.ts` が、載っているケースが全部通ることを確かめる。新しい検査を実装したら接頭辞を足す。accept / run は、要求する検査が全部そろうまで載せない。
+`conformance/PASSING.txt` は、検査が実装済みで、今通っているケースの一覧（1 行 1 ケース、ソート済み）。`pnpm conformance:update-passing` が、`package.json` に書いたケース名の接頭辞に合うケースを実行して書き直す。`pnpm test` の `passing.test.ts` が、載っているケースが全部通ることを確かめる。新しい検査を実装したら接頭辞を足す。accept は、要求する検査が全部そろったもの（今は stage 1 の 22 本）だけを載せる。run は載せない。
+
+## D020: SeededRandom は mulberry32
+
+`SeededRandom.create(seed)` は mulberry32（状態 32 ビット、`seed >>> 0` で初期化）。`nextU32()` は 1 ステップの出力、`nextF64()` は `nextU32() / 2^32`（精度は 32 ビット。[0, 1) に収まる）。暗号用ではない。出力はシードだけで決まり、単体テストが `create(42)` の最初の値（2581720956）を固定する。算法を変えるとテストの期待値を使う利用側が壊れるので、変えるときは新しい名前にする。
+
+## D021: ランタイムの構成と偽の権限
+
+- `packages/runtime-js/src` は依存なし。整数演算は型名を第 1 引数に取る共通関数（`add("i32", a, b, pos)`）で、`RANGE` の表 1 つで 7 型を畳む。`wrapMul` は 32 ビット型で `Math.imul` を使う。
+- `packages/std` は `../../runtime-js/src/index.ts` を相対 import する（pnpm の workspace リンクを使わず、`pnpm install` なしで動く。コンパイラ側が名前で import したくなったら見直す）。
+- `TestAlloc.create()` と本物の `ALLOC` は同じ不透明な値 `{ kind: "alloc" }`。確保の記録はしない（SPEC にない）。
+- `Js`: `call` / `get` は例外を `JsError { code: e.name, message }` に変換する。`await` は拒否された Promise を `err` にする。`decode` は `cast` と同じ。
+- `runMain` はスタックの枯渇（`RangeError: Maximum call stack`）を T006 に変換する（Q035）。それ以外の JS 例外は握りつぶさず再送出する（ランタイムかコンパイラの不具合）。テストランナーも同じ。
+
+## D022: テストランナー
+
+`test(name, fn)` はモジュール内の配列に積む。`runTests()` は登録順に実行し、`{ name, ok, failure?, trap?, pos? }` の配列を返す。失敗したテストは、そのテストだけを終える（Q058）。`t.traps` は期待外のコードで失敗し、トラップ以外の例外は再送出する。
+
+## D009: P2 の型の内部表現
+
+- `packages/compiler/src/types.ts`。型は判別子 `k` を持つプレーンなオブジェクト（`prim`、`num`、`lit`、`record`、`union`、`fn`、`class`、`iface`、`tparam`、`gen`、`opaque`、`ns`、`iter`、`error`）。レコードはフィールドを名前順に並べ、構造で同一性を判定する。class と interface は宣言の記号（`ClassSym` / `IfaceSym`）の同一性で判定する（Q020 の 1）。
+- `Struct<{…}>` は `struct: true` のレコード。`Result<T, E>` は §8 の定義どおり 2 つのレコードの union に展開する。`IoError`、`CastError`、`JsError` は同じ形のレコード（Q036）。
+- `Ref<X>` / `Mut<X>` はシグネチャには残し（決定性、契約、Q051 の検査に使う）、値として読むときは `X` に読み替える（`unref`。Q020 の追記、Q064）。
+- `error` 型は診断済みを表し、代入可能性の判定ではどの型とも一致する（Q003 のカスケード抑止）。P1 が拒否するはずの構文に P2 が出会ったら、黙ってエラー型にせず例外を投げる。
+- 型の別名は宣言ごとに 1 回だけ解決してキャッシュし、型引数は置換で具体化する。再帰的な別名は未対応（エラー型になる。適合テストに例がない）。
+
+## D010: 組み込みの許可リストの表現
+
+`packages/compiler/src/builtins.ts`。§12 を、名前の集合（大域の関数、名前空間、予約名、Q006 の大域の権限）と、受け手の型ごとのメンバ表（Q032、Q033、Q038 のシグネチャ）で表す。表にない名前は呼び出し側で E2000 / E2001 にする。managed 専用の組み込み（Q044）はメンバに `managedOnly` の印を付ける。組み込みの省略可能引数は `min`、コールバックが先頭からの部分列の引数を取れることは `prefix` で表す（Q032）。特別な型付けが要る組み込み関数（変換関数、`wrap*`、`divTrunc`、`rem`、`ok`、`err`、`panic`、`cast`、契約、`test`、`Math.min` / `max`）は `expr.ts` に直接書く。
+
+## D011: モジュールとシグネチャ
+
+- `packages/compiler/src/modules.ts` の `Program` が、ファイルごとの `Module`（値と型の表、export 表、import の対応）を作る。1 回めで全ファイルの宣言の殻を作り、2 回めで注釈からシグネチャを解決する（§10: シグネチャは構文だけから取り出せる）。import は名前の対応だけを持ち、参照のたびに相手の export 表をたどる。
+- import した名前が相手に export されているかの検査（E7001）は、構文だけで作る export 表で行い、P1 の診断に含める（Q003、Q009）。P1 にエラーがあれば P2 は実行しない。
+- 関数の層は、本体の指示子、なければファイルの指示子（モジュール直下の `function` だけ）で決め、記号に持たせる（Q039）。メソッド、`test` の本体は managed。アロー関数は外側の関数の層。
+
+## D012: P2 の検査器の構成
+
+- `checker.ts`: 宣言、文、制御フロー、絞り込み。`expr.ts`: 式。`determinism.ts`: §7.3 の判定（Q062）。
+- 式は双方向に検査する。`expr(c, e, want)` の `want` が文脈型で、数値リテラル（Q014）、文字列リテラル（Q016）、オブジェクトと配列のリテラル（Q021）、`ok` / `err`（Q037）、`??` の右辺がこれを使う。二項演算はリテラルだけの側を後で型付けし、もう一方の型を文脈にする。
+- ジェネリック呼び出しの推論（Q030）は 4 段: 文脈の要らない実引数 → 関数式（引数は注釈済みなので、戻り値から型引数を推論）→ 呼び出しの文脈型 → リテラル。決まらなければ E2006。
+- 絞り込み（Q025）はローカル変数（記号の番号）と `readonly` のフィールドパスをキーにした表で持つ。分岐ごとに複製し、`=== null`、`.kind === "…"`、文字列リテラル union の比較、`&&` / `||` / `!`、早期脱出、`switch` の各 case から作る。代入でそのキーを消し、ループの入口ではループ内で代入される変数の絞り込みを捨てる。
+- 文は「正常に完了しうるか」を返し、Q023（非 `void` 関数の末尾）と早期脱出の絞り込みに使う。
+- 公開 API: `check(entry)` に加えて、`deterministicFunctions(entry)` が入口ファイルのモジュール直下の関数ごとに決定性を返す（§7.3、Q062）。
+- 性能: 起動後の P1+P2 は適合テストの accept / run の 60 ファイルで平均 0.3ms、最大 0.7ms。
