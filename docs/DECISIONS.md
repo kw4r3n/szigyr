@@ -60,8 +60,8 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 
 ## D021: ランタイムの構成と偽の権限
 
-- `packages/runtime-js/src` は依存なし。整数演算は型名を第 1 引数に取る共通関数（`add("i32", a, b, pos)`）で、`RANGE` の表 1 つで 7 型を畳む。`wrapMul` は 32 ビット型で `Math.imul` を使う。
-- `packages/std` は `../../runtime-js/src/index.ts` を相対 import する（pnpm の workspace リンクを使わず、`pnpm install` なしで動く。コンパイラ側が名前で import したくなったら見直す）。
+- `packages/runtime-js/src` は依存なし。整数演算は型名を第 1 引数に取る共通関数（`add("i32", a, b, pos)`）で、`RANGE` の表 1 つで 7 型を扱う。`wrapMul` は 32 ビット型で `Math.imul` を使う。
+- `packages/std` は `../../runtime-js/src/index.ts` を相対 import する（pnpm の workspace リンクを使わず、`pnpm install` なしで動く。コンパイラ側が名前で import する必要が出たら見直す）。
 - `TestAlloc.create()` と本物の `ALLOC` は同じ不透明な値 `{ kind: "alloc" }`。確保の記録はしない（SPEC にない）。
 - `Js`: `call` / `get` は例外を `JsError { code: e.name, message }` に変換する。`await` は拒否された Promise を `err` にする。`decode` は `cast` と同じ。
 - `runMain` はスタックの枯渇（`RangeError: Maximum call stack`）を T006 に変換する（Q035）。それ以外の JS 例外は握りつぶさず再送出する（ランタイムかコンパイラの不具合）。テストランナーも同じ。
@@ -152,7 +152,7 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - `?.` つきのメンバ呼び出しも `guarded` / `charCodeAt` に書き換える。受け手を引数にしたアロー関数で受け、null なら実引数を評価せずに null を返す（§10.7）。D032 の「`?.` の受け手は包まない」は取り下げ。`?.[i]` は E1000 で拒否されるので扱わない。
 - 整数型の文脈の負の数値リテラルは `(-lit + 0)` にして `-0` を +0 にする（Q090）。ほかの経路（`neg` / `add` / `sub` / `mul` / `divTrunc` / `rem` / `convert` / `wrap*`）は既に +0 に直している。`cast` は Q141。
 - await されない Promise の拒否は Q140 の既定案どおり、`capturing`（runtime-js の `trap.ts`）が `unhandledRejection` を集める。`runMain`、`runTests`（テスト 1 件ごと）、モジュールの読み込みが使う。リスナは使用中だけ付け、入れ子では最も内側が受ける。vitest は自前の `unhandledRejection` リスナで失敗にするので、この挙動のテストは CLI を別プロセスで動かす。
-- 同じプロセスで `run` / `runTestFile` を並行に呼んだとき、スタックの位置ロケータ、テストの登録表、拒否の受け皿が 1 つを共有して混ざる。実行ごとに分ける代わりに、呼び出しを順番待ちにする（`index.ts` の `exclusive`）。結果は混ざらず、呼び出し側は変わらない。制限: 1 つの実行が終わらないと次が始まらない。
+- 同じプロセスで `run` / `runTestFile` を並行に呼んだとき、スタックの位置ロケータ、テストの登録表、拒否の受け皿が実行の間で共有されて混ざる。実行ごとに分ける代わりに、呼び出しを順番待ちにする（`index.ts` の `exclusive`）。結果は混ざらず、呼び出し側は変わらない。制限: 1 つの実行が終わらないと次が始まらない。
 - Q100 の既定案（b）を実装した。ファクトリはホストが作った exports オブジェクトを第 3 引数で受け取り、import より前に関数宣言（巻き上げられる）を入れ、末尾で残りを入れる。循環の途中のファイルから、相手の関数宣言が見える。`const` や `class` は ESM と同じく初期化の前には見えない。
 - D032 の「ロケータはプロセスに 1 つ」と「`?.` は包まない」「テンプレートリテラルと配列のスプレッドは保護がない」は、上のとおり置き換わった。
 
