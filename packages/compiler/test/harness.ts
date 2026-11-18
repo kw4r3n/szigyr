@@ -1,0 +1,140 @@
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import type { Diagnostic, RunResult } from "../src/diagnostics.ts";
+
+export type Kind = "accept" | "reject" | "run";
+export const KINDS: Kind[] = ["accept", "reject", "run"];
+
+export interface Compiler {
+  check(entryFile: string): Diagnostic[];
+  run(entryFile: string): Promise<RunResult>;
+}
+
+export interface CaseSpec {
+  name: string;
+  kind: Kind;
+  entry: string; // path of the .ts file carrying the header
+  stage: number;
+  openQuestion?: string;
+  at?: { code: string; line: number; col: number }; // reject: expected code/position; run: unused
+  output?: string[]; // run: expected stdout lines (undefined when no run expectation on output)
+  trap?: { code: string; line: number; col: number };
+}
+
+const POS = /^([ET]\d{3,4}) @ (\d+):(\d+)$/;
+
+/** Parse the header of one case's entry file. Throws on malformed headers. */
+export function parseCase(entry: string, name = entry): CaseSpec {
+  const lines = readFileSync(entry, "utf8").split("\n");
+  const bad = (n: number, msg: string): never => {
+    throw new Error(`${entry}:${n + 1}: ${msg}`);
+  };
+  let i = 0;
+  const first = lines[0] ?? "";
+  const spec: Partial<CaseSpec> = { name, entry };
+
+  if (first.startsWith("// expect:")) {
+    const v = first.slice("// expect:".length).trim();
+    if (v === "ok") spec.kind = "accept";
+    else {
+      const m = POS.exec(v);
+      if (!m || !m[1]!.startsWith("E")) return bad(0, `bad '// expect:' value '${v}' (want 'ok' or 'E3001 @ 12:9')`);
+      spec.kind = "reject";
+      spec.at = { code: m[1]!, line: +m[2]!, col: +m[3]! };
+    }
+    i = 1;
+  } else if (first.startsWith("// expect-output:") || first === "// expect-no-output" || first.startsWith("// expect-trap:")) {
+    spec.kind = "run";
+    if (first === "// expect-no-output") { spec.output = []; i = 1; }
+    else {
+      const out: string[] = [];
+      while ((lines[i] ?? "").startsWith("// expect-output:")) {
+        out.push((lines[i] as string).slice("// expect-output:".length).replace(/^ /, ""));
+        i++;
+      }
+      if (out.length) spec.output = out;
+    }
+    if ((lines[i] ?? "").startsWith("// expect-trap:")) {
+      const m = POS.exec((lines[i] as string).slice("// expect-trap:".length).trim());
+      if (!m || !m[1]!.startsWith("T")) return bad(i, "bad '// expect-trap:' value (want 'T001 @ 8:14')");
+      spec.trap = { code: m[1]!, line: +m[2]!, col: +m[3]! };
+      i++;
+    }
+    if (!spec.output && !spec.trap) return bad(0, "run case needs expectations");
+  } else {
+    return bad(0, "line 1 must be '// expect: ...', '// expect-output: ...', '// expect-no-output' or '// expect-trap: ...'");
+  }
+
+  const st = /^\/\/ stage: (\d+)$/.exec(lines[i] ?? "");
+  if (!st) return bad(i, "missing '// stage: N' directly after the expectation header");
+  spec.stage = +st[1]!;
+  i++;
+  while ((lines[i] ?? "").startsWith("// open-question:")) {
+    const q = /^\/\/ open-question: (Q\d+)$/.exec(lines[i] as string);
+    if (!q) return bad(i, "bad '// open-question:' line (want 'Q012')");
+    spec.openQuestion = q[1]!;
+    i++;
+  }
+  return spec as CaseSpec;
+}
+
+/** Load all cases under root/{accept,reject,run}. A case is `x.ts` or a directory `x/` with `main.ts`. */
+export function loadCases(root: string): CaseSpec[] {
+  const cases: CaseSpec[] = [];
+  for (const kind of KINDS) {
+    const dir = join(root, kind);
+    let names: string[];
+    try { names = readdirSync(dir).sort(); } catch { continue; }
+    for (const n of names) {
+      if (n.startsWith(".")) continue;
+      const p = join(dir, n);
+      let spec: CaseSpec;
+      if (statSync(p).isDirectory()) spec = parseCase(join(p, "main.ts"), `${kind}/${n}`);
+      else if (n.endsWith(".ts")) spec = parseCase(p, `${kind}/${n}`);
+      else continue;
+      if (spec.kind !== kind) throw new Error(`${spec.entry}: header is a '${spec.kind}' case but the file is under ${kind}/`);
+      cases.push(spec);
+    }
+  }
+  return cases;
+}
+
+/** Keep cases with stage <= maxStage; undefined keeps all. */
+export function filterByStage(cases: CaseSpec[], maxStage?: number): CaseSpec[] {
+  return maxStage === undefined ? cases : cases.filter((c) => c.stage <= maxStage);
+}
+
+/** Run one case; returns failure messages (empty = pass). Never throws. */
+export async function runCase(spec: CaseSpec, compiler: Compiler): Promise<string[]> {
+  try {
+    if (spec.kind === "accept") {
+      return compiler.check(spec.entry).map((d) => `unexpected ${d.code} @ ${d.range.start.line}:${d.range.start.col}`);
+    }
+    if (spec.kind === "reject") {
+      const d = compiler.check(spec.entry)[0];
+      const want = spec.at!;
+      if (!d) return [`expected ${want.code} @ ${want.line}:${want.col}, got no diagnostics`];
+      const s = d.range.start;
+      if (d.code === want.code && s.line === want.line && s.col === want.col) return [];
+      return [`expected ${want.code} @ ${want.line}:${want.col}, got ${d.code} @ ${s.line}:${s.col}`];
+    }
+    const r = await compiler.run(spec.entry);
+    const fails: string[] = r.diagnostics.map((d) => `unexpected diagnostic ${d.code}`);
+    if (spec.output) {
+      const got = r.stdout === "" ? [] : r.stdout.replace(/\n$/, "").split("\n");
+      if (JSON.stringify(got) !== JSON.stringify(spec.output)) {
+        fails.push(`stdout mismatch: expected ${JSON.stringify(spec.output)}, got ${JSON.stringify(got)}`);
+      }
+    }
+    if (spec.trap) {
+      const w = spec.trap, t = r.trap;
+      if (!t) fails.push(`expected trap ${w.code} @ ${w.line}:${w.col}, got none`);
+      else if (t.code !== w.code || t.line !== w.line || t.col !== w.col) {
+        fails.push(`expected trap ${w.code} @ ${w.line}:${w.col}, got ${t.code} @ ${t.line}:${t.col}`);
+      }
+    } else if (r.trap) fails.push(`unexpected trap ${r.trap.code} @ ${r.trap.line}:${r.trap.col}`);
+    return fails;
+  } catch (e) {
+    return [`threw ${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`];
+  }
+}
