@@ -1,8 +1,10 @@
 // expect-output: 2147483648
-// expect-trap: T009 @ 7:12
+// expect-trap: T009 @ 9:12
 // stage: 1
 // open-question: Q002
 // open-question: Q059
+// open-question: Q027
+// open-question: Q014
 function shl(x: u32, n: u32): u32 {
   return x << n;
 }

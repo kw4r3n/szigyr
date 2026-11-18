@@ -1,6 +1,8 @@
 // expect: ok
 // stage: 1
 // open-question: Q054
+// open-question: Q016
+// open-question: Q029
 const PRIMES: ReadonlyArray<u32> = [2, 3, 5, 7];
 
 export function sumPrimes(): u32 {

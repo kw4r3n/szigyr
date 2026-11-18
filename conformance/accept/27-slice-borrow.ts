@@ -1,5 +1,6 @@
 // expect: ok
 // stage: 2
+// open-question: Q047
 function sumSlice(s: Ref<Slice<f32>>): f32 {
   "use rt";
   let acc: f32 = 0;

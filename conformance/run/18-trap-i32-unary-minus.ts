@@ -1,8 +1,11 @@
 // expect-output: -5
-// expect-trap: T001 @ 7:10
+// expect-trap: T001 @ 10:10
 // stage: 1
 // open-question: Q002
 // open-question: Q059
+// open-question: Q027
+// open-question: Q014
+// open-question: Q015
 function flip(x: i32): i32 {
   return -x;
 }

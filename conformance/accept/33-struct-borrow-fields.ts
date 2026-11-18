@@ -1,6 +1,8 @@
 // expect: ok
 // stage: 2
 // open-question: Q052
+// open-question: Q040
+// open-question: Q047
 type Buf = Struct<{ data: Vec<f32>; readonly rate: u32 }>;
 
 export function make(alloc: Alloc, rate: u32): Buf {

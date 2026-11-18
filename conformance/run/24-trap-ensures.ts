@@ -1,9 +1,11 @@
 // expect-output: 3
-// expect-trap: T005 @ 8:3
+// expect-trap: T005 @ 10:3
 // stage: 1
 // open-question: Q002
 // open-question: Q056
 // open-question: Q059
+// open-question: Q027
+// open-question: Q014
 function absDiff(a: i32, b: i32): i32 {
   ensures((r: i32) => r >= 0);
   return a - b;

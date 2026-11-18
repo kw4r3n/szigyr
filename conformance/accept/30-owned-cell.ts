@@ -1,6 +1,7 @@
 // expect: ok
 // stage: 2
 // open-question: Q047
+// open-question: Q029
 export class Holder {
   private readonly cell: OwnedCell<Vec<f32>>;
 

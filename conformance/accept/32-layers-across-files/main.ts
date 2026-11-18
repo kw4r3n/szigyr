@@ -1,5 +1,8 @@
 // expect: ok
 // stage: 2
+// open-question: Q027
+// open-question: Q039
+// open-question: Q040
 import { energy, boosted } from "./dsp.ts";
 
 export function main(sys: System): void {

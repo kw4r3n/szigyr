@@ -1,5 +1,6 @@
 // expect: ok
 // stage: 2
+// open-question: Q047
 function sumVec(v: Ref<Vec<usize>>): usize {
   "use owned";
   let s: usize = 0;

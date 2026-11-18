@@ -6,6 +6,7 @@
 // stage: 1
 // open-question: Q027
 // open-question: Q059
+// open-question: Q032
 async function delayedDouble(x: i32): Promise<i32> {
   return x * 2;
 }

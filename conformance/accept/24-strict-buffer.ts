@@ -1,5 +1,7 @@
 // expect: ok
 // stage: 2
+// open-question: Q040
+// open-question: Q047
 // A-3: strict。所有権の移動と Struct
 type Buffer = Struct<{ data: Vec<f32>; readonly rate: u32 }>;
 

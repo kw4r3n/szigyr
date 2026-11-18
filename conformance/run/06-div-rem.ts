@@ -10,6 +10,7 @@
 // open-question: Q014
 // open-question: Q027
 // open-question: Q059
+// open-question: Q015
 function show(a: i32, b: i32): string {
   return `${a},${b} -> ${divTrunc(a, b)} ${rem(a, b)}`;
 }

@@ -2,6 +2,7 @@
 // stage: 1
 // open-question: Q056
 // open-question: Q057
+// open-question: Q029
 export function sqrtFloor(n: u32): u32 {
   requires(n < 1000000);
   ensures((r: u32) => r * r <= n);

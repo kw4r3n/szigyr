@@ -1,6 +1,7 @@
 // expect: ok
 // stage: 1
 // open-question: Q045
+// open-question: Q022
 function double(x: i32): i32 {
   return x * 2;
 }

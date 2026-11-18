@@ -9,11 +9,11 @@
 // expect-output: 4 128512 55357
 // expect-output: 0 x
 // stage: 1
-// open-question: Q019
 // open-question: Q027
 // open-question: Q031
 // open-question: Q032
 // open-question: Q059
+// open-question: Q034
 function showU(x: usize | null): string {
   return x === null ? "null" : `${x}`;
 }

@@ -1,5 +1,6 @@
 // expect: ok
 // stage: 1
+// open-question: Q024
 type Color = "red" | "green" | "blue";
 
 export function hex(c: Color): string {

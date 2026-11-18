@@ -2,6 +2,7 @@
 // stage: 1
 // open-question: Q025
 // open-question: Q031
+// open-question: Q027
 type User = { readonly name: string; readonly nick: string | null };
 
 export function display(u: User): string {

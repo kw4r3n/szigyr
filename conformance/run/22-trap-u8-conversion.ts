@@ -1,8 +1,10 @@
 // expect-output: 255
-// expect-trap: T003 @ 7:10
+// expect-trap: T003 @ 9:10
 // stage: 1
 // open-question: Q002
 // open-question: Q059
+// open-question: Q027
+// open-question: Q014
 function toByte(x: f64): u8 {
   return u8(x);
 }

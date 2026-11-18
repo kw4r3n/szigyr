@@ -2,6 +2,8 @@
 // stage: 1
 // open-question: Q030
 // open-question: Q049
+// open-question: Q022
+// open-question: Q029
 interface Scored {
   score(): f64;
 }

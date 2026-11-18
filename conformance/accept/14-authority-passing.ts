@@ -1,5 +1,8 @@
 // expect: ok
 // stage: 1
+// open-question: Q027
+// open-question: Q029
+// open-question: Q038
 // A-4: 権限。大域の console ではなく Log を受け取る
 type Env = { readonly log: Log; readonly clock: Clock };
 

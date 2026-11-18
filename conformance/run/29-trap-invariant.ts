@@ -1,11 +1,13 @@
 // expect-output: i=0
 // expect-output: i=1
 // expect-output: i=2
-// expect-trap: T010 @ 12:5
+// expect-trap: T010 @ 14:5
 // stage: 1
 // open-question: Q002
 // open-question: Q057
 // open-question: Q059
+// open-question: Q027
+// open-question: Q014
 export function main(sys: System): void {
   let i: i32 = 0;
   while (i < 5) {

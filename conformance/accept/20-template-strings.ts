@@ -1,6 +1,8 @@
 // expect: ok
 // stage: 1
 // open-question: Q027
+// open-question: Q016
+// open-question: Q032
 export function label(name: string, n: usize, flag: boolean): string {
   return `${name}:${n}:${flag}`;
 }

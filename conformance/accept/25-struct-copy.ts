@@ -1,6 +1,7 @@
 // expect: ok
 // stage: 2
 // open-question: Q053
+// open-question: Q047
 type V3 = Struct<{ readonly x: f32; readonly y: f32; readonly z: f32 }>;
 type Seg = Struct<{ readonly a: V3; readonly b: V3 }>;
 

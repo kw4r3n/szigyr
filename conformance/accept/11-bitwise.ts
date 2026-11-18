@@ -1,6 +1,6 @@
 // expect: ok
 // stage: 1
-// open-question: Q057
+// open-question: Q014
 export function hasFlag(flags: u32, bit: u32): boolean {
   return (flags & (1 << bit)) !== 0;
 }

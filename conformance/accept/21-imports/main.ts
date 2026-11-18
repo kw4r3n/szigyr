@@ -1,5 +1,7 @@
 // expect: ok
 // stage: 1
+// open-question: Q009
+// open-question: Q027
 import { Rect, area, scaled } from "./geometry.ts";
 import { clamp01 } from "./util.ts";
 

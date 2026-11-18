@@ -2,6 +2,7 @@
 // stage: 2
 // open-question: Q042
 // open-question: Q047
+// open-question: Q040
 export function iota(alloc: Alloc, n: usize): Vec<u32> {
   "use owned";
   if (n > 1000000) {

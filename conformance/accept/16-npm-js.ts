@@ -1,5 +1,9 @@
 // expect: ok
 // stage: 1
+// open-question: Q027
+// open-question: Q036
+// open-question: Q037
+// open-question: Q038
 import { parse } from "npm:yaml";
 
 export function names(js: Js, text: string): Result<Array<string>, string> {

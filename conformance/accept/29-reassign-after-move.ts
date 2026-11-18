@@ -1,5 +1,6 @@
 // expect: ok
 // stage: 2
+// open-question: Q040
 function consume(v: Vec<f32>): usize {
   "use owned";
   return v.length;

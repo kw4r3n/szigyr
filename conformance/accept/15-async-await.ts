@@ -1,5 +1,7 @@
 // expect: ok
 // stage: 1
+// open-question: Q022
+// open-question: Q027
 async function delayed(x: i32): Promise<i32> {
   return x * 2;
 }

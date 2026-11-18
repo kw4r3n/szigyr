@@ -1,5 +1,7 @@
 // expect: ok
 // stage: 2
+// open-question: Q040
+// open-question: Q047
 function dotRt(a: Ref<Slice<f32>>, b: Ref<Slice<f32>>): f32 {
   "use rt";
   requires(a.length === b.length);

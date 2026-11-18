@@ -7,6 +7,8 @@
 // open-question: Q027
 // open-question: Q047
 // open-question: Q059
+// open-question: Q040
+// open-question: Q029
 function make(alloc: Alloc): Vec<i32> {
   "use owned";
   const v = Vec.create<i32>(alloc, 4);

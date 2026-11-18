@@ -1,6 +1,7 @@
 // expect: ok
 // stage: 1
 // open-question: Q038
+// open-question: Q027
 function greet(log: Log, clock: Clock): void {
   log.info(`t=${clock.nowMs()}`);
 }

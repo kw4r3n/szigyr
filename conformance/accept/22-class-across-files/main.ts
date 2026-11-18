@@ -1,5 +1,7 @@
 // expect: ok
 // stage: 1
+// open-question: Q022
+// open-question: Q029
 import { Shape } from "./shape.ts";
 import { Circle, Square } from "./shapes.ts";
 

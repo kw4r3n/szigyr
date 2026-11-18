@@ -8,6 +8,7 @@
 // open-question: Q014
 // open-question: Q027
 // open-question: Q059
+// open-question: Q015
 function fnv1a(data: Array<u8>): u32 {
   let h: u32 = 2166136261;
   for (const byte of data) {

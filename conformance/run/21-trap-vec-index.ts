@@ -1,9 +1,11 @@
 // expect-output: 1 9
-// expect-trap: T002 @ 9:5
+// expect-trap: T002 @ 11:5
 // stage: 2
 // open-question: Q002
 // open-question: Q047
 // open-question: Q059
+// open-question: Q027
+// open-question: Q014
 function setAt(v: Mut<Vec<i32>>, i: usize, x: i32): void {
   "use owned";
   v[i] = x;

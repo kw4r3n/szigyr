@@ -2,6 +2,7 @@
 // stage: 1
 // open-question: Q031
 // open-question: Q037
+// open-question: Q014
 type AppError = { readonly code: "empty" | "bad"; readonly detail: string };
 
 export function safeDiv(a: f64, b: f64): Result<f64, string> {
