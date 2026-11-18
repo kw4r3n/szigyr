@@ -710,7 +710,11 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       if (e.kind === K.Identifier) { const l = this.lookup((e as ts.Identifier).text); if (l) return read ? this.narrow(l.c, l.t, this.typeOf(e)) : l.c; }
       if (e.kind === K.PropertyAccessExpression) {
         const p = e as ts.PropertyAccessExpression;
-        if (isStruct(this.typeOf(p.expression))) return `${this.place(p.expression, read)}.f_${p.name.text}`;
+        const pt = this.typeOf(p.expression);
+        if (isStruct(pt)) {
+          const c = `${this.place(p.expression, read)}.f_${p.name.text}`, ft = pt.fields.find((f) => f.name === p.name.text)?.type;
+          return read && ft ? this.narrow(c, ft, this.typeOf(e)) : c; // a `T | null` field the checker narrowed (`h.p !== null`)
+        }
       }
       throw this.no(e, "this assignment target or borrowed place");
     }
@@ -724,8 +728,8 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       if ((isGen(rt, "Vec") || isGen(rt, "Slice")) && name === "length") { const s = this.seq(p.expression); return this.t({ k: "num", name: "usize" }, s.len, p); }
       if (isStruct(rt)) {
         const t = this.typeOf(p);
-        const base = this.placeOrValue(p.expression);
-        return this.t(t, `${base}.f_${name}`, p);
+        const base = this.placeOrValue(p.expression), ft = rt.fields.find((f) => f.name === name)?.type;
+        return this.t(t, ft ? this.narrow(`${base}.f_${name}`, ft, t) : `${base}.f_${name}`, p);
       }
       if (rt.k === "union" && isTaggedUnion(rt) && name === "kind") return this.t(this.typeOf(p), `${this.placeOrValue(p.expression)}.kind`, p);
       if (rt.k === "opaque" && AUTH.has(rt.name)) return this.t(this.typeOf(p), `sts_get(${this.ex(p.expression)}, "${name}")`, p); // sys.alloc etc.

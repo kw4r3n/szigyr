@@ -1,0 +1,15 @@
+// expect-output: 111 0
+// stage: 2
+// Fields of type `T | null` or a tagged union, narrowed by the checker, read through the narrowed type in C (D104).
+type P = Struct<{ readonly x: i32 }>;
+type U = { readonly kind: "a"; readonly n: i32 } | { readonly kind: "b" };
+type H = { readonly p: P | null; readonly u: U; readonly q: U | null };
+function f(h: H): i32 {
+  "use rt";
+  let s: i32 = 0;
+  if (h.p !== null) { const p: P = h.p; s += p.x + h.p.x; }
+  if (h.u.kind === "a") s += h.u.n;
+  if (h.q !== null && h.q.kind === "a") s += h.q.n * 100;
+  return s;
+}
+export function main(sys: System): void { sys.log.info(`${f({ p: { x: 4 }, u: { kind: "a", n: 3 }, q: { kind: "a", n: 1 } })} ${f({ p: null, u: { kind: "b" }, q: null })}`); }
