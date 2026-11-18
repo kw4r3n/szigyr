@@ -182,3 +182,19 @@ it("Vec growth that runs out of memory is T006 under both backends, not a proces
   expect(r.stderr).not.toMatch(/mismatch|FATAL|out of memory/);
   expect(r.status).toBe(3);
 }, 60_000);
+
+it("two Workers run C-backend strict code at the same time without sharing runtime state (D111)", () => {
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-thr-`));
+  // Each call grows a Vec from capacity 1 (host calls) and recurses; the last call of main overflows i32 (T001).
+  // Both Workers load the same addon, so before D111 they shared one env, jmp_buf and Vec list.
+  const f = join(dir, "p.ts");
+  writeFileSync(f, `function deep(n: i32): i32 {\n  "use owned";\n  if (n === 0) return 0;\n  return deep(n - 1) + 1;\n}\nfunction work(a: Alloc, m: i32): i32 {\n  "use owned";\n  let s: i32 = 0;\n  for (let r: i32 = 0; r < 40; r += 1) {\n    const v = Vec.create<i32>(a, 1);\n    for (let k: i32 = 0; k < 20000; k += 1) v.push(k & 1);\n    for (let k: usize = 0; k < v.length; k += 1) s = s + v[k];\n    s = s + deep(200) - 200;\n  }\n  return s * m;\n}\nexport function main(sys: System): void {\n  for (let i: i32 = 0; i < 40; i += 1) sys.log.info(\`\${work(sys.alloc, 1)}\`);\n  sys.log.info(\`\${work(sys.alloc, 10000)}\`);\n}\n`);
+  const idx = new URL("../src/index.ts", import.meta.url).href;
+  writeFileSync(join(dir, "w.mjs"), `import { parentPort } from "node:worker_threads";\nconst { run } = await import(${JSON.stringify(idx)});\nconst out = [];\nfor (let i = 0; i < 8; i += 1) { const r = await run(${JSON.stringify(f)}, { backend: "c" }); out.push(r.diagnostics.map((d) => d.code).join() + r.stdout + "|" + (r.trap ? r.trap.code + "@" + r.trap.line : "")); }\nparentPort.postMessage(out);\n`);
+  writeFileSync(join(dir, "main.mjs"), `import { Worker } from "node:worker_threads";\nconst go = () => new Promise((res, rej) => { const w = new Worker(${JSON.stringify(join(dir, "w.mjs"))}); w.on("message", res); w.on("error", rej); });\nconsole.log(JSON.stringify(await Promise.all([go(), go()])));\n`);
+  const r = spawnSync("node", [join(dir, "main.mjs")], { encoding: "utf8" });
+  expect(r.stderr).toBe("");
+  expect(r.status).toBe(0);
+  const one = `${"400000\n".repeat(40)}|T001@15`;
+  expect(JSON.parse(r.stdout)).toEqual([Array(8).fill(one), Array(8).fill(one)]);
+}, 120_000);

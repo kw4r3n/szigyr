@@ -12,17 +12,17 @@
 typedef struct { napi_value obj; void *data; uint32_t len, cap, esize; napi_typedarray_type tt; } sts_vec;
 typedef struct { void *data; uint32_t len; } sts_slice;
 
-static napi_env sts_env;
-static napi_ref sts_host; // { trap(code, file, line, col), create(alloc, cap, elem) }
-static jmp_buf sts_jb;
-static int sts_trap_code, sts_trap_pos, sts_depth;
-static const char *sts_err; // internal (non-trap) error message
+static _Thread_local napi_env sts_env;
+static _Thread_local napi_ref sts_host; // { trap(code, file, line, col), create(alloc, cap, elem) }
+static _Thread_local jmp_buf sts_jb;
+static _Thread_local int sts_trap_code, sts_trap_pos, sts_depth;
+static _Thread_local const char *sts_err; // internal (non-trap) error message
 
 __attribute__((cold)) _Noreturn static void sts_trap(int code, int pos) { sts_trap_code = code; sts_trap_pos = pos; longjmp(sts_jb, 1); }
 _Noreturn static void sts_fail(const char *msg) { sts_err = msg; sts_trap(0, 0); }
 #define STS_OK(call) do { if ((call) != napi_ok) sts_fail(#call); } while (0)
 /** Q182: calls trap T006 once the stack is within a margin of this thread's real limit, so a large frame cannot overflow it. */
-static uintptr_t sts_stack_lim;
+static _Thread_local uintptr_t sts_stack_lim;
 static void sts_stack_init(void) {
   pthread_attr_t a; void *lo; size_t n;
   if (pthread_getattr_np(pthread_self(), &a) != 0 || pthread_attr_getstack(&a, &lo, &n) != 0) sts_fail("cannot read the stack bounds");
@@ -33,7 +33,7 @@ static void sts_stack_init(void) {
 #define STS_STACK_LOW() ((uintptr_t)__builtin_frame_address(0) < sts_stack_lim)
 
 // Vec handles live until the boundary call returns; the list is reset per entry.
-static sts_vec **sts_vecs; static size_t sts_nvecs, sts_capvecs;
+static _Thread_local sts_vec **sts_vecs; static _Thread_local size_t sts_nvecs, sts_capvecs;
 static sts_vec *sts_vec_new(void) {
   if (sts_nvecs == sts_capvecs) { sts_capvecs = sts_capvecs ? sts_capvecs * 2 : 16; sts_vecs = realloc(sts_vecs, sts_capvecs * sizeof *sts_vecs); if (!sts_vecs) sts_fail("out of memory"); }
   sts_vec *v = calloc(1, sizeof *v); if (!v) sts_fail("out of memory");

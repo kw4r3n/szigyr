@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { threadId } from "node:worker_threads";
 import { CLI_NAME } from "./names.ts";
 
 export const CFLAGS = ["-std=gnu11", "-O2", "-ffp-contract=off", "-fno-fast-math", "-fwrapv", "-fexcess-precision=standard", "-falign-loops=32", "-shared", "-fPIC", "-w"];
@@ -29,14 +30,15 @@ export function loadNative(c: string, host: object): Record<string, (...a: unkno
     if ((process.getuid && st.uid !== process.getuid()) || (st.mode & 0o022)) throw new CBuildError(`C backend: cache directory ${dir} is not private to this user`);
     const out = join(dir, `${hash}.node`);
     if (!existsSync(out)) {
-      const src = join(dir, `${hash}.c`);
+      // Workers of one process share the pid, so the temporary names also carry the thread id (D111).
+      const tmp = `${out}.${process.pid}.${threadId}.tmp`, src = `${tmp}.c`;
       writeFileSync(src, c);
-      const tmp = `${out}.${process.pid}.tmp`;
       try { execFileSync(process.env.CC ?? "cc", [...CFLAGS, `-I${inc}`, src, "-o", tmp, "-lm"], { stdio: ["ignore", "ignore", "pipe"] }); }
       catch (e) {
         const err = e as { code?: string; stderr?: Buffer };
         throw new CBuildError(err.code === "ENOENT" ? "C backend: no C compiler ('cc') found" : `C backend: compiling ${src} failed:\n${err.stderr?.toString() ?? String(e)}`);
       }
+      renameSync(src, join(dir, `${hash}.c`));
       renameSync(tmp, out);
     }
     const m = { exports: {} as Record<string, (...a: unknown[]) => unknown> };
