@@ -1,5 +1,6 @@
-// expect: E2008 @ 7:12
+// expect: E2008 @ 8:12
 // stage: 1
+// open-question: Q014
 function g(a: i32): i32 {
   return a;
 }

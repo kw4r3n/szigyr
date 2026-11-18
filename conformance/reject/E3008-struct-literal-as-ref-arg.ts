@@ -1,6 +1,8 @@
-// expect: E3008 @ 11:13
+// expect: E3008 @ 13:13
 // stage: 2
 // open-question: Q002
+// open-question: Q021
+// open-question: Q020
 type P = Struct<{ x: f32 }>;
 function rd(p: Ref<P>): f32 {
   "use owned";

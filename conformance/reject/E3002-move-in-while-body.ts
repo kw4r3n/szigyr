@@ -1,5 +1,6 @@
-// expect: E3002 @ 11:13
+// expect: E3002 @ 12:13
 // stage: 2
+// open-question: Q002
 function consume(v: Vec<f32>): void {
   "use owned";
 }

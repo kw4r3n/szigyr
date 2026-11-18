@@ -1,5 +1,6 @@
-// expect: E3003 @ 9:11
+// expect: E3003 @ 10:11
 // stage: 2
+// open-question: Q002
 type Buf = Struct<{ data: Vec<f32>; readonly rate: u32 }>;
 function consume(v: Vec<f32>): void {
   "use owned";
