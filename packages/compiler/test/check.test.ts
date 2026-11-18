@@ -89,3 +89,8 @@ const forms: [string, string, string[]][] = [
 it.each(forms)("%s", (_name, src, want) => {
   expect(run({ "main.ts": src + "\n" }).map((s) => s.replace(" main.ts", ""))).toEqual(want);
 });
+
+it("the D050 fallback stays silent when a signature already reported", () => {
+  expect(run({ "main.ts": "function f(x: Nope): i32 { return x.y; }\n" })).toEqual(["E2000 main.ts 1:15"]);
+  expect(run({ "main.ts": "type A = Array<A>;\nfunction g(a: A): string { return a[0]; }\n" }).filter((d) => d.startsWith("E2002")).length).toBe(1);
+});

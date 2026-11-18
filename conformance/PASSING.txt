@@ -25,6 +25,10 @@ accept/36-narrowing-kept.ts
 accept/37-class-init-then-use.ts
 accept/38-inferred-return-types.ts
 accept/39-generic-key-instantiation.ts
+accept/40-promise-positions.ts
+accept/41-constructor-definite-assignment.ts
+accept/42-narrowing-by-assignment.ts
+accept/43-interface-generic-method.ts
 reject/E1000-array-suffix-type.ts
 reject/E1000-await-in-non-async-arrow.ts
 reject/E1000-await-outside-async.ts
@@ -101,6 +105,7 @@ reject/E2002-constraint-unmet-alias.ts
 reject/E2002-constraint-unmet-class-declared-later.ts
 reject/E2002-ctor-calls-method-before-init.ts
 reject/E2002-ctor-reads-field-before-init.ts
+reject/E2002-ctor-reads-unassigned-after-assigned.ts
 reject/E2002-ctor-return-before-init.ts
 reject/E2002-ctor-this-escapes-before-init.ts
 reject/E2002-decode-map-target.ts
@@ -109,6 +114,7 @@ reject/E2002-eq-owned-vec.ts
 reject/E2002-generic-class-key-instantiation.ts
 reject/E2002-generic-map-key-through-type-parameter.ts
 reject/E2002-generic-set-element-record.ts
+reject/E2002-implements-generic-method-arity.ts
 reject/E2002-includes-array-element.ts
 reject/E2002-indexof-record-element.ts
 reject/E2002-inferred-return-union.ts
@@ -122,6 +128,8 @@ reject/E2002-narrow-assigned-in-and-operand.ts
 reject/E2002-narrow-assigned-in-condition.ts
 reject/E2002-narrow-assigned-in-nested-if.ts
 reject/E2002-narrow-assigned-in-then-branch.ts
+reject/E2002-narrow-assignment-captured.ts
+reject/E2002-narrow-assignment-one-branch.ts
 reject/E2002-narrow-closure-assigns-field-root.ts
 reject/E2002-narrow-closure-assigns-literal-union.ts
 reject/E2002-narrow-closure-assigns.ts
@@ -133,6 +141,14 @@ reject/E2002-narrow-tag-written-through-union.ts
 reject/E2002-narrow-while-break.ts
 reject/E2002-new-map-key-record.ts
 reject/E2002-nullable-return-without-narrowing.ts
+reject/E2002-promise-all-not-awaited.ts
+reject/E2002-promise-array-field.ts
+reject/E2002-promise-array-in-variable.ts
+reject/E2002-promise-array-inferred-return.ts
+reject/E2002-promise-array-parameter.ts
+reject/E2002-promise-array-return-type.ts
+reject/E2002-promise-assigned-to-variable.ts
+reject/E2002-promise-callback-to-foreach.ts
 reject/E2002-promise-discarded-array.ts
 reject/E2002-promise-discarded-async-callback.ts
 reject/E2002-promise-discarded-for-incrementor.ts
@@ -140,6 +156,10 @@ reject/E2002-promise-discarded-in-test.ts
 reject/E2002-promise-discarded-nullable.ts
 reject/E2002-promise-discarded-statement.ts
 reject/E2002-promise-discarded-void-arrow-body.ts
+reject/E2002-promise-in-map.ts
+reject/E2002-promise-in-record-field.ts
+reject/E2002-promise-passed-as-argument.ts
+reject/E2002-promise-stored-in-variable.ts
 reject/E2002-readonly-array-index-write.ts
 reject/E2002-readonly-field-assignment.ts
 reject/E2002-record-excess-property.ts

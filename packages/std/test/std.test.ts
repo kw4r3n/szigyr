@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { Trap, panic, requires, type Pos } from "../../runtime-js/src/index.ts";
 import { FakeClock, SeededRandom, MemoryLog, FakeFs, TestAlloc, createSystem, nodeFs, nodeJs, runMain } from "../src/index.ts";
@@ -98,3 +99,32 @@ describe("runMain", () => {
     await expect(runMain(() => { throw new TypeError("bug"); })).rejects.toThrow("bug");
   });
 });
+
+describe("Q140: a rejected Promise nobody awaits (separate process: vitest reports unhandled rejections itself)", () => {
+  const node = (body: string) => {
+    const r = spawnSync("node", ["--input-type=module", "-e", body], { encoding: "utf8" });
+    return { code: r.status, out: r.stdout, err: r.stderr };
+  };
+  const rt = new URL("../../runtime-js/src/index.ts", import.meta.url).href;
+  const std = new URL("../src/index.ts", import.meta.url).href;
+
+  it("runMain reports the late rejection as a trap and returns", () => {
+    const r = node(`import { panic } from "${rt}"; import { runMain } from "${std}";
+const g = async () => { panic("late"); };
+const res = await runMain((sys) => { void g(); sys.log.info("done"); });
+console.log(JSON.stringify(res));`);
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toMatchObject({ stdout: "done\n", trap: { code: "T006" } });
+  });
+
+  it("runTests blames the test that left the Promise, and the next test still runs", () => {
+    const r = node(`import { panic, test, runTests } from "${rt}";
+const h = async () => { panic("x"); };
+test("floating", (t) => { void h(); t.ok(true); });
+test("after", (t) => { t.ok(true); });
+console.log(JSON.stringify((await runTests()).map((x) => [x.name, x.ok, x.trap?.code])));`);
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toEqual([["floating", false, "T006"], ["after", true, null]]);
+  });
+});
+

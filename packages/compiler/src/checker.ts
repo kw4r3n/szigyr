@@ -1,7 +1,7 @@
 // P2 checker (D012): declarations, statements, control flow, narrowing. Expressions live in expr.ts.
 import { NodeFlags, SyntaxKind as K, type Node, type ts } from "./parse.ts";
 import { Program, legalUnion, type ClassValueSym, type Layer, type LocalSym, type Module, type ValueSym } from "./modules.ts";
-import { checkTo, cond, expr, isLitOnly } from "./expr.ts";
+import { PROMISE_CONTAINERS, checkTo, hasPromise, cond, expr, isLitOnly, promiseOk } from "./expr.ts";
 import {
   ERROR, NEVER, NULL, STR, VOID, assignable, field, isTaggedUnion, kindOf, nonNull, same, show, subst, bindTParams, unref, union,
   type ClassSym, type FnType, type TParam, type Type,
@@ -61,11 +61,10 @@ export class Checker {
   /** The first expression typed as the error type (D009: only after a diagnostic). */
   firstError: { node: Node; mod: Module } | undefined;
   run(): void {
-    const before = this.prog.rep.out.length;
     for (const mod of this.prog.mods) this.module(mod);
     this.prog.checkInsts();
     // Fail closed: an error type without any diagnostic would accept anything (D050).
-    if (this.firstError && this.prog.rep.out.length === before) {
+    if (this.firstError && this.prog.rep.out.length === 0) { // any diagnostic, signatures included
       this.prog.rep.at(this.firstError.mod, "E2002", this.firstError.node, "internal: expression has no type");
     }
   }
@@ -230,7 +229,9 @@ export class Checker {
     if (body.kind !== K.Block) {
       // a void callback's expression body is evaluated for effect (Q074)
       const r = this.fx.ret;
+      if (!r || isPromise(r)) promiseOk.add(body as ts.Expression); // Q130
       const t = r && !isVoidish(r) ? checkTo(this, body as ts.Expression, r) : r ? this.discard(body as ts.Expression) : expr(this, body as ts.Expression);
+      if (!r) this.onlyPromise(body as ts.Expression, t);
       result = t;
     } else {
       const reach = this.block((body as ts.Block).statements, true);
@@ -277,12 +278,24 @@ export class Checker {
     if (need.size) end = inits.findLastIndex((x) => x !== undefined);
     const prefix = stmts.slice(0, end + 1);
     this.ctorInits = new Set(inits.slice(0, end + 1).filter((x) => x !== undefined));
-    const walk = (n: Node): void => {
-      if (n.kind === K.ThisKeyword) this.at("E2002", n, "'this' is used before every field is initialized");
-      else if (n.kind === K.ReturnStatement) this.at("E2002", n, "'return' before every field is initialized");
-      n.forEachChild(walk);
+    // Q121 addendum: fields with an initializer, then those assigned by earlier top-level `this.f = ...`, may be read
+    const done = new Set([...cls.fields].filter(([, f]) => !f.static && f.node.initializer).map(([n]) => n));
+    const isThisField = (n: Node): n is ts.PropertyAccessExpression => n.kind === K.PropertyAccessExpression && (n as ts.PropertyAccessExpression).expression.kind === K.ThisKeyword;
+    const walk = (n: Node, inFn: boolean): void => {
+      if (!inFn && isThisField(n) && done.has(n.name.text)) return;
+      if (n.kind === K.ThisKeyword) { this.at("E2002", n, "'this' is used before every field is initialized"); return; }
+      if (n.kind === K.ReturnStatement) this.at("E2002", n, "'return' before every field is initialized");
+      if (!inFn && n.kind === K.BinaryExpression && (n as ts.BinaryExpression).operatorToken.kind === K.EqualsToken && isThisField((n as ts.BinaryExpression).left)) {
+        walk((n as ts.BinaryExpression).right, inFn); // a write; only a top-level one counts as assigned
+        return;
+      }
+      const f = inFn || FN_KINDS.has(n.kind);
+      n.forEachChild((ch) => walk(ch, f));
     };
-    prefix.forEach((st, i) => walk(inits[i] ? ((st as ts.ExpressionStatement).expression as ts.BinaryExpression).right : st));
+    prefix.forEach((st, i) => {
+      walk(inits[i] ? ((st as ts.ExpressionStatement).expression as ts.BinaryExpression).right : st, false);
+      if (inits[i]) done.add(inits[i]!.name.text);
+    });
     for (const m of cls.decl.members) {
       if (m.kind === K.PropertyDeclaration) {
         const p = m as ts.PropertyDeclaration;
@@ -353,7 +366,7 @@ export class Checker {
         this.narrow = new Map(saved); this.withFacts(no, m0, m1);
         const b = x.elseStatement ? this.stmt(x.elseStatement) : true;
         // Q122: only the branch that completes reaches here; if both do, an assignment in either ends the narrowing
-        if (a && b) this.restore(saved, m1);
+        if (a && b) { const endB = this.narrow; this.narrow = new Map([...endA].filter(([k, t]) => { const u = endB.get(k); return !!u && same(t, u); })); } // Q131: what holds on both paths
         else if (a) this.narrow = endA;
         return a || b;
       }
@@ -417,7 +430,9 @@ export class Checker {
   /** An expression whose value is dropped. Q125: a dropped Promise would lose its trap, so it is an error. */
   discard(e: ts.Expression): Type {
     const t = expr(this, e);
-    if (isPromise(t)) this.at("E2002", e, "a Promise must be awaited or returned");
+    // Q130 reports the Promise-typed sub-expression; a container (`c ? g() : null`) is reported here as a whole
+    const assign = e.kind === K.BinaryExpression && isAssignOp((e as ts.BinaryExpression).operatorToken.kind);
+    if (isPromise(t) && !assign && PROMISE_CONTAINERS.has(e.kind)) this.at("E2002", e, "a Promise must be awaited or returned");
     return t;
   }
 
@@ -441,6 +456,11 @@ export class Checker {
     return r;
   }
 
+  /** Q130: an inferred return type may be a Promise, not an array or union holding one. */
+  private onlyPromise(e: ts.Expression, t: Type): void {
+    if (hasPromise(t) && !(t.k === "gen" && t.name === "Promise")) this.at("E2002", e, "a Promise can only be awaited or returned");
+  }
+
   private returnStmt(r: ts.ReturnStatement): void {
     const want = this.fx.ret;
     if (!r.expression) {
@@ -448,7 +468,8 @@ export class Checker {
       if (!want) this.fx.returns.push(VOID);
       return;
     }
-    if (!want) { this.fx.returns.push(expr(this, r.expression)); return; }
+    if (!want || isPromise(want)) promiseOk.add(r.expression); // Q130
+    if (!want) { const t = expr(this, r.expression); this.onlyPromise(r.expression, t); this.fx.returns.push(t); return; }
     if (isVoidish(want)) { expr(this, r.expression); this.at("E2002", r.expression, "a void function cannot return a value"); return; }
     checkTo(this, r.expression, want);
   }
@@ -577,8 +598,7 @@ function isAssignOp(k: K): boolean {
 const isStringStmt = (s: ts.Statement): boolean => s.kind === K.ExpressionStatement && (s as ts.ExpressionStatement).expression.kind === K.StringLiteral;
 const isTrue = (e: ts.Expression): boolean => e.kind === K.TrueKeyword;
 const isVoidish = (t: Type): boolean => t.k === "prim" && t.name === "void";
-/** Q125: a Promise, also inside `| null` or an array (`c ? g() : null`, `xs.map(g)`). */
-const isPromise = (t: Type): boolean => t.k === "gen" ? t.name === "Promise" || ((t.name === "Array" || t.name === "ReadonlyArray") && isPromise(t.args[0]!)) : t.k === "union" && t.members.some(isPromise);
+const isPromise = hasPromise;
 
 /** Whether a `break` inside `n` targets `n` (not a nested loop or switch). */
 function hasBreak(n: Node, isSwitch = false): boolean {
@@ -594,8 +614,16 @@ function hasBreak(n: Node, isSwitch = false): boolean {
   return found;
 }
 
-function sameSig(a: FnType, b: FnType): boolean {
-  return a.params.length === b.params.length && a.params.every((p, i) => same(p, b.params[i]!)) && same(a.ret, b.ret);
+/** Type parameters correspond by position (Q132); their constraints must match too. */
+function sameSig(a: FnType, b0: FnType): boolean {
+  if (a.tparams.length !== b0.tparams.length) return false;
+  const m = new Map(b0.tparams.map((p, i) => [p.id, { k: "tparam", p: a.tparams[i]! } as Type]));
+  const b = subst(b0, m) as FnType;
+  const cons = a.tparams.every((p, i) => {
+    const q = b0.tparams[i]!.constraint;
+    return p.constraint && q ? same(p.constraint, subst(q, m)) : !p.constraint && !q;
+  });
+  return cons && a.params.length === b.params.length && a.params.every((p, i) => same(p, b.params[i]!)) && same(a.ret, b.ret);
 }
 
 /** Q054 / Q072: types a module-level const may not have. */

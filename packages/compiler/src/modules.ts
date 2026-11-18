@@ -352,7 +352,13 @@ export class Program {
       }
       case K.TypeReference: {
         const r = t as ts.TypeReferenceNode;
-        return this.typeRef(r.typeName as ts.Identifier, r.typeArguments, r, e);
+        const id = r.typeName as ts.Identifier;
+        // Q130: a Promise type is only the whole return type of a function (not a type argument, field, parameter or variable)
+        if (id.text === "Promise" && !e.tparams.has("Promise") && !(voidOk && r.parent.kind !== K.TypeReference)) {
+          this.rep.at(e.mod, "E2002", r, "'Promise' can only be the return type of a function");
+          return ERROR;
+        }
+        return this.typeRef(id, r.typeArguments, r, e);
       }
     }
     throw new Error(`P2: unhandled type kind ${t.kind}`); // P1 rejects every other kind

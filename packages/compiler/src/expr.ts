@@ -61,9 +61,19 @@ export function cond(c: Checker, e: ts.Expression): void {
 
 /** The type P2 gave each checked expression (last check wins), read by the JS emitter (§10, D030). */
 export const exprTypes = new WeakMap<Node, Type>();
+/** Q130: the only expressions that may have a Promise type: `await` operands, `Promise.all` arguments, returns of Promise functions. */
+export const promiseOk = new WeakSet<Node>();
+/** Q130: these get their Promise type from a sub-expression, which is the one reported. */
+export const PROMISE_CONTAINERS = new Set<K>([K.ObjectLiteralExpression, K.ArrayLiteralExpression, K.ConditionalExpression, K.ParenthesizedExpression, K.BinaryExpression]);
+/** A Promise, also inside `| null` or as array elements (`xs.map(g)`). Other holders only get one from a reported expression. */
+export function hasPromise(t: Type): boolean {
+  if (t.k === "gen") return t.name === "Promise" || ((t.name === "Array" || t.name === "ReadonlyArray") && hasPromise(t.args[0]!));
+  return t.k === "union" && t.members.some(hasPromise);
+}
 export function expr(c: Checker, e: ts.Expression, want?: Type): Type {
   const t = exprUnrecorded(c, e, want);
   exprTypes.set(e, t);
+  if (!promiseOk.has(e) && !PROMISE_CONTAINERS.has(e.kind) && hasPromise(t)) c.at("E2002", e, "a Promise can only be awaited or returned");
   if (t.k === "error") c.firstError ??= { node: e, mod: c.mod };
   return t;
 }
@@ -77,7 +87,9 @@ function exprUnrecorded(c: Checker, e: ts.Expression, want?: Type): Type {
     case K.ThisKeyword:
       if (!c.fx.thisType) throw new Error("P2: 'this' without an instance type"); // P1 allows it only where there is one (Q120)
       return c.fx.thisType;
-    case K.ParenthesizedExpression: return expr(c, (e as ts.ParenthesizedExpression).expression, want);
+    case K.ParenthesizedExpression:
+      if (promiseOk.has(e)) promiseOk.add((e as ts.ParenthesizedExpression).expression);
+      return expr(c, (e as ts.ParenthesizedExpression).expression, want);
     case K.AsExpression: return expr(c, (e as ts.AsExpression).expression, want); // `as const` is a no-op (Q026)
     case K.TemplateExpression:
       for (const sp of (e as ts.TemplateExpression).templateSpans) {
@@ -86,6 +98,7 @@ function exprUnrecorded(c: Checker, e: ts.Expression, want?: Type): Type {
       }
       return STR;
     case K.AwaitExpression: {
+      promiseOk.add((e as ts.AwaitExpression).expression);
       const t = expr(c, (e as ts.AwaitExpression).expression);
       if (t.k === "gen" && t.name === "Promise") return t.args[0]!;
       if (!isErr(t)) c.at("E2002", (e as ts.AwaitExpression).expression, "await needs a Promise");
@@ -357,7 +370,13 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
   if (k === K.EqualsToken) {
     const lt = lvalue(c, b.left);
     if (isErr(lt)) { expr(c, b.right); return ERROR; }
-    checkTo(c, b.right, lt);
+    const rt = checkTo(c, b.right, lt);
+    // Q131: a non-null value assigned to a stable `T | null` local narrows it to T
+    let l = b.left;
+    while (l.kind === K.ParenthesizedExpression) l = (l as ts.ParenthesizedExpression).expression;
+    const s = isId(l) ? c.scope.lookup(l.text) : undefined;
+    const inner = s && !s.unstable ? nonNull(s.type) : undefined;
+    if (inner && !isErr(rt) && !isNull(rt) && !nonNull(rt)) c.narrow.set(`${s!.id}`, inner);
     return lt;
   }
   const base = COMPOUND[k];
@@ -601,6 +620,11 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
   }
   if (callee.kind === K.PropertyAccessExpression) {
     const p = callee as ts.PropertyAccessExpression;
+    const a0 = e.arguments[0];
+    if (a0 && isId(p.expression) && p.expression.text === "Promise" && p.name.text === "all" && isNamespace(c, p.expression)) { // Q130
+      if (a0.kind === K.CallExpression) promiseOk.add(a0); // an array made right here, such as `xs.map(g)`; a variable or field holding one is rejected
+      if (a0.kind === K.ArrayLiteralExpression) for (const x of (a0 as ts.ArrayLiteralExpression).elements) promiseOk.add(x);
+    }
     const m = member(c, p, true);
     if (m.kind === "error") return ERROR;
     if (m.kind === "variadic") { // Math.min / Math.max (Q033)

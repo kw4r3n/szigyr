@@ -1,11 +1,10 @@
 // JS backend (SPEC §10) and the run / test entries, beyond what conformance/run covers.
-import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { run, runTestFile } from "../src/index.ts";
+import { check, run, runTestFile } from "../src/index.ts";
 import { loadCases } from "./harness.ts";
 
 function project(files: Record<string, string>): string {
@@ -357,44 +356,21 @@ ${"\n".repeat(n)}  panic("x");
   });
 });
 
-describe("Q140: a Promise nobody awaits (separate process: vitest reports unhandled rejections itself)", () => {
-  const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
-  const sts = (...a: string[]) => { const r = spawnSync("node", [cli, ...a], { encoding: "utf8" }); return { code: r.status, out: r.stdout, err: r.stderr }; };
-
-  it("run reports the trap of a floating Promise instead of crashing", () => {
-    const main = project({
-      "main.ts": `async function g(): Promise<void> {
+// Q130 rejects a floating Promise in the source, so the Q140 host fallback is tested in packages/std/test/std.test.ts.
+it("a Promise that is neither awaited nor returned is E2002 (Q130)", () => {
+  const main = project({
+    "main.ts": `async function g(): Promise<void> {
   panic("late");
 }
 export function main(sys: System): void {
-  const p: Promise<void> = g();
+  const p = g();
   sys.log.info("done");
 }
-`,
-    });
-    const r = sts("run", main);
-    expect(r.out).toBe("done\n");
-    expect(r.code).toBe(3);
-    expect(r.err).toContain("T006");
-  });
-
-  it("test reports the test that left the Promise, and the next test still runs", () => {
-    const main = project({
-      "main.ts": `async function h(): Promise<void> {
-  panic("x");
-}
 test("floating", (t: Test) => {
-  const p: Promise<void> = h();
-  t.ok(true);
-});
-test("after", (t: Test) => {
+  const q = g();
   t.ok(true);
 });
 `,
-    });
-    const r = sts("test", "--json", main);
-    const lines = r.out.trim().split("\n").map((l) => JSON.parse(l));
-    expect(lines.slice(0, 2)).toMatchObject([{ name: "floating", ok: false, trap: "T006" }, { name: "after", ok: true }]);
-    expect(r.code).toBe(1);
   });
+  expect(check(main).map((d) => `${d.code} ${d.range.start.line}:${d.range.start.col}`)).toEqual(["E2002 5:13", "E2002 9:13"]);
 });
