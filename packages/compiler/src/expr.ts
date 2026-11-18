@@ -380,6 +380,7 @@ function arith(c: Checker, op: Node, kind: K, lt: Type, rt: Type): Type {
     if (lt.name !== rt.name) { c.at("E2003", op, `cannot mix '${lt.name}' and '${rt.name}'`); return ERROR; }
     if (kind === K.SlashToken && isInt(lt)) { c.at("E2007", op, "integer '/' is not allowed; use divTrunc"); return ERROR; }
     if ((kind === K.PercentToken || kind === K.AsteriskAsteriskToken) && isInt(lt)) { c.at("E2002", op, "this operator is for floating-point types only"); return ERROR; }
+    if (kind === K.AsteriskAsteriskToken && !c.callAllowed("managed")) c.at("E4001", op, "'**' is managed-only"); // Q180: pow is not exact (§10.1)
     return lt;
   }
   c.at("E2002", op, `operator cannot be applied to '${show(lt)}' and '${show(rt)}'`);

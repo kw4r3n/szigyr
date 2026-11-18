@@ -1,0 +1,9 @@
+// expect: E2002 @ 8:5
+// stage: 2
+// open-question: Q002
+type C = Struct<{ readonly n: u32; m: u32 }>;
+function f(c: Mut<C>): void {
+  "use owned";
+  c.m = 1;
+  c.n = 2;
+}

@@ -1,0 +1,5 @@
+// expect: E2002 @ 5:10
+// stage: 2
+// open-question: Q002
+type R = { readonly x: f32 };
+type S = Struct<R>;
