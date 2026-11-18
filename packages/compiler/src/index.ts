@@ -8,6 +8,7 @@ import { checkOwnership } from "./ownership.ts";
 import { trapSites, type TrapSite } from "./traps.ts";
 import { isDeterministic } from "./determinism.ts";
 import { emitFile, EXPORTS, IMP, RT, SOURCE_URL } from "./emit.ts";
+import { loopBoundaryWarnings } from "./boundary.ts";
 import { emitC } from "./emit-c.ts";
 import { loadNative } from "./native.ts";
 import { createRequire } from "node:module";
@@ -75,11 +76,12 @@ const displayPath = (p: string): string => relative(process.cwd(), p) || p;
 
 /** Phases run in order P1 -> P2 -> P3 and stop at the first phase with an error (Q003). */
 export function check(entryFile: string): Diagnostic[] {
-  return analyze(entryFile).diagnostics;
+  const a = analyze(entryFile);
+  return [...a.diagnostics, ...(a.warnings ?? [])];
 }
 
 /** P1 + P2 + P3 over the program; on success the expression types are in `exprTypes` for the emitter. */
-function analyze(entryFile: string): { files: ParsedFile[]; diagnostics: Diagnostic[]; decls?: Decls } {
+function analyze(entryFile: string): { files: ParsedFile[]; diagnostics: Diagnostic[]; warnings?: Diagnostic[]; decls?: Decls } {
   const prog = loadProgram(entryFile);
   const p1 = [...prog.missing, ...prog.files.flatMap((f) => checkSyntax(f, displayPath(f.path)))];
   if (!p1.length) p1.push(...checkImportNames(prog.files, displayPath));
@@ -88,7 +90,10 @@ function analyze(entryFile: string): { files: ParsedFile[]; diagnostics: Diagnos
   const decls = new Decls(prog.files, displayPath, rep);
   new Checker(decls).run();
   if (!rep.out.length) checkOwnership(decls);
-  return { files: prog.files, diagnostics: rep.out, decls };
+  if (rep.out.length) return { files: prog.files, diagnostics: rep.out, decls };
+  const warns = new Reporter();
+  loopBoundaryWarnings(decls, warns);
+  return { files: prog.files, diagnostics: [], warnings: warns.out, decls };
 }
 
 /** §7.3 query (Q062): for each top-level function of the entry file, whether it is deterministic. Assumes P1 passes. */

@@ -19,6 +19,8 @@ export interface CaseSpec {
   at?: { code: string; line: number; col: number }; // reject: expected code/position; run: unused
   output?: string[]; // run: expected stdout lines (undefined when no run expectation on output)
   trap?: { code: string; line: number; col: number };
+  /** accept: the exact warnings `check` must report (Q187), in position order. */
+  warnings?: { code: string; line: number; col: number }[];
 }
 
 const POS = /^([ET]\d{3,4}) @ (\d+):(\d+)$/;
@@ -35,14 +37,22 @@ export function parseCase(entry: string, name = entry): CaseSpec {
 
   if (first.startsWith("// expect:")) {
     const v = first.slice("// expect:".length).trim();
-    if (v === "ok") spec.kind = "accept";
+    if (v === "ok") {
+      spec.kind = "accept";
+      spec.warnings = [];
+      while ((lines[1 + spec.warnings.length] ?? "").startsWith("// expect-warning:")) {
+        const m = /^(W\d{4}) @ (\d+):(\d+)$/.exec((lines[1 + spec.warnings.length] as string).slice("// expect-warning:".length).trim());
+        if (!m) return bad(1 + spec.warnings.length, "bad '// expect-warning:' value (want 'W8001 @ 8:14')");
+        spec.warnings.push({ code: m[1]!, line: +m[2]!, col: +m[3]! });
+      }
+    }
     else {
       const m = POS.exec(v);
       if (!m || !m[1]!.startsWith("E")) return bad(0, `bad '// expect:' value '${v}' (want 'ok' or 'E3001 @ 12:9')`);
       spec.kind = "reject";
       spec.at = { code: m[1]!, line: +m[2]!, col: +m[3]! };
     }
-    i = 1;
+    i = 1 + (spec.warnings?.length ?? 0);
   } else if (first.startsWith("// expect-output:") || first === "// expect-no-output" || first.startsWith("// expect-trap:")) {
     spec.kind = "run";
     if (first === "// expect-no-output") { spec.output = []; i = 1; }
@@ -108,7 +118,12 @@ export function filterByStage(cases: CaseSpec[], maxStage?: number): CaseSpec[] 
 export async function runCase(spec: CaseSpec, compiler: Compiler): Promise<string[]> {
   try {
     if (spec.kind === "accept") {
-      return compiler.check(spec.entry).map((d) => `unexpected ${d.code} @ ${d.range.start.line}:${d.range.start.col}`);
+      const ds = compiler.check(spec.entry);
+      const fails = ds.filter((d) => d.severity === "error").map((d) => `unexpected ${d.code} @ ${d.range.start.line}:${d.range.start.col}`);
+      const got = ds.filter((d) => d.severity === "warning").map((d) => `${d.code} @ ${d.range.start.line}:${d.range.start.col}`).sort();
+      const want = (spec.warnings ?? []).map((w) => `${w.code} @ ${w.line}:${w.col}`).sort();
+      if (JSON.stringify(got) !== JSON.stringify(want)) fails.push(`warnings: expected ${JSON.stringify(want)}, got ${JSON.stringify(got)}`);
+      return fails;
     }
     if (spec.kind === "reject") {
       const d = [...compiler.check(spec.entry)].sort(

@@ -51,6 +51,7 @@ accept/50-ownership-operands.ts
 accept/51-borrow-destructure-and-do-once.ts
 accept/52-owned-types-shapes.ts
 accept/53-cast-after-unwrapping-result.ts
+accept/54-loop-boundary-warning.ts
 reject/E1000-array-suffix-type.ts
 reject/E1000-await-in-non-async-arrow.ts
 reject/E1000-await-outside-async.ts

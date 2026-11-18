@@ -43,10 +43,12 @@ export interface Module {
 
 export class Reporter {
   readonly out: Diagnostic[] = [];
-  report(mod: Module, code: string, start: number, end: number, message: string, data?: Record<string, unknown>): void {
+  report(mod: Module, code: string, start: number, end: number, message: string, data?: Record<string, unknown>, severity: "error" | "warning" = "error"): void {
     if (this.out.some((d) => d.code === code && d.file === mod.file && d.range.start.line === mod.pf.position(start).line && d.range.start.col === mod.pf.position(start).col)) return; // Q133: one per code and position
-    this.out.push({ code, severity: "error", message, file: mod.file, range: { start: mod.pf.position(start), end: mod.pf.position(end) }, ...(data ? { data } : {}) });
+    this.out.push({ code, severity, message, file: mod.file, range: { start: mod.pf.position(start), end: mod.pf.position(end) }, ...(data ? { data } : {}) });
   }
+  /** Wxxxx (Q187): reported by `check`, never blocks `run` / `test`. */
+  warn(mod: Module, code: string, n: Node, message: string, data?: Record<string, unknown>): void { this.report(mod, code, n.getStart(mod.sf), n.end, message, data, "warning"); }
   at(mod: Module, code: string, n: Node, message: string, data?: Record<string, unknown>): void {
     this.report(mod, code, n.getStart(mod.sf), n.end, message, data);
   }
