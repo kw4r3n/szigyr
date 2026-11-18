@@ -91,7 +91,12 @@ static sts_slice sts_vslice(sts_vec *v) { return (sts_slice){ v->data, v->len };
 static sts_slice sts_slice_in(napi_value o, uint32_t es, const char *desc) {
   napi_value off; bool has; STS_OK(napi_has_named_property(sts_env, o, "off", &has));
   if (!has) { sts_vec *v = sts_vec_in(o, es, desc); return sts_vslice(v); }
-  napi_value buf = sts_get(o, "buf"); bool ta; STS_OK(napi_is_typedarray(sts_env, buf, &ta)); if (!ta) sts_fail("Slice of a Vec made with a type parameter as its element type (D105)");
+  napi_value buf = sts_get(o, "buf"); bool ta; STS_OK(napi_is_typedarray(sts_env, buf, &ta));
+  if (!ta) { // a view of a Vec made where the element type was a type parameter: switch both to the representation (D105)
+    napi_value host, f = sts_hostf("adopt", &host), args[2] = { o }, r;
+    STS_OK(napi_create_string_utf8(sts_env, desc, NAPI_AUTO_LENGTH, &args[1])); STS_OK(napi_call_function(sts_env, host, f, 2, args, &r));
+    buf = sts_get(o, "buf"); STS_OK(napi_is_typedarray(sts_env, buf, &ta)); if (!ta) sts_fail("Slice is not backed by a TypedArray");
+  }
   napi_typedarray_type tt; size_t n, boff; void *data; napi_value ab; STS_OK(napi_get_typedarray_info(sts_env, buf, &tt, &n, &data, &ab, &boff));
   uint32_t o32, len; off = sts_get(o, "off"); STS_OK(napi_get_value_uint32(sts_env, off, &o32)); STS_OK(napi_get_value_uint32(sts_env, sts_get(o, "length"), &len));
   return (sts_slice){ (char *)data + (size_t)o32 * es, len };

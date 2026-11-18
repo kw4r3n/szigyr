@@ -55,11 +55,20 @@ const dvOf = (u: Uint8Array): DataView => { let d = dvs.get(u.buffer); if (!d) d
 
 export class Slice<T = unknown> {
   /** Only Vec.slice and Vec.view construct these. */
-  private readonly buf: Buf<T>;
+  private buf: Buf<T>;
   private readonly off: number;
   readonly length: number;
-  private readonly cod: Codec | undefined;
-  constructor(buf: Buf<T>, off: number, length: number, cod?: Codec) { this.buf = buf; this.off = off; this.length = length; this.cod = cod; }
+  private cod: Codec | undefined;
+  /** The Vec this views, so a view of a type-parameter Vec can switch representation with it (D105). */
+  private readonly owner: Vec<T> | undefined;
+  constructor(buf: Buf<T>, off: number, length: number, cod?: Codec, owner?: Vec<T>) { this.buf = buf; this.off = off; this.length = length; this.cod = cod; this.owner = owner; }
+  /** C boundary: a view of a Vec made with a type parameter as its element type ("other") adopts `elem` together with that Vec. */
+  adopt(elem: ElemKind): void {
+    if (!this.owner || !Array.isArray(this.buf)) return;
+    this.owner.adopt(elem);
+    const o = this.owner as unknown as { buf: Buf<T>; cod: Codec | undefined };
+    this.buf = o.buf; this.cod = o.cod;
+  }
   get(i: number, pos?: Pos): T {
     if (!inBounds(i, this.length)) trap("T002", `index ${i} out of range (length ${this.length})`, pos);
     if (this.cod) return this.cod.rd(dvOf(this.buf as Uint8Array), (this.off + i) * this.cod.z) as T;
@@ -77,7 +86,7 @@ export class Slice<T = unknown> {
   slice(start: number, end: number, pos?: Pos): Slice<T> {
     if (!(Number.isInteger(start) && Number.isInteger(end) && start >= 0 && start <= end && end <= this.length))
       trap("T002", `slice ${start}..${end} out of range (length ${this.length})`, pos);
-    return new Slice(this.buf, this.off + start, end - start, this.cod);
+    return new Slice(this.buf, this.off + start, end - start, this.cod, this.owner);
   }
 }
 
@@ -140,10 +149,10 @@ export class Vec<T = unknown> {
   slice(start: number, end: number, pos?: Pos): Slice<T> {
     if (!(Number.isInteger(start) && Number.isInteger(end) && start >= 0 && start <= end && end <= this.len))
       trap("T002", `slice ${start}..${end} out of range (length ${this.len})`, pos);
-    return new Slice(this.buf, start, end - start, this.cod);
+    return new Slice(this.buf, start, end - start, this.cod, this);
   }
   /** Whole-vector view, for passing a Vec where a Slice parameter is expected. */
-  view(): Slice<T> { return new Slice(this.buf, 0, this.len, this.cod); }
+  view(): Slice<T> { return new Slice(this.buf, 0, this.len, this.cod, this); }
 }
 
 /** a[i] / a[i] = x for Array, Vec and Slice (T002). */

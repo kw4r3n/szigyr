@@ -448,16 +448,23 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         case K.SwitchStatement: {
           const sw = s as ts.SwitchStatement;
           const dt = this.typeOf(sw.expression);
-          if (dt.k === "num" && !isInt(dt)) throw this.no(sw.expression, "a switch over a floating-point value");
           const d = this.ex(sw.expression);
-          this.emit(`switch (${d}) {`);
-          for (const cl of sw.caseBlock.clauses) {
+          const labels = sw.caseBlock.clauses.map((cl) => {
+            if (cl.kind === K.DefaultClause) return undefined;
+            const e = (cl as ts.CaseClause).expression;
+            if (e.kind !== K.StringLiteral && e.kind !== K.NumericLiteral && !(e.kind === K.PrefixUnaryExpression && (e as ts.PrefixUnaryExpression).operand.kind === K.NumericLiteral)) throw this.no(e, "a non-literal case label");
+            return this.ex(e);
+          });
+          const float = dt.k === "num" && !isInt(dt);
+          if (float) { // C `case` needs integers: pick the clause with `==` (as `===`: NaN matches nothing, -0 matches 0), then switch on its index
+            const sel = `t${this.tmp++}`;
+            this.emit(`int ${sel} = -1;`);
+            labels.forEach((l, i) => { if (l !== undefined) this.emit(`if (${sel} < 0 && ${d} == ${l}) ${sel} = ${i};`); });
+            this.emit(`switch (${sel}) {`);
+          } else this.emit(`switch (${d}) {`);
+          for (const [i, cl] of sw.caseBlock.clauses.entries()) {
             if (cl.kind === K.DefaultClause) this.emit("default:");
-            else {
-              const e = (cl as ts.CaseClause).expression;
-              if (e.kind !== K.StringLiteral && e.kind !== K.NumericLiteral && !(e.kind === K.PrefixUnaryExpression && (e as ts.PrefixUnaryExpression).operand.kind === K.NumericLiteral)) throw this.no(e, "a non-literal case label");
-              this.emit(`case ${this.ex(e)}:`);
-            }
+            else this.emit(`case ${float ? i : labels[i]}:`);
             this.block(() => { for (const x of cl.statements) this.stmt(x); });
           }
           this.emit("}");
