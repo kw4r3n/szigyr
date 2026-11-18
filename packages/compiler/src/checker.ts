@@ -1,9 +1,9 @@
 // P2 checker (D012): declarations, statements, control flow, narrowing. Expressions live in expr.ts.
 import { NodeFlags, SyntaxKind as K, type Node, type ts } from "./parse.ts";
 import { Program, legalUnion, type ClassValueSym, type Layer, type LocalSym, type Module, type ValueSym } from "./modules.ts";
-import { PROMISE_CONTAINERS, checkTo, hasPromise, cond, expr, isLitOnly, promiseOk } from "./expr.ts";
+import { PROMISE_CONTAINERS, assignTarget, checkTo, exprTypes, hasPromise, cond, expr, isLitOnly, promiseOk } from "./expr.ts";
 import {
-  ERROR, NEVER, NULL, STR, VOID, assignable, field, isTaggedUnion, kindOf, nonNull, same, show, subst, bindTParams, unref, union,
+  ERROR, NEVER, NULL, STR, VOID, assignable, field, isErr, isNull, isTaggedUnion, kindOf, nonNull, same, show, subst, bindTParams, unref, union,
   type ClassSym, type FnType, type TParam, type Type,
 } from "./types.ts";
 
@@ -44,7 +44,7 @@ export class Checker {
   litLets = new Map<number, ts.Identifier>();
   narrow = new Map<string, Type>();
   /** Q122: every local id whose narrowings were dropped, in order. A mark is an index into it. */
-  kills: number[] = [];
+  kills: string[] = [];
   /** Q122: per function node, the names of its locals that are captured by a nested function and assigned. */
   unstable = new Map<Node, Set<string>>();
   fx!: FnCtx;
@@ -144,20 +144,39 @@ export class Checker {
   /** Adds facts, except those about locals assigned since `mark` (Q122). */
   withFacts(f: Map<string, Type>, mark?: number, end?: number): void {
     const dead = mark === undefined ? undefined : this.killedSince(mark, end);
-    const add = [...f].filter(([k]) => !dead?.has(k.split(".")[0]!));
+    const add = [...f].filter(([k]) => !dead || !isDead(k, dead));
     if (add.length) this.narrow = new Map([...this.narrow, ...add]);
   }
-  /** An assignment to local `id` ends its narrowings (Q025) and is logged so that saved states drop them too (Q122). */
-  forget(id: number): void {
-    this.kills.push(id);
-    for (const k of [...this.narrow.keys()]) if (k === `${id}` || k.startsWith(`${id}.`)) this.narrow.delete(k);
+  /** An assignment to the key (a local or a `this.f` path) ends the narrowings on it and below (Q025), and is logged so that saved states drop them too (Q122). */
+  forget(key: string): void {
+    this.kills.push(key);
+    const dead = new Set([key]);
+    for (const k of [...this.narrow.keys()]) if (isDead(k, dead)) this.narrow.delete(k);
+  }
+  /** The assignment target `e` (parentheses removed): ends its narrowings; returns the target and its key, if it has one (Q133). */
+  assigned(e: ts.Expression): { node: ts.Expression; key?: string } {
+    const node = assignTarget(e);
+    const k = this.keyOf(node)?.key;
+    if (k) this.forget(k);
+    return { node, key: k };
   }
   mark(): number { return this.kills.length; }
-  killedSince(mark: number, end?: number): Set<string> { return new Set(this.kills.slice(mark, end).map(String)); }
-  /** `saved` without the narrowings of locals assigned since `mark`: the state after code that may have run (Q122). */
+  killedSince(mark: number, end?: number): Set<string> { return new Set(this.kills.slice(mark, end)); }
+  /** `saved` without the narrowings of keys assigned since `mark`: the state after code that may have run (Q122). */
   restore(saved: Map<string, Type>, mark: number): void {
     const dead = this.killedSince(mark);
-    this.narrow = dead.size ? new Map([...saved].filter(([k]) => !dead.has(k.split(".")[0]!))) : saved;
+    this.narrow = dead.size ? new Map([...saved].filter(([k]) => !isDead(k, dead))) : saved;
+  }
+  /**
+   * Q133: the one entry for code that runs conditionally (the right side of `&&` / `||` / `??`, a branch of `?:`, an optional call,
+   * a loop body). It starts from the current narrowings plus `facts`; afterwards the narrowings it added are gone and those it
+   * assigned stay ended. `if` and `switch` join their branches themselves (Q131, Q122 3).
+   */
+  branch<T>(f: () => T, facts?: Map<string, Type>, factsMark?: number, factsEnd?: number): T {
+    const saved = this.narrow, m = this.mark();
+    this.narrow = new Map(saved);
+    if (facts) this.withFacts(facts, factsMark, factsEnd ?? m);
+    try { return f(); } finally { this.restore(saved, m); }
   }
 
   // ---- modules
@@ -284,7 +303,7 @@ export class Checker {
     const walk = (n: Node, inFn: boolean): void => {
       if (!inFn && isThisField(n) && done.has(n.name.text)) return;
       if (n.kind === K.ThisKeyword) { this.at("E2002", n, "'this' is used before every field is initialized"); return; }
-      if (n.kind === K.ReturnStatement) this.at("E2002", n, "'return' before every field is initialized");
+      if (n.kind === K.ReturnStatement && !inFn) this.at("E2002", n, "'return' before every field is initialized");
       if (!inFn && n.kind === K.BinaryExpression && (n as ts.BinaryExpression).operatorToken.kind === K.EqualsToken && isThisField((n as ts.BinaryExpression).left)) {
         walk((n as ts.BinaryExpression).right, inFn); // a write; only a top-level one counts as assigned
         return;
@@ -352,6 +371,7 @@ export class Checker {
       case K.VariableStatement: this.varList((s as ts.VariableStatement).declarationList); return true;
       case K.ExpressionStatement: {
         const t = this.discard((s as ts.ExpressionStatement).expression);
+        this.assignNarrow((s as ts.ExpressionStatement).expression);
         return !(t.k === "prim" && t.name === "never");
       }
       case K.IfStatement: {
@@ -393,7 +413,7 @@ export class Checker {
         const saved = this.scope;
         this.scope = new Scope(saved);
         if (x.initializer?.kind === K.VariableDeclarationList) this.varList(x.initializer as ts.VariableDeclarationList);
-        else if (x.initializer) this.discard(x.initializer as ts.Expression);
+        else if (x.initializer) { this.discard(x.initializer as ts.Expression); this.assignNarrow(x.initializer as ts.Expression); }
         this.loopEntry(x.statement, x.incrementor, x.condition);
         const m0 = this.mark();
         if (x.condition) cond(this, x.condition);
@@ -436,24 +456,33 @@ export class Checker {
     return t;
   }
 
+  /**
+   * Q131 / Q133: `x = e` written as a whole statement (or a `for` initializer) narrows a stable `T | null` local to T when e is not
+   * nullable. An assignment inside an expression only ends narrowings (`lvalue`), so nothing conditional can leave one behind.
+   */
+  private assignNarrow(e: ts.Expression): void {
+    if (e.kind !== K.BinaryExpression || (e as ts.BinaryExpression).operatorToken.kind !== K.EqualsToken) return;
+    const b = e as ts.BinaryExpression;
+    const l = assignTarget(b.left);
+    const s = isId(l) ? this.scope.lookup(l.text) : undefined;
+    const inner = s && !s.unstable ? nonNull(s.type) : undefined;
+    const rt = exprTypes.get(b.right);
+    if (inner && rt && !isErr(rt) && !isNull(rt) && !nonNull(rt)) this.narrow.set(`${s!.id}`, inner);
+  }
+
   /** Drops narrowings of locals assigned inside a loop: they do not hold on later iterations (Q025). */
   private loopEntry(body: Node, ...extra: (Node | undefined)[]): void {
-    const names = new Set<string>();
+    const targets: ts.Expression[] = [];
     const walk = (n: Node): void => {
-      if (n.kind === K.BinaryExpression && isAssignOp((n as ts.BinaryExpression).operatorToken.kind) && isId((n as ts.BinaryExpression).left)) names.add(((n as ts.BinaryExpression).left as ts.Identifier).text);
+      if (n.kind === K.BinaryExpression && isAssignOp((n as ts.BinaryExpression).operatorToken.kind)) targets.push((n as ts.BinaryExpression).left);
       n.forEachChild(walk);
     };
     walk(body);
     for (const x of extra) if (x) walk(x);
-    for (const n of names) { const s = this.scope.lookup(n); if (s) this.forget(s.id); }
+    for (const t of targets) this.assigned(t);
   }
   private loopBody(body: ts.Statement, f: Map<string, Type>, after?: () => void, factsMark?: number): boolean {
-    const saved = this.narrow, m = this.mark();
-    this.narrow = new Map(saved); this.withFacts(f, factsMark, m);
-    const r = this.stmt(body);
-    after?.();
-    this.restore(saved, m);
-    return r;
+    return this.branch(() => { const r = this.stmt(body); after?.(); return r; }, f, factsMark);
   }
 
   /** Q130: an inferred return type may be a Promise, not an array or union holding one. */
@@ -599,6 +628,8 @@ const isStringStmt = (s: ts.Statement): boolean => s.kind === K.ExpressionStatem
 const isTrue = (e: ts.Expression): boolean => e.kind === K.TrueKeyword;
 const isVoidish = (t: Type): boolean => t.k === "prim" && t.name === "void";
 const isPromise = hasPromise;
+/** Whether narrowing key `k` is `d` or a path below it, for some `d` in `dead`. */
+const isDead = (k: string, dead: Set<string>): boolean => { for (let i = k.indexOf("."); i >= 0; i = k.indexOf(".", i + 1)) if (dead.has(k.slice(0, i))) return true; return dead.has(k); };
 
 /** Whether a `break` inside `n` targets `n` (not a nested loop or switch). */
 function hasBreak(n: Node, isSwitch = false): boolean {
@@ -664,8 +695,7 @@ export function capturedAssigned(root: Node): Map<Node, Set<string>> {
       if (i >= 0 && i < stack.length - 1) note(captured, stack[i]!, (n as ts.Identifier).text);
     } else if (n.kind === K.PropertyAccessExpression) { walk((n as ts.PropertyAccessExpression).expression, stack); return; }
     else if (n.kind === K.BinaryExpression && isAssignOp((n as ts.BinaryExpression).operatorToken.kind)) {
-      let l = (n as ts.BinaryExpression).left;
-      while (l.kind === K.ParenthesizedExpression) l = (l as ts.ParenthesizedExpression).expression;
+      const l = assignTarget((n as ts.BinaryExpression).left);
       const i = isId(l) ? owner(l.text, stack) : -1;
       if (i >= 0) note(assigned, stack[i]!, (l as ts.Identifier).text);
     }

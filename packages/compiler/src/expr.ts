@@ -1,6 +1,6 @@
 // P2 expressions (D012): bidirectional checking. `expr(c, e, want)` types `e` with the contextual type `want`
 // (numeric literals Q014, string literals Q016, object / array literals Q021, ok / err Q037, generic calls Q030).
-import { SyntaxKind as K, type Node, type ts } from "./parse.ts";
+import { NodeFlags, SyntaxKind as K, type Node, type ts } from "./parse.ts";
 import type { Checker } from "./checker.ts";
 import { tparamShells, type Layer, type LocalSym } from "./modules.ts";
 import { BUILTIN_FUNCTIONS, GLOBAL_AUTHORITIES, NAMESPACES, RESERVED, genMember, nsMember, opaqueMember, stringMember, type Member } from "./builtins.ts";
@@ -63,6 +63,7 @@ export function cond(c: Checker, e: ts.Expression): void {
 export const exprTypes = new WeakMap<Node, Type>();
 /** Q130: the only expressions that may have a Promise type: `await` operands, `Promise.all` arguments, returns of Promise functions. */
 export const promiseOk = new WeakSet<Node>();
+const optCall = new WeakSet<Node>();
 /** Q130: these get their Promise type from a sub-expression, which is the one reported. */
 export const PROMISE_CONTAINERS = new Set<K>([K.ObjectLiteralExpression, K.ArrayLiteralExpression, K.ConditionalExpression, K.ParenthesizedExpression, K.BinaryExpression]);
 /** A Promise, also inside `| null` or as array elements (`xs.map(g)`). Other holders only get one from a reported expression. */
@@ -302,13 +303,19 @@ function element(c: Checker, e: ts.ElementAccessExpression, write: boolean): Typ
 }
 
 // ---- assignment targets
-function lvalue(c: Checker, e: ts.Expression): Type {
-  if (e.kind === K.ParenthesizedExpression) return lvalue(c, (e as ts.ParenthesizedExpression).expression);
+/** Q133: the target of an assignment with its parentheses removed. Every reader of assignment targets goes through this. */
+export function assignTarget(e: ts.Expression): ts.Expression {
+  while (e.kind === K.ParenthesizedExpression) e = (e as ts.ParenthesizedExpression).expression;
+  return e;
+}
+
+function lvalue(c: Checker, e0: ts.Expression): Type {
+  const e = c.assigned(e0).node; // ends the target's narrowings, a `this.f` path included (Q133)
   if (isId(e)) {
     const s = c.scope.lookup(e.text);
     if (s) {
       if (!s.mutable) c.at("E2002", e, `'${e.text}' is const`);
-      c.forget(s.id);
+      c.forget(`${s.id}`); // an unstable local has no key above, but is logged all the same
       return s.mutable ? s.type : ERROR;
     }
     if (c.prog.lookupValue(c.mod, e.text)) { c.at("E2002", e, `'${e.text}' cannot be assigned`); return ERROR; }
@@ -370,13 +377,7 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
   if (k === K.EqualsToken) {
     const lt = lvalue(c, b.left);
     if (isErr(lt)) { expr(c, b.right); return ERROR; }
-    const rt = checkTo(c, b.right, lt);
-    // Q131: a non-null value assigned to a stable `T | null` local narrows it to T
-    let l = b.left;
-    while (l.kind === K.ParenthesizedExpression) l = (l as ts.ParenthesizedExpression).expression;
-    const s = isId(l) ? c.scope.lookup(l.text) : undefined;
-    const inner = s && !s.unstable ? nonNull(s.type) : undefined;
-    if (inner && !isErr(rt) && !isNull(rt) && !nonNull(rt)) c.narrow.set(`${s!.id}`, inner);
+    checkTo(c, b.right, lt); // narrowing by the assignment is a statement's (Checker.assignNarrow, Q133)
     return lt;
   }
   const base = COMPOUND[k];
@@ -392,10 +393,7 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
       const m0 = c.mark();
       const lt = expr(c, b.left);
       if (!isBool(lt) && !isErr(lt)) c.at("E2004", b.left, "operand must be boolean");
-      const saved = c.narrow, m1 = c.mark();
-      c.narrow = new Map(saved); c.withFacts(c.facts(b.left, k === K.AmpersandAmpersandToken), m0);
-      const rt = expr(c, b.right);
-      c.restore(saved, m1); // the right side may not run, but its assignments may have (Q122)
+      const rt = c.branch(() => expr(c, b.right), c.facts(b.left, k === K.AmpersandAmpersandToken), m0);
       if (!isBool(rt) && !isErr(rt)) c.at("E2004", b.right, "operand must be boolean");
       return BOOL;
     }
@@ -404,7 +402,7 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
       if (isErr(lt)) { expr(c, b.right); return ERROR; }
       const inner = nonNull(lt);
       if (!inner) { c.at("E2002", op, "'??' needs a nullable left operand"); return ERROR; }
-      const rt = expr(c, b.right, inner);
+      const rt = c.branch(() => expr(c, b.right, inner));
       if (assignable(rt, inner)) return inner;
       if (assignable(rt, lt)) return lt;
       c.at("E2002", b.right, `expected '${show(inner)}', got '${show(rt)}'`);
@@ -498,10 +496,9 @@ function conditional(c: Checker, e: ts.ConditionalExpression, want: Type | undef
   const m0 = c.mark();
   cond(c, e.condition);
   const saved = c.narrow, m1 = c.mark();
-  c.narrow = new Map(saved); c.withFacts(c.facts(e.condition, true), m0, m1);
-  const a = want ? checkTo(c, e.whenTrue, want) : expr(c, e.whenTrue);
-  c.narrow = new Map(saved); c.withFacts(c.facts(e.condition, false), m0, m1);
-  const b = want ? checkTo(c, e.whenFalse, want) : expr(c, e.whenFalse, deferrable(e.whenFalse) ? sideCtx(a) : undefined);
+  const a = c.branch(() => (want ? checkTo(c, e.whenTrue, want) : expr(c, e.whenTrue)), c.facts(e.condition, true), m0, m1);
+  c.narrow = saved; // the two branches are alternatives
+  const b = c.branch(() => (want ? checkTo(c, e.whenFalse, want) : expr(c, e.whenFalse, deferrable(e.whenFalse) ? sideCtx(a) : undefined)), c.facts(e.condition, false), m0, m1);
   c.restore(saved, m1);
   if (want) return isErr(a) || isErr(b) ? ERROR : want;
   if (isErr(a) || isErr(b)) return ERROR;
@@ -606,6 +603,8 @@ export function checkArrow(c: Checker, e: ts.ArrowFunction | ts.FunctionExpressi
 
 // ---- calls
 function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
+  // `a?.m(args)`: the arguments may not run (Q133)
+  if (e.flags & NodeFlags.OptionalChain && !optCall.has(e)) { optCall.add(e); return c.branch(() => call(c, e, want)); }
   const callee = e.expression;
   if (isId(callee) && !c.scope.lookup(callee.text)) {
     const sym = c.prog.lookupValue(c.mod, callee.text);

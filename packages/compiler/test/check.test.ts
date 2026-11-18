@@ -94,3 +94,7 @@ it("the D050 fallback stays silent when a signature already reported", () => {
   expect(run({ "main.ts": "function f(x: Nope): i32 { return x.y; }\n" })).toEqual(["E2000 main.ts 1:15"]);
   expect(run({ "main.ts": "type A = Array<A>;\nfunction g(a: A): string { return a[0]; }\n" }).filter((d) => d.startsWith("E2002")).length).toBe(1);
 });
+
+it("one diagnostic per code and position (Q133)", () => {
+  expect(run({ "main.ts": "async function g(): Promise<void> {}\nfunction f(): void { const a = [g()]; }\n" })).toEqual(["E2002 main.ts 2:33"]);
+});

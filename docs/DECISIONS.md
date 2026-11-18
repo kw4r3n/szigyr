@@ -188,3 +188,15 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 ## D055: constructor の確定代入（Q121 の追記）
 
 - `classBody` は初期化区間の文を順にたどり、代入済みのフィールドの集合（初期化子つきから始める）を持つ。`this.f` は f が代入済みなら読める。入れ子の関数の中では、どの `this` も拒否する。直下の文 `this.f = …` は右辺を検査した後に f を代入済みに加える。入れ子の `this.f = …` は書き込みとして通すが、代入済みには数えない。
+
+## D056: 条件つきの評価と代入先の 1 か所化（Q133）
+
+- 代入による絞り込みは `Checker.assignNarrow` だけが付ける。呼ぶのは `ExpressionStatement` と `for` の初期化式で、`binary` の `=` は右辺を検査するだけにした。
+- 代入先は `expr.ts` の `assignTarget`（括弧を外す）で決める。`Checker.assigned` は代入先の鍵（局所変数の番号、または `this.f` のパス）を `keyOf` で求めて `forget` する。`lvalue`、`loopEntry`、`assignNarrow`、`capturedAssigned` はどれも `assignTarget` を使う。`kills` は鍵の文字列の列で、鍵とその下のパスを無効にする（`isDead`）。
+- 条件つきで評価される部分は `Checker.branch(f, facts, mark, end)` を通す。入口で絞り込みの表を写し、出口で `restore` して、中で足した絞り込みを捨て、中の代入による無効化を残す。使う箇所は `&&` / `||` の右辺、`??` の右辺、三項演算子の 2 つの枝、`?.` を含む呼び出し（`NodeFlags.OptionalChain`）、ループの本体（`loopBody`）。三項演算子の 2 つ目の枝は 1 つ目の枝の前の表から始める。`if` と `switch` は分岐ごとの終わりの表を自分で合流させる（Q122 の 3、Q131）。
+
+## D057: 型パラメータの Promise と診断の重複（Q130 の追記）
+
+- `tparamShells` が作るユーザーの型パラメータは、最初から条件 `nopromise` を持つ。Q127 の `checkInsts` が、具体化のたびに型引数が Promise を含まないか（関数型の中は見ない）を検査する。組み込みの型パラメータはこの条件を持たない。
+- `Reporter.report` は、同じファイル、同じコード、同じ開始位置の診断を 2 つ目から落とす。
+

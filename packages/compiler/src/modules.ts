@@ -44,6 +44,7 @@ export interface Module {
 export class Reporter {
   readonly out: Diagnostic[] = [];
   report(mod: Module, code: string, start: number, end: number, message: string, data?: Record<string, unknown>): void {
+    if (this.out.some((d) => d.code === code && d.file === mod.file && d.range.start.line === mod.pf.position(start).line && d.range.start.col === mod.pf.position(start).col)) return; // Q133: one per code and position
     this.out.push({ code, severity: "error", message, file: mod.file, range: { start: mod.pf.position(start), end: mod.pf.position(end) }, ...(data ? { data } : {}) });
   }
   at(mod: Module, code: string, n: Node, message: string, data?: Record<string, unknown>): void {
@@ -441,4 +442,4 @@ export function legalUnion(u: Type): boolean {
 
 export interface TypeEnv { mod: Module; tparams: Map<string, TParam> }
 
-export const tparamShells = (list: ts.NodeArray<ts.TypeParameterDeclaration> | undefined): TParam[] => (list ?? []).map((d) => newTParam(d.name.text));
+export const tparamShells = (list: ts.NodeArray<ts.TypeParameterDeclaration> | undefined): TParam[] => (list ?? []).map((d) => ({ ...newTParam(d.name.text), need: new Set(["nopromise"] as const) }));

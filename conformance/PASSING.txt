@@ -29,6 +29,7 @@ accept/40-promise-positions.ts
 accept/41-constructor-definite-assignment.ts
 accept/42-narrowing-by-assignment.ts
 accept/43-interface-generic-method.ts
+accept/44-narrowing-statement-assign.ts
 reject/E1000-array-suffix-type.ts
 reject/E1000-await-in-non-async-arrow.ts
 reject/E1000-await-outside-async.ts
@@ -104,6 +105,8 @@ reject/E2002-cast-unknown-target.ts
 reject/E2002-constraint-unmet-alias.ts
 reject/E2002-constraint-unmet-class-declared-later.ts
 reject/E2002-ctor-calls-method-before-init.ts
+reject/E2002-ctor-readonly-literal-reassign.ts
+reject/E2002-ctor-readonly-reassign-ends-narrowing.ts
 reject/E2002-ctor-reads-field-before-init.ts
 reject/E2002-ctor-reads-unassigned-after-assigned.ts
 reject/E2002-ctor-return-before-init.ts
@@ -124,6 +127,7 @@ reject/E2002-js-encode-authority.ts
 reject/E2002-js-encode-function.ts
 reject/E2002-map-key-array.ts
 reject/E2002-missing-return-path.ts
+reject/E2002-narrow-assign-in-condition.ts
 reject/E2002-narrow-assigned-in-and-operand.ts
 reject/E2002-narrow-assigned-in-condition.ts
 reject/E2002-narrow-assigned-in-nested-if.ts
@@ -135,6 +139,12 @@ reject/E2002-narrow-closure-assigns-literal-union.ts
 reject/E2002-narrow-closure-assigns.ts
 reject/E2002-narrow-closure-reads-reassigned-param.ts
 reject/E2002-narrow-closure-reads-reassigned.ts
+reject/E2002-narrow-do-while-condition-assign.ts
+reject/E2002-narrow-nullish-right-assign.ts
+reject/E2002-narrow-optional-call-arg-assign.ts
+reject/E2002-narrow-paren-target-for-of.ts
+reject/E2002-narrow-paren-target-for-update.ts
+reject/E2002-narrow-paren-target-in-loop.ts
 reject/E2002-narrow-readonly-field-in-constructor.ts
 reject/E2002-narrow-switch-fallthrough.ts
 reject/E2002-narrow-tag-written-through-union.ts
@@ -158,8 +168,11 @@ reject/E2002-promise-discarded-statement.ts
 reject/E2002-promise-discarded-void-arrow-body.ts
 reject/E2002-promise-in-map.ts
 reject/E2002-promise-in-record-field.ts
+reject/E2002-promise-inferred-type-argument.ts
 reject/E2002-promise-passed-as-argument.ts
 reject/E2002-promise-stored-in-variable.ts
+reject/E2002-promise-type-argument-generic-class.ts
+reject/E2002-promise-type-argument-into-map.ts
 reject/E2002-readonly-array-index-write.ts
 reject/E2002-readonly-field-assignment.ts
 reject/E2002-record-excess-property.ts

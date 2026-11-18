@@ -15,7 +15,8 @@ export const OPAQUE_NAMES = new Set<string>([...AUTHORITIES, "JsRef", "Test", "F
 
 export interface Field { name: string; type: Type; readonly: boolean }
 /** Q127: conditions a type parameter takes on from the positions it is used in, checked on every instantiation. */
-export type Need = "key" | "copy" | "field" | "borrow" | "eq";
+/** `nopromise`: every user type parameter has it (Q130 addendum): a Promise cannot hide behind a type parameter. */
+export type Need = "key" | "copy" | "field" | "borrow" | "eq" | "nopromise";
 export interface TParam { name: string; id: number; constraint?: Type; need?: Set<Need> }
 /** `min`: builtin optional trailing parameters (Q032). `prefix`: a builtin callback may take a prefix of the parameters. */
 export interface FnType {
@@ -303,6 +304,17 @@ export function needOk(n: Need, t: Type): boolean {
     case "field": return structField(t);
     case "borrow": return t.k === "error" || isOwned(t) || (t.k === "gen" && t.name === "Slice");
     case "eq": return comparable(t);
+    case "nopromise": return !promiseIn(t);
+  }
+}
+/** A Promise anywhere in `t` except behind a function type (calling the function is checked where it happens). */
+function promiseIn(t: Type): boolean {
+  switch (t.k) {
+    case "gen": return t.name === "Promise" || t.args.some(promiseIn);
+    case "union": return t.members.some(promiseIn);
+    case "record": return t.fields.some((f) => promiseIn(f.type));
+    case "class": return t.args.some(promiseIn);
+    default: return false;
   }
 }
 /** `t` meets `n`, or is a type parameter, which then requires `n` of whatever instantiates it (Q127). */
