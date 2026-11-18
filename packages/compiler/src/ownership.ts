@@ -17,7 +17,7 @@ interface Frame { loop: boolean; depth: number; breaks: State[]; continues: Stat
 
 const isId = (n: Node | undefined): n is ts.Identifier => n?.kind === K.Identifier;
 const strip = (e: ts.Expression): ts.Expression => {
-  while (e.kind === K.ParenthesizedExpression || e.kind === K.AsExpression) e = (e as ts.ParenthesizedExpression).expression;
+  while (e.kind === K.ParenthesizedExpression) e = (e as ts.ParenthesizedExpression).expression;
   return e;
 };
 const genName = (t: Type | undefined): string | undefined => { const u = t && unref(t); return u?.k === "gen" ? u.name : undefined; };
@@ -25,6 +25,10 @@ const borrowMode = (t: Type | undefined): "ref" | "mut" | undefined => (t?.k ===
 /** Vec / Slice methods that need `Mut` of the receiver (§3.3). */
 const MUT_METHODS = new Set(["push", "pop", "clear", "fill"]);
 const FN_EXPR = new Set<K>([K.ArrowFunction, K.FunctionExpression]);
+/** A managed container (or a Promise) whose element is owned (Q174). */
+const CONTAINERS = new Set(["Array", "ReadonlyArray", "Map", "Set", "Promise"]);
+const ownedInside = (t: Type | undefined): boolean =>
+  !!t && (t.k === "union" ? t.members.some(ownedInside) : t.k === "gen" && CONTAINERS.has(t.name) && t.args.some((a) => movesLike(a) || ownedInside(a)));
 const isNever = (t: Type | undefined): boolean => t?.k === "prim" && t.name === "never";
 
 export function checkOwnership(prog: Program): void {
@@ -63,8 +67,16 @@ class ModuleCheck {
     if (n.kind === K.TypeReference) {
       const r = n as ts.TypeReferenceNode;
       const p = r.parent as ts.ParameterDeclaration;
-      if (isId(r.typeName) && (r.typeName.text === "Ref" || r.typeName.text === "Mut") && !(p.kind === K.Parameter && p.type === r)) {
-        this.at("E3004", r, `'${r.typeName.text}' can only be the type of a parameter`);
+      const name = isId(r.typeName) ? r.typeName.text : undefined;
+      if ((name === "Ref" || name === "Mut") && !(p.kind === K.Parameter && p.type === r)) {
+        this.at("E3004", r, `'${name}' can only be the type of a parameter`);
+      } else if (name === "Ref" || name === "Mut") {
+        const f = p.parent as ts.FunctionLikeDeclaration;
+        if (f.modifiers?.some((m) => m.kind === K.AsyncKeyword)) this.at("E3004", r, "an async function cannot take a borrow; it would outlive the call (Q171)");
+      } else if (name === "Slice") {
+        const q = r.parent as ts.TypeReferenceNode;
+        const outer = q.kind === K.TypeReference && isId(q.typeName) ? q.typeName.text : undefined;
+        if (outer !== "Ref" && outer !== "Mut") this.at("E3004", r, "'Slice' can only appear as 'Ref<Slice<T>>' or 'Mut<Slice<T>>' (§3.2, Q173)");
       }
     }
     n.forEachChild((c) => this.typePositions(c));
@@ -79,6 +91,15 @@ class Flow {
   readonly declDepth = new Map<number, number>();
   /** Captured locals already reported in this function (E3004 / E3007 once per local). */
   readonly captured = new Set<number>();
+  /**
+   * Borrows in force while sibling operands are evaluated (§5.5, Q170): a call's receiver and borrowed arguments, and the
+   * root of an element access (`ref`) or of an assignment target (`mut`, a `base`). A move of the variable meanwhile is
+   * E3005 (E3001 for a base); an inner `Mut` borrow of it is E3005. Reads and inner `Ref` borrows stay allowed (Q065, Q067).
+   */
+  readonly active: { sym: LocalSym; mode: "ref" | "mut"; node: Node; base: boolean }[] = [];
+  readonly e3005 = new Set<Node>();
+  /** Where the current call's own entries start in `active`. */
+  callMark = 0;
   readonly m: ModuleCheck;
   /** Function nesting depth, as P2 counts it in `LocalSym.fnDepth`. */
   readonly depth: number;
@@ -130,7 +151,7 @@ class Flow {
           f.continues = [];
           this.ex(x.expression, "read");
           return isTrue(x.expression) ? null : copy(this.state);
-        });
+        }, x.expression.kind === K.FalseKeyword); // `do … while (false)` has no back edge
         return;
       }
       case K.ForStatement: {
@@ -202,11 +223,11 @@ class Flow {
    * One pass over a loop. `iter` runs the condition and the body, and returns the state that leaves through the condition.
    * The back edge (the body's end joined with its `continue`s) must not hold an outer local the loop moved (E3002, §5.3).
    */
-  private loop(iter: (f: Frame) => State): void {
+  private loop(iter: (f: Frame) => State, once = false): void {
     const f = this.push(true);
     const out = iter(f);
     const back = f.continues.reduce(join, this.state);
-    for (const mv of f.moves) {
+    if (!once) for (const mv of f.moves) {
       if (back?.get(mv.sym.id) === mv.node) this.m.at("E3002", mv.node, `'${mv.sym.name}' is moved inside a loop`);
     }
     this.frames.pop();
@@ -216,7 +237,10 @@ class Flow {
 
   private vars(list: ts.VariableDeclarationList): void {
     for (const d of list.declarations) {
-      if (d.initializer) this.ex(d.initializer, "move"); // destructuring moves the whole value (§5.3, Q052)
+      // destructuring moves the whole value (§5.3, Q052); taking only Copy fields out of a borrow just reads it
+      const copyOut = !isId(d.name) && d.initializer && isId(strip(d.initializer)) && borrowMode(localOf.get(strip(d.initializer) as ts.Identifier)?.declared)
+        && (d.name as ts.ObjectBindingPattern).elements.every((el) => isId(el.name) && !movesLike(localOf.get(el.name)?.type ?? { k: "error" }));
+      if (d.initializer) this.ex(d.initializer, copyOut ? "read" : "move");
       this.declared(d.name);
     }
   }
@@ -243,7 +267,11 @@ class Flow {
       case K.ElementAccessExpression: {
         const x = e as ts.ElementAccessExpression;
         this.ex(x.expression, "read");
+        const mark = this.active.length;
+        const r = this.rootOf(x.expression);
+        if (r) this.active.push({ sym: r.sym, mode: "ref", node: r.id, base: true });
         this.ex(x.argumentExpression, "read");
+        this.active.length = mark;
         return;
       }
       case K.CallExpression: case K.NewExpression: this.call(e as ts.CallExpression); return;
@@ -299,6 +327,12 @@ class Flow {
     this.moved(id, sym);
   }
 
+  private exclusive(n: Node, sym: LocalSym): void {
+    if (this.e3005.has(n)) return;
+    this.e3005.add(n);
+    this.m.at("E3005", n, `'${sym.name}' is used by another argument of this call`);
+  }
+
   private useCheck(id: ts.Identifier, sym: LocalSym): void {
     const at = this.state?.get(sym.id);
     if (!at) return;
@@ -308,6 +342,9 @@ class Flow {
 
   private moved(id: ts.Identifier, sym: LocalSym): void {
     if (!this.state) return;
+    const a = this.active.find((x) => x.sym.id === sym.id);
+    if (a?.base) this.m.at("E3001", a.node, `'${sym.name}' is moved while this access to it is being evaluated`, { variable: sym.name, movedAt: this.m.mod.pf.position(id.getStart(this.m.mod.sf)) });
+    else if (a) this.exclusive(id, sym);
     this.state.set(sym.id, id);
     const d = this.declDepth.get(sym.id) ?? 0;
     for (const f of this.frames) if (f.loop && f.depth > d) f.moves.push({ sym, node: id });
@@ -315,7 +352,12 @@ class Flow {
 
   private binary(b: ts.BinaryExpression, ctx: Ctx): void {
     const k = b.operatorToken.kind;
-    if (k === K.EqualsToken) { this.assign(b); return; }
+    if (k === K.EqualsToken) {
+      this.assign(b);
+      const l = assignTarget(b.left);
+      if (ctx !== "read" && (isId(l) || l.kind === K.PropertyAccessExpression)) this.ex(l, ctx); // the value of `x = v` is `x` (Q172)
+      return;
+    }
     if (k === K.AmpersandAmpersandToken || k === K.BarBarToken || k === K.QuestionQuestionToken) {
       const inner: Ctx = k === K.QuestionQuestionToken ? ctx : "read";
       this.ex(b.left, inner);
@@ -325,8 +367,10 @@ class Flow {
       return;
     }
     if (k === K.PlusEqualsToken || k === K.MinusEqualsToken || k === K.AsteriskEqualsToken || k === K.SlashEqualsToken || k === K.PercentEqualsToken || k === K.AsteriskAsteriskEqualsToken) {
+      const mark = this.active.length;
       this.lhs(assignTarget(b.left));
       this.ex(b.right, "read");
+      this.active.length = mark;
       return;
     }
     this.ex(b.left, "read");
@@ -345,19 +389,22 @@ class Flow {
       this.state?.delete(sym.id); // §5.2: a reassigned `let` is usable again
       return;
     }
+    const mark = this.active.length;
     const base = this.lhs(l);
     const bt = base && unref(exprTypes.get(base) ?? { k: "error" });
     const struct = l.kind === K.PropertyAccessExpression && bt?.k === "record" && bt.struct;
     const vecElem = l.kind === K.ElementAccessExpression && (genName(bt) === "Vec" || genName(bt) === "Slice");
     this.ex(b.right, struct ? "move" : vecElem ? "read" : "store");
+    this.active.length = mark;
   }
 
-  /** An assignment target `a.f` / `a[i]`: its root is used; writing through `Ref` is E3006 (Q050). Returns the object written to. */
+  /** An assignment target `a.f` / `a[i]`: its root is used; writing through `Ref` is E3006 (Q050). Returns the object written to. Leaves the root in `active`. */
   private lhs(l: ts.Expression): ts.Expression | undefined {
     if (isId(l)) { const sym = localOf.get(l); if (sym) this.useCheck(l, sym); return undefined; }
     const obj = l.kind === K.PropertyAccessExpression ? (l as ts.PropertyAccessExpression).expression : (l as ts.ElementAccessExpression).expression;
     const root = this.rootOf(obj);
     this.place(obj);
+    if (root) this.active.push({ sym: root.sym, mode: "mut", node: root.id, base: true }); // popped by the caller
     if (l.kind === K.ElementAccessExpression) this.ex((l as ts.ElementAccessExpression).argumentExpression, "read");
     if (root && borrowMode(root.sym.declared) === "ref") this.m.at("E3006", l, `cannot write through the Ref '${root.sym.name}'`);
     return obj;
@@ -401,7 +448,11 @@ class Flow {
     }
     this.place(e);
     if (mode === "mut" && borrowMode(r.sym.declared) === "ref") this.m.at("E3006", member ?? strip(e), `'${r.sym.name}' is borrowed as Ref and cannot be passed as Mut`);
-    return { sym: r.sym, mode, node: strip(e) };
+    const node = strip(e);
+    // Q170: within one call either side `Mut` conflicts; an outer borrow conflicts only with an inner `Mut` (Q065, Q067)
+    if (this.active.some((x, i) => x.sym.id === r.sym.id && (mode === "mut" || (i >= this.callMark && x.mode === "mut")))) this.exclusive(node, r.sym);
+    this.active.push({ sym: r.sym, mode, node, base: false }); // popped by `call`
+    return { sym: r.sym, mode, node };
   }
 
   // ---- calls
@@ -410,6 +461,9 @@ class Flow {
     const args = e.arguments ?? [];
     const sig = callSigs.get(e);
     const uses: Use[] = [];
+    const mark = this.active.length;
+    const outerMark = this.callMark;
+    this.callMark = mark;
     let store = false;
     if (callee.kind === K.PropertyAccessExpression) {
       const p = callee as ts.PropertyAccessExpression;
@@ -442,8 +496,13 @@ class Flow {
     // E3005 (§5.5): a variable passed as Mut takes part in no other argument; moving it while borrowed is rejected too (Q152)
     uses.forEach((u, j) => {
       const v = uses.slice(0, j).find((w) => w.sym.id === u.sym.id && (w.mode !== "ref" || u.mode !== "ref"));
-      if (v) this.m.at("E3005", u.node, `'${u.sym.name}' is used by another argument of this call`);
+      if (v) this.exclusive(u.node, u.sym);
     });
+    this.active.length = mark;
+    this.callMark = outerMark;
+    // a new container, or one derived from a container that already holds owned values (and so is empty), is fine
+    const recv = callee.kind === K.PropertyAccessExpression ? exprTypes.get((callee as ts.PropertyAccessExpression).expression) : undefined;
+    if (e.kind === K.CallExpression && ownedInside(exprTypes.get(e)) && !ownedInside(recv)) this.m.at("E3007", isId(callee) ? callee : callee.kind === K.PropertyAccessExpression ? (callee as ts.PropertyAccessExpression).name : callee, "this call makes a managed container that holds an owned value (Q174)");
     if (isNever(exprTypes.get(e))) this.state = null;
   }
 }

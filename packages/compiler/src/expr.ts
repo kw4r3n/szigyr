@@ -7,7 +7,7 @@ import { BUILTIN_FUNCTIONS, GLOBAL_AUTHORITIES, NAMESPACES, RESERVED, genMember,
 import { isDeterministic } from "./determinism.ts";
 import {
   BOOL, ERROR, ERROR_RECORD, F64, NEVER, NULL, NUM_NAMES, STR, UNKNOWN, USIZE, VOID, assignable, bindTParams, field, fn, gen, hasTParam,
-  isBool, isInt, isNull, isNum, isOwned, isStr, isTaggedUnion, kindOf, literalFits, nonNull, nullable, num, opaque, result, resultParts,
+  isBool, isInt, isNull, isNum, isOwned, isStr, movesLike, isTaggedUnion, kindOf, literalFits, nonNull, nullable, num, opaque, result, resultParts,
   same, show, subst, unify, union, unref, castable, demand, layerOk, type FnType, type NumName, type Type,
 } from "./types.ts";
 
@@ -105,7 +105,6 @@ function exprUnrecorded(c: Checker, e: ts.Expression, want?: Type): Type {
     case K.ParenthesizedExpression:
       if (promiseOk.has(e)) promiseOk.add((e as ts.ParenthesizedExpression).expression);
       return expr(c, (e as ts.ParenthesizedExpression).expression, want);
-    case K.AsExpression: return expr(c, (e as ts.AsExpression).expression, want); // `as const` is a no-op (Q026)
     case K.TemplateExpression:
       for (const sp of (e as ts.TemplateExpression).templateSpans) {
         const t = expr(c, sp.expression);
@@ -829,6 +828,13 @@ function observeOnly(c: Checker, root: Node): void {
       const builtin = !recv || unref(nonNull(recv) ?? recv).k !== "class"; // a namespace (`Vec`, `Math`) has no type here
       if (builtin && MUTATORS.has(p.name.text)) c.at("E6002", p.name, `a contract cannot call '${p.name.text}'`);
     }
+    const sig = n.kind === K.CallExpression ? callSigs.get(n as ts.CallExpression) : undefined;
+    (n as ts.CallExpression).arguments?.forEach((a, i) => { // Q175: a contract neither consumes nor mutably borrows
+      const p = sig?.params[i];
+      if (!p) return;
+      const mode = p.k === "gen" && (p.name === "Ref" || p.name === "Mut") ? p.name : undefined;
+      if (mode === "Mut" || (!mode && movesLike(unref(exprTypes.get(a) ?? ERROR)))) c.at("E6002", a, mode ? "a contract cannot pass a Mut borrow" : "a contract cannot move a value");
+    });
     n.forEachChild(walk);
   };
   walk(root);

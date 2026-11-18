@@ -78,7 +78,7 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean): Emitted 
         const s = text.lastIndexOf("<", c.getStart(sf));
         const e = skipWs(list.end);
         cuts.push({ s, e: text[e] === ">" ? e + 1 : e, out: "" });
-      } else if (a.type === c && n.kind !== K.AsExpression) {
+      } else if (a.type === c) {
         cuts.push({ s: text.lastIndexOf(":", c.getStart(sf)), e: c.end, out: "" }); // `: T`
       } else if (DROP_MODS.has(c.kind) || c.kind === K.HeritageClause) {
         cuts.push({ s: c.getStart(sf), e: skipWs(c.end), out: "" });
@@ -92,7 +92,6 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean): Emitted 
   function gen(n: Node): string {
     switch (n.kind) {
       case K.TypeAliasDeclaration: case K.InterfaceDeclaration: return "";
-      case K.AsExpression: return gen((n as ts.AsExpression).expression); // `as const` (Q026)
       case K.NumericLiteral: return numName(n) === "f32" ? `${RT}.f32(${splice(n)})` : splice(n); // Q015
       case K.PrefixUnaryExpression: return prefix(n as ts.PrefixUnaryExpression);
       case K.BinaryExpression: return binary(n as ts.BinaryExpression);

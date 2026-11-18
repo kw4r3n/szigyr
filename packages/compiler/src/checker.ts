@@ -225,6 +225,7 @@ export class Checker {
   }
   layerType(t: Type, node: Node, layer: Layer): void {
     if (layer === "rt" && hasAuthority(t)) this.at("E4006", node, "rt functions cannot take authorities");
+    else if (t.k === "fn") this.at("E4003", node, `a function value cannot be used in ${layer} code`); // §2: function values are E4003
     else if (!layerOk(t)) this.at("E4002", node, `'${show(t)}' cannot be used in ${layer} code`);
   }
 
@@ -534,7 +535,7 @@ export class Checker {
     if (!want || isPromise(want)) promiseOk.add(r.expression); // Q130
     if (!want) { const t = expr(this, r.expression); this.onlyPromise(r.expression, t); this.fx.returns.push(t); return; }
     if (isVoidish(want)) { expr(this, r.expression); this.at("E2002", r.expression, "a void function cannot return a value"); return; }
-    checkTo(this, r.expression, want);
+    checkTo(this, r.expression, unref(want)); // a `Ref` / `Mut` return type is P3's E3004 (§5.5)
   }
 
   private switchStmt(x: ts.SwitchStatement): boolean {

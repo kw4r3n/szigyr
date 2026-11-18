@@ -5,7 +5,7 @@ import type { Diagnostic } from "./diagnostics.ts";
 import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { RESERVED, builtinType, isGenName } from "./builtins.ts";
 import {
-  ERROR, GEN_ARITY, NULL, VOID, assignable, bindTParams, demand, fn, isTaggedUnion, kindOf, layerOk, needOk, newTParam, nonNull, record, result, show, subst, union,
+  ERROR, GEN_ARITY, NULL, VOID, assignable, bindTParams, demand, fn, isTaggedUnion, hasAuthority, kindOf, layerOk, needOk, newTParam, nonNull, record, result, show, subst, union,
   type ClassSym, type Field, type FnType, type IfaceSym, type TParam, type Type,
 } from "./types.ts";
 
@@ -217,7 +217,7 @@ export class Program {
       }
     }
     for (const v of mod.values.values()) {
-      if (v.k === "fn" && v.mod === mod) { v.sig = this.signature(v.decl, v.decl.name!, env()); if (v.layer !== "managed") for (const p of v.sig.tparams) p.owner = "owned"; }
+      if (v.k === "fn" && v.mod === mod) { v.sig = this.signature(v.decl, v.decl.name!, env()); for (const p of v.sig.tparams) p.owner = v.layer; }
       else if (v.k === "class" && v.mod === mod) this.classMembers(v.cls, env(v.cls.tparams));
       else if (v.k === "const" && v.mod === mod) {
         if (!v.decl.type) this.rep.at(mod, "E2006", v.decl.name, "module-level const needs a type annotation");
@@ -298,7 +298,8 @@ export class Program {
       const key = `${mod.file}:${node.pos}:${p.id}`;
       if (seen.has(key)) continue;
       if (bad) { seen.add(key); this.rep.at(mod, "E2002", node, `'${show(arg)}' cannot instantiate '${p.name}' (${bad} condition)`); }
-      else if (p.owner === "owned" && !layerOk(arg)) { seen.add(key); this.rep.at(mod, "E4002", node, `'${show(arg)}' cannot instantiate '${p.name}' of a strict / rt function (§3.3)`); }
+      else if (p.owner === "rt" && hasAuthority(arg)) { seen.add(key); this.rep.at(mod, "E4006", node, `'${show(arg)}' cannot instantiate '${p.name}' of an rt function (§6)`); }
+      else if (p.owner && p.owner !== "managed" && !layerOk(arg)) { seen.add(key); this.rep.at(mod, "E4002", node, `'${show(arg)}' cannot instantiate '${p.name}' of a strict / rt function (§3.3)`); }
     }
   }
 
@@ -372,7 +373,7 @@ export class Program {
       if (!p.type) { this.rep.at(e.mod, "E2006", p.name, "property needs a type annotation"); return ERROR; }
       const name = (p.name as ts.Identifier).text;
       const type = this.typeOf(p.type, e);
-      if (struct && !demand(type, "field")) this.rep.at(e.mod, "E2002", p.type, `a Struct field is a number, boolean, Struct or Vec, not '${show(type)}'`); // Q086
+      if (struct && !demand(type, "field") && !(type.k === "gen" && (type.name === "Ref" || type.name === "Mut"))) this.rep.at(e.mod, "E2002", p.type, `a Struct field is a number, boolean, Struct or Vec, not '${show(type)}'`); // Q086; a borrow field is P3's E3004 (§5.5)
       fields.push({ name, type, readonly: hasMod(p, K.ReadonlyKeyword) });
     }
     return record(fields, struct);

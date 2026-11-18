@@ -410,7 +410,11 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     switch (s.kind) {
       case K.Block: scoped(() => { for (const b of (s as ts.Block).statements) stmt(b); }); return;
       case K.VariableStatement: mods(s, []); varList((s as ts.VariableStatement).declarationList, "local"); return;
-      case K.ExpressionStatement: unusedIncs.add((s as ts.ExpressionStatement).expression); expr((s as ts.ExpressionStatement).expression); return;
+      case K.ExpressionStatement: {
+        const x = (s as ts.ExpressionStatement).expression;
+        if (x.kind === K.StringLiteral) { e1000(x, "a string statement after the directive prologue"); return; } // Q176: a misplaced directive is not silently ignored
+        unusedIncs.add(x); expr(x); return;
+      }
       case K.IfStatement: {
         const x = s as ts.IfStatement;
         expr(x.expression); stmt(x.thenStatement); if (x.elseStatement) stmt(x.elseStatement);
