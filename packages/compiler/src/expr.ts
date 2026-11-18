@@ -723,7 +723,7 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
   if ((tc === "cast" || tc === "eq" || tc === "copy") && sig.tparams[0]) { // Q084, Q086
     const b = m.get(sig.tparams[0].id)!;
     if (!isErr(b) && !(tc === "cast" ? castable(b) : demand(b, tc))) {
-      c.at("E2002", e.typeArguments?.[0] ?? anchor, `'${show(b)}' is not allowed as the type argument here`);
+      c.at(tc === "copy" ? "E4002" : "E2002", e.typeArguments?.[0] ?? anchor, `'${show(b)}' is not allowed as the type argument here`); // Q086: `Vec.create` is §3.3
       return ERROR;
     }
   }

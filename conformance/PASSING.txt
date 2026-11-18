@@ -226,7 +226,6 @@ reject/E2002-struct-missing-field.ts
 reject/E2002-struct-of-alias.ts
 reject/E2002-struct-passed-as-record.ts
 reject/E2002-struct-readonly-field-assign.ts
-reject/E2002-struct-string-field.ts
 reject/E2002-tagged-union-unknown-kind.ts
 reject/E2002-traps-code-not-literal.ts
 reject/E2002-traps-unknown-code.ts
@@ -235,9 +234,6 @@ reject/E2002-union-i32-or-string.ts
 reject/E2002-union-nullable-mixed.ts
 reject/E2002-union-records-without-kind.ts
 reject/E2002-usize-init-from-u32.ts
-reject/E2002-vec-create-string.ts
-reject/E2002-vec-element-owned-struct.ts
-reject/E2002-vec-element-string.ts
 reject/E2002-vec-f32-to-slice-f64.ts
 reject/E2002-vec-for-of.ts
 reject/E2002-vec-index-i32.ts
@@ -382,8 +378,12 @@ reject/E4002-strict-generic-type-argument-not-allowed.ts
 reject/E4002-string-literal-local-in-strict.ts
 reject/E4002-string-param-in-rt.ts
 reject/E4002-string-param-in-strict.ts
+reject/E4002-struct-string-field.ts
 reject/E4002-template-literal-local-in-strict.ts
 reject/E4002-unknown-param-in-strict.ts
+reject/E4002-vec-create-string.ts
+reject/E4002-vec-element-owned-struct.ts
+reject/E4002-vec-element-string.ts
 reject/E4003-arrow-in-rt.ts
 reject/E4003-arrow-in-strict.ts
 reject/E4003-capturing-arrow-in-strict.ts

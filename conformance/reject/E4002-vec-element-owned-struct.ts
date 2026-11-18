@@ -1,4 +1,4 @@
-// expect: E2002 @ 5:19
+// expect: E4002 @ 5:19
 // stage: 1
 // open-question: Q086
 type Buf = Struct<{ data: Vec<f32> }>;
