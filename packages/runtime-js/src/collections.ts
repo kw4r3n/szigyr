@@ -109,6 +109,13 @@ export class Vec<T = unknown> {
     for (const x of xs) v.push(x);
     this.buf = v.buf; this.elem = elem; this.cod = v.cod;
   }
+  /** C boundary growth (D106): a bigger buffer of the same representation holding the first `len` elements. Allocation failure throws RangeError (T006). */
+  reserve(cap: number, len: number): void {
+    const z = this.cod ? this.cod.z : 1;
+    const bigger = this.cod ? new Uint8Array(cap * z) : new TYPED[this.elem as NumType](cap);
+    bigger.set((this.buf as Uint8Array).subarray(0, len * z) as never);
+    this.buf = bigger as Buf<T>;
+  }
   get length(): number { return this.len; }
   get(i: number, pos?: Pos): T {
     if (!inBounds(i, this.len)) trap("T002", `index ${i} out of range (length ${this.len})`, pos);

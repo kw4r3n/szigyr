@@ -120,6 +120,7 @@ const HOST = {
   trap: (code: number, file: string, line: number, col: number): never => rt.trap(`T${String(code).padStart(3, "0")}` as rt.TrapCode, "trap in C", file ? { file, line, col } : undefined),
   create: (alloc: unknown, cap: number, elem: rt.ElemKind): unknown => rt.Vec.create(alloc, cap, elem),
   adopt: (v: rt.Vec | rt.Slice, elem: rt.ElemKind): void => v.adopt(elem),
+  reserve: (v: rt.Vec, cap: number, len: number): void => v.reserve(cap, len),
 };
 
 /** Emits every file and evaluates them as module factories in memory (D031). Returns the entry's exports. */

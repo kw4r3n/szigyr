@@ -76,11 +76,14 @@ static sts_vec *sts_vec_create(napi_value alloc, uint32_t cap, const char *elem,
 /** Growth keeps the length within usize: the capacity doubles up to 2^32 - 1 elements; past that, or when the allocation fails, T006 (D106). */
 static void sts_vec_grow(sts_vec *v, int pos) {
   if (v->len == UINT32_MAX) sts_trap(6, pos);
-  uint64_t c = (uint64_t)v->len * 2; uint32_t cap = c > UINT32_MAX ? UINT32_MAX : c < 4 ? 4 : (uint32_t)c; void *data; napi_value ab, ta;
-  sts_alloc_ok(napi_create_arraybuffer(sts_env, (size_t)cap * v->esize, &data, &ab), pos);
-  STS_OK(napi_create_typedarray(sts_env, v->tt, (size_t)cap * v->esize / sts_tbytes(v->tt), ab, 0, &ta));
-  memcpy(data, v->data, (size_t)v->len * v->esize);
-  sts_set(v->obj, "buf", ta); v->data = data; v->cap = cap;
+  uint64_t c = (uint64_t)v->len * 2; uint32_t cap = c > UINT32_MAX ? UINT32_MAX : c < 4 ? 4 : (uint32_t)c, len = v->len;
+  // through the host: napi_create_arraybuffer aborts the process when V8 is out of memory; a JS RangeError becomes T006 (D106)
+  napi_value host, f = sts_hostf("reserve", &host), args[3] = { v->obj }, r;
+  STS_OK(napi_create_uint32(sts_env, cap, &args[1])); STS_OK(napi_create_uint32(sts_env, len, &args[2]));
+  sts_alloc_ok(napi_call_function(sts_env, host, f, 3, args, &r), pos);
+  size_t n; napi_value ab, buf = sts_get(v->obj, "buf"); size_t off;
+  STS_OK(napi_get_typedarray_info(sts_env, buf, &v->tt, &n, &v->data, &ab, &off));
+  v->cap = cap; v->len = len;
 }
 /** Boundary exit: lengths changed in C go back to the JS objects. */
 static void sts_vec_sync(void) {
@@ -102,7 +105,7 @@ static sts_slice sts_slice_in(napi_value o, uint32_t es, const char *desc) {
   return (sts_slice){ (char *)data + (size_t)o32 * es, len };
 }
 /** Packed element fields (SPEC §10.2). The layout aligns every field and buffers are at least 8-aligned, so typed access is valid;
- * unlike byte-wise memcpy stores, typed stores do not alias the Vec header, so lengths and data pointers stay in registers (D105). */
+ * (with -fno-strict-aliasing they may still alias the Vec header, D105). */
 #define STS_LD(T, p) (*(const T *)(p))
 #define STS_ST(p, T, v) (*(T *)(p) = (v))
 static uint32_t sts_lidx(const int32_t *tbl, uint32_t n, int32_t id) { for (uint32_t i = 0; i < n; i++) if (tbl[i] == id) return i; sts_fail("bad literal"); return 0; }

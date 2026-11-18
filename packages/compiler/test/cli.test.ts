@@ -170,3 +170,15 @@ it("t.eq on values from C (packed Vec<Struct>, unions) agrees under --backend=bo
   expect(ls.filter((l) => l.kind === "mismatch")).toEqual([]);
   expect(ls.at(-1)).toEqual({ kind: "summary", passed: 1, failed: 1 });
 });
+
+it("Vec growth that runs out of memory is T006 under both backends, not a process abort (D106)", () => {
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-oom-`));
+  const f = join(dir, "oom.ts");
+  writeFileSync(f, `function g(a: Alloc): usize {\n  "use owned";\n  const v = Vec.create<f64>(a, 1);\n  for (let k: i32 = 0; k < 2000000000; k += 1) v.push(2);\n  return v.length;\n}\nexport function main(sys: System): void {\n  sys.log.info("go");\n  sys.log.info(\`\${g(sys.alloc)}\`);\n}\n`);
+  // ~11 GB of address space: V8 starts, and growing to 2e9 doubles fails with a RangeError
+  const r = spawnSync("sh", ["-c", `ulimit -v 11000000 && exec node "$0" run --backend=both "$1"`, CLI, f], { encoding: "utf8" });
+  expect(r.stdout).toBe("go\n");
+  expect(r.stderr).toMatch(/trap T006 at .*:4:\d+/);
+  expect(r.stderr).not.toMatch(/mismatch|FATAL|out of memory/);
+  expect(r.status).toBe(3);
+}, 60_000);

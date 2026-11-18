@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { CLI_NAME } from "./names.ts";
 
-export const CFLAGS = ["-std=gnu11", "-O2", "-ffp-contract=off", "-fno-fast-math", "-fwrapv", "-fexcess-precision=standard", "-shared", "-fPIC", "-w"];
+export const CFLAGS = ["-std=gnu11", "-O2", "-ffp-contract=off", "-fno-fast-math", "-fwrapv", "-fexcess-precision=standard", "-fno-strict-aliasing", "-shared", "-fPIC", "-w"];
 
 /** Error of the C toolchain (missing compiler or headers, compile failure): a CLI / internal error, not a diagnostic. */
 export class CBuildError extends Error {
