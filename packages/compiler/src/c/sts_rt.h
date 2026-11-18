@@ -18,7 +18,7 @@ static jmp_buf sts_jb;
 static int sts_trap_code, sts_trap_pos, sts_depth;
 static const char *sts_err; // internal (non-trap) error message
 
-_Noreturn static void sts_trap(int code, int pos) { sts_trap_code = code; sts_trap_pos = pos; longjmp(sts_jb, 1); }
+__attribute__((cold)) _Noreturn static void sts_trap(int code, int pos) { sts_trap_code = code; sts_trap_pos = pos; longjmp(sts_jb, 1); }
 _Noreturn static void sts_fail(const char *msg) { sts_err = msg; sts_trap(0, 0); }
 #define STS_OK(call) do { if ((call) != napi_ok) sts_fail(#call); } while (0)
 /** Q182: calls trap T006 once the stack is within a margin of this thread's real limit, so a large frame cannot overflow it. */
@@ -96,19 +96,20 @@ static sts_slice sts_slice_in(napi_value o, uint32_t es, const char *desc) {
   uint32_t o32, len; off = sts_get(o, "off"); STS_OK(napi_get_value_uint32(sts_env, off, &o32)); STS_OK(napi_get_value_uint32(sts_env, sts_get(o, "length"), &len));
   return (sts_slice){ (char *)data + (size_t)o32 * es, len };
 }
-/** Packed element fields (SPEC §10.2): unaligned-safe loads and stores. */
-#define STS_LD(T, p) ({ T x_; memcpy(&x_, (p), sizeof x_); x_; })
-#define STS_ST(p, T, v) do { T x_ = (v); memcpy((p), &x_, sizeof x_); } while (0)
+/** Packed element fields (SPEC §10.2). The layout aligns every field and buffers are at least 8-aligned, so typed access is valid;
+ * unlike byte-wise memcpy stores, typed stores do not alias the Vec header, so lengths and data pointers stay in registers (D105). */
+#define STS_LD(T, p) (*(const T *)(p))
+#define STS_ST(p, T, v) (*(T *)(p) = (v))
 static uint32_t sts_lidx(const int32_t *tbl, uint32_t n, int32_t id) { for (uint32_t i = 0; i < n; i++) if (tbl[i] == id) return i; sts_fail("bad literal"); return 0; }
-static void sts_chk(uint32_t i, uint32_t len, int pos) { if (i >= len) sts_trap(2, pos); }
+static void sts_chk(uint32_t i, uint32_t len, int pos) { if (__builtin_expect(i >= len, 0)) sts_trap(2, pos); }
 static sts_slice sts_sub(sts_slice s, uint32_t a, uint32_t b, size_t es, int pos) {
   if (!(a <= b && b <= s.len)) sts_trap(2, pos);
   return (sts_slice){ (char *)s.data + (size_t)a * es, b - a };
 }
 
 // Integers: computed wide, then range-checked (T001); never C signed overflow.
-static int64_t sts_rng(int64_t r, int64_t lo, int64_t hi, int pos) { if (r < lo || r > hi) sts_trap(1, pos); return r; }
-static int64_t sts_mulr(int64_t a, int64_t b, int64_t lo, int64_t hi, int pos) { __int128 r = (__int128)a * b; if (r < lo || r > hi) sts_trap(1, pos); return (int64_t)r; }
+static int64_t sts_rng(int64_t r, int64_t lo, int64_t hi, int pos) { if (__builtin_expect(r < lo || r > hi, 0)) sts_trap(1, pos); return r; }
+static int64_t sts_mulr(int64_t a, int64_t b, int64_t lo, int64_t hi, int pos) { __int128 r = (__int128)a * b; if (__builtin_expect(r < lo || r > hi, 0)) sts_trap(1, pos); return (int64_t)r; }
 static int64_t sts_div(int64_t a, int64_t b, int64_t lo, int64_t hi, int pos) { if (b == 0) sts_trap(7, pos); return sts_rng(a / b, lo, hi, pos); }
 static int64_t sts_rem(int64_t a, int64_t b, int pos) { if (b == 0) sts_trap(7, pos); return a % b; }
 static int64_t sts_wrap(int64_t r, int64_t lo, int64_t hi) { int64_t m = hi - lo + 1; return ((r - lo) % m + m) % m + lo; }

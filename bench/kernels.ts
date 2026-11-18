@@ -1,0 +1,106 @@
+// Benchmark kernels (ROADMAP stage 2). bench/hand.c holds the same kernels in hand-written C.
+// Each line of output: <kernel> <mean ms per call over REPS calls> <checksum>. Clock.nowMs has 1 ms resolution, so calls are timed together.
+type P = Struct<{ readonly x: f32; readonly y: f32; readonly vx: f32; readonly vy: f32 }>;
+
+function dot(a: Ref<Slice<f32>>, b: Ref<Slice<f32>>): f32 {
+  "use rt";
+  let acc: f32 = 0;
+  for (let i: usize = 0; i < a.length; i += 1) acc += a[i] * b[i];
+  return acc;
+}
+
+function saxpy(k: f32, x: Ref<Slice<f32>>, y: Mut<Slice<f32>>): void {
+  "use rt";
+  for (let i: usize = 0; i < y.length; i += 1) y[i] = k * x[i] + y[i];
+}
+
+function prefix(s: Mut<Slice<i32>>): i32 {
+  "use rt";
+  for (let i: usize = 1; i < s.length; i += 1) s[i] = s[i] + s[i - 1];
+  return s[s.length - 1];
+}
+
+function stencil(a: Ref<Slice<f64>>, out: Mut<Slice<f64>>): f64 {
+  "use rt";
+  for (let i: usize = 1; i + 1 < a.length; i += 1) out[i] = (a[i - 1] + a[i] + a[i + 1]) / 3;
+  return out[divTrunc(a.length, 2)];
+}
+
+function particles(ps: Mut<Vec<P>>, dt: f32): f32 {
+  "use rt";
+  let e: f32 = 0;
+  for (let i: usize = 0; i < ps.length; i += 1) {
+    const p = ps[i];
+    const vy: f32 = p.vy - 9.75 * dt;
+    ps[i] = { x: p.x + p.vx * dt, y: p.y + vy * dt, vx: p.vx, vy };
+    e += vy * vy;
+  }
+  return e;
+}
+
+function f32s(alloc: Alloc, n: usize, m: u32): Vec<f32> {
+  "use owned";
+  const v = Vec.create<f32>(alloc, n);
+  for (let i: usize = 0; i < n; i += 1) v.push(f32(rem(u32(i), m)) * 0.5);
+  return v;
+}
+
+function f64s(alloc: Alloc, n: usize): Vec<f64> {
+  "use owned";
+  const v = Vec.create<f64>(alloc, n);
+  for (let i: usize = 0; i < n; i += 1) v.push(f64(rem(u32(i), 11)) * 0.25);
+  return v;
+}
+
+function i32s(alloc: Alloc, n: usize): Vec<i32> {
+  "use owned";
+  const v = Vec.create<i32>(alloc, n);
+  for (let i: usize = 0; i < n; i += 1) v.push(i32(rem(u32(i), 3)));
+  return v;
+}
+
+function resetI32(s: Mut<Slice<i32>>): void {
+  "use rt";
+  for (let i: usize = 0; i < s.length; i += 1) s[i] = i32(rem(u32(i), 3));
+}
+
+function parts(alloc: Alloc, n: usize): Vec<P> {
+  "use owned";
+  const v = Vec.create<P>(alloc, n);
+  for (let i: usize = 0; i < n; i += 1) {
+    const f = f32(rem(u32(i), 13));
+    v.push({ x: f, y: f * 2, vx: 1, vy: f * 0.5 });
+  }
+  return v;
+}
+
+const N: usize = 1048576;
+const REPS: u32 = 50;
+
+export function main(sys: System): void {
+  const clock = sys.clock;
+  const a = f32s(sys.alloc, N, 7);
+  const b = f32s(sys.alloc, N, 5);
+  const y = f32s(sys.alloc, N, 3);
+  const s = i32s(sys.alloc, N);
+  const d = f64s(sys.alloc, N);
+  const o = f64s(sys.alloc, N);
+  const ps = parts(sys.alloc, N);
+  let sum: f64 = 0;
+  let t0: f64 = 0;
+  t0 = clock.nowMs();
+  for (let r: u32 = 0; r < REPS; r += 1) { sum = f64(dot(a, b)); }
+  sys.log.info(`dot_f32 ${(clock.nowMs() - t0) / f64(REPS)} ${sum}`);
+  t0 = clock.nowMs();
+  for (let r: u32 = 0; r < REPS; r += 1) { saxpy(0.5, a, y); }
+  sys.log.info(`saxpy_f32 ${(clock.nowMs() - t0) / f64(REPS)} ${f64(y[N - 1])}`);
+  t0 = clock.nowMs();
+  for (let r: u32 = 0; r < REPS; r += 1) { resetI32(s); sum = f64(prefix(s)); }
+  sys.log.info(`prefix_i32 ${(clock.nowMs() - t0) / f64(REPS)} ${sum}`);
+  t0 = clock.nowMs();
+  for (let r: u32 = 0; r < REPS; r += 1) { sum = stencil(d, o); }
+  sys.log.info(`stencil_f64 ${(clock.nowMs() - t0) / f64(REPS)} ${sum}`);
+  t0 = clock.nowMs();
+  for (let r: u32 = 0; r < REPS; r += 1) { sum = f64(particles(ps, 0.001)); }
+  sys.log.info(`particles_aos_f32 ${(clock.nowMs() - t0) / f64(REPS)} ${sum}`);
+}
