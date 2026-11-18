@@ -1,0 +1,14 @@
+// expect: E6002 @ 12:18
+// stage: 2
+// open-question: Q175
+class K {
+  n: usize;
+  constructor(v: Mut<Vec<f32>>) {
+    this.n = v.length;
+    v.push(1);
+  }
+}
+function f(v: Mut<Vec<f32>>): usize {
+  requires(new K(v).n >= 0);
+  return 1;
+}

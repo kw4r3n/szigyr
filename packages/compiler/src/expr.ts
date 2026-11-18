@@ -343,6 +343,7 @@ function lvalue(c: Checker, e0: ts.Expression): Type {
     if (r.kind !== "value") return ERROR;
     const ctorThis = c.fx.inCtor && c.ctorInits.has(p); // Q121
     if (r.readonly && !ctorThis) { c.at("E2002", p.name, `'${p.name.text}' is readonly`); return ERROR; }
+    exprTypes.set(p, r.type); // P3 reads it when the assignment's value is used (Q172)
     return r.type;
   }
   if (e.kind === K.ElementAccessExpression) return element(c, e as ts.ElementAccessExpression, true);
@@ -829,7 +830,7 @@ function observeOnly(c: Checker, root: Node): void {
       const builtin = !recv || unref(nonNull(recv) ?? recv).k !== "class"; // a namespace (`Vec`, `Math`) has no type here
       if (builtin && MUTATORS.has(p.name.text)) c.at("E6002", p.name, `a contract cannot call '${p.name.text}'`);
     }
-    const sig = n.kind === K.CallExpression ? callSigs.get(n as ts.CallExpression) : undefined;
+    const sig = n.kind === K.CallExpression || n.kind === K.NewExpression ? callSigs.get(n) : undefined;
     (n as ts.CallExpression).arguments?.forEach((a, i) => { // Q175: a contract neither consumes nor mutably borrows
       const p = sig?.params[i];
       if (!p) return;

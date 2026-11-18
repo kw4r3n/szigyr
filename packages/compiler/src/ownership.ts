@@ -29,6 +29,11 @@ const FN_EXPR = new Set<K>([K.ArrowFunction, K.FunctionExpression]);
 const CONTAINERS = new Set(["Array", "ReadonlyArray", "Map", "Set", "Promise"]);
 const ownedInside = (t: Type | undefined): boolean =>
   !!t && (t.k === "union" ? t.members.some(ownedInside) : t.k === "gen" && CONTAINERS.has(t.name) && t.args.some((a) => movesLike(a) || ownedInside(a)));
+/** Q174: a container whose own elements are owned is never filled, so anything derived from it is empty too (not so for `Array<Array<Vec>>`). */
+const emptyOwned = (t: Type | undefined): boolean => {
+  const u = t && unref(t);
+  return u?.k === "gen" && u.name !== "Promise" && CONTAINERS.has(u.name) && movesLike(u.args[u.args.length - 1]!);
+};
 const isNever = (t: Type | undefined): boolean => t?.k === "prim" && t.name === "never";
 
 export function checkOwnership(prog: Program): void {
@@ -385,6 +390,7 @@ class Flow {
       this.ex(b.right, "move");
       if (!sym) return;
       if (borrowMode(sym.declared)) { this.m.at("E3004", l, `the borrow parameter '${sym.name}' cannot be reassigned`); return; } // Q151
+      if (this.active.some((x) => x.sym.id === sym.id)) this.exclusive(l, sym); // Q170: overwriting a borrowed root
       if (sym.fnDepth < this.depth) this.ident(l, "read"); // a captured local (E3004 / E3007)
       this.state?.delete(sym.id); // §5.2: a reassigned `let` is usable again
       return;
@@ -404,6 +410,7 @@ class Flow {
     const obj = l.kind === K.PropertyAccessExpression ? (l as ts.PropertyAccessExpression).expression : (l as ts.ElementAccessExpression).expression;
     const root = this.rootOf(obj);
     this.place(obj);
+    if (root && this.active.some((x) => x.sym.id === root.sym.id)) this.exclusive(l, root.sym); // Q170: a write under a borrow of the same root
     if (root) this.active.push({ sym: root.sym, mode: "mut", node: root.id, base: true }); // popped by the caller
     if (l.kind === K.ElementAccessExpression) this.ex((l as ts.ElementAccessExpression).argumentExpression, "read");
     if (root && borrowMode(root.sym.declared) === "ref") this.m.at("E3006", l, `cannot write through the Ref '${root.sym.name}'`);
@@ -502,7 +509,7 @@ class Flow {
     this.callMark = outerMark;
     // a new container, or one derived from a container that already holds owned values (and so is empty), is fine
     const recv = callee.kind === K.PropertyAccessExpression ? exprTypes.get((callee as ts.PropertyAccessExpression).expression) : undefined;
-    if (e.kind === K.CallExpression && ownedInside(exprTypes.get(e)) && !ownedInside(recv)) this.m.at("E3007", isId(callee) ? callee : callee.kind === K.PropertyAccessExpression ? (callee as ts.PropertyAccessExpression).name : callee, "this call makes a managed container that holds an owned value (Q174)");
+    if (e.kind === K.CallExpression && ownedInside(exprTypes.get(e)) && !emptyOwned(recv)) this.m.at("E3007", isId(callee) ? callee : callee.kind === K.PropertyAccessExpression ? (callee as ts.PropertyAccessExpression).name : callee, "this call makes a managed container that holds an owned value (Q174)");
     if (isNever(exprTypes.get(e))) this.state = null;
   }
 }
