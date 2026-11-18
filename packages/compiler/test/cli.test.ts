@@ -142,3 +142,43 @@ it("C traps T006 from the stack bound before the depth limit (Q182, D106)", () =
   const r = sts("run", "--backend=c", f);
   expect(r.out + r.err).toMatch(/T006/);
 });
+
+const EQ = `type V2 = Struct<{ readonly x: f32; readonly y: f32 }>;
+type Ev = { readonly kind: "move"; readonly to: V2 } | { readonly kind: "stop" };
+function mk(alloc: Alloc): Vec<V2> {
+  "use owned";
+  const v = Vec.create<V2>(alloc, 1);
+  v.push({ x: 0.5, y: -1 });
+  v.push({ x: 2, y: 3 });
+  return v;
+}
+function ev(n: i32): Ev {
+  "use rt";
+  if (n > 0) return { kind: "move", to: { x: 1, y: 2 } };
+  return { kind: "stop" };
+}
+function first(v: Ref<Vec<V2>>): V2 {
+  "use rt";
+  return v[0];
+}
+test("eq through C", (t: Test) => {
+  const v = mk(TestAlloc.create());
+  t.eq(first(v), { x: 0.5, y: -1 });
+  t.eq(v[1], { y: 3, x: 2 });
+  t.eq(ev(1), { kind: "move", to: { x: 1, y: 2 } });
+  t.eq(ev(0), { kind: "stop" });
+});
+test("eq fails the same way", (t: Test) => {
+  t.eq(ev(1), { kind: "stop" });
+});
+`;
+
+it("t.eq on values from C (packed Vec<Struct>, unions) agrees under --backend=both", () => {
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-eq-`));
+  const f = join(dir, "eq.ts");
+  writeFileSync(f, EQ);
+  const r = sts("test", "--json", "--backend=both", f);
+  const ls = jsonLines(r.out);
+  expect(ls.filter((l) => l.kind === "mismatch")).toEqual([]);
+  expect(ls.at(-1)).toEqual({ kind: "summary", passed: 1, failed: 1 });
+});
