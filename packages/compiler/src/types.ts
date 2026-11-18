@@ -17,7 +17,8 @@ export interface Field { name: string; type: Type; readonly: boolean }
 /** Q127: conditions a type parameter takes on from the positions it is used in, checked on every instantiation. */
 /** `nopromise`: every user type parameter has it (Q130 addendum): a Promise cannot hide behind a type parameter. */
 export type Need = "key" | "copy" | "field" | "borrow" | "eq" | "nopromise";
-export interface TParam { name: string; id: number; constraint?: Type; need?: Set<Need> }
+/** `owner`: the declaring layer for user type parameters (Q068 b): "managed" ones never take owned types, "owned" ones (strict / rt functions) may. */
+export interface TParam { name: string; id: number; constraint?: Type; need?: Set<Need>; owner?: "managed" | "owned" }
 /** `min`: builtin optional trailing parameters (Q032). `prefix`: a builtin callback may take a prefix of the parameters. */
 export interface FnType {
   k: "fn"; tparams: TParam[]; params: Type[]; ret: Type; min?: number; prefix?: boolean;
@@ -238,11 +239,11 @@ export function isCopy(t: Type): boolean {
 /** Owned types (§5.1): non-Copy Structs and Vec. */
 export const isOwned = (t: Type): boolean => (t.k === "gen" && t.name === "Vec") || (t.k === "record" && t.struct && !isCopy(t));
 /**
- * P3: values that move. Owned types, unions holding one, and type parameters (Q049) unless their instantiations cannot
- * be owned: an interface constraint (only classes implement one), or a `key` / `copy` / `eq` condition (Q153).
+ * P3: values that move. Owned types, unions holding one, and strict / rt type parameters (Q049; managed ones never are, Q068 b)
+ * unless their instantiations cannot be owned: an interface constraint (only classes implement one), or a `key` / `copy` / `eq` condition (Q153).
  */
 export function movesLike(t: Type): boolean {
-  if (t.k === "tparam") return !t.p.constraint && !["key", "copy", "eq"].some((n) => t.p.need?.has(n as Need));
+  if (t.k === "tparam") return t.p.owner === "owned" && !t.p.constraint && !["key", "copy", "eq"].some((n) => t.p.need?.has(n as Need));
   return isOwned(t) || (t.k === "union" && t.members.some(movesLike));
 }
 

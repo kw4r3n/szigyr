@@ -72,7 +72,7 @@ const forms: [string, string, string[]][] = [
   ["narrowing by early return", "function f(x: f64 | null): f64 { if (x === null) { return 0; } return x + 1; }", []],
   ["narrowing by kind", "type S = { readonly kind: \"a\"; readonly x: f64 } | { readonly kind: \"b\"; readonly y: f64 };\nfunction f(s: S): f64 { if (s.kind === \"a\") { return s.x; } return s.y; }", []],
   ["ReadonlyArray has no push (Q032)", "function f(xs: ReadonlyArray<i32>): void { xs.push(1); }", ["E2001 1:47"]],
-  ["generic class inferred from the constructor", "class B<T> { readonly v: T; constructor(v: T) { this.v = v; } get(): T { return this.v; } }\nfunction f(x: i32): i32 { return new B(x).get(); }", ["E3003 1:81", "E3007 1:58"]], // P3 under Q049 / Q068 (a): T may be owned (Q153)
+  ["generic class inferred from the constructor", "class B<T> { readonly v: T; constructor(v: T) { this.v = v; } get(): T { return this.v; } }\nfunction f(x: i32): i32 { return new B(x).get(); }", []], // Q068 (b): managed T is never owned
   ["implements with a different signature", "interface I { m(): i32; }\nclass A implements I { m(): f64 { return 1; } }", ["E2002 2:20"]],
   ["while (true) with break reaches the end (Q023)", "function f(b: boolean): i32 { while (true) { if (b) { break; } } }", ["E2002 1:10"]],
   ["strict calls a managed-only Math function (Q044)", "function f(x: f64): f64 { \"use owned\"; return Math.sin(x); }", ["E4001 1:52"]],

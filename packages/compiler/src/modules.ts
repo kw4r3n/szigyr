@@ -5,7 +5,7 @@ import type { Diagnostic } from "./diagnostics.ts";
 import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { RESERVED, builtinType, isGenName } from "./builtins.ts";
 import {
-  ERROR, GEN_ARITY, NULL, VOID, assignable, bindTParams, demand, fn, isTaggedUnion, kindOf, needOk, newTParam, nonNull, record, result, show, subst, union,
+  ERROR, GEN_ARITY, NULL, VOID, assignable, bindTParams, demand, fn, isTaggedUnion, kindOf, layerOk, needOk, newTParam, nonNull, record, result, show, subst, union,
   type ClassSym, type Field, type FnType, type IfaceSym, type TParam, type Type,
 } from "./types.ts";
 
@@ -170,12 +170,12 @@ export class Program {
         case K.TypeAliasDeclaration: { const d = s as ts.TypeAliasDeclaration; mod.types.set(d.name.text, { k: "alias", decl: d, mod }); break; }
         case K.InterfaceDeclaration: {
           const d = s as ts.InterfaceDeclaration;
-          mod.types.set(d.name.text, { k: "iface", decl: d, mod, iface: { name: d.name.text, tparams: tparamShells(d.typeParameters), methods: new Map() } });
+          mod.types.set(d.name.text, { k: "iface", decl: d, mod, iface: { name: d.name.text, tparams: tparamShells(d.typeParameters, "managed"), methods: new Map() } });
           break;
         }
         case K.ClassDeclaration: {
           const d = s as ts.ClassDeclaration;
-          const cls: ClassSym = { name: d.name!.text, decl: d, tparams: tparamShells(d.typeParameters), fields: new Map(), methods: new Map(), ctor: fn([], VOID), implements: [] };
+          const cls: ClassSym = { name: d.name!.text, decl: d, tparams: tparamShells(d.typeParameters, "managed"), fields: new Map(), methods: new Map(), ctor: fn([], VOID), implements: [] };
           mod.types.set(cls.name, { k: "class", cls, mod });
           mod.values.set(cls.name, { k: "class", cls, mod });
           break;
@@ -217,7 +217,7 @@ export class Program {
       }
     }
     for (const v of mod.values.values()) {
-      if (v.k === "fn" && v.mod === mod) v.sig = this.signature(v.decl, v.decl.name!, env());
+      if (v.k === "fn" && v.mod === mod) { v.sig = this.signature(v.decl, v.decl.name!, env()); if (v.layer !== "managed") for (const p of v.sig.tparams) p.owner = "owned"; }
       else if (v.k === "class" && v.mod === mod) this.classMembers(v.cls, env(v.cls.tparams));
       else if (v.k === "const" && v.mod === mod) {
         if (!v.decl.type) this.rep.at(mod, "E2006", v.decl.name, "module-level const needs a type annotation");
@@ -249,7 +249,7 @@ export class Program {
 
   /** Q022: parameters always annotated; return annotated for named functions and methods (anchor: the name). */
   signature(d: ts.SignatureDeclaration, name: Node | undefined, outer: TypeEnv, requireRet = true): FnType {
-    const tparams = tparamShells(d.typeParameters);
+    const tparams = tparamShells(d.typeParameters, "managed");
     const e: TypeEnv = { mod: outer.mod, tparams: new Map([...outer.tparams, ...tparams.map((p) => [p.name, p] as const)]) };
     this.constraints(d.typeParameters, tparams, e);
     const params = d.parameters.map((p) => {
@@ -296,9 +296,9 @@ export class Program {
     for (const { mod, node, p, arg } of this.insts) {
       const bad = arg.k === "tparam" ? undefined : [...p.need ?? []].find((n) => !needOk(n, arg));
       const key = `${mod.file}:${node.pos}:${p.id}`;
-      if (!bad || seen.has(key)) continue;
-      seen.add(key);
-      this.rep.at(mod, "E2002", node, `'${show(arg)}' cannot instantiate '${p.name}' (${bad} condition)`);
+      if (seen.has(key)) continue;
+      if (bad) { seen.add(key); this.rep.at(mod, "E2002", node, `'${show(arg)}' cannot instantiate '${p.name}' (${bad} condition)`); }
+      else if (p.owner === "owned" && !layerOk(arg)) { seen.add(key); this.rep.at(mod, "E4002", node, `'${show(arg)}' cannot instantiate '${p.name}' of a strict / rt function (§3.3)`); }
     }
   }
 
@@ -442,4 +442,4 @@ export function legalUnion(u: Type): boolean {
 
 export interface TypeEnv { mod: Module; tparams: Map<string, TParam> }
 
-export const tparamShells = (list: ts.NodeArray<ts.TypeParameterDeclaration> | undefined): TParam[] => (list ?? []).map((d) => ({ ...newTParam(d.name.text), need: new Set(["nopromise"] as const) }));
+export const tparamShells = (list: ts.NodeArray<ts.TypeParameterDeclaration> | undefined, owner?: "managed"): TParam[] => (list ?? []).map((d) => ({ ...newTParam(d.name.text), need: new Set(["nopromise"] as const), ...(owner ? { owner } : {}) }));

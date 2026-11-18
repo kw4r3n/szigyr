@@ -2,7 +2,7 @@
 import { SyntaxKind as K, type Node, type ts } from "./parse.ts";
 import type { LocalSym, Module, Program } from "./modules.ts";
 import { assignTarget, callSigs, exprTypes, localOf } from "./expr.ts";
-import { movesLike, unref, type Type } from "./types.ts";
+import { movesLike, show, unref, type Type } from "./types.ts";
 
 /** Moved locals (by id) and the expression that moved each; null on a path that cannot be reached. */
 type State = Map<number, Node> | null;
@@ -29,6 +29,13 @@ const isNever = (t: Type | undefined): boolean => t?.k === "prim" && t.name === 
 
 export function checkOwnership(prog: Program): void {
   for (const mod of prog.mods) new ModuleCheck(prog, mod).run();
+  const seen = new Set<string>();
+  for (const { mod, node, p, arg } of prog.insts) { // Q068 (b): managed generics never take owned types (D090)
+    const key = `${mod.file}:${node.pos}:${p.id}`;
+    if (p.owner !== "managed" || !movesLike(arg) || seen.has(key)) continue;
+    seen.add(key);
+    prog.rep.at(mod, "E3007", node, `'${p.name}' of a managed generic cannot be instantiated with the owned type '${show(arg)}'`);
+  }
 }
 
 class ModuleCheck {

@@ -602,7 +602,7 @@ function arrLit(c: Checker, e: ts.ArrayLiteralExpression, want: Type | undefined
 /** Arrow functions and function expressions (Q022: parameters annotated, return inferred when not annotated). */
 export function checkArrow(c: Checker, e: ts.ArrowFunction | ts.FunctionExpression, want: FnType | undefined, inferRet: boolean): FnType {
   if (c.fx.layer !== "managed" && !ensuresArgs.has(e)) c.at("E4003", e, `a function expression cannot be written in ${c.fx.layer} code`); // §2, Q012
-  const tps = tparamShells(e.typeParameters);
+  const tps = tparamShells(e.typeParameters, "managed");
   const outerTps = c.fx.tparams;
   c.fx.tparams = new Map([...outerTps, ...tps.map((p) => [p.name, p] as const)]);
   e.typeParameters?.forEach((d, i) => { if (d.constraint) { const t = c.typeOf(d.constraint); if (t.k === "iface") tps[i]!.constraint = t; else if (!isErr(t)) c.at("E2002", d.constraint, "a constraint must be an interface"); } });
