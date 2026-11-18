@@ -30,6 +30,7 @@ accept/41-constructor-definite-assignment.ts
 accept/42-narrowing-by-assignment.ts
 accept/43-interface-generic-method.ts
 accept/44-narrowing-statement-assign.ts
+accept/45-constructor-paren-target.ts
 reject/E1000-array-suffix-type.ts
 reject/E1000-await-in-non-async-arrow.ts
 reject/E1000-await-outside-async.ts
@@ -255,7 +256,13 @@ reject/E6001-invariant-not-first.ts
 reject/E6001-invariant-outside-loop.ts
 reject/E6001-requires-after-statement.ts
 reject/E6001-requires-in-arrow.ts
+reject/E6002-contract-assigns-parameter.ts
+reject/E6002-contract-compound-assignment.ts
+reject/E6002-contract-element-assignment.ts
+reject/E6002-contract-mutating-method.ts
+reject/E6002-ensures-assigns.ts
 reject/E6002-ensures-owned-arg.ts
+reject/E6002-invariant-mutating-method.ts
 reject/E6002-requires-nondeterministic-call.ts
 reject/E6003-test-in-function.ts
 reject/E6003-test-in-test.ts

@@ -772,6 +772,7 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
         }
       } else checkTo(c, args[0]!, BOOL);
       c.fx.contract = saved;
+      observeOnly(c, args[0]!);
       return VOID;
     }
     case "test": { // §9.2, Q058
@@ -785,6 +786,26 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
     }
   }
   throw new Error(`P2: unhandled builtin '${name}'`);
+}
+
+/** Builtin methods that change their receiver or the outside world (§3.3, §7.1, §7.4, §12). */
+const MUTATORS = new Set(["push", "pop", "reverse", "sort", "fill", "set", "delete", "clear", "add", "take", "put", "info", "warn", "error", "writeText", "nextF64", "nextU32", "call", "await", "advance"]);
+/** Q134: a contract only observes. Assignments and mutating builtin calls inside it are E6002; user calls are not analysed. */
+function observeOnly(c: Checker, root: Node): void {
+  const walk = (n: Node): void => {
+    if (n.kind === K.BinaryExpression && (COMPOUND[(n as ts.BinaryExpression).operatorToken.kind] !== undefined || (n as ts.BinaryExpression).operatorToken.kind === K.EqualsToken)) {
+      c.at("E6002", n, "a contract cannot assign");
+    } else if ((n.kind === K.PrefixUnaryExpression || n.kind === K.PostfixUnaryExpression) && [K.PlusPlusToken, K.MinusMinusToken].includes((n as ts.PrefixUnaryExpression).operator)) {
+      c.at("E6002", n, "a contract cannot assign");
+    } else if (n.kind === K.CallExpression && (n as ts.CallExpression).expression.kind === K.PropertyAccessExpression) {
+      const p = (n as ts.CallExpression).expression as ts.PropertyAccessExpression;
+      const recv = exprTypes.get(p.expression);
+      const builtin = !recv || unref(nonNull(recv) ?? recv).k !== "class"; // a namespace (`Vec`, `Math`) has no type here
+      if (builtin && MUTATORS.has(p.name.text)) c.at("E6002", p.name, `a contract cannot call '${p.name.text}'`);
+    }
+    n.forEachChild(walk);
+  };
+  walk(root);
 }
 
 function newExpr(c: Checker, e: ts.NewExpression, want: Type | undefined): Type {

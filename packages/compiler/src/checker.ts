@@ -287,7 +287,7 @@ export class Checker {
       if (s.kind !== K.ExpressionStatement) return undefined;
       const b = (s as ts.ExpressionStatement).expression;
       if (b.kind !== K.BinaryExpression || (b as ts.BinaryExpression).operatorToken.kind !== K.EqualsToken) return undefined;
-      const l = (b as ts.BinaryExpression).left;
+      const l = assignTarget((b as ts.BinaryExpression).left);
       return l.kind === K.PropertyAccessExpression && (l as ts.PropertyAccessExpression).expression.kind === K.ThisKeyword ? l as ts.PropertyAccessExpression : undefined;
     };
     const inits = stmts.map(initOf);
@@ -304,7 +304,7 @@ export class Checker {
       if (!inFn && isThisField(n) && done.has(n.name.text)) return;
       if (n.kind === K.ThisKeyword) { this.at("E2002", n, "'this' is used before every field is initialized"); return; }
       if (n.kind === K.ReturnStatement && !inFn) this.at("E2002", n, "'return' before every field is initialized");
-      if (!inFn && n.kind === K.BinaryExpression && (n as ts.BinaryExpression).operatorToken.kind === K.EqualsToken && isThisField((n as ts.BinaryExpression).left)) {
+      if (!inFn && n.kind === K.BinaryExpression && (n as ts.BinaryExpression).operatorToken.kind === K.EqualsToken && isThisField(assignTarget((n as ts.BinaryExpression).left))) {
         walk((n as ts.BinaryExpression).right, inFn); // a write; only a top-level one counts as assigned
         return;
       }
