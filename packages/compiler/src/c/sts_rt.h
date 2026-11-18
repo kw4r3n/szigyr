@@ -108,10 +108,13 @@ static sts_slice sts_sub(sts_slice s, uint32_t a, uint32_t b, size_t es, int pos
 }
 
 // Integers: computed wide, then range-checked (T001); never C signed overflow.
+/** Integer +, -, * with T001 on a result outside T (the builtin compares the exact result). */
+#define STS_AOP(op, T, a, b, pos) ({ T r_; if (__builtin_expect(__builtin_##op##_overflow((a), (b), &r_), 0)) sts_trap(1, (pos)); r_; })
 static int64_t sts_rng(int64_t r, int64_t lo, int64_t hi, int pos) { if (__builtin_expect(r < lo || r > hi, 0)) sts_trap(1, pos); return r; }
 static int64_t sts_mulr(int64_t a, int64_t b, int64_t lo, int64_t hi, int pos) { __int128 r = (__int128)a * b; if (__builtin_expect(r < lo || r > hi, 0)) sts_trap(1, pos); return (int64_t)r; }
-static int64_t sts_div(int64_t a, int64_t b, int64_t lo, int64_t hi, int pos) { if (b == 0) sts_trap(7, pos); return sts_rng(a / b, lo, hi, pos); }
-static int64_t sts_rem(int64_t a, int64_t b, int pos) { if (b == 0) sts_trap(7, pos); return a % b; }
+/** divTrunc / rem in T: T007 on a zero divisor; for signed T, x / -1 is a checked negation (MIN / -1 is T001) and x % -1 is 0. */
+#define STS_DIV(T, a, b, pos) ({ T a_ = (a), b_ = (b); if (__builtin_expect(b_ == 0, 0)) sts_trap(7, (pos)); ((T)-1 < 0 && b_ == (T)-1) ? STS_AOP(sub, T, (T)0, a_, (pos)) : (T)(a_ / b_); })
+#define STS_REM(T, a, b, pos) ({ T a_ = (a), b_ = (b); if (__builtin_expect(b_ == 0, 0)) sts_trap(7, (pos)); ((T)-1 < 0 && b_ == (T)-1) ? (T)0 : (T)(a_ % b_); })
 static int64_t sts_wrap(int64_t r, int64_t lo, int64_t hi) { int64_t m = hi - lo + 1; return ((r - lo) % m + m) % m + lo; }
 static int64_t sts_wmul32(int64_t a, int64_t b, int64_t lo, int64_t hi) { return sts_wrap((int64_t)(uint32_t)((uint32_t)a * (uint32_t)b), lo, hi); }
 static uint32_t sts_amt(int64_t n, int pos) { if (n < 0 || n > 31) sts_trap(9, pos); return (uint32_t)n; }

@@ -514,3 +514,4 @@ run/79-strict-infinite-literal.ts
 run/80-strict-deep-recursion-big-frame.ts
 run/81-strict-packed-vec-ops.ts
 run/82-strict-alloc-fail.ts
+run/83-strict-int-ops-typed.ts

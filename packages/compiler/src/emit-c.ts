@@ -591,8 +591,8 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       if (isInt(t)) {
         const [lo, hi] = RANGE[t.name]!;
         switch (o) {
-          case "+": case "-": return `(${c})sts_rng((int64_t)${l} ${o} (int64_t)${r}, ${lo}, ${hi}, ${this.pos(anchor)})`;
-          case "*": return `(${c})sts_mulr(${l}, ${r}, ${lo}, ${hi}, ${this.pos(anchor)})`;
+          // the builtins check the exact result against the range of `c`; unlike a widened compare they keep loop-carried values in registers (D108)
+          case "+": case "-": case "*": void lo; void hi; return `STS_AOP(${o === "+" ? "add" : o === "-" ? "sub" : "mul"}, ${c}, ${l}, ${r}, ${this.pos(anchor)})`;
           case "&": case "|": case "^": return `(${c})(${l} ${o} ${r})`;
           case "<<": return t.name === "i32" ? `(int32_t)((uint32_t)${l} << sts_amt(${r}, ${this.pos(anchor)}))` : `(uint32_t)(${l} << sts_amt(${r}, ${this.pos(anchor)}))`;
           case ">>": case ">>>": return `(${c})(${l} >> sts_amt(${r}, ${this.pos(anchor)}))`;
@@ -765,8 +765,8 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
               return this.t(num!, `(${CNUM[num!.name]})${r}`, e);
             }
             case "divTrunc": case "rem": {
-              const a = this.ex(e.arguments[0]!), b = this.ex(e.arguments[1]!), [lo, hi] = RANGE[num!.name]!;
-              return this.t(num!, name === "rem" ? `(${CNUM[num!.name]})sts_rem(${a}, ${b}, ${this.pos(callee)})` : `(${CNUM[num!.name]})sts_div(${a}, ${b}, ${lo}, ${hi}, ${this.pos(callee)})`, e);
+              const a = this.ex(e.arguments[0]!), b = this.ex(e.arguments[1]!);
+              return this.t(num!, `STS_${name === "rem" ? "REM" : "DIV"}(${CNUM[num!.name]}, ${a}, ${b}, ${this.pos(callee)})`, e); // in the operand type, so loops can vectorize (D108)
             }
             case "panic": this.emit(`sts_trap(6, ${this.pos(callee)});`); return stmt ? undefined : "0";
             case "ok": case "err": { // Result (Q043): a member of the union
