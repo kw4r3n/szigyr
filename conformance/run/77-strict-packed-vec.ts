@@ -1,0 +1,94 @@
+// expect-output: 2 false false true
+// expect-output: 0.10000000149011612 2 9
+// expect-output: 1.5 -2 0.5 -2 -Infinity
+// expect-output: 2 moved 4 stopped
+// expect-output: 7 null 5 2
+// expect-output: lo hi lo 1
+// stage: 2
+type V2 = Struct<{ readonly x: f32; readonly y: f32 }>;
+type P = Struct<{ readonly id: u8; readonly at: V2; readonly w: f64; readonly on: boolean }>;
+type Ev = { readonly kind: "move"; readonly to: V2; readonly n: u16 } | { readonly kind: "stop" };
+type Lv = "lo" | "hi";
+
+function flip(s: Mut<Slice<boolean>>): u32 {
+  "use rt";
+  let n: u32 = 0;
+  for (let i: usize = 0; i < s.length; i += 1) {
+    s[i] = !s[i];
+    if (s[i]) n += 1;
+  }
+  return n;
+}
+
+function bump(ps: Mut<Vec<P>>, d: f32): void {
+  "use owned";
+  for (let i: usize = 0; i < ps.length; i += 1) {
+    const p = ps[i];
+    ps[i] = { id: p.id + 1, at: { x: p.at.x + d, y: p.at.y - d }, w: p.w * -1, on: !p.on };
+  }
+  ps.push({ id: 9, at: { x: 0.5, y: -2 }, w: 0, on: true });
+}
+
+function moves(es: Ref<Vec<Ev>>): u32 {
+  "use rt";
+  let n: u32 = 0;
+  for (let i: usize = 0; i < es.length; i += 1) {
+    const e = es[i];
+    if (e.kind === "move") n += u32(e.n);
+  }
+  return n;
+}
+
+function lastSome(v: Mut<Vec<i32 | null>>): i32 | null {
+  "use owned";
+  v.push(5);
+  const a = v.pop();
+  if (a === null) return null;
+  return a;
+}
+
+function raise(v: Mut<Slice<Lv>>): u32 {
+  "use rt";
+  let n: u32 = 0;
+  for (let i: usize = 0; i < v.length; i += 1) {
+    if (v[i] === "lo") { v[i] = "hi"; n += 1; } else v[i] = "lo";
+  }
+  return n;
+}
+
+export function main(sys: System): void {
+  const bs = Vec.create<boolean>(sys.alloc, 1);
+  bs.push(false);
+  bs.push(true);
+  bs.push(false);
+  bs.push(false);
+  const n = flip(bs.slice(1, 4));
+  sys.log.info(`${n} ${bs[0] || bs[1] ? "true" : "false"} ${bs[1]} ${bs[3]}`);
+
+  const ps = Vec.create<P>(sys.alloc, 1);
+  ps.push({ id: 1, at: { x: 0.1, y: 0 }, w: 0, on: false });
+  ps.push({ id: 7, at: { x: 1, y: 3 }, w: 2, on: true });
+  sys.log.info(`${ps[0].at.x} ${ps.length} ${ps[1].id + 2}`);
+  bump(ps, 0.5);
+  sys.log.info(`${ps[1].at.x} ${ps[1].w} ${ps[2].at.x} ${ps[2].at.y} ${1 / ps[0].w}`);
+
+  const es = Vec.create<Ev>(sys.alloc, 2);
+  es.push({ kind: "move", to: { x: 1, y: 2 }, n: 4 });
+  es.push({ kind: "stop" });
+  const e1 = es[1];
+  sys.log.info(`${es.length} ${es[0].kind === "move" ? "moved" : "?"} ${moves(es)} ${e1.kind === "stop" ? "stopped" : "?"}`);
+
+  const ns = Vec.create<i32 | null>(sys.alloc, 1);
+  ns.push(7);
+  ns.push(null);
+  const s = lastSome(ns);
+  const n0 = ns[0];
+  sys.log.info(`${n0 === null ? "null" : `${n0}`} ${ns[1] === null ? "null" : "x"} ${s === null ? "null" : `${s}`} ${ns.length}`);
+
+  const ls = Vec.create<Lv>(sys.alloc, 3);
+  ls.push("hi");
+  ls.push("lo");
+  ls.push("hi");
+  const r = raise(ls.slice(0, 2));
+  sys.log.info(`${ls[0]} ${ls[1]} ${ls[2] === "hi" ? "lo" : "hi"} ${r}`);
+}

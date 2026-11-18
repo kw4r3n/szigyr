@@ -29,28 +29,35 @@ static sts_vec *sts_vec_new(void) {
 }
 static napi_value sts_get(napi_value o, const char *k) { napi_value r; STS_OK(napi_get_named_property(sts_env, o, k, &r)); return r; }
 static void sts_set(napi_value o, const char *k, napi_value v) { STS_OK(napi_set_named_property(sts_env, o, k, v)); }
-static void sts_vec_load(sts_vec *v) {
+static uint32_t sts_tbytes(napi_typedarray_type tt) {
+  switch (tt) { case napi_int8_array: case napi_uint8_array: return 1; case napi_int16_array: case napi_uint16_array: return 2; case napi_float64_array: return 8; default: return 4; }
+}
+static napi_value sts_hostf(const char *k, napi_value *host) { STS_OK(napi_get_reference_value(sts_env, sts_host, host)); return sts_get(*host, k); }
+/** `esize` and `desc` come from the static element type: a number type's name or a layout's JSON (SPEC §10.2, D105). */
+static void sts_vec_load(sts_vec *v, const char *desc) {
   napi_value buf = sts_get(v->obj, "buf"); bool ta;
-  STS_OK(napi_is_typedarray(sts_env, buf, &ta)); if (!ta) sts_fail("Vec is not backed by a TypedArray (D100 generic Vec)");
+  STS_OK(napi_is_typedarray(sts_env, buf, &ta));
+  if (!ta) { // made where the element type was a type parameter (D100): switch it to its representation
+    napi_value host, f = sts_hostf("adopt", &host), args[2] = { v->obj }, r;
+    STS_OK(napi_create_string_utf8(sts_env, desc, NAPI_AUTO_LENGTH, &args[1])); STS_OK(napi_call_function(sts_env, host, f, 2, args, &r));
+    buf = sts_get(v->obj, "buf"); STS_OK(napi_is_typedarray(sts_env, buf, &ta)); if (!ta) sts_fail("Vec is not backed by a TypedArray");
+  }
   size_t n; napi_value ab; size_t off;
   STS_OK(napi_get_typedarray_info(sts_env, buf, &v->tt, &n, &v->data, &ab, &off));
-  v->cap = (uint32_t)n;
+  v->cap = (uint32_t)(n * sts_tbytes(v->tt) / v->esize);
   uint32_t len; STS_OK(napi_get_value_uint32(sts_env, sts_get(v->obj, "len"), &len)); v->len = len;
-  switch (v->tt) { case napi_int8_array: case napi_uint8_array: v->esize = 1; break; case napi_int16_array: case napi_uint16_array: v->esize = 2; break;
-    case napi_float64_array: v->esize = 8; break; default: v->esize = 4; }
 }
-static sts_vec *sts_vec_in(napi_value o) { sts_vec *v = sts_vec_new(); v->obj = o; sts_vec_load(v); return v; }
-static sts_vec *sts_vec_create(napi_value alloc, uint32_t cap, const char *elem) {
-  napi_value host, f, args[3], r;
-  STS_OK(napi_get_reference_value(sts_env, sts_host, &host)); f = sts_get(host, "create");
+static sts_vec *sts_vec_in(napi_value o, uint32_t es, const char *desc) { sts_vec *v = sts_vec_new(); v->obj = o; v->esize = es; sts_vec_load(v, desc); return v; }
+static sts_vec *sts_vec_create(napi_value alloc, uint32_t cap, const char *elem, uint32_t es) {
+  napi_value host, f = sts_hostf("create", &host), args[3], r;
   args[0] = alloc; STS_OK(napi_create_uint32(sts_env, cap, &args[1])); STS_OK(napi_create_string_utf8(sts_env, elem, NAPI_AUTO_LENGTH, &args[2]));
   STS_OK(napi_call_function(sts_env, host, f, 3, args, &r));
-  return sts_vec_in(r);
+  return sts_vec_in(r, es, elem);
 }
 static void sts_vec_grow(sts_vec *v) {
   uint32_t cap = v->len * 2; void *data; napi_value ab, ta;
   STS_OK(napi_create_arraybuffer(sts_env, (size_t)cap * v->esize, &data, &ab));
-  STS_OK(napi_create_typedarray(sts_env, v->tt, cap, ab, 0, &ta));
+  STS_OK(napi_create_typedarray(sts_env, v->tt, (size_t)cap * v->esize / sts_tbytes(v->tt), ab, 0, &ta));
   memcpy(data, v->data, (size_t)v->len * v->esize);
   sts_set(v->obj, "buf", ta); v->data = data; v->cap = cap;
 }
@@ -60,15 +67,18 @@ static void sts_vec_sync(void) {
   sts_nvecs = 0;
 }
 static sts_slice sts_vslice(sts_vec *v) { return (sts_slice){ v->data, v->len }; }
-static sts_slice sts_slice_in(napi_value o) {
+static sts_slice sts_slice_in(napi_value o, uint32_t es, const char *desc) {
   napi_value off; bool has; STS_OK(napi_has_named_property(sts_env, o, "off", &has));
-  if (!has) { sts_vec *v = sts_vec_in(o); return sts_vslice(v); }
-  napi_value buf = sts_get(o, "buf"); bool ta; STS_OK(napi_is_typedarray(sts_env, buf, &ta)); if (!ta) sts_fail("Slice is not backed by a TypedArray");
+  if (!has) { sts_vec *v = sts_vec_in(o, es, desc); return sts_vslice(v); }
+  napi_value buf = sts_get(o, "buf"); bool ta; STS_OK(napi_is_typedarray(sts_env, buf, &ta)); if (!ta) sts_fail("Slice of a Vec made with a type parameter as its element type (D105)");
   napi_typedarray_type tt; size_t n, boff; void *data; napi_value ab; STS_OK(napi_get_typedarray_info(sts_env, buf, &tt, &n, &data, &ab, &boff));
   uint32_t o32, len; off = sts_get(o, "off"); STS_OK(napi_get_value_uint32(sts_env, off, &o32)); STS_OK(napi_get_value_uint32(sts_env, sts_get(o, "length"), &len));
-  size_t es = (tt == napi_int8_array || tt == napi_uint8_array) ? 1 : (tt == napi_int16_array || tt == napi_uint16_array) ? 2 : tt == napi_float64_array ? 8 : 4;
   return (sts_slice){ (char *)data + (size_t)o32 * es, len };
 }
+/** Packed element fields (SPEC §10.2): unaligned-safe loads and stores. */
+#define STS_LD(T, p) ({ T x_; memcpy(&x_, (p), sizeof x_); x_; })
+#define STS_ST(p, T, v) do { T x_ = (v); memcpy((p), &x_, sizeof x_); } while (0)
+static uint32_t sts_lidx(const int32_t *tbl, uint32_t n, int32_t id) { for (uint32_t i = 0; i < n; i++) if (tbl[i] == id) return i; sts_fail("bad literal"); return 0; }
 static void sts_chk(uint32_t i, uint32_t len, int pos) { if (i >= len) sts_trap(2, pos); }
 static sts_slice sts_sub(sts_slice s, uint32_t a, uint32_t b, size_t es, int pos) {
   if (!(a <= b && b <= s.len)) sts_trap(2, pos);

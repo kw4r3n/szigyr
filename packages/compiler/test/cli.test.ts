@@ -121,7 +121,13 @@ it("test --backend=both runs each test under JS and C and agrees", () => {
 });
 
 it("run --backend=c stops with an internal error on an unsupported construct", () => {
-  const r = sts("run", "--backend=c", `${CONF}run/52-strict-struct-vec.ts`);
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-unsup-`));
+  const f = join(dir, "unsup.ts");
+  // A switch over a floating-point value is SPEC-legal but not translated to C yet.
+  writeFileSync(f, `function g(x: f64): i32 {\n  "use rt";\n  switch (x) {\n    case 1.5: return 1;\n    default: return 0;\n  }\n}\nexport function main(sys: System): void {\n  sys.log.info(\`\${g(1.5)}\`);\n}\n`);
+  const ok = sts("run", f);
+  expect(ok.out.trim()).toBe("1");
+  const r = sts("run", "--backend=c", f);
   expect(r.code).toBe(2);
   expect(r.err).toMatch(/C backend: .* not supported/);
 });

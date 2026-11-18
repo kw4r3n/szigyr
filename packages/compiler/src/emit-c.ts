@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { SyntaxKind as K, type Node, type ts } from "./parse.ts";
 import { callTArgs, exprTypes } from "./expr.ts";
 import type { FnSym, Module, Program } from "./modules.ts";
+import { layout, elemDesc, type Lay } from "./layout.ts";
 import { AUTHORITIES, isCopy, isInt, isTaggedUnion, kindOf, nonNull, isNull, isBool, unref, show, subst, type Field, type NumName, type Type } from "./types.ts";
 
 /** A construct the C backend does not translate yet: the run stops with this error (never a silent fallback to JS). */
@@ -110,8 +111,11 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       case "lit": litId(t.value); return "int32_t"; // Q043: only `kind` fields and their comparisons
       case "record": return struct(t, where);
       case "gen":
-        if (t.name === "Vec") { const e = elemOf(t); if (e.k !== "num") throw new CUnsupported(where, `Vec<${show(e)}> (D102, Q184)`); return "sts_vec*"; }
-        if (t.name === "Slice") { if (elemOf(t).k !== "num") throw new CUnsupported(where, `Slice<${show(elemOf(t))}> (Q184)`); return "sts_slice"; }
+        if (t.name === "Vec" || t.name === "Slice") {
+          const e = elemOf(t);
+          if (!layout(e)) throw new CUnsupported(where, `${t.name}<${show(e)}> (an element type without a byte layout, D105)`);
+          return t.name === "Vec" ? "sts_vec*" : "sts_slice";
+        }
         if (t.name === "Ref" || t.name === "Mut") { const a = elemOf(t); return isStruct(a) ? `${ctype(a, where)}*` : ctype(a, where); }
         break;
       case "opaque": if (AUTH.has(t.name)) return "napi_value"; break;
@@ -163,6 +167,59 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     helpers.push(`static napi_value out_${name}(${name} v) { ${ks.map((k, i) => `if (v.kind == ${k}) return out_${ms[i]}(v.m${i});`).join(" ")} sts_fail("bad union tag"); }`);
     return name;
   }
+  /** C string literal (octal escapes keep any byte valid). */
+  const cstr = (x: string): string => `"${[...Buffer.from(x)].map((b) => (/[A-Za-z0-9_ :,.{}\[\]-]/.test(String.fromCharCode(b)) ? String.fromCharCode(b) : `\\${b.toString(8).padStart(3, "0")}`)).join("")}"`;
+  /** Element size and the run-time kind string of a Vec / Slice element type (SPEC §10.2). */
+  const eargs = (et: Type): string => `${layout(et)!.z}, ${cstr(elemDesc(et))}`;
+  const packs = new Map<string, string>();
+  /** ld_P / st_P: a value of `t` from / to its packed bytes `l` (SPEC §10.2, D105). */
+  function packed(l: Lay, t: Type, where: string): string {
+    const key = `${JSON.stringify(l)}|${show(t)}`;
+    const have = packs.get(key);
+    if (have) return have;
+    const ct = ctype(t, where);
+    let ld: string, st: string;
+    switch (l.t) {
+      case "num": ld = `return STS_LD(${ct}, p);`; st = `STS_ST(p, ${ct}, v);`; break;
+      case "bool": ld = "return p[0] != 0;"; st = "p[0] = v ? 1 : 0;"; break;
+      case "lit": {
+        const tb = `L${packs.size}_${helpers.length}`;
+        helpers.push(`static const int32_t ${tb}[] = {${l.v.map(litId).join(", ")}};`);
+        ld = `return ${tb}[STS_LD(uint32_t, p)];`; st = `STS_ST(p, uint32_t, sts_lidx(${tb}, ${l.v.length}, v));`; break;
+      }
+      case "rec": {
+        const r = t as Extract<Type, { k: "record" }>;
+        const fs = l.f.map((f) => ({ ...f, p: packed(f.l, r.fields.find((x) => x.name === f.n)!.type, where) }));
+        ld = `${ct} r; ${fs.map((f) => `r.f_${f.n} = ld_${f.p}(p + ${f.o});`).join(" ")} return r;`;
+        st = fs.map((f) => `st_${f.p}(p + ${f.o}, v.f_${f.n});`).join(" ");
+        break;
+      }
+      case "uni": {
+        const u = t as Extract<Type, { k: "union" }>;
+        const ms = l.m.map((m, i) => { const k = ((m as Extract<Lay, { t: "rec" }>).f[0]!.l as Extract<Lay, { t: "lit" }>).v[i]!; const j = memberOf(u, k); return { i, j, k, p: packed(m, u.members[j]!, where) }; });
+        ld = `${ct} r; switch (STS_LD(uint32_t, p)) { ${ms.map((m) => `case ${m.i}: r.m${m.j} = ld_${m.p}(p); return r;`).join(" ")} } sts_fail("bad union tag");`;
+        st = `switch (v.kind) { ${ms.map((m) => `case ${litId(m.k)}: st_${m.p}(p, v.m${m.j}); return;`).join(" ")} } sts_fail("bad union tag");`;
+        break;
+      }
+      case "opt": {
+        const sub = packed(l.l, nonNull(t)!, where);
+        ld = `${ct} r = {0}; r.some = p[0] != 0; if (r.some) r.v = ld_${sub}(p + ${l.o}); return r;`;
+        st = `p[0] = v.some ? 1 : 0; if (v.some) st_${sub}(p + ${l.o}, v.v);`;
+        break;
+      }
+    }
+    const name = `P${packs.size}`;
+    packs.set(key, name);
+    helpers.push(`static ${ct} ld_${name}(const uint8_t *p) { ${ld} }`, `static void st_${name}(uint8_t *p, ${ct} v) { ${st} }`);
+    return name;
+  }
+  /** Element access on a Vec / Slice data pointer: plain C arrays for numbers, ld_P / st_P otherwise. */
+  function elem(et: Type, where: string): { z: string; ld: (d: string, i: string) => string; st: (d: string, i: string, v: string) => string } {
+    const ce = ctype(et, where);
+    if (et.k === "num") return { z: `sizeof(${ce})`, ld: (d, i) => `((${ce}*)${d})[${i}]`, st: (d, i, v) => `((${ce}*)${d})[${i}] = ${v};` };
+    const l = layout(et)!, p = packed(l, et, where), at = (d: string, i: string): string => `(uint8_t *)(${d}) + (size_t)(${i}) * ${l.z}`;
+    return { z: `${l.z}`, ld: (d, i) => `ld_${p}(${at(d, i)})`, st: (d, i, v) => `st_${p}(${at(d, i)}, ${v});` };
+  }
   /** Index of the member of tagged union `u` whose kind is `k`. */
   const memberOf = (u: Extract<Type, { k: "union" }>, k: string): number => u.members.findIndex((m) => kindOf(m) === k);
 
@@ -171,8 +228,8 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     if (isBool(t)) return `sts_bool(${v})`;
     if (t.k === "lit" || (t.k === "union" && t.members.every((m) => m.k === "lit"))) { ctype(t, where); return `sts_lit_in(${v})`; }
     if (isStruct(t) || (t.k === "union" && isTaggedUnion(t))) return `in_${ctype(t, where)}(${v})`;
-    if (isGen(t, "Vec")) { ctype(t, where); return `sts_vec_in(${v})`; }
-    if (isGen(t, "Slice")) { ctype(t, where); return `sts_slice_in(${v})`; }
+    if (isGen(t, "Vec")) { ctype(t, where); return `sts_vec_in(${v}, ${eargs(elemOf(t))})`; }
+    if (isGen(t, "Slice")) { ctype(t, where); return `sts_slice_in(${v}, ${eargs(elemOf(t))})`; }
     if (t.k === "opaque" && AUTH.has(t.name)) return v;
     if ((t as Type).k === "union" && nonNull(t)) { const n = ctype(t, where); return `({ napi_value x_ = ${v}; sts_isnull(x_) ? (${n}){ .some = false } : (${n}){ .some = true, .v = ${inConv(nonNull(t)!, "x_", where)} }; })`; }
     throw new CUnsupported(where, `passing '${show(t)}' between managed code and C`);
@@ -467,7 +524,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
           const { data, len, et } = this.seq(a.expression);
           const i = this.ex(a.argumentExpression);
           this.emit(`sts_chk(${i}, ${len}, ${this.pos(a.argumentExpression)});`);
-          return this.t(et, `((${ctype(et, this.where)}*)${data})[${i}]`, e);
+          return this.t(et, elem(et, this.where).ld(data, i), e);
         }
         case K.CallExpression: return this.call(e as ts.CallExpression, false)!;
         case K.ConditionalExpression: {
@@ -592,18 +649,18 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         const a = left as ts.ElementAccessExpression;
         const { data, len, et } = this.seq(a.expression);
         const i = this.ex(a.argumentExpression), ip = this.pos(a.argumentExpression);
-        const ce = ctype(et, this.where);
+        const el = elem(et, this.where);
         if (op) {
           this.emit(`sts_chk(${i}, ${len}, ${ip});`);
-          const cur = this.t(et, `((${ce}*)${data})[${i}]`, a);
+          const cur = this.t(et, el.ld(data, i), a);
           const r = this.ex(b.right);
           const nv = this.t(et, this.arith(et, op, cur, r, b.operatorToken), b);
-          this.emit(`((${ce}*)${data})[${i}] = ${nv};`);
+          this.emit(el.st(data, i, nv));
           return nv;
         }
-        const r = this.ex(b.right);
+        const r = this.t(et, this.conv(this.ex(b.right), this.typeOf(b.right), et), b);
         this.emit(`sts_chk(${i}, ${len}, ${ip});`);
-        this.emit(`((${ce}*)${data})[${i}] = ${r};`);
+        this.emit(el.st(data, i, r));
         return r;
       }
       const p = this.place(left);
@@ -729,7 +786,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
           const el = elemOf(t);
           ctype(t, this.where);
           const a = this.ex(e.arguments[0]!), n = this.ex(e.arguments[1]!);
-          return this.t(t, `sts_vec_create(${a}, ${n}, "${(el as { name: string }).name}")`, e);
+          return this.t(t, `sts_vec_create(${a}, ${n}, ${cstr(elemDesc(el))}, ${layout(el)!.z})`, e);
         }
         throw this.no(p.name, `'${ns}.${m}'`);
       }
@@ -744,28 +801,30 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         return this.t(t, inConv(t, r, this.where), e);
       }
       if (isGen(rt, "Vec") || isGen(rt, "Slice")) {
-        const s = this.seq(p.expression), ce = ctype(s.et, this.where);
+        const s = this.seq(p.expression), el = elem(s.et, this.where);
         switch (m) {
           case "push": {
-            const x = this.ex(e.arguments[0]!);
+            const x = this.t(s.et, this.conv(this.ex(e.arguments[0]!), this.typeOf(e.arguments[0]!), s.et), e);
             this.emit(`if (${s.vec}->len == ${s.vec}->cap) sts_vec_grow(${s.vec});`);
-            this.emit(`((${ce}*)${s.vec}->data)[${s.vec}->len++] = ${x};`);
+            this.emit(el.st(`${s.vec}->data`, `${s.vec}->len`, x));
+            this.emit(`${s.vec}->len++;`);
             return stmt ? undefined : "0";
           }
           case "pop": {
             const n = ctype(t, this.where);
-            return this.t(t, `${s.vec}->len == 0 ? (${n}){ .some = false } : (${n}){ .some = true, .v = ((${ce}*)${s.vec}->data)[--${s.vec}->len] }`, e);
+            if (nonNull(s.et)) return this.t(t, `${s.vec}->len == 0 ? (${n}){ .some = false } : ${el.ld(`${s.vec}->data`, `--${s.vec}->len`)}`, e); // T | null elements: pop's T | null is the element type
+            return this.t(t, `${s.vec}->len == 0 ? (${n}){ .some = false } : (${n}){ .some = true, .v = ${el.ld(`${s.vec}->data`, `--${s.vec}->len`)} }`, e);
           }
           case "clear": this.emit(`${s.vec}->len = 0;`); return stmt ? undefined : "0";
           case "fill": {
-            const x = this.ex(e.arguments[0]!);
-            this.emit(`for (uint32_t k = 0; k < ${s.len}; k++) ((${ce}*)${s.data})[k] = ${x};`);
+            const x = this.t(s.et, this.conv(this.ex(e.arguments[0]!), this.typeOf(e.arguments[0]!), s.et), e);
+            this.emit(`for (uint32_t k = 0; k < ${s.len}; k++) ${el.st(s.data, "k", x)}`);
             return stmt ? undefined : "0";
           }
           case "slice": {
             const base = s.vec ? `sts_vslice(${s.vec})` : s.slice!;
             const a = this.ex(e.arguments[0]!), b = this.ex(e.arguments[1]!);
-            return this.t({ k: "gen", name: "Slice", args: [s.et] }, `sts_sub(${base}, ${a}, ${b}, sizeof(${ce}), ${this.pos(p.name)})`, e);
+            return this.t({ k: "gen", name: "Slice", args: [s.et] }, `sts_sub(${base}, ${a}, ${b}, ${el.z}, ${this.pos(p.name)})`, e);
           }
         }
       }

@@ -11,7 +11,7 @@ const cases = filterByStage(loadCases(root), stage);
 /** D101: stage 2+ run cases also run with strict / rt compiled to C. A missing C toolchain fails these cases (no skip). */
 const cBackend = { ...compiler, run: (f: string) => compiler.run(f, { backend: "c" }) };
 /** Cases whose strict / rt code uses what the C backend does not translate yet (D102). They must fail with that error, so the list stays exact. */
-const C_PENDING = new Set(["run/52-strict-struct-vec.ts", "run/53-rt-union-result.ts"]);
+const C_PENDING = new Set<string>([]); // stage-2 run cases the C backend does not translate yet (none since D105)
 
 describe("conformance", () => {
   it(`${cases.length} cases${stage === undefined ? "" : ` (stage <= ${stage})`}`, () => {});

@@ -4,6 +4,7 @@
 import { resolve, dirname } from "node:path";
 import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { exprTypes } from "./expr.ts";
+import { elemDesc } from "./layout.ts";
 import { NUM_NAMES, isInt, isStr, nonNull, resultParts, unref, type FnType, type Type } from "./types.ts";
 import { CLI_NAME, RUNTIME_GLOBAL } from "./names.ts";
 import type { Pos } from "../../runtime-js/src/index.ts";
@@ -217,7 +218,7 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
     const awaited = e.arguments.some(hasAwait);
     if (recv.kind === K.Identifier && (recv as ts.Identifier).text === "Vec" && m === "create" && !typeOf(recv)) {
       const el = self?.k === "gen" ? self.args[0] : undefined;
-      return withArgs([q(el?.k === "num" ? el.name : "other")]);
+      return withArgs([q(elemDesc(el))]);
     }
     const r0 = typeOf(recv);
     const r = r0 && (nonNull(r0) ?? r0);

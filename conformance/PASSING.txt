@@ -497,3 +497,4 @@ run/73-generic-strict.ts
 run/74-trap-ensures-void-block.ts
 run/75-capabilities-strict.ts
 run/76-module-const-struct.ts
+run/77-strict-packed-vec.ts
