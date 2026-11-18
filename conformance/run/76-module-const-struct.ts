@@ -1,0 +1,20 @@
+// expect-output: 1.5 -2 3
+// stage: 2
+type V2 = Struct<{ readonly x: f32; readonly y: f32 }>;
+const ORIGIN: V2 = { x: 1.5, y: -2 };
+const STEP: u8 = 3;
+
+function shifted(k: u8): V2 {
+  "use rt";
+  return { x: ORIGIN.x, y: ORIGIN.y + f32(k) * 0 };
+}
+
+function step(): u8 {
+  "use rt";
+  return STEP;
+}
+
+export function main(sys: System): void {
+  const p = shifted(step());
+  sys.log.info(`${p.x} ${p.y} ${step()}`);
+}

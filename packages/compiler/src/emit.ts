@@ -116,6 +116,7 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
         const key = native?.get(n);
         if (!key) break;
         const f = n as ts.FunctionDeclaration, ps = f.parameters.map((p) => p.name.getText(sf));
+        if (key === "!generic") return `function ${f.name!.text}() { throw new Error("internal: a generic strict / rt function runs only through its C instances (D104)"); }`;
         return `function ${f.name!.text}(${ps.join(", ")}) { return ${RT}.native.${key}(${ps.join(", ")}); }`;
       }
     }
@@ -189,6 +190,8 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
   function call(e: ts.CallExpression): string {
     const callee = e.expression;
     const args = e.arguments.map(gen);
+    const inst = native?.get(e); // D104: a managed call of a generic strict / rt function goes to its C instance
+    if (inst) return `${mark(callee)}${RT}.native.${inst}(${args.join(", ")})`;
     const self = typeOf(e);
     const q = (s: string): string => JSON.stringify(s);
     if (callee.kind === K.Identifier) {

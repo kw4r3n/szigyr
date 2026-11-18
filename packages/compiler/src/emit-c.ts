@@ -2,16 +2,17 @@
 // plus a Node-API wrapper per function that managed JS calls. Every subexpression goes through a temporary, in source order (D103).
 import { readFileSync } from "node:fs";
 import { SyntaxKind as K, type Node, type ts } from "./parse.ts";
-import { exprTypes } from "./expr.ts";
+import { callTArgs, exprTypes } from "./expr.ts";
 import type { FnSym, Module, Program } from "./modules.ts";
-import { isCopy, isInt, nonNull, isNull, isBool, unref, show, type NumName, type Type } from "./types.ts";
+import { AUTHORITIES, isCopy, isInt, isTaggedUnion, kindOf, nonNull, isNull, isBool, unref, show, subst, type Field, type NumName, type Type } from "./types.ts";
 
 /** A construct the C backend does not translate yet: the run stops with this error (never a silent fallback to JS). */
 export class CUnsupported extends Error {
   constructor(where: string, what: string) { super(`C backend: ${what} is not supported (${where})`); this.name = "CUnsupported"; }
 }
 
-export interface EmittedC { c: string; keys: Map<ts.FunctionDeclaration, string> }
+/** `keys`: strict / rt declarations and managed call sites of generic ones -> the addon export (`!generic`: no direct export). */
+export interface EmittedC { c: string; keys: Map<Node, string> }
 
 const RANGE: Record<string, [string, string]> = {
   i8: ["-128LL", "127LL"], i16: ["-32768LL", "32767LL"], i32: ["-2147483648LL", "2147483647LL"],
@@ -21,41 +22,105 @@ const CNUM: Record<NumName, string> = { f64: "double", f32: "float", i8: "int8_t
 const TRAP: Record<string, number> = { T001: 1, T002: 2, T003: 3, T004: 4, T005: 5, T006: 6, T007: 7, T008: 8, T009: 9, T010: 10 };
 const numText = (n: ts.NumericLiteral): number => Number(n.text.replace(/_/g, ""));
 const isGen = (t: Type, n: string): boolean => t.k === "gen" && t.name === n;
-const isStruct = (t: Type): t is Extract<Type, { k: "record" }> => t.k === "record" && t.struct;
+/** Structs, and the all-readonly Copy records strict / rt accepts as Copy Structs (Q043). */
+const isStruct = (t: Type): t is Extract<Type, { k: "record" }> => t.k === "record";
+const AUTH = new Set<string>(AUTHORITIES);
+const hasTParam = (t: Type): boolean => t.k === "tparam" || (t.k === "gen" && t.args.some(hasTParam)) || (t.k === "record" && t.fields.some((f) => hasTParam(f.type))) || (t.k === "union" && t.members.some(hasTParam));
 const elemOf = (t: Type): Type => (t as { args: Type[] }).args[0]!;
 const borrowMode = (t: Type): "Ref" | "Mut" | undefined => (t.k === "gen" && (t.name === "Ref" || t.name === "Mut") ? t.name : undefined);
 
 interface Local { c: string; t: Type; ptr: boolean }
 
+/** The function a name refers to in `mod` (local or imported). */
+export function resolveFn(mod: Module, name: string): FnSym | undefined {
+  const v = mod.values.get(name);
+  if (v?.k === "fn") return v;
+  const imp = mod.imports.get(name);
+  if (imp) { const local = imp.mod.exports.get(imp.name); const w = local ? imp.mod.values.get(local) : undefined; if (w?.k === "fn") return w; }
+  return undefined;
+}
+function resolveConst(mod: Module, name: string): Extract<Module["values"] extends Map<string, infer V> ? V : never, { k: "const" }> | undefined {
+  const v = mod.values.get(name);
+  if (v?.k === "const") return v;
+  const imp = mod.imports.get(name);
+  if (imp) { const local = imp.mod.exports.get(imp.name); const w = local ? imp.mod.values.get(local) : undefined; if (w?.k === "const") return w; }
+  return undefined;
+}
+
+/** One C function: a strict / rt function, or one instantiation of a generic one (D104). */
+interface Inst { f: FnSym; m: Map<number, Type>; name: string; params: Type[]; ret: Type }
+
 export function emitC(prog: Program, display: (path: string) => string): EmittedC | undefined {
+  void display;
   const fns = prog.fns.filter((f) => f.layer !== "managed");
   if (!fns.length) return undefined;
-  const keys = new Map<ts.FunctionDeclaration, string>();
-  const names = new Map<FnSym, string>();
-  fns.forEach((f, i) => { names.set(f, `F${i}_${f.name}`); keys.set(f.decl, `F${i}_${f.name}`); });
+  const keys = new Map<Node, string>();
+  const insts = new Map<string, Inst>();
+  const queue: Inst[] = [];
+  let fnIndex = 0;
+  const fnBase = new Map<FnSym, string>();
+  const baseOf = (f: FnSym): string => { let b = fnBase.get(f); if (!b) fnBase.set(f, b = `F${fnIndex++}_${f.name}`); return b; };
+  /** The C function for `f` with type arguments `args` (D104: monomorphized per instantiation). */
+  function inst(f: FnSym, args: Type[], where: string): Inst {
+    if (args.some(hasTParam)) throw new CUnsupported(where, "a generic instantiation that is not concrete");
+    const key = `${baseOf(f)}<${args.map(show).join(",")}>`;
+    let i = insts.get(key);
+    if (!i) {
+      const m = new Map(f.sig.tparams.map((p, k) => [p.id, args[k]!]));
+      i = { f, m, name: args.length ? `${baseOf(f)}_I${insts.size}` : baseOf(f), params: f.sig.params.map((p) => subst(p, m)), ret: subst(f.sig.ret, m) };
+      insts.set(key, i);
+      queue.push(i);
+    }
+    return i;
+  }
+  for (const f of fns) {
+    if (!f.sig.tparams.length) keys.set(f.decl, inst(f, [], f.name).name);
+    else keys.set(f.decl, "!generic"); // called through its instances only (emit.ts)
+  }
+  // Managed call sites of generic strict / rt functions get the key of their instance (D104).
+  for (const mod of prog.mods) {
+    const walk = (n: Node): void => {
+      if (n.kind === K.FunctionDeclaration && fns.some((f) => f.decl === n)) return;
+      if (n.kind === K.CallExpression && (n as ts.CallExpression).expression.kind === K.Identifier) {
+        const fn = resolveFn(mod, ((n as ts.CallExpression).expression as ts.Identifier).text);
+        if (fn && fn.layer !== "managed" && fn.sig.tparams.length) {
+          const p = mod.pf.position(n.getStart(mod.sf));
+          keys.set(n, inst(fn, callTArgs.get(n as ts.CallExpression) ?? [], `${mod.file}:${p.line}:${p.col}`).name);
+        }
+      }
+      n.forEachChild(walk);
+    };
+    walk(mod.sf);
+  }
 
   const files: string[] = [];
   const poss: string[] = [];
   const typedefs: string[] = [];
   const structs = new Map<string, string>();
   const nullables = new Map<string, string>();
+  const unions = new Map<string, string>();
+  const lits: string[] = [];
   const helpers: string[] = [];
+  const litId = (s: string): number => { let i = lits.indexOf(s); if (i < 0) { lits.push(s); i = lits.length - 1; } return i; };
 
-  function ctype(t0: Type, where: string): string {
-    const t = t0;
+  function ctype(t: Type, where: string): string {
     switch (t.k) {
       case "num": return CNUM[t.name];
-      case "prim": if (t.name === "boolean") return "bool"; if (t.name === "void") return "void"; break;
-      case "record": if (t.struct) return struct(t, where); break;
+      case "prim": if (t.name === "boolean") return "bool"; if (t.name === "void" || t.name === "never") return "void"; break;
+      case "lit": litId(t.value); return "int32_t"; // Q043: only `kind` fields and their comparisons
+      case "record": return struct(t, where);
       case "gen":
-        if (t.name === "Vec") { const e = elemOf(t); if (e.k !== "num") throw new CUnsupported(where, `Vec<${show(e)}> (D102)`); return "sts_vec*"; }
-        if (t.name === "Slice") { if (elemOf(t).k !== "num") throw new CUnsupported(where, `Slice<${show(elemOf(t))}>`); return "sts_slice"; }
+        if (t.name === "Vec") { const e = elemOf(t); if (e.k !== "num") throw new CUnsupported(where, `Vec<${show(e)}> (D102, Q184)`); return "sts_vec*"; }
+        if (t.name === "Slice") { if (elemOf(t).k !== "num") throw new CUnsupported(where, `Slice<${show(elemOf(t))}> (Q184)`); return "sts_slice"; }
         if (t.name === "Ref" || t.name === "Mut") { const a = elemOf(t); return isStruct(a) ? `${ctype(a, where)}*` : ctype(a, where); }
         break;
-      case "opaque": if (t.name === "Alloc") return "napi_value"; break;
+      case "opaque": if (AUTH.has(t.name)) return "napi_value"; break;
       case "union": {
+        if (isTaggedUnion(t)) return union(t, where);
+        const lu = t as Extract<Type, { k: "union" }>;
+        if (lu.members.every((m) => m.k === "lit")) { for (const m of lu.members) litId((m as { value: string }).value); return "int32_t"; }
         const n = nonNull(t);
-        if (n && (n.k === "num" || isBool(n) || (isStruct(n) && isCopy(n)))) {
+        if (n && (n.k === "num" || isBool(n) || (isStruct(n) && isCopy(n)) || isTaggedUnion(n))) {
           const key = show(t);
           let name = nullables.get(key);
           if (!name) { const inner = ctype(n, where); name = `N${nullables.size}`; nullables.set(key, name); typedefs.push(`typedef struct { bool some; ${inner} v; } ${name};`); }
@@ -66,76 +131,99 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     throw new CUnsupported(where, `the type '${show(t)}'`);
   }
 
+  /** Fields in C order: `kind` first (the common initial sequence of a union's members, D104), then by name. */
+  const cfields = (t: Extract<Type, { k: "record" }>): Field[] => [...t.fields.filter((f) => f.name === "kind"), ...t.fields.filter((f) => f.name !== "kind")];
+
   function struct(t: Extract<Type, { k: "record" }>, where: string): string {
     const key = show(t);
     const have = structs.get(key);
     if (have) return have;
-    const fs = t.fields.map((f) => `${ctype(f.type, where)} f_${f.name};`); // nested types are defined first
+    const fs = cfields(t).map((f) => `${ctype(f.type, where)} f_${f.name};`); // nested types are defined first
     const name = `S${structs.size}`;
     structs.set(key, name);
     typedefs.push(`typedef struct { ${fs.join(" ")} } ${name};`);
-    // JS <-> C conversion of the struct (boundary, D102).
-    helpers.push(`static ${name} in_${name}(napi_value o) { ${name} r; ${t.fields.map((f) => `r.f_${f.name} = ${inConv(f.type, `sts_get(o, "${f.name}")`, where)};`).join(" ")} return r; }`);
-    helpers.push(`static napi_value out_${name}(${name} v) { napi_value o; STS_OK(napi_create_object(sts_env, &o)); ${t.fields.map((f) => `sts_set(o, "${f.name}", ${outConv(f.type, `v.f_${f.name}`, where)});`).join(" ")} return o; }`);
-    helpers.push(`static void wb_${name}(napi_value o, ${name} *v) { ${t.fields.map((f) => (isStruct(f.type) && !isCopy(f.type) ? `wb_${ctype(f.type, where)}(sts_get(o, "${f.name}"), &v->f_${f.name});` : `sts_set(o, "${f.name}", ${outConv(f.type, `v->f_${f.name}`, where)});`)).join(" ")} }`);
+    // JS <-> C conversion of the struct (boundary, D102). Keys are created in C field order (Q186).
+    helpers.push(`static ${name} in_${name}(napi_value o) { ${name} r; ${cfields(t).map((f) => `r.f_${f.name} = ${inConv(f.type, `sts_get(o, "${f.name}")`, where)};`).join(" ")} return r; }`);
+    helpers.push(`static napi_value out_${name}(${name} v) { napi_value o; STS_OK(napi_create_object(sts_env, &o)); ${cfields(t).map((f) => `sts_set(o, "${f.name}", ${outConv(f.type, `v.f_${f.name}`, where)});`).join(" ")} return o; }`);
+    helpers.push(`static void wb_${name}(napi_value o, ${name} *v) { ${cfields(t).map((f) => (isStruct(f.type) && !isCopy(f.type) ? `wb_${ctype(f.type, where)}(sts_get(o, "${f.name}"), &v->f_${f.name});` : `sts_set(o, "${f.name}", ${outConv(f.type, `v->f_${f.name}`, where)});`)).join(" ")} }`);
     return name;
   }
+
+  /** Tagged union (and Result, Q043): a C union of its member structs, which all start with `kind` (D104). */
+  function union(t: Extract<Type, { k: "union" }>, where: string): string {
+    const key = show(t);
+    const have = unions.get(key);
+    if (have) return have;
+    const ms = t.members.map((m) => ctype(m, where));
+    const name = `U${unions.size}`;
+    unions.set(key, name);
+    typedefs.push(`typedef union { int32_t kind; ${ms.map((m, i) => `${m} m${i};`).join(" ")} } ${name};`);
+    const ks = t.members.map((m) => litId(kindOf(m)!));
+    helpers.push(`static ${name} in_${name}(napi_value o) { ${name} r; int32_t k = sts_lit_in(sts_get(o, "kind")); ${ks.map((k, i) => `if (k == ${k}) { r.m${i} = in_${ms[i]}(o); return r; }`).join(" ")} sts_fail("bad union tag"); }`);
+    helpers.push(`static napi_value out_${name}(${name} v) { ${ks.map((k, i) => `if (v.kind == ${k}) return out_${ms[i]}(v.m${i});`).join(" ")} sts_fail("bad union tag"); }`);
+    return name;
+  }
+  /** Index of the member of tagged union `u` whose kind is `k`. */
+  const memberOf = (u: Extract<Type, { k: "union" }>, k: string): number => u.members.findIndex((m) => kindOf(m) === k);
 
   function inConv(t: Type, v: string, where: string): string {
     if (t.k === "num") return `(${CNUM[t.name]})sts_num(${v})`;
     if (isBool(t)) return `sts_bool(${v})`;
-    if (isStruct(t)) return `in_${ctype(t, where)}(${v})`;
+    if (t.k === "lit" || (t.k === "union" && t.members.every((m) => m.k === "lit"))) { ctype(t, where); return `sts_lit_in(${v})`; }
+    if (isStruct(t) || (t.k === "union" && isTaggedUnion(t))) return `in_${ctype(t, where)}(${v})`;
     if (isGen(t, "Vec")) { ctype(t, where); return `sts_vec_in(${v})`; }
     if (isGen(t, "Slice")) { ctype(t, where); return `sts_slice_in(${v})`; }
-    if (t.k === "opaque" && t.name === "Alloc") return v;
-    throw new CUnsupported(where, `passing '${show(t)}' from managed code`);
+    if (t.k === "opaque" && AUTH.has(t.name)) return v;
+    if ((t as Type).k === "union" && nonNull(t)) { const n = ctype(t, where); return `({ napi_value x_ = ${v}; sts_isnull(x_) ? (${n}){ .some = false } : (${n}){ .some = true, .v = ${inConv(nonNull(t)!, "x_", where)} }; })`; }
+    throw new CUnsupported(where, `passing '${show(t)}' between managed code and C`);
   }
   function outConv(t: Type, v: string, where: string): string {
     if (t.k === "num") return `sts_mknum((double)(${v}))`;
     if (isBool(t)) return `sts_mkbool(${v})`;
-    if (isStruct(t)) return `out_${ctype(t, where)}(${v})`;
+    if (t.k === "lit" || (t.k === "union" && t.members.every((m) => m.k === "lit"))) return `sts_mklit(${v})`;
+    if (isStruct(t) || (t.k === "union" && isTaggedUnion(t))) return `out_${ctype(t, where)}(${v})`;
     if (isGen(t, "Vec")) return `(${v})->obj`;
-    if (t.k === "union" && nonNull(t)) { const n = nonNull(t)!; ctype(t, where); return `((${v}).some ? ${outConv(n, `(${v}).v`, where)} : sts_mknull())`; }
-    throw new CUnsupported(where, `returning '${show(t)}' to managed code`);
+    if (t.k === "opaque" && AUTH.has(t.name)) return v;
+    if ((t as Type).k === "union" && nonNull(t)) { const n = nonNull(t)!; ctype(t, where); return `((${v}).some ? ${outConv(n, `(${v}).v`, where)} : sts_mknull())`; }
+    throw new CUnsupported(where, `passing '${show(t)}' between C and managed code`);
   }
 
-  function proto(f: FnSym): string {
-    const where = `${f.mod.file}: ${f.name}`;
-    if (f.sig.tparams.length) throw new CUnsupported(where, "a generic strict / rt function");
-    const ps = f.decl.parameters.map((p, i) => `${ctype(f.sig.params[i]!, where)} u_${(p.name as ts.Identifier).text}`);
-    return `static ${ctype(f.sig.ret, where)} ${names.get(f)}(${ps.join(", ") || "void"})`;
+  function proto(i: Inst): string {
+    const where = `${i.f.mod.file}: ${i.f.name}`;
+    const ps = i.f.decl.parameters.map((p, k) => `${ctype(i.params[k]!, where)} u_${(p.name as ts.Identifier).text}`);
+    return `static ${ctype(i.ret, where)} ${i.name}(${ps.join(", ") || "void"})`;
   }
 
   /** Node-API wrapper: decode the arguments, call, write `Mut` structs back, sync Vec lengths; a trap returns here by longjmp (D103). */
-  function wrapper(f: FnSym): string {
-    const where = `${f.mod.file}: ${f.name}`;
-    const n = f.decl.parameters.length;
+  function wrapper(i: Inst): string {
+    const where = `${i.f.mod.file}: ${i.f.name}`;
+    const n = i.f.decl.parameters.length;
     const lines: string[] = [];
     const frame: string[] = [], args: string[] = [], wb: string[] = [];
-    f.sig.params.forEach((pt, i) => {
+    i.params.forEach((pt, k) => {
       const a = unref(pt);
       if (borrowMode(pt) && isStruct(a)) {
-        frame.push(`${ctype(a, where)} a${i};`);
-        lines.push(`  fr->a${i} = ${inConv(a, `argv[${i}]`, where)};`);
-        args.push(`&fr->a${i}`);
-        if (borrowMode(pt) === "Mut") wb.push(`wb_${ctype(a, where)}(argv[${i}], &fr->a${i});`);
+        frame.push(`${ctype(a, where)} a${k};`);
+        lines.push(`  fr->a${k} = ${inConv(a, `argv[${k}]`, where)};`);
+        args.push(`&fr->a${k}`);
+        if (borrowMode(pt) === "Mut") wb.push(`wb_${ctype(a, where)}(argv[${k}], &fr->a${k});`);
       } else {
-        frame.push(`${ctype(pt, where)} a${i};`);
-        lines.push(`  fr->a${i} = ${inConv(a.k === "gen" && a.name === "Slice" ? a : a, `argv[${i}]`, where)};`);
-        args.push(`fr->a${i}`);
+        frame.push(`${ctype(pt, where)} a${k};`);
+        lines.push(`  fr->a${k} = ${inConv(a, `argv[${k}]`, where)};`);
+        args.push(`fr->a${k}`);
       }
     });
-    const ret = f.sig.ret;
-    const isVoid = ret.k === "prim" && ret.name === "void";
+    const ret = i.ret;
+    const isVoid = ret.k === "prim" && (ret.name === "void" || ret.name === "never");
     return [
-      `static napi_value w_${names.get(f)}(napi_env env, napi_callback_info info) {`,
+      `static napi_value w_${i.name}(napi_env env, napi_callback_info info) {`,
       `  sts_env = env; sts_depth = 0; sts_err = 0; sts_nvecs = 0;`,
       `  size_t argc = ${n}; napi_value argv[${Math.max(n, 1)}]; napi_get_cb_info(env, info, &argc, argv, 0, 0);`,
       `  struct { int ok; ${frame.join(" ")} } *volatile fr = calloc(1, sizeof *fr);`,
       `  if (setjmp(sts_jb)) { if (fr->ok) { fr->ok = 0; ${wb.join(" ")} } sts_vec_sync(); free(fr); return sts_throw(); }`,
       ...lines,
       `  fr->ok = 1;`,
-      isVoid ? `  ${names.get(f)}(${args.join(", ")});` : `  ${ctype(ret, where)} r = ${names.get(f)}(${args.join(", ")});`,
+      isVoid ? `  ${i.name}(${args.join(", ")});` : `  ${ctype(ret, where)} r = ${i.name}(${args.join(", ")});`,
       `  fr->ok = 0; ${wb.join(" ")}`,
       `  napi_value res = ${isVoid ? "0" : outConv(ret, "r", where)};`,
       `  if (!res) napi_get_undefined(env, &res);`,
@@ -145,34 +233,61 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
   }
 
   class FnGen {
-    f: FnSym; mod: Module; sf: ts.SourceFile; where: string;
+    f: FnSym; mod: Module; sf: ts.SourceFile; where: string; i: Inst;
     body: string[] = [];
     scopes: Map<string, Local>[] = [];
     tmp = 0; label = 0;
     loops: { cont: string }[] = [];
     ensures: ts.ArrowFunction[] = [];
-    constructor(f: FnSym) { this.f = f; this.mod = f.mod; this.sf = f.mod.sf; this.where = `${f.mod.file}: ${f.name}`; }
+    /** Inside a block-bodied ensures predicate: where its `return` goes. */
+    pred: { v: string; end: string } | undefined;
+    constructor(i: Inst) { this.i = i; this.f = i.f; this.mod = i.f.mod; this.sf = i.f.mod.sf; this.where = `${i.f.mod.file}: ${i.f.name}`; }
 
     run(): string {
       const f = this.f;
       this.scopes.push(new Map());
       f.decl.parameters.forEach((p, i) => {
         if (p.name.kind !== K.Identifier) throw this.no(p, "a destructured parameter");
-        const t = f.sig.params[i]!, a = unref(t);
+        const t = this.i.params[i]!, a = unref(t);
         const name = (p.name as ts.Identifier).text;
         this.scopes[0]!.set(name, { c: borrowMode(t) && isStruct(a) ? `(*u_${name})` : `u_${name}`, t: a, ptr: false });
       });
-      const ss = f.decl.body!.statements;
-      const rv = f.sig.ret;
-      if (rv.k === "prim" && rv.name === "void" && ss.some((s) => s.kind === K.ExpressionStatement && ((s as ts.ExpressionStatement).expression as ts.CallExpression).expression?.getText(this.sf) === "ensures")) throw this.no(f.decl, "ensures on a void function");
-      for (const s of ss) {
+      for (const s of f.decl.body!.statements) {
         if (s.kind === K.ExpressionStatement && (s as ts.ExpressionStatement).expression.kind === K.CallExpression) {
           const c = (s as ts.ExpressionStatement).expression as ts.CallExpression;
           if (c.expression.kind === K.Identifier && (c.expression as ts.Identifier).text === "ensures") { this.ensures.push(c.arguments[0] as ts.ArrowFunction); continue; }
         }
         this.stmt(s);
       }
-      return `${proto(f)} {\n${this.body.join("\n")}\n}`;
+      // Falling off the end: a void function checks its ensures; elsewhere the checker proved it unreachable (Q023).
+      if (this.isVoid()) this.checkEnsures(undefined);
+      else this.emit(`sts_fail("unreachable end of function");`);
+      return `${proto(this.i)} {\n${this.body.join("\n")}\n}`;
+    }
+    isVoid(): boolean { return this.isVoidT(this.i.ret); }
+    isVoidT(r: Type): boolean { return r.k === "prim" && (r.name === "void" || r.name === "never"); }
+
+    /** §9.1: every ensures predicate, with `r` bound to `rv` (absent for void). */
+    checkEnsures(rv: string | undefined): void {
+      for (const a of this.ensures) {
+        const p = a.parameters[0]?.name as ts.Identifier | undefined;
+        this.emit("{");
+        this.scopes.push(new Map(p && rv !== undefined ? [[p.text, { c: rv, t: this.i.ret, ptr: false }]] : []));
+        let c: string;
+        if (a.body.kind === K.Block) {
+          c = `t${this.tmp++}`;
+          const end = `L${this.label++}`;
+          this.emit(`bool ${c} = false;`);
+          const saved = this.pred;
+          this.pred = { v: c, end };
+          this.block(() => { for (const x of (a.body as ts.Block).statements) this.stmt(x); });
+          this.pred = saved;
+          this.emit(`${end}: ;`);
+        } else c = this.ex(a.body as ts.Expression);
+        this.scopes.pop();
+        this.emit(`if (!${c}) sts_trap(5, ${this.pos((a.parent as ts.CallExpression).expression)});`);
+        this.emit("}");
+      }
     }
 
     no(n: Node, what: string): CUnsupported { const p = this.mod.pf.position(n.getStart(this.sf)); return new CUnsupported(`${this.mod.file}:${p.line}:${p.col}`, what); }
@@ -192,7 +307,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         if (isStruct(r)) t = r.fields.find((f) => f.name === (n as ts.PropertyAccessExpression).name.text)?.type;
       }
       if (!t) throw this.no(n, "an expression without a type");
-      return unref(t);
+      return unref(this.i.m.size ? subst(t, this.i.m) : t);
     }
     lookup(name: string): Local | undefined { for (let i = this.scopes.length - 1; i >= 0; i--) { const l = this.scopes[i]!.get(name); if (l) return l; } return undefined; }
     block(f: () => void): void { this.emit("{"); this.scopes.push(new Map()); f(); this.scopes.pop(); this.emit("}"); }
@@ -262,24 +377,33 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         case K.ContinueStatement: this.emit(`goto ${this.loops.at(-1)!.cont};`); return;
         case K.ReturnStatement: {
           const r = s as ts.ReturnStatement;
-          if (!r.expression) { this.emit("return;"); return; }
-          const want = this.f.sig.ret;
+          if (this.pred) { this.emit(`${this.pred.v} = ${this.ex(r.expression!)}; goto ${this.pred.end};`); return; }
+          if (!r.expression) { this.checkEnsures(undefined); this.emit("return;"); return; }
+          const want = this.i.ret;
           const v = this.conv(this.ex(r.expression), this.typeOf(r.expression), want);
-          if (this.ensures.length) {
-            const rv = `t${this.tmp++}`;
-            this.emit(`${ctype(want, this.where)} ${rv} = ${v};`);
-            for (const a of this.ensures) {
-              const p = a.parameters[0]!.name as ts.Identifier;
-              if (a.body.kind === K.Block) throw this.no(a.body, "an ensures predicate with a block body");
-              this.emit("{");
-              this.scopes.push(new Map([[p.text, { c: rv, t: want, ptr: false }]]));
-              const c = this.ex(a.body as ts.Expression);
-              this.scopes.pop();
-              this.emit(`if (!${c}) sts_trap(5, ${this.pos((a.parent as ts.CallExpression).expression)});`);
-              this.emit("}");
+          if (this.isVoid()) { this.checkEnsures(undefined); this.emit("return;"); return; }
+          const rv = `t${this.tmp++}`;
+          this.emit(`${ctype(want, this.where)} ${rv} = ${v};`);
+          this.checkEnsures(rv);
+          this.emit(`return ${rv};`);
+          return;
+        }
+        case K.SwitchStatement: {
+          const sw = s as ts.SwitchStatement;
+          const dt = this.typeOf(sw.expression);
+          if (dt.k === "num" && !isInt(dt)) throw this.no(sw.expression, "a switch over a floating-point value");
+          const d = this.ex(sw.expression);
+          this.emit(`switch (${d}) {`);
+          for (const cl of sw.caseBlock.clauses) {
+            if (cl.kind === K.DefaultClause) this.emit("default:");
+            else {
+              const e = (cl as ts.CaseClause).expression;
+              if (e.kind !== K.StringLiteral && e.kind !== K.NumericLiteral && !(e.kind === K.PrefixUnaryExpression && (e as ts.PrefixUnaryExpression).operand.kind === K.NumericLiteral)) throw this.no(e, "a non-literal case label");
+              this.emit(`case ${this.ex(e)}:`);
             }
-            this.emit(`return ${rv};`);
-          } else this.emit(`return ${v};`);
+            this.block(() => { for (const x of cl.statements) this.stmt(x); });
+          }
+          this.emit("}");
           return;
         }
       }
@@ -308,7 +432,11 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     /** Value of type `from` stored where `to` is expected: wraps into / out of `T | null`. */
     conv(v: string, from: Type, to0: Type): string {
       const to = unref(to0);
-      if (to.k === "union" && nonNull(to) && !(from.k === "union")) {
+      if (to.k === "union" && isTaggedUnion(to) && from.k === "record") { // a member into its union
+        const i = memberOf(to, kindOf(from)!);
+        return `((${ctype(to, this.where)}){ .m${i} = ${v} })`;
+      }
+      if (to.k === "union" && nonNull(to) && !(from.k === "union" && !isTaggedUnion(from))) {
         const n = ctype(to, this.where);
         return isNull(from) ? `((${n}){ .some = false })` : `((${n}){ .some = true, .v = ${v} })`;
       }
@@ -327,6 +455,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         case K.ParenthesizedExpression: return this.ex((e as ts.ParenthesizedExpression).expression);
         case K.NumericLiteral: return this.lit(numText(e as ts.NumericLiteral), this.typeOf(e));
         case K.TrueKeyword: return "true";
+        case K.StringLiteral: return `((int32_t)${litId((e as ts.StringLiteral).text)})`; // Q043: a `kind` value
         case K.FalseKeyword: return "false";
         case K.NullKeyword: return "0";
         case K.Identifier: return this.ident(e as ts.Identifier);
@@ -365,16 +494,13 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     ident(id: ts.Identifier): string {
       const l = this.lookup(id.text);
       if (l) {
-        const now = this.typeOf(id);
-        if (l.t.k === "union" && now.k !== "union") return `${l.c}.v`; // narrowed `T | null`
-        return l.c;
+        return this.narrow(l.c, l.t, this.typeOf(id));
       }
-      const sym = this.mod.values.get(id.text);
-      if (sym?.k === "const") {
-        const init = sym.decl.initializer!;
-        if (init.kind === K.NumericLiteral) return this.lit(numText(init as ts.NumericLiteral), sym.type);
-        if (init.kind === K.PrefixUnaryExpression && (init as ts.PrefixUnaryExpression).operand.kind === K.NumericLiteral) return this.lit(-numText((init as ts.PrefixUnaryExpression).operand as ts.NumericLiteral), sym.type);
-        if (init.kind === K.TrueKeyword || init.kind === K.FalseKeyword) return init.kind === K.TrueKeyword ? "true" : "false";
+      const sym = resolveConst(this.mod, id.text);
+      if (sym) { // §1: a literal, or a record literal of literals; translated at each use (D104)
+        const saved = [this.mod, this.sf] as const;
+        this.mod = sym.mod; this.sf = sym.mod.sf;
+        try { return this.conv(this.ex(sym.decl.initializer!), this.typeOf(sym.decl.initializer!), sym.type); } finally { [this.mod, this.sf] = saved; }
       }
       throw this.no(id, `the name '${id.text}' here`);
     }
@@ -444,7 +570,13 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
           const v = this.ex(side);
           return this.t({ k: "prim", name: "boolean" }, `${neg ? "" : "!"}${v}.some`, b);
         }
-        if (lt.k === "union" || rt.k === "union") throw this.no(b, "comparing a nullable value");
+        const ln = lt.k === "union" && !!nonNull(lt), rn = rt.k === "union" && !!nonNull(rt);
+        if (ln || rn) { // Q017: `T | null` against `T` (or both nullable)
+          const l = this.ex(b.left), r = this.ex(b.right);
+          const L = ln ? `${l}.v` : l, R = rn ? `${r}.v` : r;
+          const eq = ln && rn ? `(${l}.some == ${r}.some && (!${l}.some || ${L} == ${R}))` : `(${ln ? `${l}.some` : `${r}.some`} && ${L} == ${R})`;
+          return this.t({ k: "prim", name: "boolean" }, neg ? `!${eq}` : eq, b);
+        }
       }
       const t = this.typeOf(b);
       const l = this.ex(b.left), r = this.ex(b.right);
@@ -489,13 +621,21 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       return p;
     }
 
-    /** An lvalue: a local, or a field path from one (`s.a.b`, `(*u_m).x`). */
-    place(e: ts.Expression): string {
-      if (e.kind === K.ParenthesizedExpression) return this.place((e as ts.ParenthesizedExpression).expression);
-      if (e.kind === K.Identifier) { const l = this.lookup((e as ts.Identifier).text); if (l) return l.c; }
+    /** A local of declared type `decl` read where the checker narrowed it to `now`: `T | null` -> `.v`, a union -> its member. */
+    narrow(c: string, decl: Type, now: Type): string {
+      if (decl.k !== "union" || now.k === "union") return c;
+      if (isTaggedUnion(decl)) return `${c}.m${memberOf(decl, kindOf(now)!)}`;
+      const inner = nonNull(decl)!;
+      return inner.k === "union" && isTaggedUnion(inner) && now.k === "record" ? `${c}.v.m${memberOf(inner, kindOf(now)!)}` : `${c}.v`;
+    }
+
+    /** An lvalue: a local, or a field path from one (`s.a.b`, `(*u_m).x`). `read`: narrowed locals read as their narrowed type. */
+    place(e: ts.Expression, read = false): string {
+      if (e.kind === K.ParenthesizedExpression) return this.place((e as ts.ParenthesizedExpression).expression, read);
+      if (e.kind === K.Identifier) { const l = this.lookup((e as ts.Identifier).text); if (l) return read ? this.narrow(l.c, l.t, this.typeOf(e)) : l.c; }
       if (e.kind === K.PropertyAccessExpression) {
         const p = e as ts.PropertyAccessExpression;
-        if (isStruct(this.typeOf(p.expression))) return `${this.place(p.expression)}.f_${p.name.text}`;
+        if (isStruct(this.typeOf(p.expression))) return `${this.place(p.expression, read)}.f_${p.name.text}`;
       }
       throw this.no(e, "this assignment target or borrowed place");
     }
@@ -512,10 +652,12 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         const base = this.placeOrValue(p.expression);
         return this.t(t, `${base}.f_${name}`, p);
       }
+      if (rt.k === "union" && isTaggedUnion(rt) && name === "kind") return this.t(this.typeOf(p), `${this.placeOrValue(p.expression)}.kind`, p);
+      if (rt.k === "opaque" && AUTH.has(rt.name)) return this.t(this.typeOf(p), `sts_get(${this.ex(p.expression)}, "${name}")`, p); // sys.alloc etc.
       throw this.no(p, `the member '${name}'`);
     }
     placeOrValue(e: ts.Expression): string {
-      try { return this.place(e); } catch (x) { if (x instanceof CUnsupported) return this.ex(e); throw x; }
+      try { return this.place(e, true); } catch (x) { if (x instanceof CUnsupported) return this.ex(e); throw x; }
     }
 
     object(o: ts.ObjectLiteralExpression): string {
@@ -560,8 +702,14 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
               return this.t(num!, name === "rem" ? `(${CNUM[num!.name]})sts_rem(${a}, ${b}, ${this.pos(callee)})` : `(${CNUM[num!.name]})sts_div(${a}, ${b}, ${lo}, ${hi}, ${this.pos(callee)})`, e);
             }
             case "panic": this.emit(`sts_trap(6, ${this.pos(callee)});`); return stmt ? undefined : "0";
+            case "ok": case "err": { // Result (Q043): a member of the union
+              if (t.k !== "union" || !isTaggedUnion(t)) throw this.no(e, `'${name}' of type ${show(t)}`);
+              const v = this.ex(e.arguments[0]!), i = memberOf(t, name), mt = t.members[i] as Extract<Type, { k: "record" }>;
+              const f = mt.fields.find((x) => x.name !== "kind")!;
+              return this.t(t, `((${ctype(t, this.where)}){ .m${i} = { .f_kind = ${litId(name)}, .f_${f.name} = ${this.conv(v, this.typeOf(e.arguments[0]!), f.type)} } })`, e);
+            }
           }
-          const fn = this.resolveFn(name);
+          const fn = resolveFn(this.mod, name);
           if (fn) return this.userCall(e, fn, stmt);
         }
         throw this.no(callee, `calling '${name}'`);
@@ -586,6 +734,15 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         throw this.no(p.name, `'${ns}.${m}'`);
       }
       const rt = this.typeOf(p.expression);
+      if (rt.k === "opaque" && AUTH.has(rt.name)) { // Q040: an authority's method calls back into the JS host
+        const o = this.ex(p.expression);
+        const as = e.arguments.map((a) => outConv(this.typeOf(a), this.ex(a), this.where));
+        const arr = `t${this.tmp++}`;
+        this.emit(`napi_value ${arr}[${Math.max(as.length, 1)}] = {${as.join(", ") || "0"}};`);
+        const r = `sts_callm(${o}, "${m}", ${as.length}, ${arr})`;
+        if (this.isVoidT(t)) { this.emit(`${r};`); return stmt ? undefined : "0"; }
+        return this.t(t, inConv(t, r, this.where), e);
+      }
       if (isGen(rt, "Vec") || isGen(rt, "Slice")) {
         const s = this.seq(p.expression), ce = ctype(s.et, this.where);
         switch (m) {
@@ -615,18 +772,12 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       throw this.no(p.name, `the method '${m}' on ${show(rt)}`);
     }
 
-    resolveFn(name: string): FnSym | undefined {
-      const v = this.mod.values.get(name);
-      if (v?.k === "fn") return v;
-      const imp = this.mod.imports.get(name);
-      if (imp) { const local = imp.mod.exports.get(imp.name); const w = local ? imp.mod.values.get(local) : undefined; if (w?.k === "fn") return w; }
-      return undefined;
-    }
-
     userCall(e: ts.CallExpression, fn: FnSym, stmt: boolean): string | undefined {
       if (fn.layer === "managed") throw this.no(e, "a call to managed code");
+      const targs = (callTArgs.get(e) ?? []).map((t) => (this.i.m.size ? subst(t, this.i.m) : t));
+      const callee = inst(fn, fn.sig.tparams.length ? targs : [], this.where);
       const args = e.arguments.map((a, i) => {
-        const pt = fn.sig.params[i]!, inner = unref(pt), mode = borrowMode(pt);
+        const pt = callee.params[i]!, inner = unref(pt), mode = borrowMode(pt);
         if (mode && isStruct(inner)) return `&${this.place(a)}`;
         if (isGen(inner, "Slice")) {
           const at = this.typeOf(a);
@@ -636,33 +787,41 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         return this.conv(this.ex(a), this.typeOf(a), pt);
       });
       this.emit(`if (++sts_depth > 10000) sts_trap(6, ${this.pos(e.expression)});`);
-      const ret = fn.sig.ret;
-      if (ret.k === "prim" && (ret.name === "void" || ret.name === "never")) { this.emit(`${names.get(fn)}(${args.join(", ")}); sts_depth--;`); return stmt ? undefined : "0"; }
-      const r = this.t(ret, `${names.get(fn)}(${args.join(", ")})`, e);
+      const ret = callee.ret;
+      if (ret.k === "prim" && (ret.name === "void" || ret.name === "never")) { this.emit(`${callee.name}(${args.join(", ")}); sts_depth--;`); return stmt ? undefined : "0"; }
+      const r = this.t(ret, `${callee.name}(${args.join(", ")})`, e);
       this.emit("sts_depth--;");
       return r;
     }
   }
 
   const out: string[] = [];
-  for (const f of fns) out.push(new FnGen(f).run());
-  const protos = fns.map((f) => `${proto(f)};`);
-  const wrappers = fns.map(wrapper);
+  const done: Inst[] = [];
+  for (let q = queue.shift(); q; q = queue.shift()) { done.push(q); out.push(new FnGen(q).run()); }
+  const protos = done.map((i) => `${proto(i)};`);
+  const wrappers = done.map(wrapper);
 
   const rtH = readFileSync(new URL("./c/sts_rt.h", import.meta.url), "utf8");
   const c = [
     `static const int STS_POS[][3] = {${poss.join(",") || "{0,0,0}"}};`,
     `static const char *const STS_FILES[] = {${files.map((x) => JSON.stringify(x)).join(",") || "\"\""}};`,
+    `static const char *const STS_LITS[] = {${lits.map((x) => JSON.stringify(x)).join(",") || "\"\""}};`,
+    `#define STS_NLITS ${lits.length}`,
     rtH,
     `static double sts_num(napi_value v) { double d; STS_OK(napi_get_value_double(sts_env, v, &d)); return d; }`,
     `static bool sts_bool(napi_value v) { bool b; STS_OK(napi_get_value_bool(sts_env, v, &b)); return b; }`,
     `static napi_value sts_mknum(double d) { napi_value r; STS_OK(napi_create_double(sts_env, d, &r)); return r; }`,
     `static napi_value sts_mkbool(bool b) { napi_value r; STS_OK(napi_get_boolean(sts_env, b, &r)); return r; }`,
     `static napi_value sts_mknull(void) { napi_value r; STS_OK(napi_get_null(sts_env, &r)); return r; }`,
+    `static bool sts_isnull(napi_value v) { napi_valuetype t; STS_OK(napi_typeof(sts_env, v, &t)); return t == napi_null; }`,
+    `static napi_value sts_mklit(int32_t k) { napi_value r; STS_OK(napi_create_string_utf8(sts_env, STS_LITS[k], NAPI_AUTO_LENGTH, &r)); return r; }`,
+    `static int32_t sts_lit_in(napi_value v) { char b[256]; size_t n; STS_OK(napi_get_value_string_utf8(sts_env, v, b, sizeof b, &n)); for (int32_t i = 0; i < STS_NLITS; i++) if (strcmp(b, STS_LITS[i]) == 0) return i; sts_fail("unknown string literal"); }`,
+    `/** A method of an authority (Q040): a call back into the JS host. */`,
+    `static napi_value sts_callm(napi_value o, const char *m, size_t n, napi_value *a) { napi_value f, r; f = sts_get(o, m); STS_OK(napi_call_function(sts_env, o, f, n, a, &r)); return r; }`,
     ...typedefs, ...helpers, ...protos, ...out, THROW, ...wrappers,
     `NAPI_MODULE_INIT() {`,
     `  napi_value f; STS_INIT_EXPORT("init", sts_init);`,
-    ...fns.map((x) => `  STS_INIT_EXPORT("${names.get(x)}", w_${names.get(x)});`),
+    ...done.map((x) => `  STS_INIT_EXPORT("${x.name}", w_${x.name});`),
     `  return exports;`,
     `}`,
   ].join("\n");

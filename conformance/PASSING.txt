@@ -492,3 +492,8 @@ run/68-float-edges-strict.ts
 run/69-trap-u32-mul-wide.ts
 run/70-trap-divtrunc-min.ts
 run/71-nullable-and-consts-strict.ts
+run/72-union-result-boundary.ts
+run/73-generic-strict.ts
+run/74-trap-ensures-void-block.ts
+run/75-capabilities-strict.ts
+run/76-module-const-struct.ts

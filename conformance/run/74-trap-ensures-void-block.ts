@@ -1,0 +1,27 @@
+// expect-output: 7 6
+// expect-trap: T005 @ 17:3
+// stage: 2
+// open-question: Q002
+type Acc = Struct<{ n: i32; cap: i32 }>;
+
+function positive(x: i32): i32 {
+  "use rt";
+  ensures((r: i32) => {
+    return r > 0 && r <= x;
+  });
+  return divTrunc(x, 2) + 1;
+}
+
+function add(a: Mut<Acc>, k: i32): void {
+  "use rt";
+  ensures(() => k < 5);
+  a.n += k;
+}
+
+export function main(sys: System): void {
+  const a: Acc = { n: 0, cap: 10 };
+  add(a, positive(4));
+  add(a, positive(6));
+  sys.log.info(`${a.n} ${positive(10)}`);
+  add(a, positive(20));
+}

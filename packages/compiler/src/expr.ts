@@ -61,6 +61,8 @@ export function cond(c: Checker, e: ts.Expression): void {
 
 /** The type P2 gave each checked expression (last check wins), read by the JS emitter (§10, D030). */
 export const exprTypes = new WeakMap<Node, Type>();
+/** Type arguments of each call of a generic function, for the C backend's instantiation (D104). */
+export const callTArgs = new WeakMap<Node, Type[]>();
 /** Q130: the only expressions that may have a Promise type: `await` operands, `Promise.all` arguments, returns of Promise functions. */
 export const promiseOk = new WeakSet<Node>();
 const optCall = new WeakSet<Node>();
@@ -734,6 +736,7 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
     if (!assignable(t, p, true)) c.at("E2002", a, `expected '${show(p)}', got '${show(t)}'`);
   });
   sig.tparams.forEach((p, i) => c.prog.insts.push({ mod: c.mod, node: e.typeArguments?.[i] ?? anchor, p, arg: m.get(p.id)! })); // Q127
+  callTArgs.set(e, sig.tparams.map((p) => m.get(p.id)!));
   return subst(sig.ret, m);
 }
 

@@ -1,0 +1,78 @@
+// expect-output: area=12 circle=true
+// expect-output: ok 7 err -3 again=ok 9
+// expect-output: sum=8
+// expect-output: bad=err 2
+// stage: 2
+// open-question: Q043
+type Shape = { readonly kind: "rect"; readonly w: i32; readonly h: i32 } | { readonly kind: "sq"; readonly s: i32 };
+type Pos = Struct<{ readonly x: i32; readonly y: i32 }>;
+type Ev = { readonly kind: "move"; readonly to: Pos } | { readonly kind: "stop" };
+
+function area(s: Shape): i32 {
+  "use rt";
+  switch (s.kind) {
+    case "rect":
+      return s.w * s.h;
+    case "sq":
+      return s.s * s.s;
+  }
+}
+
+function isSquare(s: Shape): boolean {
+  "use rt";
+  return s.kind === "sq";
+}
+
+function check(x: i32): Result<i32, i32> {
+  "use rt";
+  if (x < 0) return err(x);
+  return ok(x + 1);
+}
+
+function bump(r: Result<i32, i32>): Result<i32, i32> {
+  "use rt";
+  if (r.kind === "err") return r;
+  return ok(r.value + 2);
+}
+
+function walk(evs: Ref<Vec<i32>>): Result<i32, usize> {
+  "use owned";
+  let total: i32 = 0;
+  for (let i: usize = 0; i < evs.length; i += 1) {
+    const e = decode(evs[i]);
+    switch (e.kind) {
+      case "move":
+        total += e.to.x + e.to.y;
+        break;
+      case "stop":
+        return err(i);
+    }
+  }
+  return ok(total);
+}
+
+function decode(n: i32): Ev {
+  "use rt";
+  if (n < 0) return { kind: "stop" };
+  return { kind: "move", to: { x: n, y: 1 } };
+}
+
+function show(r: Result<i32, i32>): string {
+  return r.kind === "ok" ? `ok ${r.value}` : `err ${r.error}`;
+}
+
+function showU(r: Result<i32, usize>): string {
+  return r.kind === "ok" ? `sum=${r.value}` : `bad=err ${r.error}`;
+}
+
+export function main(sys: System): void {
+  const sq: Shape = { kind: "sq", s: 3 };
+  sys.log.info(`area=${area({ kind: "rect", w: 3, h: 4 })} circle=${isSquare(sq)}`);
+  sys.log.info(`${show(bump(check(4)))} ${show(bump(check(-3)))} again=${show(bump(ok(7)))}`);
+  const v = Vec.create<i32>(sys.alloc, 3);
+  v.push(2);
+  v.push(4);
+  sys.log.info(showU(walk(v)));
+  v.push(-1);
+  sys.log.info(showU(walk(v)));
+}
