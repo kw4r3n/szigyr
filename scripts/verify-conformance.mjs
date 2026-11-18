@@ -1,7 +1,7 @@
 // Static checks on conformance/: counts, SPEC §11 coverage, syntax, header positions. Run: pnpm verify:conformance
 import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
-import ts from "typescript";
+import { join, resolve } from "node:path";
+import { parseSources } from "../packages/compiler/src/parse.ts";
 import { loadCases } from "../packages/compiler/test/harness.ts";
 
 const problems = [];
@@ -28,25 +28,25 @@ const leafStarts = (sf) => {
   walk(sf);
   return s;
 };
-const parsed = new Map();
-for (const f of files("conformance")) {
-  const sf = ts.createSourceFile(f, readFileSync(f, "utf8"), ts.ScriptTarget.Latest, true);
-  parsed.set(f, sf);
-  for (const d of sf.parseDiagnostics) { // parseDiagnostics is internal but present in 6.x
-    const p = sf.getLineAndCharacterOfPosition(d.start);
-    problems.push(`${f}:${p.line + 1}:${p.character + 1}: syntax error: ${ts.flattenDiagnosticMessageText(d.messageText, " ")}`);
+const paths = files("conformance");
+const parsed = parseSources(Object.fromEntries(paths.map((f) => [f, readFileSync(f, "utf8")])));
+const get = (f) => parsed.get(resolve(f));
+for (const f of paths) {
+  const pf = get(f);
+  for (const d of pf.syntaxErrors) {
+    const p = pf.position(d.start);
+    problems.push(`${f}:${p.line}:${p.col}: syntax error: ${d.message}`);
   }
 }
 
 // (d) expected positions must be the start of a token
 for (const c of cases) {
   const w = c.at ?? c.trap;
-  const sf = parsed.get(c.entry);
-  if (!w || !sf) continue;
-  const lines = sf.getLineStarts();
-  if (w.line < 1 || w.line > lines.length) { problems.push(`${c.entry}: position ${w.line}:${w.col} is outside the file`); continue; }
-  const off = lines[w.line - 1] + w.col - 1;
-  if (!leafStarts(sf).has(off)) problems.push(`${c.entry}: ${w.line}:${w.col} is not the start of a token`);
+  const pf = get(c.entry);
+  if (!w || !pf) continue;
+  const off = pf.offsetOf(w.line, w.col);
+  if (off === undefined) problems.push(`${c.entry}: position ${w.line}:${w.col} is outside the file`);
+  else if (!pf.isTokenStart(off)) problems.push(`${c.entry}: ${w.line}:${w.col} is not the start of a token`);
 }
 
 if (problems.length) { console.error(problems.join("\n")); process.exit(1); }

@@ -35,8 +35,8 @@ TypeScript の構文をそのまま使い、意味を「健全なサブセット
 ## 技術選定
 
 - 言語: TypeScript（strict）。ESM。Node 24 以上。パッケージ管理は pnpm。
-- 構文解析: `typescript` パッケージの `createSourceFile` だけを使う。**tsc の型検査器（`createProgram`、`TypeChecker`）は使わない**。型検査器は自作する。
-  - `typescript` は 6.x に固定するのを既定とする。7 系の API が安定していれば 7 でもよい。着手時に確認して `docs/DECISIONS.md` に記録する。
+- 構文解析: `typescript` パッケージの構文解析 API だけを使い、呼び出しは `packages/compiler/src/parse.ts` の 1 モジュールに閉じ込める。**tsc の型検査器（`Checker`、型検査の診断）は使わない**。型検査器は自作する。
+  - `typescript` は最新を使う。7 系の `typescript/unstable/sync` と `typescript/unstable/ast` を使う（`docs/DECISIONS.md` D005）。
 - テスト: vitest。
 - 依存は最小限。追加するときは `docs/DECISIONS.md` に理由を書く。
 
