@@ -44,6 +44,7 @@ accept/43-interface-generic-method.ts
 accept/44-narrowing-statement-assign.ts
 accept/45-constructor-paren-target.ts
 accept/46-ownership-flow.ts
+accept/47-map-literal-key.ts
 reject/E1000-array-suffix-type.ts
 reject/E1000-await-in-non-async-arrow.ts
 reject/E1000-await-outside-async.ts
@@ -140,6 +141,7 @@ reject/E2002-interface-structural-conformance.ts
 reject/E2002-js-encode-authority.ts
 reject/E2002-js-encode-function.ts
 reject/E2002-map-key-array.ts
+reject/E2002-map-key-mixed-union.ts
 reject/E2002-missing-return-path.ts
 reject/E2002-narrow-assign-in-condition.ts
 reject/E2002-narrow-assigned-in-and-operand.ts
@@ -198,6 +200,7 @@ reject/E2002-ref-of-number.ts
 reject/E2002-relational-on-strings.ts
 reject/E2002-return-type-mismatch.ts
 reject/E2002-return-u32-from-usize.ts
+reject/E2002-set-element-null-union.ts
 reject/E2002-set-element-record.ts
 reject/E2002-string-concat-with-plus.ts
 reject/E2002-stringify-map.ts
@@ -403,3 +406,4 @@ run/28-trap-shift-range.ts
 run/29-trap-invariant.ts
 run/30-int-no-negative-zero.ts
 run/40-trap-ensures-void.ts
+run/47-map-literal-key.ts

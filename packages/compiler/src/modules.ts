@@ -417,7 +417,7 @@ export class Program {
       }
       if (args.some((a) => a.k === "error")) return ERROR;
       if ((name === "Map" || name === "Set") && !demand(args[0]!, "key")) { // §3.2, Q081, Q127
-        this.rep.at(e.mod, "E2002", argNodes![0]!, `a ${name} ${name === "Map" ? "key" : "element"} is a string, number or boolean, not '${show(args[0]!)}'`);
+        this.rep.at(e.mod, "E2002", argNodes![0]!, `a ${name} ${name === "Map" ? "key" : "element"} is a string, number, boolean or string literal union, not '${show(args[0]!)}'`);
         return ERROR;
       }
       if ((name === "Vec" || name === "Slice") && !demand(args[0]!, "copy")) { // §3.3, Q086, Q127

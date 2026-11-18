@@ -82,7 +82,7 @@ STS は仮称。この文書が言語の唯一の規範である。
 - **文字列リテラルの union**: `type Color = "red" | "green"`。
 - **`T | null`**: 絞り込みは `x === null` / `x !== null`。`??` と `?.` を使える。
 - 上記以外の union と intersection は禁止。
-- **コレクション**: `Array<T>`（不変）、`ReadonlyArray<T>`（共変）、`Map<K, V>`、`Set<T>`。`K` と `Set` の `T` は `string`、数値型、`boolean` のみ。
+- **コレクション**: `Array<T>`（不変）、`ReadonlyArray<T>`（共変）、`Map<K, V>`、`Set<T>`。`K` と `Set` の `T` は `string`、数値型、`boolean`、文字列リテラル型、文字列リテラル型だけの union のみ。ほかの union は E2002（Q081）。
   - `T[]` という書き方は禁止。`Array<T>` に統一する。
   - 添字と `length` の型は `usize`。添字アクセスは範囲検査され、範囲外はトラップ（T002）。
   - タプル型と配列の分割代入は禁止。

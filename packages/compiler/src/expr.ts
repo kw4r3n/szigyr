@@ -843,7 +843,7 @@ function newExpr(c: Checker, e: ts.NewExpression, want: Type | undefined): Type 
     if (e.typeArguments) {
       if (e.typeArguments.length !== n) { c.at("E2002", id, `'${id.text}' takes ${n} type argument(s)`); return ERROR; }
       const targs = e.typeArguments.map((t) => c.typeOf(t));
-      if (!demand(targs[0]!, "key")) { c.at("E2002", e.typeArguments[0]!, `a ${id.text} ${id.text === "Map" ? "key" : "element"} is a string, number or boolean`); return ERROR; } // Q081
+      if (!demand(targs[0]!, "key")) { c.at("E2002", e.typeArguments[0]!, `a ${id.text} ${id.text === "Map" ? "key" : "element"} is a string, number, boolean or string literal union`); return ERROR; } // Q081
       return gen(id.text, ...targs);
     }
     const w = want && (nonNull(want) ?? want);

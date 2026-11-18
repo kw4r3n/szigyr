@@ -279,7 +279,9 @@ export function show(t: Type): string {
 }
 
 /** `Map` key / `Set` element types (§3.2, Q081). Type parameters cannot be checked here. */
-export const keyOk = (t: Type): boolean => t.k === "error" || t.k === "tparam" || t.k === "num" || (t.k === "prim" && (t.name === "string" || t.name === "boolean"));
+export const keyOk = (t: Type): boolean =>
+  t.k === "error" || t.k === "tparam" || t.k === "num" || t.k === "lit" || (t.k === "prim" && (t.name === "string" || t.name === "boolean")) ||
+  (t.k === "union" && t.members.every((m) => m.k === "lit"));
 
 /** Types `cast<T>`, `js.decode<T>` and `JSON.stringify<T>` accept (§3.2 `unknown`, Q084): primitives, closed records, tagged / literal unions, `Array`, `T | null`. */
 export function castable(t: Type): boolean {
