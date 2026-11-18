@@ -131,3 +131,14 @@ it("run --backend=c stops with an internal error on an unsupported construct", (
   expect(r.code).toBe(2);
   expect(r.err).toMatch(/C backend: .* not supported/);
 });
+
+it("C traps T006 from the stack bound before the depth limit (Q182, D106)", () => {
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-stack-`));
+  const f = join(dir, "stack.ts");
+  const fs = Array.from({ length: 100 }, (_, i) => `readonly f${i}: f64`).join("; ");
+  const init = Array.from({ length: 100 }, (_, i) => `f${i}: ${i}`).join(", ");
+  // depth 9990 is under the 10000 counter; 800-byte frames exceed an 8 MiB stack only with the stack check
+  writeFileSync(f, `type S = Struct<{ ${fs} }>;\nfunction r(n: usize, s: S): f64 { "use owned"; if (n === 0) { return s.f0; } const t: S = { ...s, f1: s.f1 + 1 }; return r(n - 1, t) + s.f2; }\nexport function main(sys: System): void { const s: S = { ${init} }; sys.log.info(\`\${r(9990, s)}\`); }\n`);
+  const r = sts("run", "--backend=c", f);
+  expect(r.out + r.err).toMatch(/T006/);
+});

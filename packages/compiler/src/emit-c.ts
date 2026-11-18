@@ -274,7 +274,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     const isVoid = ret.k === "prim" && (ret.name === "void" || ret.name === "never");
     return [
       `static napi_value w_${i.name}(napi_env env, napi_callback_info info) {`,
-      `  sts_env = env; sts_depth = 0; sts_err = 0; sts_nvecs = 0;`,
+      `  sts_env = env; sts_depth = 0; sts_err = 0; sts_nvecs = 0; if (!sts_stack_lim) sts_stack_init();`,
       `  size_t argc = ${n}; napi_value argv[${Math.max(n, 1)}]; napi_get_cb_info(env, info, &argc, argv, 0, 0);`,
       `  struct { int ok; ${frame.join(" ")} } *volatile fr = calloc(1, sizeof *fr);`,
       `  if (setjmp(sts_jb)) { if (fr->ok) { fr->ok = 0; ${wb.join(" ")} } sts_vec_sync(); free(fr); return sts_throw(); }`,
@@ -544,15 +544,13 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     lit(x: number, t: Type): string {
       if (t.k !== "num") throw new CUnsupported(this.where, `a literal of type ${show(t)}`);
       if (isInt(t)) return `((${CNUM[t.name]})${x}LL)`;
-      const s = Object.is(x, -0) ? "-0.0" : /[.e]/.test(`${x}`) ? `${x}` : `${x}.0`;
+      const s = !Number.isFinite(x) ? (x > 0 ? "INFINITY" : "(-INFINITY)") : Object.is(x, -0) ? "-0.0" : /[.e]/.test(`${x}`) ? `${x}` : `${x}.0`; // 1e999 is Infinity in JS
       return t.name === "f32" ? `((float)${s})` : s;
     }
 
     ident(id: ts.Identifier): string {
       const l = this.lookup(id.text);
-      if (l) {
-        return this.narrow(l.c, l.t, this.typeOf(id));
-      }
+      if (l) return this.t(this.typeOf(id), this.narrow(l.c, l.t, this.typeOf(id)), id); // a snapshot: a later operand may assign the local (D103, Q172)
       const sym = resolveConst(this.mod, id.text);
       if (sym) { // §1: a literal, or a record literal of literals; translated at each use (D104)
         const saved = [this.mod, this.sf] as const;
@@ -675,7 +673,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       const decl = left.kind === K.Identifier ? this.lookup((left as ts.Identifier).text)?.t : undefined;
       const v = this.conv(this.ex(b.right), this.typeOf(b.right), decl ?? lt);
       this.emit(`${p} = ${v};`);
-      return p;
+      return this.t(lt, p, b);
     }
 
     /** A local of declared type `decl` read where the checker narrowed it to `now`: `T | null` -> `.v`, a union -> its member. */
@@ -786,7 +784,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
           const el = elemOf(t);
           ctype(t, this.where);
           const a = this.ex(e.arguments[0]!), n = this.ex(e.arguments[1]!);
-          return this.t(t, `sts_vec_create(${a}, ${n}, ${cstr(elemDesc(el))}, ${layout(el)!.z})`, e);
+          return this.t(t, `sts_vec_create(${a}, ${n}, ${cstr(elemDesc(el))}, ${layout(el)!.z}, ${this.pos(p.name)})`, e);
         }
         throw this.no(p.name, `'${ns}.${m}'`);
       }
@@ -805,7 +803,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         switch (m) {
           case "push": {
             const x = this.t(s.et, this.conv(this.ex(e.arguments[0]!), this.typeOf(e.arguments[0]!), s.et), e);
-            this.emit(`if (${s.vec}->len == ${s.vec}->cap) sts_vec_grow(${s.vec});`);
+            this.emit(`if (${s.vec}->len == ${s.vec}->cap) sts_vec_grow(${s.vec}, ${this.pos(p.name)});`);
             this.emit(el.st(`${s.vec}->data`, `${s.vec}->len`, x));
             this.emit(`${s.vec}->len++;`);
             return stmt ? undefined : "0";
@@ -845,7 +843,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         }
         return this.conv(this.ex(a), this.typeOf(a), pt);
       });
-      this.emit(`if (++sts_depth > 10000) sts_trap(6, ${this.pos(e.expression)});`);
+      this.emit(`if (++sts_depth > 10000 || STS_STACK_LOW()) sts_trap(6, ${this.pos(e.expression)});`);
       const ret = callee.ret;
       if (ret.k === "prim" && (ret.name === "void" || ret.name === "never")) { this.emit(`${callee.name}(${args.join(", ")}); sts_depth--;`); return stmt ? undefined : "0"; }
       const r = this.t(ret, `${callee.name}(${args.join(", ")})`, e);

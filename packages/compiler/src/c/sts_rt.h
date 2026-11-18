@@ -1,4 +1,6 @@
 // C runtime for the strict / rt backend (D101-D103). Included once at the top of the generated translation unit.
+#define _GNU_SOURCE
+#include <pthread.h>
 #include <node_api.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -19,6 +21,16 @@ static const char *sts_err; // internal (non-trap) error message
 _Noreturn static void sts_trap(int code, int pos) { sts_trap_code = code; sts_trap_pos = pos; longjmp(sts_jb, 1); }
 _Noreturn static void sts_fail(const char *msg) { sts_err = msg; sts_trap(0, 0); }
 #define STS_OK(call) do { if ((call) != napi_ok) sts_fail(#call); } while (0)
+/** Q182: calls trap T006 once the stack is within a margin of this thread's real limit, so a large frame cannot overflow it. */
+static uintptr_t sts_stack_lim;
+static void sts_stack_init(void) {
+  pthread_attr_t a; void *lo; size_t n;
+  if (pthread_getattr_np(pthread_self(), &a) != 0 || pthread_attr_getstack(&a, &lo, &n) != 0) sts_fail("cannot read the stack bounds");
+  pthread_attr_destroy(&a);
+  size_t margin = n / 8 > (size_t)256 << 10 ? n / 8 : (size_t)256 << 10;
+  sts_stack_lim = (uintptr_t)lo + margin;
+}
+#define STS_STACK_LOW() ((uintptr_t)__builtin_frame_address(0) < sts_stack_lim)
 
 // Vec handles live until the boundary call returns; the list is reset per entry.
 static sts_vec **sts_vecs; static size_t sts_nvecs, sts_capvecs;
@@ -44,19 +56,28 @@ static void sts_vec_load(sts_vec *v, const char *desc) {
   }
   size_t n; napi_value ab; size_t off;
   STS_OK(napi_get_typedarray_info(sts_env, buf, &v->tt, &n, &v->data, &ab, &off));
-  v->cap = (uint32_t)(n * sts_tbytes(v->tt) / v->esize);
-  uint32_t len; STS_OK(napi_get_value_uint32(sts_env, sts_get(v->obj, "len"), &len)); v->len = len;
+  size_t cap = n * sts_tbytes(v->tt) / v->esize; v->cap = cap > UINT32_MAX ? UINT32_MAX : (uint32_t)cap;
+  double len; STS_OK(napi_get_value_double(sts_env, sts_get(v->obj, "len"), &len));
+  if (!(len >= 0 && len <= v->cap)) sts_fail("Vec length out of range"); v->len = (uint32_t)len;
 }
 static sts_vec *sts_vec_in(napi_value o, uint32_t es, const char *desc) { sts_vec *v = sts_vec_new(); v->obj = o; v->esize = es; sts_vec_load(v, desc); return v; }
-static sts_vec *sts_vec_create(napi_value alloc, uint32_t cap, const char *elem, uint32_t es) {
+/** A JS exception from the host's allocation (RangeError) is T006 at the call, as in JS (D100, Q035). */
+static void sts_alloc_ok(napi_status st, int pos) {
+  if (st == napi_ok) return;
+  bool pend; napi_value x; if (napi_is_exception_pending(sts_env, &pend) == napi_ok && pend) napi_get_and_clear_last_exception(sts_env, &x);
+  sts_trap(6, pos);
+}
+static sts_vec *sts_vec_create(napi_value alloc, uint32_t cap, const char *elem, uint32_t es, int pos) {
   napi_value host, f = sts_hostf("create", &host), args[3], r;
   args[0] = alloc; STS_OK(napi_create_uint32(sts_env, cap, &args[1])); STS_OK(napi_create_string_utf8(sts_env, elem, NAPI_AUTO_LENGTH, &args[2]));
-  STS_OK(napi_call_function(sts_env, host, f, 3, args, &r));
+  sts_alloc_ok(napi_call_function(sts_env, host, f, 3, args, &r), pos);
   return sts_vec_in(r, es, elem);
 }
-static void sts_vec_grow(sts_vec *v) {
-  uint32_t cap = v->len * 2; void *data; napi_value ab, ta;
-  STS_OK(napi_create_arraybuffer(sts_env, (size_t)cap * v->esize, &data, &ab));
+/** Growth keeps the length within usize: the capacity doubles up to 2^32 - 1 elements; past that, or when the allocation fails, T006 (D106). */
+static void sts_vec_grow(sts_vec *v, int pos) {
+  if (v->len == UINT32_MAX) sts_trap(6, pos);
+  uint64_t c = (uint64_t)v->len * 2; uint32_t cap = c > UINT32_MAX ? UINT32_MAX : c < 4 ? 4 : (uint32_t)c; void *data; napi_value ab, ta;
+  sts_alloc_ok(napi_create_arraybuffer(sts_env, (size_t)cap * v->esize, &data, &ab), pos);
   STS_OK(napi_create_typedarray(sts_env, v->tt, (size_t)cap * v->esize / sts_tbytes(v->tt), ab, 0, &ta));
   memcpy(data, v->data, (size_t)v->len * v->esize);
   sts_set(v->obj, "buf", ta); v->data = data; v->cap = cap;

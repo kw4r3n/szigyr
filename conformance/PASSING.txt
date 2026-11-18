@@ -498,3 +498,6 @@ run/74-trap-ensures-void-block.ts
 run/75-capabilities-strict.ts
 run/76-module-const-struct.ts
 run/77-strict-packed-vec.ts
+run/78-strict-assign-value-order.ts
+run/79-strict-infinite-literal.ts
+run/80-strict-deep-recursion-big-frame.ts
