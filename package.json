@@ -8,7 +8,8 @@
     "test": "vitest run --config vitest.config.ts",
     "conformance": "vitest run --config vitest.conformance.config.ts",
     "typecheck": "tsc --noEmit",
-    "verify:conformance": "node scripts/verify-conformance.mjs"
+    "verify:conformance": "node scripts/verify-conformance.mjs",
+    "conformance:update-passing": "node scripts/update-passing.mjs reject/E1 reject/E5002 reject/E6001 reject/E6003 reject/E7001"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

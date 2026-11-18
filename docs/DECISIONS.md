@@ -34,3 +34,22 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - 注意: `SyntaxKind.EndOfFileToken` は存在せず、`EndOfFile` を使う。`getChildren` はない。素のスキャナはテンプレートの継続を誤って分割するので、トークン先頭の判定は AST ノードの開始位置と併用する。
 
 リスク: `unstable` は API が予告なく変わりうる。そこで `typescript` を import するのは `packages/compiler/src/parse.ts` だけにし、差し替えを安くする（`scripts/verify-conformance.mjs` もこれ経由）。バージョンは `7.0.2` に固定し、更新するときは `pnpm test` と `pnpm verify:conformance` で確かめる。
+
+## D006: P1（構文の許可リスト）の構造
+
+- `packages/compiler/src/syntax.ts` の `checkSyntax(file)` が P1。文・式・型・宣言ごとに `switch` で受理する種別を列挙し、`default` は E1000 にする。演算子、修飾子、リテラル型も同じく列挙で受理する。
+- 子の走査は種別ごとに明示する（`forEachChild` で一律にたどらない）。トークンや名前を式として誤って検査しないため。
+- 個別コードと位置は DIAGNOSTICS の表どおり。AST にノードのないトークン（`as`、`satisfies`、`export function*` の `function`）は `ParsedFile.tokenAfter` で求める。
+- P1 の対象は Q003 のとおり E1xxx、E5002、E6001、E6003、E7001（`P1_CODE`）。
+- 細部: `for…of` は `const` だけ（`let` は E1000）。空文、メソッドとフィールドの `public` / `protected` / `override`、確定代入アサーション `x!: T` は E1000。宣言のマージは、モジュール直下で同じ名前が 2 回宣言されたとき（型と値の区別なし）に、後の名前へ出す。`bigint` と `undefined` の型は名前として P2（E2000）に回す（Q011）。
+
+## D007: check の骨組みとファイルの読み込み
+
+- `check(entry)` は、入口のファイルと、そこから相対の静的 import（`./`、`../` で始まり `.ts` で終わるもの）でたどれるファイルを読み、フェーズを順に実行する（Q003）。今は P1 だけ。
+- tsgo の子プロセスは 1 回の `check` で 1 つ（`parse.ts` の `createParser`）。import の深さごとに `updateSnapshot` を 1 回足す（1 回あたり約 1ms）。起動後の 1 ファイルの解析と P1 は合わせて約 2ms（68 行のファイル）。
+- import 先のファイルがなければ、指定子の文字列リテラルに E7001（Q009）。名前が export されているかの検査は、モジュール解決の一切れで行う。
+- 診断の `file` はカレントディレクトリからの相対パス。
+
+## D008: 退行検出の PASSING.txt
+
+`conformance/PASSING.txt` は、検査が実装済みで、今通っているケースの一覧（1 行 1 ケース、ソート済み）。`pnpm conformance:update-passing` が、`package.json` に書いたケース名の接頭辞（今は `reject/E1`、`reject/E5002`、`reject/E6001`、`reject/E6003`、`reject/E7001`）に合うケースを実行して書き直す。`pnpm test` の `passing.test.ts` が、載っているケースが全部通ることを確かめる。新しい検査を実装したら接頭辞を足す。accept / run は、要求する検査が全部そろうまで載せない。
