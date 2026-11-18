@@ -230,6 +230,7 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - 型は `JSON.parse(s: string): Result<unknown, JsError>`。構文エラー（JS の `SyntaxError`）は `err({ code: "SyntaxError", message })` で、`code` は Q036 のとおり JS の例外の名前。エラー型は `IoError` / `CastError` と同じ形の `JsError`。
 - 実行時は `runtime-js` の `jsonParse(text, pos)`。`SyntaxError` 以外の例外（スタックの枯渇など）は T006（位置は `parse` の名前）。`JSON.stringify` とほかの組み込みは今までどおり `guarded` で T006。
 - `cast<T>(x)` は `unknown` を受け取るので、`Result` をそのまま渡しても型検査は通る（実行時は `err`）。`unknown` を取り出して渡すこと。これは `cast` の引数の規則の問題で、今回は変えていない。
+- 訂正（2026-11-19）: 上の項目は誤りだった。`Result` は `unknown` に渡せないので、`cast<T>(JSON.parse(x))` は E2002 になる（Q182）。
 
 ## D081: `js.callback` の形（Q128）
 

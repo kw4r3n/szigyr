@@ -50,6 +50,7 @@ accept/49-generics-managed-and-strict.ts
 accept/50-ownership-operands.ts
 accept/51-borrow-destructure-and-do-once.ts
 accept/52-owned-types-shapes.ts
+accept/53-cast-after-unwrapping-result.ts
 reject/E1000-array-suffix-type.ts
 reject/E1000-await-in-non-async-arrow.ts
 reject/E1000-await-outside-async.ts
@@ -124,6 +125,7 @@ reject/E2002-array-spread-not-array.ts
 reject/E2002-assign-boolean-to-number-var.ts
 reject/E2002-await-conditional-null-branch.ts
 reject/E2002-cast-class-target.ts
+reject/E2002-cast-of-result.ts
 reject/E2002-cast-type-parameter.ts
 reject/E2002-cast-unknown-target.ts
 reject/E2002-constraint-unmet-alias.ts
