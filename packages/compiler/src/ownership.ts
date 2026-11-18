@@ -446,12 +446,12 @@ class Flow {
       this.place(e); // a `slice` here is still in a borrowing position (Q013)
       return undefined;
     }
-    this.place(e);
-    if (mode === "mut" && borrowMode(r.sym.declared) === "ref") this.m.at("E3006", member ?? strip(e), `'${r.sym.name}' is borrowed as Ref and cannot be passed as Mut`);
     const node = strip(e);
     // Q170: within one call either side `Mut` conflicts; an outer borrow conflicts only with an inner `Mut` (Q065, Q067)
     if (this.active.some((x, i) => x.sym.id === r.sym.id && (mode === "mut" || (i >= this.callMark && x.mode === "mut")))) this.exclusive(node, r.sym);
-    this.active.push({ sym: r.sym, mode, node, base: false }); // popped by `call`
+    this.active.push({ sym: r.sym, mode, node, base: false }); // popped by `call`; active while `slice` bounds are evaluated
+    this.place(e);
+    if (mode === "mut" && borrowMode(r.sym.declared) === "ref") this.m.at("E3006", member ?? strip(e), `'${r.sym.name}' is borrowed as Ref and cannot be passed as Mut`);
     return { sym: r.sym, mode, node };
   }
 

@@ -319,6 +319,7 @@ reject/E3005-mut-and-mut-same-variable.ts
 reject/E3005-mut-and-ref-same-variable.ts
 reject/E3005-mut-borrow-inside-argument.ts
 reject/E3005-mut-borrow-inside-index-of-assignment.ts
+reject/E3005-mut-borrow-inside-slice-bound.ts
 reject/E3005-ref-and-move-same-variable.ts
 reject/E3005-ref-then-mut-same-variable.ts
 reject/E3006-fill-through-ref-slice.ts
@@ -354,6 +355,7 @@ reject/E4001-strict-calls-managed-only-builtin.ts
 reject/E4001-strict-calls-managed.ts
 reject/E4002-array-param-in-strict.ts
 reject/E4002-async-in-strict.ts
+reject/E4002-managed-type-parameter-into-strict-generic.ts
 reject/E4002-owned-cell-in-strict.ts
 reject/E4002-strict-generic-type-argument-not-allowed.ts
 reject/E4002-string-literal-local-in-strict.ts

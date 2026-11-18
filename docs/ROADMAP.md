@@ -83,7 +83,7 @@
 
 - Q068 の決定（案2）を実装した（D090）。managed のジェネリックを所有型で具体化すると E3007 になる。strict / rt の関数の型引数は §3.3 で検査する（E4002、rt の権限は E4006）。
 - 独立レビューが見つけた穴を塞いだ（D091、Q170〜Q176）。入れ子の実引数・添字・代入先の途中の移動、式の中の代入、`async` の借用パラメータ、所有型を要素に持つコンテナを作る呼び出し、契約の中の移動と `Mut` の借用が対象。
-- 計測: `pnpm typecheck` 成功、`pnpm test` 184 通過、`pnpm verify:conformance` accept=51 reject=361 run=36、`pnpm conformance` 449 通過。
+- 計測: `pnpm typecheck` 成功、`pnpm test` 184 通過、`pnpm verify:conformance` accept=51 reject=363 run=36、`pnpm conformance` 451 通過。
 
 完了条件: strict / rt を使う適合テストがすべて通る。差分テストで両バックエンドが一致する。数値カーネルが手書き C の 1.5 倍以内の時間で動く（目標）。
 

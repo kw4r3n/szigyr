@@ -1,0 +1,17 @@
+// expect: E3005 @ 16:20
+// stage: 2
+// open-question: Q170
+function wn(v: Mut<Vec<f32>>): usize {
+  "use owned";
+  v.push(1);
+  return 1;
+}
+function ws(s: Mut<Slice<f32>>): void {
+  "use owned";
+  s[0] = 1;
+}
+function f(alloc: Alloc): void {
+  "use owned";
+  const a = Vec.create<f32>(alloc, 2);
+  ws(a.slice(0, wn(a)));
+}

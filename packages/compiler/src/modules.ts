@@ -298,6 +298,7 @@ export class Program {
       const key = `${mod.file}:${node.pos}:${p.id}`;
       if (seen.has(key)) continue;
       if (bad) { seen.add(key); this.rep.at(mod, "E2002", node, `'${show(arg)}' cannot instantiate '${p.name}' (${bad} condition)`); }
+      else if (p.owner && p.owner !== "managed" && arg.k === "tparam" && arg.p.owner === "managed") { seen.add(key); this.rep.at(mod, "E4002", node, `the managed type parameter '${arg.p.name}' cannot instantiate '${p.name}' of a strict / rt function (§3.3 is not checked through it)`); }
       else if (p.owner === "rt" && hasAuthority(arg)) { seen.add(key); this.rep.at(mod, "E4006", node, `'${show(arg)}' cannot instantiate '${p.name}' of an rt function (§6)`); }
       else if (p.owner && p.owner !== "managed" && !layerOk(arg)) { seen.add(key); this.rep.at(mod, "E4002", node, `'${show(arg)}' cannot instantiate '${p.name}' of a strict / rt function (§3.3)`); }
     }
