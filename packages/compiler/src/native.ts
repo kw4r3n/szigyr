@@ -1,8 +1,8 @@
 // Builds the C translation unit into a Node-API addon with the installed `cc` and loads it (D101). No node-gyp, no npm dependency.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { CLI_NAME } from "./names.ts";
 
@@ -22,8 +22,11 @@ export function loadNative(c: string, host: object): Record<string, (...a: unkno
   const hash = createHash("sha256").update(c).update(CFLAGS.join(" ")).update(process.version).digest("hex").slice(0, 24);
   let mod = loaded.get(hash);
   if (!mod) {
-    const dir = join(tmpdir(), `${CLI_NAME}-native`);
-    mkdirSync(dir, { recursive: true });
+    // A per-user cache: a loaded addon runs native code, so the directory must be ours and closed to others.
+    const dir = join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), `${CLI_NAME}-native`);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const st = statSync(dir);
+    if ((process.getuid && st.uid !== process.getuid()) || (st.mode & 0o022)) throw new CBuildError(`C backend: cache directory ${dir} is not private to this user`);
     const out = join(dir, `${hash}.node`);
     if (!existsSync(out)) {
       const src = join(dir, `${hash}.c`);

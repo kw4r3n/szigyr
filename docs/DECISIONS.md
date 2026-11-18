@@ -270,7 +270,7 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 
 - C にするのは、プログラムの全ファイルのモジュール直下の strict / rt の `function` 宣言だけ。managed は今までどおり JS で動く。プログラム全体で 1 つの C の翻訳単位にする（ファイルをまたぐ strict どうしの呼び出しは C の中で直接呼ぶ）。
 - JS 側では、その関数の本体を `return rt.native.<key>(引数…)` に置き換える。managed からの呼び出しは、この JS の関数を経由してアドオンに入る。strict / rt どうしの呼び出しは C の中で閉じ、JS を経由しない。
-- ビルド: インストール済みの `cc` で、実行中の Node のヘッダ（`<execPath>/../../include/node`）に対して Node-API のアドオンを直接コンパイルし、`process.dlopen` で読み込む。node-gyp も npm の依存も足さない。フラグは `-std=c11 -O2 -ffp-contract=off -fno-fast-math -fwrapv -shared -fPIC`。出力は C ソースのハッシュをキーに `os.tmpdir()` の下にキャッシュする。`cc` かヘッダがなければ、C バックエンドの実行はその理由を書いた内部エラーで止まる（JS にこっそり戻らない）。`zig` もあるが、`cc` で足りるので使わない。
+- ビルド: インストール済みの `cc` で、実行中の Node のヘッダ（`<execPath>/../../include/node`）に対して Node-API のアドオンを直接コンパイルし、`process.dlopen` で読み込む。node-gyp も npm の依存も足さない。フラグは `-std=c11 -O2 -ffp-contract=off -fno-fast-math -fwrapv -shared -fPIC`。出力は C ソースのハッシュをキーに、利用者ごとのキャッシュ（`$XDG_CACHE_HOME` か `~/.cache` の下、自分だけが書けるディレクトリ）に置く。`cc` かヘッダがなければ、C バックエンドの実行はその理由を書いた内部エラーで止まる（JS にこっそり戻らない）。`zig` もあるが、`cc` で足りるので使わない。
 - 選択: `run(file, { backend: "c" })` と `sts run|test --backend=js|c|both`。`both` は JS と C で別々に実行し、出力・テストの結果・トラップ（コードと位置）を比べ、食い違いを失敗として両方の結果とともに報告する。適合テストは、stage 2 以上の実行例を両方のバックエンドで実行する。
 
 ## D102: C での値の表現と境界

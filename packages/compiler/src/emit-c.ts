@@ -19,6 +19,7 @@ const RANGE: Record<string, [string, string]> = {
 };
 const CNUM: Record<NumName, string> = { f64: "double", f32: "float", i8: "int8_t", i16: "int16_t", i32: "int32_t", u8: "uint8_t", u16: "uint16_t", u32: "uint32_t", usize: "uint32_t" };
 const TRAP: Record<string, number> = { T001: 1, T002: 2, T003: 3, T004: 4, T005: 5, T006: 6, T007: 7, T008: 8, T009: 9, T010: 10 };
+const numText = (n: ts.NumericLiteral): number => Number(n.text.replace(/_/g, ""));
 const isGen = (t: Type, n: string): boolean => t.k === "gen" && t.name === n;
 const isStruct = (t: Type): t is Extract<Type, { k: "record" }> => t.k === "record" && t.struct;
 const elemOf = (t: Type): Type => (t as { args: Type[] }).args[0]!;
@@ -131,11 +132,11 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       `  sts_env = env; sts_depth = 0; sts_err = 0; sts_nvecs = 0;`,
       `  size_t argc = ${n}; napi_value argv[${Math.max(n, 1)}]; napi_get_cb_info(env, info, &argc, argv, 0, 0);`,
       `  struct { int ok; ${frame.join(" ")} } *volatile fr = calloc(1, sizeof *fr);`,
-      `  if (setjmp(sts_jb)) { if (fr->ok) { ${wb.join(" ")} } sts_vec_sync(); free(fr); return sts_throw(); }`,
+      `  if (setjmp(sts_jb)) { if (fr->ok) { fr->ok = 0; ${wb.join(" ")} } sts_vec_sync(); free(fr); return sts_throw(); }`,
       ...lines,
       `  fr->ok = 1;`,
       isVoid ? `  ${names.get(f)}(${args.join(", ")});` : `  ${ctype(ret, where)} r = ${names.get(f)}(${args.join(", ")});`,
-      `  ${wb.join(" ")}`,
+      `  fr->ok = 0; ${wb.join(" ")}`,
       `  napi_value res = ${isVoid ? "0" : outConv(ret, "r", where)};`,
       `  if (!res) napi_get_undefined(env, &res);`,
       `  sts_vec_sync(); free(fr); return res;`,
@@ -324,7 +325,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     ex(e: ts.Expression): string {
       switch (e.kind) {
         case K.ParenthesizedExpression: return this.ex((e as ts.ParenthesizedExpression).expression);
-        case K.NumericLiteral: return this.lit(Number((e as ts.NumericLiteral).text.replace(/_/g, "")), this.typeOf(e));
+        case K.NumericLiteral: return this.lit(numText(e as ts.NumericLiteral), this.typeOf(e));
         case K.TrueKeyword: return "true";
         case K.FalseKeyword: return "false";
         case K.NullKeyword: return "0";
@@ -357,7 +358,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     lit(x: number, t: Type): string {
       if (t.k !== "num") throw new CUnsupported(this.where, `a literal of type ${show(t)}`);
       if (isInt(t)) return `((${CNUM[t.name]})${x}LL)`;
-      const s = Object.is(x, -0) ? "-0.0" : Number.isInteger(x) ? `${x}.0` : `${x}`;
+      const s = Object.is(x, -0) ? "-0.0" : /[.e]/.test(`${x}`) ? `${x}` : `${x}.0`;
       return t.name === "f32" ? `((float)${s})` : s;
     }
 
@@ -371,8 +372,8 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       const sym = this.mod.values.get(id.text);
       if (sym?.k === "const") {
         const init = sym.decl.initializer!;
-        if (init.kind === K.NumericLiteral) return this.lit(Number((init as ts.NumericLiteral).text), sym.type);
-        if (init.kind === K.PrefixUnaryExpression && (init as ts.PrefixUnaryExpression).operand.kind === K.NumericLiteral) return this.lit(-Number(((init as ts.PrefixUnaryExpression).operand as ts.NumericLiteral).text), sym.type);
+        if (init.kind === K.NumericLiteral) return this.lit(numText(init as ts.NumericLiteral), sym.type);
+        if (init.kind === K.PrefixUnaryExpression && (init as ts.PrefixUnaryExpression).operand.kind === K.NumericLiteral) return this.lit(-numText((init as ts.PrefixUnaryExpression).operand as ts.NumericLiteral), sym.type);
         if (init.kind === K.TrueKeyword || init.kind === K.FalseKeyword) return init.kind === K.TrueKeyword ? "true" : "false";
       }
       throw this.no(id, `the name '${id.text}' here`);
@@ -390,7 +391,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
 
     prefix(u: ts.PrefixUnaryExpression): string {
       const t = this.typeOf(u);
-      if (u.operator === K.MinusToken && u.operand.kind === K.NumericLiteral) return this.lit(-Number((u.operand as ts.NumericLiteral).text), t);
+      if (u.operator === K.MinusToken && u.operand.kind === K.NumericLiteral) return this.lit(-numText(u.operand as ts.NumericLiteral), t);
       const v = this.ex(u.operand);
       switch (u.operator) {
         case K.ExclamationToken: return this.t(t, `!${v}`, u);
@@ -482,9 +483,8 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         this.emit(`${p} = ${nv};`);
         return nv;
       }
-      const r = this.conv(this.ex(b.right), this.typeOf(b.right), exprTypes.get(left) ?? lt);
       const decl = left.kind === K.Identifier ? this.lookup((left as ts.Identifier).text)?.t : undefined;
-      const v = decl ? this.conv(r, this.typeOf(b.right), decl) : r;
+      const v = this.conv(this.ex(b.right), this.typeOf(b.right), decl ?? lt);
       this.emit(`${p} = ${v};`);
       return p;
     }

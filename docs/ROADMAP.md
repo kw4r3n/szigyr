@@ -95,7 +95,7 @@
 - 構成は D101〜D103。インストール済みの `cc` で Node-API のアドオンを直接ビルドする（依存の追加なし）。`sts run|test --backend=js|c|both`。適合テストは stage 2 以上の実行例を C でも実行する。
 - C で動くもの: 数値型、`boolean`、Struct（Copy と非 Copy、入れ子、`Vec` のフィールド）、`Vec<数値型>`（JS の TypedArray とメモリを共有、C での伸長を含む）、`Slice`、`Ref` / `Mut`、数値型などの `T | null`、`Alloc`、契約、全トラップ、`Math` の §10.1 の関数。
 - 未対応（使うと位置つきの内部エラーで止まる）: `Vec<Struct>` / `Vec<boolean>` / `Vec<union>`（Q184）、タグつき union と `switch`、`Result`、文字列リテラル型、`Alloc` 以外の権限、strict / rt のジェネリック関数、ブロック本体の `ensures`、`void` の関数の `ensures`、モジュール直下の `const` のうちリテラル以外。
-- 実行例 22 本（stage 2 の 24 本のうち、`run/52` と `run/53` を除く）が C でも JS と同じ結果になった。`run/52` と `run/53` は未対応のエラーで止まることを適合テストで確かめている。
+- 実行例 23 本（stage 2 の 25 本のうち、`run/52` と `run/53` を除く）が C でも JS と同じ結果になった。`run/52` と `run/53` は未対応のエラーで止まることを適合テストで確かめている。
 - 残り: 「strict / rt の C への変換」と「managed と strict の境界」は、上の未対応が残るので未完。
 
 完了条件: strict / rt を使う適合テストがすべて通る。差分テストで両バックエンドが一致する。数値カーネルが手書き C の 1.5 倍以内の時間で動く（目標）。
