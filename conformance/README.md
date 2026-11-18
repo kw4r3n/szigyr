@@ -10,7 +10,7 @@ Put it in `accept/`, `reject/` or `run/`. The header lives in the entry file, fr
    - run: one or more consecutive `// expect-output: <text>` lines (stdout lines, in order, exact; one space after the colon is dropped),
      or `// expect-no-output`; optionally followed by `// expect-trap: T001 @ 8:14`
      (trap code and position; stdout up to the trap is still compared). Run also requires zero diagnostics.
-     No trap line means no trap is allowed.
+     No trap line means no trap is allowed. A case with only `expect-trap` (no output lines) does not compare stdout.
 2. `// stage: N` directly after: the ROADMAP stage that must pass this case (required).
    `STS_STAGE=N` runs only cases with stage <= N.
 3. Optional `// open-question: Q012` lines (ignored by the harness).

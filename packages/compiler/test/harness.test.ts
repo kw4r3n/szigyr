@@ -18,7 +18,7 @@ const byName = (n: string) => loadCases(fx("good")).find((c) => c.name === n)!;
 describe("header parsing", () => {
   it("loads all good cases incl. directory form", () => {
     expect(loadCases(fx("good")).map((c) => c.name)).toEqual([
-      "accept/ok.ts", "reject/rej.ts", "run/dir", "run/noout.ts", "run/out.ts", "run/trap.ts",
+      "accept/ok.ts", "reject/rej.ts", "run/dir", "run/noout.ts", "run/out.ts", "run/trap.ts", "run/traponly.ts",
     ]);
   });
   it("parses fields", () => {
@@ -78,6 +78,11 @@ describe("runCase", () => {
     expect(await runCase(c, fake([], { stdout: "a\n" }))).toHaveLength(1);
     expect(await runCase(c, fake([], { stdout: "b\n", trap }))).toHaveLength(1);
     expect(await runCase(byName("run/out.ts"), fake([], { stdout: "a\n b\n", trap }))).toHaveLength(1);
+  });
+  it("trap-only case does not compare stdout", async () => {
+    const trap = { code: "T002", file: "f", line: 4, col: 1 };
+    expect(await runCase(byName("run/traponly.ts"), fake([], { stdout: "anything\n", trap }))).toEqual([]);
+    expect(await runCase(byName("run/traponly.ts"), fake([], { stdout: "x\n" }))).toHaveLength(1);
   });
   it("reports a throwing compiler as a failure", async () => {
     const boom: Compiler = { check: () => { throw new Error("x"); }, run: async () => { throw new Error("y"); } };
