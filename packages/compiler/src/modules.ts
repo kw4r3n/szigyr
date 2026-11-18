@@ -5,7 +5,7 @@ import type { Diagnostic } from "./diagnostics.ts";
 import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { RESERVED, builtinType, isGenName } from "./builtins.ts";
 import {
-  ERROR, GEN_ARITY, NULL, VOID, assignable, bindTParams, demand, fn, isTaggedUnion, hasAuthority, kindOf, layerOk, needOk, newTParam, nonNull, record, result, show, subst, union,
+  ERROR, GEN_ARITY, NULL, VOID, assignable, bindTParams, demand, fn, isTaggedUnion, hasAuthority, kindOf, layerOk, movesLike, needOk, ownedInside, CONTAINERS, newTParam, nonNull, record, result, show, subst, union,
   type ClassSym, type Field, type FnType, type IfaceSym, type TParam, type Type,
 } from "./types.ts";
 
@@ -297,7 +297,7 @@ export class Program {
       const bad = arg.k === "tparam" ? undefined : [...p.need ?? []].find((n) => !needOk(n, arg));
       const key = `${mod.file}:${node.pos}:${p.id}`;
       if (seen.has(key)) continue;
-      if (bad) { seen.add(key); this.rep.at(mod, "E2002", node, `'${show(arg)}' cannot instantiate '${p.name}' (${bad} condition)`); }
+      if (bad) { seen.add(key); this.rep.at(mod, bad === "copy" || bad === "field" ? "E4002" : "E2002", node, `'${show(arg)}' cannot instantiate '${p.name}' (${bad} condition)`); } // Q086: copy / field are §3.3 codes
       else if (p.owner && p.owner !== "managed" && arg.k === "tparam" && arg.p.owner === "managed") { seen.add(key); this.rep.at(mod, "E4002", node, `the managed type parameter '${arg.p.name}' cannot instantiate '${p.name}' of a strict / rt function (§3.3 is not checked through it)`); }
       else if (p.owner === "rt" && hasAuthority(arg)) { seen.add(key); this.rep.at(mod, "E4006", node, `'${show(arg)}' cannot instantiate '${p.name}' of an rt function (§6)`); }
       else if (p.owner && p.owner !== "managed" && !layerOk(arg)) { seen.add(key); this.rep.at(mod, "E4002", node, `'${show(arg)}' cannot instantiate '${p.name}' of a strict / rt function (§3.3)`); }
@@ -374,7 +374,7 @@ export class Program {
       if (!p.type) { this.rep.at(e.mod, "E2006", p.name, "property needs a type annotation"); return ERROR; }
       const name = (p.name as ts.Identifier).text;
       const type = this.typeOf(p.type, e);
-      if (struct && !demand(type, "field") && !(type.k === "gen" && (type.name === "Ref" || type.name === "Mut"))) this.rep.at(e.mod, "E2002", p.type, `a Struct field is a number, boolean, Struct or Vec, not '${show(type)}'`); // Q086; a borrow field is P3's E3004 (§5.5)
+      if (struct && !demand(type, "field") && !(type.k === "gen" && (type.name === "Ref" || type.name === "Mut"))) this.rep.at(e.mod, "E4002", p.type, `a Struct field is a number, boolean, Struct or Vec, not '${show(type)}'`); // Q086; a borrow field is P3's E3004 (§5.5)
       fields.push({ name, type, readonly: hasMod(p, K.ReadonlyKeyword) });
     }
     return record(fields, struct);
@@ -399,7 +399,12 @@ export class Program {
       const bad = ps.findIndex((p, i) => p.constraint && args[i]!.k !== "error" && !assignable(args[i]!, subst(p.constraint, bindTParams(ps, args))));
       if (bad >= 0) { this.rep.at(e.mod, "E2002", argNodes![bad]!, `type argument does not implement '${show(ps[bad]!.constraint!)}'`); return ERROR; }
       ps.forEach((p, i) => this.insts.push({ mod: e.mod, node: argNodes![i]!, p, arg: args[i]! })); // Q127
-      if (body) return subst(body, bindTParams(ps, args));
+      if (body) {
+        const r = subst(body, bindTParams(ps, args));
+        const i = ownedInside(r) ? args.findIndex(movesLike) : -1; // Q174: `Bx<Vec<f32>>` for `type Bx<T> = Array<T>`
+        if (i >= 0) this.rep.at(e.mod, "E3007", argNodes![i]!, `'${show(r)}' is a managed container holding an owned type`);
+        return r;
+      }
       return sym.k === "iface" ? { k: "iface", iface: sym.iface, args } : { k: "class", cls: (sym as Extract<TypeSym, { k: "class" }>).cls, args };
     }
     if (name === "Struct") {
@@ -423,9 +428,11 @@ export class Program {
         return ERROR;
       }
       if ((name === "Vec" || name === "Slice") && !demand(args[0]!, "copy")) { // §3.3, Q086, Q127
-        this.rep.at(e.mod, "E2002", argNodes![0]!, `${name}<T> needs a Copy element type, not '${show(args[0]!)}'`);
+        this.rep.at(e.mod, "E4002", argNodes![0]!, `${name}<T> needs a Copy element type, not '${show(args[0]!)}'`);
         return ERROR;
       }
+      const i = CONTAINERS.has(name) ? args.findIndex(movesLike) : -1;
+      if (i >= 0) this.rep.at(e.mod, "E3007", argNodes![i]!, `'${name}' cannot hold the owned type '${show(args[i]!)}' (Q174)`);
       return { k: "gen", name, args };
     }
     const b = !RESERVED.has(name) ? builtinType(name) : undefined;

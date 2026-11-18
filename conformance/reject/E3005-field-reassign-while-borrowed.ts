@@ -1,0 +1,21 @@
+// expect: E3005 @ 20:12
+// stage: 2
+// open-question: Q170
+type W = Struct<{ a: Vec<f32>; b: Vec<f32> }>;
+function mk(alloc: Alloc): Vec<f32> {
+  "use owned";
+  return Vec.create<f32>(alloc, 2);
+}
+function eat(v: Vec<f32>): usize {
+  "use owned";
+  return v.length;
+}
+function mn(a: Mut<Vec<f32>>, n: usize): void {
+  "use owned";
+  a.push(f32(n));
+}
+function f(al: Alloc): void {
+  "use owned";
+  const w: W = { a: mk(al), b: mk(al) };
+  mn(w.a, (w.a = mk(al)).length);
+}

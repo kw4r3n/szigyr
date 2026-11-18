@@ -50,6 +50,7 @@ accept/49-generics-managed-and-strict.ts
 accept/50-ownership-operands.ts
 accept/51-borrow-destructure-and-do-once.ts
 accept/52-owned-types-shapes.ts
+accept/53-cast-after-unwrapping-result.ts
 reject/E1000-array-suffix-type.ts
 reject/E1000-await-in-non-async-arrow.ts
 reject/E1000-await-outside-async.ts
@@ -124,6 +125,7 @@ reject/E2002-array-spread-not-array.ts
 reject/E2002-assign-boolean-to-number-var.ts
 reject/E2002-await-conditional-null-branch.ts
 reject/E2002-cast-class-target.ts
+reject/E2002-cast-of-result.ts
 reject/E2002-cast-type-parameter.ts
 reject/E2002-cast-unknown-target.ts
 reject/E2002-constraint-unmet-alias.ts
@@ -226,7 +228,6 @@ reject/E2002-struct-missing-field.ts
 reject/E2002-struct-of-alias.ts
 reject/E2002-struct-passed-as-record.ts
 reject/E2002-struct-readonly-field-assign.ts
-reject/E2002-struct-string-field.ts
 reject/E2002-tagged-union-unknown-kind.ts
 reject/E2002-traps-code-not-literal.ts
 reject/E2002-traps-unknown-code.ts
@@ -235,9 +236,6 @@ reject/E2002-union-i32-or-string.ts
 reject/E2002-union-nullable-mixed.ts
 reject/E2002-union-records-without-kind.ts
 reject/E2002-usize-init-from-u32.ts
-reject/E2002-vec-create-string.ts
-reject/E2002-vec-element-owned-struct.ts
-reject/E2002-vec-element-string.ts
 reject/E2002-vec-f32-to-slice-f64.ts
 reject/E2002-vec-for-of.ts
 reject/E2002-vec-index-i32.ts
@@ -302,6 +300,7 @@ reject/E3002-move-in-inner-loop.ts
 reject/E3002-move-in-while-body.ts
 reject/E3002-move-into-struct-in-loop.ts
 reject/E3002-reassigned-on-one-path-only-in-loop.ts
+reject/E3003-field-assignment-used-as-value.ts
 reject/E3003-partial-move-as-argument.ts
 reject/E3003-partial-move-by-return.ts
 reject/E3003-partial-move-into-struct-literal.ts
@@ -324,6 +323,7 @@ reject/E3004-slice-bound-to-local.ts
 reject/E3004-slice-by-value-parameter.ts
 reject/E3005-disjoint-fields-same-root.ts
 reject/E3005-disjoint-slices-same-root.ts
+reject/E3005-field-reassign-while-borrowed.ts
 reject/E3005-move-inside-later-argument.ts
 reject/E3005-move-inside-receiver-argument.ts
 reject/E3005-move-root-of-borrowed-field.ts
@@ -333,6 +333,7 @@ reject/E3005-mut-and-ref-same-variable.ts
 reject/E3005-mut-borrow-inside-argument.ts
 reject/E3005-mut-borrow-inside-index-of-assignment.ts
 reject/E3005-mut-borrow-inside-slice-bound.ts
+reject/E3005-reassign-while-borrowed.ts
 reject/E3005-ref-and-move-same-variable.ts
 reject/E3005-ref-then-mut-same-variable.ts
 reject/E3006-fill-through-ref-slice.ts
@@ -343,10 +344,13 @@ reject/E3006-ref-slice-passed-as-mut-slice.ts
 reject/E3006-write-field-through-ref.ts
 reject/E3006-write-index-through-ref.ts
 reject/E3007-async-returns-owned.ts
+reject/E3007-container-alias-of-owned.ts
 reject/E3007-managed-generic-class-owned-type-argument.ts
 reject/E3007-managed-generic-explicit-owned-type-argument.ts
 reject/E3007-managed-generic-inferred-owned-type-argument.ts
+reject/E3007-map-over-nested-container.ts
 reject/E3007-map-returns-owned.ts
+reject/E3007-nested-container-of-owned-parameter.ts
 reject/E3007-owned-captured-by-closure.ts
 reject/E3007-owned-in-array-literal.ts
 reject/E3007-owned-in-class-field.ts
@@ -376,8 +380,12 @@ reject/E4002-strict-generic-type-argument-not-allowed.ts
 reject/E4002-string-literal-local-in-strict.ts
 reject/E4002-string-param-in-rt.ts
 reject/E4002-string-param-in-strict.ts
+reject/E4002-struct-string-field.ts
 reject/E4002-template-literal-local-in-strict.ts
 reject/E4002-unknown-param-in-strict.ts
+reject/E4002-vec-create-string.ts
+reject/E4002-vec-element-owned-struct.ts
+reject/E4002-vec-element-string.ts
 reject/E4003-arrow-in-rt.ts
 reject/E4003-arrow-in-strict.ts
 reject/E4003-capturing-arrow-in-strict.ts
@@ -419,6 +427,7 @@ reject/E6002-ensures-consumes-result.ts
 reject/E6002-ensures-owned-arg.ts
 reject/E6002-invariant-mutating-method.ts
 reject/E6002-requires-mut-borrow.ts
+reject/E6002-requires-new-mut-borrow.ts
 reject/E6002-requires-nondeterministic-call.ts
 reject/E6003-test-in-function.ts
 reject/E6003-test-in-test.ts

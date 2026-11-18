@@ -2,7 +2,7 @@
 import { SyntaxKind as K, type Node, type ts } from "./parse.ts";
 import type { LocalSym, Module, Program } from "./modules.ts";
 import { assignTarget, callSigs, exprTypes, localOf } from "./expr.ts";
-import { movesLike, show, unref, type Type } from "./types.ts";
+import { movesLike, ownedInside, show, unref, type Type } from "./types.ts";
 
 /** Moved locals (by id) and the expression that moved each; null on a path that cannot be reached. */
 type State = Map<number, Node> | null;
@@ -25,10 +25,6 @@ const borrowMode = (t: Type | undefined): "ref" | "mut" | undefined => (t?.k ===
 /** Vec / Slice methods that need `Mut` of the receiver (§3.3). */
 const MUT_METHODS = new Set(["push", "pop", "clear", "fill"]);
 const FN_EXPR = new Set<K>([K.ArrowFunction, K.FunctionExpression]);
-/** A managed container (or a Promise) whose element is owned (Q174). */
-const CONTAINERS = new Set(["Array", "ReadonlyArray", "Map", "Set", "Promise"]);
-const ownedInside = (t: Type | undefined): boolean =>
-  !!t && (t.k === "union" ? t.members.some(ownedInside) : t.k === "gen" && CONTAINERS.has(t.name) && t.args.some((a) => movesLike(a) || ownedInside(a)));
 const isNever = (t: Type | undefined): boolean => t?.k === "prim" && t.name === "never";
 
 export function checkOwnership(prog: Program): void {
@@ -385,6 +381,7 @@ class Flow {
       this.ex(b.right, "move");
       if (!sym) return;
       if (borrowMode(sym.declared)) { this.m.at("E3004", l, `the borrow parameter '${sym.name}' cannot be reassigned`); return; } // Q151
+      if (this.active.some((x) => x.sym.id === sym.id)) this.exclusive(l, sym); // Q170: overwriting a borrowed root
       if (sym.fnDepth < this.depth) this.ident(l, "read"); // a captured local (E3004 / E3007)
       this.state?.delete(sym.id); // §5.2: a reassigned `let` is usable again
       return;
@@ -404,6 +401,7 @@ class Flow {
     const obj = l.kind === K.PropertyAccessExpression ? (l as ts.PropertyAccessExpression).expression : (l as ts.ElementAccessExpression).expression;
     const root = this.rootOf(obj);
     this.place(obj);
+    if (root && this.active.some((x) => x.sym.id === root.sym.id)) this.exclusive(l, root.sym); // Q170: a write under a borrow of the same root
     if (root) this.active.push({ sym: root.sym, mode: "mut", node: root.id, base: true }); // popped by the caller
     if (l.kind === K.ElementAccessExpression) this.ex((l as ts.ElementAccessExpression).argumentExpression, "read");
     if (root && borrowMode(root.sym.declared) === "ref") this.m.at("E3006", l, `cannot write through the Ref '${root.sym.name}'`);
@@ -500,9 +498,12 @@ class Flow {
     });
     this.active.length = mark;
     this.callMark = outerMark;
-    // a new container, or one derived from a container that already holds owned values (and so is empty), is fine
     const recv = callee.kind === K.PropertyAccessExpression ? exprTypes.get((callee as ts.PropertyAccessExpression).expression) : undefined;
-    if (e.kind === K.CallExpression && ownedInside(exprTypes.get(e)) && !ownedInside(recv)) this.m.at("E3007", isId(callee) ? callee : callee.kind === K.PropertyAccessExpression ? (callee as ts.PropertyAccessExpression).name : callee, "this call makes a managed container that holds an owned value (Q174)");
+    // Q174 (案2): an inferred container-of-owned type (a written one is P2's); a receiver of such a type was reported where it came from
+    if (ownedInside(exprTypes.get(e)) && !ownedInside(recv)) {
+      const targ = e.typeArguments?.find((a) => this.m.prog.insts.some((x) => x.node === a && movesLike(x.arg)));
+      this.m.at("E3007", targ ?? (e.kind === K.NewExpression && e.typeArguments ? e.typeArguments[e.typeArguments.length - 1]! : isId(callee) ? callee : callee.kind === K.PropertyAccessExpression ? (callee as ts.PropertyAccessExpression).name : callee), "this expression has a managed container type that holds an owned value (Q174)");
+    }
     if (isNever(exprTypes.get(e))) this.state = null;
   }
 }
