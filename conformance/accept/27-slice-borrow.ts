@@ -1,0 +1,40 @@
+// expect: ok
+// stage: 2
+function sumSlice(s: Ref<Slice<f32>>): f32 {
+  "use rt";
+  let acc: f32 = 0;
+  for (let i: usize = 0; i < s.length; i += 1) {
+    acc += s[i];
+  }
+  return acc;
+}
+
+function zero(s: Mut<Slice<f32>>): void {
+  "use rt";
+  s.fill(0);
+}
+
+export function halves(v: Ref<Vec<f32>>): f32 {
+  "use rt";
+  const mid = divTrunc(v.length, 2);
+  return sumSlice(v.slice(0, mid)) + sumSlice(v.slice(mid, v.length));
+}
+
+export function zeroHalf(v: Mut<Vec<f32>>): void {
+  "use rt";
+  const mid = divTrunc(v.length, 2);
+  zero(v.slice(0, mid));
+}
+
+test("slice borrow", (t: Test) => {
+  const alloc = TestAlloc.create();
+  const v = Vec.create<f32>(alloc, 4);
+  v.push(1); v.push(2); v.push(3); v.push(4);
+  t.eq(halves(v), 10);
+  zeroHalf(v);
+  t.eq(v[0], 0);
+  t.eq(v[3], 4);
+  const w = Vec.create<f32>(alloc, 2);
+  w.push(3); w.push(4);
+  t.eqSlice(v.slice(2, 4), w);
+});

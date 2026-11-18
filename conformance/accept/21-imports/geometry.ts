@@ -1,0 +1,11 @@
+import { clamp01 as clamp, SCALE } from "./util.ts";
+
+export type Rect = { readonly w: f64; readonly h: f64 };
+
+export function area(r: Rect): f64 {
+  return r.w * r.h;
+}
+
+export function scaled(r: Rect): Rect {
+  return { w: clamp(r.w) * SCALE, h: clamp(r.h) * SCALE };
+}

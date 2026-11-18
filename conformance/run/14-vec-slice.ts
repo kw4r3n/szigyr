@@ -1,0 +1,51 @@
+// expect-output: len=6 sum=55
+// expect-output: 0 10 40 90 16 25
+// expect-output: part=146
+// expect-output: pop=25 len=5
+// expect-output: sum=35
+// expect-output: len=0 pop=null
+// stage: 2
+// open-question: Q027
+// open-question: Q032
+// open-question: Q047
+// open-question: Q059
+function sum(s: Ref<Slice<i32>>): i32 {
+  "use owned";
+  let acc: i32 = 0;
+  for (let i: usize = 0; i < s.length; i += 1) {
+    acc += s[i];
+  }
+  return acc;
+}
+
+function scaleInPlace(s: Mut<Slice<i32>>, k: i32): void {
+  "use rt";
+  for (let i: usize = 0; i < s.length; i += 1) {
+    s[i] = s[i] * k;
+  }
+}
+
+function fillSquares(v: Mut<Vec<i32>>, n: i32): void {
+  "use owned";
+  for (let i: i32 = 0; i < n; i += 1) {
+    v.push(i * i);
+  }
+}
+
+function showI(x: i32 | null): string {
+  return x === null ? "null" : `${x}`;
+}
+
+export function main(sys: System): void {
+  const v = Vec.create<i32>(sys.alloc, 8);
+  fillSquares(v, 6);
+  sys.log.info(`len=${v.length} sum=${sum(v)}`);
+  scaleInPlace(v.slice(1, 4), 10);
+  sys.log.info(`${v[0]} ${v[1]} ${v[2]} ${v[3]} ${v[4]} ${v[5]}`);
+  sys.log.info(`part=${sum(v.slice(2, 5))}`);
+  sys.log.info(`pop=${showI(v.pop())} len=${v.length}`);
+  v.fill(7);
+  sys.log.info(`sum=${sum(v)}`);
+  v.clear();
+  sys.log.info(`len=${v.length} pop=${showI(v.pop())}`);
+}

@@ -1,0 +1,7 @@
+// expect: E3004 @ 6:15
+// stage: 2
+// open-question: Q013
+function f(v: Ref<Vec<f32>>): void {
+  "use rt";
+  const w = v.slice(0, 2);
+}

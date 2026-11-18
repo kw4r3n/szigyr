@@ -1,0 +1,33 @@
+import { Shape } from "./shape.ts";
+
+export class Circle implements Shape {
+  private readonly r: f64;
+
+  constructor(r: f64) {
+    this.r = r;
+  }
+
+  area(): f64 {
+    return Math.PI * this.r * this.r;
+  }
+
+  name(): string {
+    return "circle";
+  }
+}
+
+export class Square implements Shape {
+  private readonly side: f64;
+
+  constructor(side: f64) {
+    this.side = side;
+  }
+
+  area(): f64 {
+    return this.side * this.side;
+  }
+
+  name(): string {
+    return "square";
+  }
+}

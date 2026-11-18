@@ -1,0 +1,9 @@
+// expect: E6002 @ 7:31
+// stage: 2
+// open-question: Q056
+// open-question: Q047
+export function len(v: Ref<Vec<f32>>): usize {
+  "use owned";
+  ensures((r: usize) => r === v.length);
+  return v.length;
+}
