@@ -242,6 +242,11 @@ export const isOwned = (t: Type): boolean => (t.k === "gen" && t.name === "Vec")
  * P3: values that move. Owned types, unions holding one, and strict / rt type parameters (Q049; managed ones never are, Q068 b)
  * unless their instantiations cannot be owned: an interface constraint (only classes implement one), or a `key` / `copy` / `eq` condition (Q153).
  */
+/** Q174 (案2): an Array / ReadonlyArray / Map / Set / Promise whose type arguments are, or hold, owned types (E3007). */
+export const CONTAINERS = new Set(["Array", "ReadonlyArray", "Map", "Set", "Promise"]);
+export const ownedInside = (t: Type | undefined): boolean =>
+  !!t && (t.k === "union" ? t.members.some(ownedInside) : t.k === "gen" && CONTAINERS.has(t.name) && t.args.some((a) => movesLike(a) || ownedInside(a)));
+
 export function movesLike(t: Type): boolean {
   if (t.k === "tparam") return (t.p.owner === "strict" || t.p.owner === "rt") && !t.p.constraint && !["key", "copy", "eq"].some((n) => t.p.need?.has(n as Need));
   return isOwned(t) || (t.k === "union" && t.members.some(movesLike));

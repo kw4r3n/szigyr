@@ -5,7 +5,7 @@ import type { Diagnostic } from "./diagnostics.ts";
 import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { RESERVED, builtinType, isGenName } from "./builtins.ts";
 import {
-  ERROR, GEN_ARITY, NULL, VOID, assignable, bindTParams, demand, fn, isTaggedUnion, hasAuthority, kindOf, layerOk, needOk, newTParam, nonNull, record, result, show, subst, union,
+  ERROR, GEN_ARITY, NULL, VOID, assignable, bindTParams, demand, fn, isTaggedUnion, hasAuthority, kindOf, layerOk, movesLike, needOk, ownedInside, CONTAINERS, newTParam, nonNull, record, result, show, subst, union,
   type ClassSym, type Field, type FnType, type IfaceSym, type TParam, type Type,
 } from "./types.ts";
 
@@ -399,7 +399,12 @@ export class Program {
       const bad = ps.findIndex((p, i) => p.constraint && args[i]!.k !== "error" && !assignable(args[i]!, subst(p.constraint, bindTParams(ps, args))));
       if (bad >= 0) { this.rep.at(e.mod, "E2002", argNodes![bad]!, `type argument does not implement '${show(ps[bad]!.constraint!)}'`); return ERROR; }
       ps.forEach((p, i) => this.insts.push({ mod: e.mod, node: argNodes![i]!, p, arg: args[i]! })); // Q127
-      if (body) return subst(body, bindTParams(ps, args));
+      if (body) {
+        const r = subst(body, bindTParams(ps, args));
+        const i = ownedInside(r) ? args.findIndex(movesLike) : -1; // Q174: `Bx<Vec<f32>>` for `type Bx<T> = Array<T>`
+        if (i >= 0) this.rep.at(e.mod, "E3007", argNodes![i]!, `'${show(r)}' is a managed container holding an owned type`);
+        return r;
+      }
       return sym.k === "iface" ? { k: "iface", iface: sym.iface, args } : { k: "class", cls: (sym as Extract<TypeSym, { k: "class" }>).cls, args };
     }
     if (name === "Struct") {
@@ -426,6 +431,8 @@ export class Program {
         this.rep.at(e.mod, "E2002", argNodes![0]!, `${name}<T> needs a Copy element type, not '${show(args[0]!)}'`);
         return ERROR;
       }
+      const i = CONTAINERS.has(name) ? args.findIndex(movesLike) : -1;
+      if (i >= 0) this.rep.at(e.mod, "E3007", argNodes![i]!, `'${name}' cannot hold the owned type '${show(args[i]!)}' (Q174)`);
       return { k: "gen", name, args };
     }
     const b = !RESERVED.has(name) ? builtinType(name) : undefined;

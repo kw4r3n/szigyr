@@ -1,4 +1,4 @@
-// expect: E3007 @ 14:17
+// expect: E3007 @ 13:25
 // stage: 2
 // open-question: Q174
 function mk(alloc: Alloc): Vec<f32> {

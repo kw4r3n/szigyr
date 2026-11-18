@@ -346,11 +346,13 @@ reject/E3006-ref-slice-passed-as-mut-slice.ts
 reject/E3006-write-field-through-ref.ts
 reject/E3006-write-index-through-ref.ts
 reject/E3007-async-returns-owned.ts
+reject/E3007-container-alias-of-owned.ts
 reject/E3007-managed-generic-class-owned-type-argument.ts
 reject/E3007-managed-generic-explicit-owned-type-argument.ts
 reject/E3007-managed-generic-inferred-owned-type-argument.ts
 reject/E3007-map-over-nested-container.ts
 reject/E3007-map-returns-owned.ts
+reject/E3007-nested-container-of-owned-parameter.ts
 reject/E3007-owned-captured-by-closure.ts
 reject/E3007-owned-in-array-literal.ts
 reject/E3007-owned-in-class-field.ts
