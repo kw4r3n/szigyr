@@ -517,3 +517,5 @@ run/82-strict-alloc-fail.ts
 run/83-strict-int-ops-typed.ts
 run/84-rt-switch-float.ts
 run/85-generic-vec-slice-to-c.ts
+run/86-generic-strict-vec-create.ts
+run/87-strict-nullable-union-member.ts

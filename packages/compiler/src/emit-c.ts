@@ -475,8 +475,9 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     }
 
     varDecl(d: ts.VariableDeclaration): void {
-      const t = exprTypes.get(d.name);
-      if (!t) throw this.no(d, "a declaration without a recorded type");
+      const t0 = exprTypes.get(d.name);
+      if (!t0) throw this.no(d, "a declaration without a recorded type");
+      const t = this.i.m.size ? subst(t0, this.i.m) : t0; // inside a generic instance (D104)
       const v = this.conv(this.ex(d.initializer!), this.typeOf(d.initializer!), t);
       if (d.name.kind === K.Identifier) {
         const name = (d.name as ts.Identifier).text, c = `u_${name}_${this.tmp++}`;
@@ -486,7 +487,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       }
       const src = this.t(t, v, d); // `const { x, y } = s`: whole-value move, then fields
       for (const el of (d.name as ts.ObjectBindingPattern).elements) {
-        const prop = (el.propertyName ?? el.name) as ts.Identifier, name = (el.name as ts.Identifier).text, ft = exprTypes.get(el.name!)!;
+        const prop = (el.propertyName ?? el.name) as ts.Identifier, name = (el.name as ts.Identifier).text, ft = ((x: Type): Type => (this.i.m.size ? subst(x, this.i.m) : x))(exprTypes.get(el.name!)!);
         const c = `u_${name}_${this.tmp++}`;
         this.emit(`${ctype(ft, this.where)} ${c} = ${src}.f_${prop.text};`);
         this.scopes.at(-1)!.set(name, { c, t: ft, ptr: false });
@@ -502,7 +503,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       }
       if (to.k === "union" && nonNull(to) && !(from.k === "union" && from.members.some(isNull))) {
         const n = ctype(to, this.where);
-        return isNull(from) ? `((${n}){ .some = false })` : `((${n}){ .some = true, .v = ${v} })`;
+        return isNull(from) ? `((${n}){ .some = false })` : `((${n}){ .some = true, .v = ${this.conv(v, from, nonNull(to)!)} })`; // a member goes into its union first
       }
       return v;
     }
