@@ -502,3 +502,5 @@ run/77-strict-packed-vec.ts
 run/78-strict-assign-value-order.ts
 run/79-strict-infinite-literal.ts
 run/80-strict-deep-recursion-big-frame.ts
+run/81-strict-packed-vec-ops.ts
+run/82-strict-alloc-fail.ts

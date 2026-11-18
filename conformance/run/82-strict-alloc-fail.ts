@@ -1,0 +1,12 @@
+// expect-trap: T006 @ 7:17
+// stage: 2
+// A failed allocation (the JS RangeError in Vec.create) is T006 at the call under both backends (D100, D106).
+type P = Struct<{ readonly x: f64; readonly y: f64; readonly z: f64 }>;
+function big(alloc: Alloc): usize {
+  "use owned";
+  const v = Vec.create<P>(alloc, 4294967295);
+  return v.length;
+}
+export function main(sys: System): void {
+  sys.log.info(`${big(sys.alloc)}`);
+}

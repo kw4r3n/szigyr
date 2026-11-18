@@ -124,7 +124,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         const lu = t as Extract<Type, { k: "union" }>;
         if (lu.members.every((m) => m.k === "lit")) { for (const m of lu.members) litId((m as { value: string }).value); return "int32_t"; }
         const n = nonNull(t);
-        if (n && (n.k === "num" || isBool(n) || (isStruct(n) && isCopy(n)) || isTaggedUnion(n))) {
+        if (n && (n.k === "num" || isBool(n) || n.k === "lit" || (n.k === "union" && n.members.every((m) => m.k === "lit")) || (isStruct(n) && isCopy(n)) || isTaggedUnion(n))) {
           const key = show(t);
           let name = nullables.get(key);
           if (!name) { const inner = ctype(n, where); name = `N${nullables.size}`; nullables.set(key, name); typedefs.push(`typedef struct { bool some; ${inner} v; } ${name};`); }
@@ -493,7 +493,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         const i = memberOf(to, kindOf(from)!);
         return `((${ctype(to, this.where)}){ .m${i} = ${v} })`;
       }
-      if (to.k === "union" && nonNull(to) && !(from.k === "union" && !isTaggedUnion(from))) {
+      if (to.k === "union" && nonNull(to) && !(from.k === "union" && from.members.some(isNull))) {
         const n = ctype(to, this.where);
         return isNull(from) ? `((${n}){ .some = false })` : `((${n}){ .some = true, .v = ${v} })`;
       }
@@ -614,6 +614,14 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         this.emit(`if (${k === K.BarBarToken ? "!" : ""}${r})`); this.block(() => this.emit(`${r} = ${this.ex(b.right)};`));
         return r;
       }
+      if (k === K.QuestionQuestionToken) { // `a ?? b`: `b` runs only when `a` is null
+        const t = this.typeOf(b), lt = this.typeOf(b.left);
+        const l = this.ex(b.left), r = `t${this.tmp++}`;
+        this.emit(`${ctype(t, this.where)} ${r};`);
+        this.emit(`if (${l}.some)`); this.block(() => this.emit(`${r} = ${this.conv(`${l}.v`, nonNull(lt)!, t)};`));
+        this.emit("else"); this.block(() => this.emit(`${r} = ${this.conv(this.ex(b.right), this.typeOf(b.right), t)};`));
+        return r;
+      }
       if (k === K.EqualsToken) return this.assign(b, undefined);
       const COMP: Partial<Record<K, string>> = { [K.PlusEqualsToken]: "+", [K.MinusEqualsToken]: "-", [K.AsteriskEqualsToken]: "*", [K.SlashEqualsToken]: "/", [K.PercentEqualsToken]: "%" };
       if (COMP[k]) return this.assign(b, COMP[k]);
@@ -678,10 +686,14 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
 
     /** A local of declared type `decl` read where the checker narrowed it to `now`: `T | null` -> `.v`, a union -> its member. */
     narrow(c: string, decl: Type, now: Type): string {
-      if (decl.k !== "union" || now.k === "union") return c;
-      if (isTaggedUnion(decl)) return `${c}.m${memberOf(decl, kindOf(now)!)}`;
-      const inner = nonNull(decl)!;
-      return inner.k === "union" && isTaggedUnion(inner) && now.k === "record" ? `${c}.v.m${memberOf(inner, kindOf(now)!)}` : `${c}.v`;
+      if (decl.k !== "union") return c;
+      const inner = nonNull(decl);
+      if (inner) {
+        if (now.k === "union" && now.members.some(isNull)) return c; // still `T | null`
+        return inner.k === "union" && isTaggedUnion(inner) && now.k === "record" ? `${c}.v.m${memberOf(inner, kindOf(now)!)}` : `${c}.v`;
+      }
+      if (now.k === "union" || !isTaggedUnion(decl)) return c; // a literal union narrowed to one literal keeps its id
+      return `${c}.m${memberOf(decl, kindOf(now)!)}`;
     }
 
     /** An lvalue: a local, or a field path from one (`s.a.b`, `(*u_m).x`). `read`: narrowed locals read as their narrowed type. */
