@@ -247,6 +247,27 @@ export const CONTAINERS = new Set(["Array", "ReadonlyArray", "Map", "Set", "Prom
 export const ownedInside = (t: Type | undefined): boolean =>
   !!t && (t.k === "union" ? t.members.some(ownedInside) : t.k === "gen" && CONTAINERS.has(t.name) && t.args.some((a) => movesLike(a) || ownedInside(a)));
 
+/** Q174: a container holding owned values anywhere inside `t`, through record / union / generic / function types and class / interface members. */
+export function ownedDeep(t: Type, seen = new Set<object>()): boolean {
+  switch (t.k) {
+    case "record": return t.fields.some((f) => ownedDeep(f.type, seen));
+    case "union": return t.members.some((m) => ownedDeep(m, seen));
+    case "gen": return ownedInside(t) || t.args.some((a) => ownedDeep(a, seen));
+    case "fn": return t.params.some((p) => ownedDeep(p, seen)) || ownedDeep(t.ret, seen);
+    case "class": case "iface": {
+      const sym = t.k === "class" ? t.cls : t.iface;
+      if (seen.has(sym)) return false;
+      seen.add(sym);
+      const m = bindTParams(sym.tparams, t.args);
+      const members: Type[] = t.k === "class" ? [...t.cls.fields.values()].map((f) => f.type) : [...t.iface.methods.values()];
+      const r = t.args.some((a) => ownedDeep(a, seen)) || members.some((x) => ownedDeep(subst(x, m), seen));
+      seen.delete(sym); // only the current path is guarded (a self-referencing class)
+      return r;
+    }
+    default: return false;
+  }
+}
+
 export function movesLike(t: Type): boolean {
   if (t.k === "tparam") return (t.p.owner === "strict" || t.p.owner === "rt") && !t.p.constraint && !["key", "copy", "eq"].some((n) => t.p.need?.has(n as Need));
   return isOwned(t) || (t.k === "union" && t.members.some(movesLike));

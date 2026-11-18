@@ -51,6 +51,7 @@ accept/50-ownership-operands.ts
 accept/51-borrow-destructure-and-do-once.ts
 accept/52-owned-types-shapes.ts
 accept/53-cast-after-unwrapping-result.ts
+accept/54-alias-copy-instantiation.ts
 reject/E1000-array-suffix-type.ts
 reject/E1000-await-in-non-async-arrow.ts
 reject/E1000-await-outside-async.ts
@@ -343,13 +344,18 @@ reject/E3006-ref-passed-as-mut.ts
 reject/E3006-ref-slice-passed-as-mut-slice.ts
 reject/E3006-write-field-through-ref.ts
 reject/E3006-write-index-through-ref.ts
+reject/E3007-alias-instantiation-inside-array.ts
+reject/E3007-alias-record-field-container-of-owned.ts
 reject/E3007-async-returns-owned.ts
 reject/E3007-container-alias-of-owned.ts
+reject/E3007-generic-class-field-container-of-owned.ts
+reject/E3007-generic-interface-promise-of-owned.ts
 reject/E3007-managed-generic-class-owned-type-argument.ts
 reject/E3007-managed-generic-explicit-owned-type-argument.ts
 reject/E3007-managed-generic-inferred-owned-type-argument.ts
 reject/E3007-map-over-nested-container.ts
 reject/E3007-map-returns-owned.ts
+reject/E3007-nested-alias-map-of-owned.ts
 reject/E3007-nested-container-of-owned-parameter.ts
 reject/E3007-owned-captured-by-closure.ts
 reject/E3007-owned-in-array-literal.ts
