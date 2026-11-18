@@ -66,3 +66,62 @@ it("run without an exported main is a CLI error, exit 2 (Q061)", () => {
   writeFileSync(join(dir, "m.ts"), "export function f(): void {}\n");
   expect(sts("run", join(dir, "m.ts")).code).toBe(2);
 });
+
+// D101-D103: the same tests under the JS and the C backend. A trap in C is the same JS trap, `Mut` writes reach the caller,
+// and a Vec grown in C is the same JS object with the new buffer.
+const BOTH = `type Acc = Struct<{ n: i32; total: i32 }>;
+function addAll(a: Mut<Acc>, s: Ref<Slice<i32>>): void {
+  "use rt";
+  for (let i: usize = 0; i < s.length; i += 1) {
+    a.n += 1;
+    a.total += s[i];
+  }
+}
+function grow(v: Mut<Vec<i32>>, n: i32): void {
+  "use owned";
+  for (let i: i32 = 0; i < n; i += 1) {
+    v.push(i);
+  }
+}
+test("growth, writes and traps", (t: Test) => {
+  const v = Vec.create<i32>(TestAlloc.create(), 1);
+  grow(v, 9);
+  t.eq(v.length, 9);
+  t.eq(v[8], 8);
+  const a: Acc = { n: 0, total: 0 };
+  addAll(a, v.slice(2, 5));
+  t.eq(a.n, 3);
+  t.eq(a.total, 9);
+  t.traps("T001", () => {
+    const w = Vec.create<i32>(TestAlloc.create(), 2);
+    w.push(2147483647);
+    w.push(1);
+    const b: Acc = { n: 0, total: 0 };
+    addAll(b, w);
+  });
+});
+test("a failing test fails on both", (t: Test) => {
+  const a: Acc = { n: 0, total: 0 };
+  const v = Vec.create<i32>(TestAlloc.create(), 1);
+  v.push(5);
+  addAll(a, v);
+  t.eq(a.total, 6);
+});
+`;
+
+it("test --backend=both runs each test under JS and C and agrees", () => {
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-both-`));
+  const f = join(dir, "both.ts");
+  writeFileSync(f, BOTH);
+  const r = sts("test", "--json", "--backend=both", f);
+  const ls = jsonLines(r.out);
+  expect(ls.filter((l) => l.kind === "mismatch")).toEqual([]);
+  expect(ls.at(-1)).toEqual({ kind: "summary", passed: 1, failed: 1 });
+  expect(r.code).toBe(1);
+});
+
+it("run --backend=c stops with an internal error on an unsupported construct", () => {
+  const r = sts("run", "--backend=c", `${CONF}run/52-strict-struct-vec.ts`);
+  expect(r.code).toBe(2);
+  expect(r.err).toMatch(/C backend: .* not supported/);
+});

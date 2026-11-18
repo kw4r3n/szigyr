@@ -8,6 +8,8 @@ import { checkOwnership } from "./ownership.ts";
 import { trapSites, type TrapSite } from "./traps.ts";
 import { isDeterministic } from "./determinism.ts";
 import { emitFile, EXPORTS, IMP, RT, SOURCE_URL } from "./emit.ts";
+import { emitC } from "./emit-c.ts";
+import { loadNative } from "./native.ts";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import * as rt from "../../runtime-js/src/index.ts";
@@ -77,7 +79,7 @@ export function check(entryFile: string): Diagnostic[] {
 }
 
 /** P1 + P2 + P3 over the program; on success the expression types are in `exprTypes` for the emitter. */
-function analyze(entryFile: string): { files: ParsedFile[]; diagnostics: Diagnostic[] } {
+function analyze(entryFile: string): { files: ParsedFile[]; diagnostics: Diagnostic[]; decls?: Decls } {
   const prog = loadProgram(entryFile);
   const p1 = [...prog.missing, ...prog.files.flatMap((f) => checkSyntax(f, displayPath(f.path)))];
   if (!p1.length) p1.push(...checkImportNames(prog.files, displayPath));
@@ -86,7 +88,7 @@ function analyze(entryFile: string): { files: ParsedFile[]; diagnostics: Diagnos
   const decls = new Decls(prog.files, displayPath, rep);
   new Checker(decls).run();
   if (!rep.out.length) checkOwnership(decls);
-  return { files: prog.files, diagnostics: rep.out };
+  return { files: prog.files, diagnostics: rep.out, decls };
 }
 
 /** §7.3 query (Q062): for each top-level function of the entry file, whether it is deterministic. Assumes P1 passes. */
@@ -104,10 +106,22 @@ export function rtTrapSites(entryFile: string): Record<string, TrapSite[]> {
   return trapSites(a.files.find((f) => f.path === resolve(entryFile))!);
 }
 
+/** Which backend runs strict / rt functions (D101). Managed code always runs on the JS engine. */
+export type Backend = "js" | "c";
+export interface RunOptions { backend?: Backend }
+
+/** The host object the C addon calls back into: traps (D103) and Vec creation (D102). */
+const HOST = {
+  trap: (code: number, file: string, line: number, col: number): never => rt.trap(`T${String(code).padStart(3, "0")}` as rt.TrapCode, "trap in C", file ? { file, line, col } : undefined),
+  create: (alloc: unknown, cap: number, elem: rt.ElemKind): unknown => rt.Vec.create(alloc, cap, elem),
+};
+
 /** Emits every file and evaluates them as module factories in memory (D031). Returns the entry's exports. */
-async function load(files: ParsedFile[], entryFile: string, tests: boolean): Promise<Record<string, unknown>> {
+async function load(files: ParsedFile[], entryFile: string, tests: boolean, decls?: Decls, backend: Backend = "js"): Promise<Record<string, unknown>> {
   const entry = resolve(entryFile);
-  const emitted = new Map(files.map((f) => [f.path, emitFile(f, displayPath(f.path), tests && f.path === entry)]));
+  const c = backend === "c" && decls ? emitC(decls, displayPath) : undefined;
+  const native = c ? loadNative(c.c, HOST) : undefined;
+  const emitted = new Map(files.map((f) => [f.path, emitFile(f, displayPath(f.path), tests && f.path === entry, c?.keys as Map<never, string> | undefined)]));
   const npm = new Map<string, unknown>();
   for (const [path, e] of emitted) {
     for (const spec of e.imports) {
@@ -135,7 +149,7 @@ async function load(files: ParsedFile[], entryFile: string, tests: boolean): Pro
     ex = {};
     done.set(path, ex);
     const f = new Function(RT, IMP, EXPORTS, emitted.get(path)!.js) as (rt: unknown, imp: (k: string) => unknown, ex: Record<string, unknown>) => Record<string, unknown>;
-    f(RUNTIME, (k) => (k.startsWith("npm:") ? npm.get(k) : instantiate(k)), ex);
+    f(native ? { ...RUNTIME, native } : RUNTIME, (k) => (k.startsWith("npm:") ? npm.get(k) : instantiate(k)), ex);
     return ex;
   };
   return instantiate(entry);
@@ -153,19 +167,19 @@ function exclusive<T>(f: () => Promise<T>): Promise<T> {
 }
 
 /** `load`, then rethrows an unhandled rejection of the module bodies (Q140). */
-async function loadChecked(files: ParsedFile[], entryFile: string, tests: boolean): Promise<Record<string, unknown>> {
+async function loadChecked(files: ParsedFile[], entryFile: string, tests: boolean, decls?: Decls, backend?: Backend): Promise<Record<string, unknown>> {
   let ex: Record<string, unknown> = {};
-  const rejected = await rt.capturing(async () => { ex = await load(files, entryFile, tests); });
+  const rejected = await rt.capturing(async () => { ex = await load(files, entryFile, tests, decls, backend); });
   if (rejected.length) throw rejected[0];
   return ex;
 }
 
 /** Checks, emits and runs `main(sys)` of the entry file with a real System (Q059, Q061). */
-export const run = (entryFile: string): Promise<RunResult> => exclusive(() => runNow(entryFile));
-async function runNow(entryFile: string): Promise<RunResult> {
+export const run = (entryFile: string, opts: RunOptions = {}): Promise<RunResult> => exclusive(() => runNow(entryFile, opts.backend));
+async function runNow(entryFile: string, backend?: Backend): Promise<RunResult> {
   const a = analyze(entryFile);
   if (a.diagnostics.length) return { diagnostics: a.diagnostics, stdout: "", trap: null };
-  const main = (await loadChecked(a.files, entryFile, false)).main;
+  const main = (await loadChecked(a.files, entryFile, false, a.decls, backend)).main;
   if (typeof main !== "function") throw new Error(`${entryFile}: no exported function 'main'`); // Q061: a CLI error, not a diagnostic
   const r = await runMain(main as Parameters<typeof runMain>[0]);
   // Only stack exhaustion outside any source call (Q035) has no position.
@@ -174,11 +188,11 @@ async function runNow(entryFile: string): Promise<RunResult> {
 }
 
 /** `sts test`: checks, emits the entry file's `test(...)` calls and runs them in order (§9.2, D022). */
-export const runTestFile = (entryFile: string): Promise<{ diagnostics: Diagnostic[]; results: rt.TestResult[] }> => exclusive(() => runTestFileNow(entryFile));
-async function runTestFileNow(entryFile: string): Promise<{ diagnostics: Diagnostic[]; results: rt.TestResult[] }> {
+export const runTestFile = (entryFile: string, opts: RunOptions = {}): Promise<{ diagnostics: Diagnostic[]; results: rt.TestResult[] }> => exclusive(() => runTestFileNow(entryFile, opts.backend));
+async function runTestFileNow(entryFile: string, backend?: Backend): Promise<{ diagnostics: Diagnostic[]; results: rt.TestResult[] }> {
   const a = analyze(entryFile);
   if (a.diagnostics.length) return { diagnostics: a.diagnostics, results: [] };
   rt.clearTests();
-  await loadChecked(a.files, entryFile, true);
+  await loadChecked(a.files, entryFile, true, a.decls, backend);
   try { return { diagnostics: [], results: await rt.runTests() }; } finally { rt.clearTests(); }
 }

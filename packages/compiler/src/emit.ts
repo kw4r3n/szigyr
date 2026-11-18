@@ -45,7 +45,8 @@ export interface Emitted {
 type AnyNode = Node & Record<string, unknown>;
 
 /** `tests`: keep the module's top-level `test(...)` calls (§9.2, §10.10). `file`: path reported in trap positions. */
-export function emitFile(pf: ParsedFile, file: string, tests: boolean): Emitted {
+/** `native`: strict / rt function declarations compiled to C (D101), with their key in `rt.native`. */
+export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: Map<Node, string>): Emitted {
   const sf = pf.sourceFile, text = sf.text;
   const poss: string[] = [];
   const marks: Pos[] = [];
@@ -111,6 +112,12 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean): Emitted 
         return called(pa, n) || (pa?.kind === K.PropertyAccessExpression && (pa as ts.PropertyAccessExpression).name === n && called(pa.parent, pa)) ? mark(n) + splice(n) : splice(n);
       }
       case K.Block: return block(n as ts.Block);
+      case K.FunctionDeclaration: {
+        const key = native?.get(n);
+        if (!key) break;
+        const f = n as ts.FunctionDeclaration, ps = f.parameters.map((p) => p.name.getText(sf));
+        return `function ${f.name!.text}(${ps.join(", ")}) { return ${RT}.native.${key}(${ps.join(", ")}); }`;
+      }
     }
     return splice(n);
   }

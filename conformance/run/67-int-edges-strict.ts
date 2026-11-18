@@ -1,0 +1,55 @@
+// expect-output: -67153019 3410065408 64
+// expect-output: 0 -3 -4 1 -2147483648
+// expect-output: 4294967295 127 -128
+// stage: 2
+// open-question: Q090
+function wraps(a: i32, b: i32, c: u32, d: u8): Ints {
+  "use rt";
+  return { x: wrapMul(a, b), y: wrapMul(c, 3), z: wrapMul(d, d) };
+}
+
+type Ints = Struct<{ readonly x: i32; readonly y: u32; readonly z: u8 }>;
+
+function divs(m: i32): Ints {
+  "use rt";
+  const sh: u32 = 0x80000000;
+  return { x: rem(m, -1), y: sh >>> 31, z: 0 };
+}
+
+function halfOf(a: i32): i32 {
+  "use rt";
+  return divTrunc(a, 2);
+}
+
+function sar(a: i32, n: i32): i32 {
+  "use rt";
+  return a >> n;
+}
+
+function bits(a: i32, n: i32): i32 {
+  "use rt";
+  return a << n;
+}
+
+function small(a: u32, b: u32, c: i8): Ints {
+  "use rt";
+  return { x: 0, y: a * b, z: 0 };
+}
+
+function i8wrap(a: i8, b: i8): i8 {
+  "use rt";
+  return wrapSub(a, b);
+}
+
+function i8wrap2(a: i8, b: i8): i8 {
+  "use rt";
+  return wrapAdd(a, b);
+}
+
+export function main(sys: System): void {
+  const w = wraps(123456789, 987654321, 4000000000, 200);
+  sys.log.info(`${w.x} ${w.y} ${w.z}`);
+  const d = divs(-2147483648);
+  sys.log.info(`${d.x} ${halfOf(-7)} ${sar(-8, 1)} ${d.y} ${bits(1, 31)}`);
+  sys.log.info(`${small(65535, 65537, 0).y} ${i8wrap(-128, 1)} ${i8wrap2(127, 1)}`);
+}

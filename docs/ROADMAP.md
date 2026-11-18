@@ -72,9 +72,9 @@
 - [x] strict / rt の層の検査（E4002 〜 E4006）。rt 関数ごとのトラップ箇所の一覧。
 - [x] strict / rt の JS への変換（TypedArray による表現）。
 - [ ] strict / rt の C への変換。評価順、浮動小数点、トラップ位置を JS 側と一致させる（SPEC §10.1）。
-- [ ] C のビルド。`zig cc` か clang。ネイティブアドオンとして Node から読み込む。
+- [x] C のビルド。`zig cc` か clang。ネイティブアドオンとして Node から読み込む。
 - [ ] managed と strict の境界。`Vec` はコピーせず、共有メモリ上の型つき配列として渡す。
-- [ ] 差分テスト: `sts test --backend=both`。同じテストを JS と C の両方で実行し、結果とトラップを比べる。
+- [x] 差分テスト: `sts test --backend=both`。同じテストを JS と C の両方で実行し、結果とトラップを比べる。
 - [ ] ループの中で層の境界をまたぐ呼び出しを、診断（警告）として報告する。
 - [ ] ベンチマーク。数値カーネル数本を、手書きの C と比べる。
 - [ ] 次の機能の設計提案を `docs/OPEN_QUESTIONS.md` に書く: アリーナとプール、strict での関数値、重ならない範囲への同時借用、strict 用の数学関数。
@@ -90,6 +90,13 @@
 - JS への変換: 変換器は層によらず同じで、strict / rt はすでに動いていた。表現と C との対応、評価順の決め方は D100。実行例 15 本（`run/52`〜`run/66`）を足した。出力 3 本、strict / rt でのトラップ（T001〜T007、T009、T010）、トラップで観測する評価順 4 本。期待値は実装とは別に、Node の `Math.fround` と手計算で求めた。トラップの位置は DIAGNOSTICS のアンカー規則から求めた。どのケースも最初の実行から通ったので、テストが先に失敗するのは確認できていない。
 - 計測: `pnpm typecheck` 成功、`pnpm test` 184 通過、`pnpm verify:conformance` accept=52 reject=377 run=51、`pnpm conformance` 481 通過。
 - 残り: 共有メモリでの境界（項目「managed と strict の境界」）は C バックエンドと一緒に進めるので未着手。
+
+### 途中の記録（2026-11-19、C バックエンドの最初の区切り）
+- 構成は D101〜D103。インストール済みの `cc` で Node-API のアドオンを直接ビルドする（依存の追加なし）。`sts run|test --backend=js|c|both`。適合テストは stage 2 以上の実行例を C でも実行する。
+- C で動くもの: 数値型、`boolean`、Struct（Copy と非 Copy、入れ子、`Vec` のフィールド）、`Vec<数値型>`（JS の TypedArray とメモリを共有、C での伸長を含む）、`Slice`、`Ref` / `Mut`、数値型などの `T | null`、`Alloc`、契約、全トラップ、`Math` の §10.1 の関数。
+- 未対応（使うと位置つきの内部エラーで止まる）: `Vec<Struct>` / `Vec<boolean>` / `Vec<union>`（Q184）、タグつき union と `switch`、`Result`、文字列リテラル型、`Alloc` 以外の権限、strict / rt のジェネリック関数、ブロック本体の `ensures`、`void` の関数の `ensures`、モジュール直下の `const` のうちリテラル以外。
+- 実行例 22 本（stage 2 の 24 本のうち、`run/52` と `run/53` を除く）が C でも JS と同じ結果になった。`run/52` と `run/53` は未対応のエラーで止まることを適合テストで確かめている。
+- 残り: 「strict / rt の C への変換」と「managed と strict の境界」は、上の未対応が残るので未完。
 
 完了条件: strict / rt を使う適合テストがすべて通る。差分テストで両バックエンドが一致する。数値カーネルが手書き C の 1.5 倍以内の時間で動く（目標）。
 

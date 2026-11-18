@@ -618,6 +618,7 @@ export class Checker {
         if (t.k === "lit" || (t.k === "union" && t.members.every((m) => m.k === "lit") && mutableDecl)) t = mutableDecl ? STR : t;
         if (t.k === "iter") { this.at("E2002", init, "keys() / values() can only be iterated"); t = ERROR; }
       }
+      exprTypes.set(d.name, t); // the declared type, for the C backend (D102)
       if (isId(d.name)) {
         const sym = this.declare(d.name, t, { mutable: mutableDecl });
         if (!d.type && t.k === "num" && isLitOnly(init)) this.litLets.set(sym.id, d.name);
@@ -634,6 +635,7 @@ export class Checker {
         const f = field(t, prop.text);
         if (f) ft = f.type; else this.at("E2002", prop, `no field '${prop.text}'`);
       } else if (t.k !== "error") this.at("E2002", prop, "only records can be destructured");
+      exprTypes.set(el.name!, ft);
       this.declare(el.name as ts.Identifier, ft);
     }
   }

@@ -478,3 +478,7 @@ run/63-trap-order-args-left-first.ts
 run/64-trap-order-operands-left-first.ts
 run/65-trap-rt-shift.ts
 run/66-trap-rt-invariant.ts
+run/67-int-edges-strict.ts
+run/68-float-edges-strict.ts
+run/69-trap-u32-mul-wide.ts
+run/70-trap-divtrunc-min.ts
