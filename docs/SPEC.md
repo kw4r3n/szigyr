@@ -252,7 +252,10 @@ strict の規則に加えて、次を禁止する。
   | `js.await(v: JsRef)` | `Promise<Result<JsRef, JsError>>` |
   | `js.decode<T>(v: JsRef)` | `Result<T, CastError>`（`T` の条件は `cast` と同じ） |
   | `js.encode<T>(v: T)` | `JsRef` |
+  | `js.callback<T>(f: (arg: Result<T, CastError>) => void)` | `JsRef` |
 
+- `js.encode<T>` の `T` には `cast` と同じ条件が付く（関数、権限、`unknown`、`Map`、`Set`、class のインスタンスは E2002）。STS の関数を JS へ渡す方法は `js.callback` だけ。
+- `js.callback<T>(f)` は、JS から呼べる関数を作る。JS が最初の引数を渡して呼ぶと、その値を `js.decode<T>` と同じ検査にかけ、結果の `Result<T, CastError>` を `f` に渡す。検査に失敗してもトラップせず、`f` が `err` を受け取る。`T` の条件は `cast` と同じ。`f` の戻り値は `void` で、JS 側には `undefined` を返す。2 つ目以降の引数は捨て、引数がなければ `undefined` が検査にかかる。`f` の中のトラップは回復できず、JS の呼び出し元をそのまま抜ける（`JsError` にならない）。
 - JS 側で投げられた例外は、境界で `JsError` に変換される。
 - `npm:` の import と `JsRef` は managed 層でのみ使える。
 

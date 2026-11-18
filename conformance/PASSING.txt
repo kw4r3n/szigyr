@@ -45,6 +45,7 @@ accept/44-narrowing-statement-assign.ts
 accept/45-constructor-paren-target.ts
 accept/46-ownership-flow.ts
 accept/47-map-literal-key.ts
+accept/48-js-callback.ts
 reject/E1000-array-suffix-type.ts
 reject/E1000-await-in-non-async-arrow.ts
 reject/E1000-await-outside-async.ts
@@ -140,6 +141,8 @@ reject/E2002-indexof-record-element.ts
 reject/E2002-inferred-return-union.ts
 reject/E2002-integer-modulo.ts
 reject/E2002-interface-structural-conformance.ts
+reject/E2002-js-callback-function-argument.ts
+reject/E2002-js-callback-returns-value.ts
 reject/E2002-js-encode-authority.ts
 reject/E2002-js-encode-function.ts
 reject/E2002-json-parse-unwrapped.ts
@@ -242,6 +245,7 @@ reject/E2005-string-literal-union-missing-case.ts
 reject/E2005-union-missing-case.ts
 reject/E2006-arrow-parameter-without-annotation.ts
 reject/E2006-empty-array-without-context.ts
+reject/E2006-js-callback-plain-parameter.ts
 reject/E2006-module-const-without-annotation.ts
 reject/E2006-object-literal-without-context.ts
 reject/E2006-ok-without-result-context.ts
@@ -414,3 +418,4 @@ run/47-map-literal-key.ts
 run/48-rem-min-neg1.ts
 run/49-await-conditional.ts
 run/50-json-parse-result.ts
+run/51-js-callback.ts

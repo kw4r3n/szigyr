@@ -230,3 +230,10 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - 型は `JSON.parse(s: string): Result<unknown, JsError>`。構文エラー（JS の `SyntaxError`）は `err({ code: "SyntaxError", message })` で、`code` は Q036 のとおり JS の例外の名前。エラー型は `IoError` / `CastError` と同じ形の `JsError`。
 - 実行時は `runtime-js` の `jsonParse(text, pos)`。`SyntaxError` 以外の例外（スタックの枯渇など）は T006（位置は `parse` の名前）。`JSON.stringify` とほかの組み込みは今までどおり `guarded` で T006。
 - `cast<T>(x)` は `unknown` を受け取るので、`Result` をそのまま渡しても型検査は通る（実行時は `err`）。`unknown` を取り出して渡すこと。これは `cast` の引数の規則の問題で、今回は変えていない。
+
+## D081: `js.callback` の形（Q128）
+
+- 署名は `js.callback<T>(f: (arg: Result<T, CastError>) => void): JsRef`。`T` は `cast` と同じ条件（`tcheck: "cast"`）。引数の注釈（`Result<string, CastError>` など）から `T` を推論できる。推論できない形（`(x: string) => …`）は E2006、戻り値が `void` でない関数は E2002、`T` が条件に合わなければ E2002（アンカーは明示した型引数の先頭）。新しいエラーコードは足していない。
+- 引数を検査する場所がソースに見えるよう、関数は検査結果の `Result` を受け取る。`decode` が失敗を `Result` で返すのと同じ形で、失敗してもトラップしない。
+- 最小の形にしたので、引数は 1 つ、戻り値は `void` だけ（Q160）。実行時は `Js.callback(f, desc)` が `(...a) => { f(cast(a[0], desc)); }` を返す。`emit.ts` は引数の関数型から `T` の記述子（`decode` と同じ `desc`）を取って渡す。
+- `encode` は変えない。

@@ -37,6 +37,7 @@ export const nodeJs: Js = {
   await: async (v) => { try { return ok(await v); } catch (e) { if (isTrap(e)) throw e; return err(jsError(e)); } },
   decode: (v, desc) => cast(v, desc),
   encode: (v) => v,
+  callback: (f, desc) => (...a: unknown[]): void => { f(cast(a[0], desc)); },
 };
 
 export function createSystem(

@@ -64,8 +64,10 @@ function opaqueMember(name: string, member: string): Member | undefined {
     JsRef: () => ({}),
     Js: () => {
       const J = opaque("JsRef"), jr = result(J, ERROR_RECORD);
-      const T = newTParam("T"), U = newTParam("T");
+      const T = newTParam("T"), U = newTParam("T"), A = newTParam("T");
       return {
+        // Q128: the callback gets its one argument from JS, checked like `decode` does.
+        callback: m([fn([result({ k: "tparam", p: A }, ERROR_RECORD)], VOID)], J, { tparams: [A], tcheck: "cast" }),
         call: m([J, gen("Array", J)], jr), get: m([J, STR], jr), await: m([J], gen("Promise", jr)),
         decode: m([J], result({ k: "tparam", p: T }, ERROR_RECORD), { tparams: [T], tcheck: "cast" }), encode: m([{ k: "tparam", p: U }], J, { tparams: [U], tcheck: "cast" }), // Q128
       };

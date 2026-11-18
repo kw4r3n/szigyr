@@ -20,6 +20,8 @@ export interface Js {
   /** `desc` describes T (same descriptor as cast). */
   decode<T>(v: JsRef, desc: TypeDesc): Result<T, CastError>;
   encode<T>(v: T): JsRef;
+  /** Q128: a JS function that calls `f` with its first argument checked against `desc` (T) like decode; extra arguments are dropped, the result is undefined. */
+  callback<T>(f: (arg: Result<T, CastError>) => void, desc: TypeDesc): JsRef;
 }
 /** Net is reserved. */
 export interface System { readonly alloc: Alloc; readonly fs: Fs; readonly clock: Clock; readonly random: Random; readonly log: Log; readonly js: Js }

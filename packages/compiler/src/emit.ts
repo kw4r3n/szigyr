@@ -4,7 +4,7 @@
 import { resolve, dirname } from "node:path";
 import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { exprTypes } from "./expr.ts";
-import { NUM_NAMES, isInt, isStr, nonNull, resultParts, unref, type Type } from "./types.ts";
+import { NUM_NAMES, isInt, isStr, nonNull, resultParts, unref, type FnType, type Type } from "./types.ts";
 import { CLI_NAME, RUNTIME_GLOBAL } from "./names.ts";
 import type { Pos } from "../../runtime-js/src/index.ts";
 
@@ -232,6 +232,7 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean): Emitted 
       if (m === "charCodeAt") { const f = (o: string): string => `${RT}.charCodeAt(${o}, ${args[0]}, ${at(p.name)})`; return p.questionDotToken ? optional(gen(recv), awaited, f) : f(gen(recv)); }
     } else if (r?.k === "opaque") {
       if (r.name === "Js" && m === "decode") return nn(withArgs([desc(resultParts(self!)!.ok)]));
+      if (r.name === "Js" && m === "callback") return nn(withArgs([desc(resultParts((typeOf(e.arguments[0]!) as FnType).params[0]!)!.ok)]));
       if (r.name === "Test") return nn(withArgs([at(p.name)]));
     }
     return nn(withArgs([]));

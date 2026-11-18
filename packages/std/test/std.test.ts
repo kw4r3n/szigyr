@@ -70,6 +70,14 @@ describe("node authorities", () => {
     expect(nodeJs.decode("x", { k: "num", t: "i32" })).toMatchObject({ kind: "err", error: { code: "cast" } });
     expect(nodeJs.encode(7)).toBe(7);
   });
+  it("Js.callback: the first argument is checked like decode (Q128)", () => {
+    const seen: unknown[] = [];
+    const f = nodeJs.callback((r) => { seen.push(r); }, { k: "num", t: "i32" }) as (...a: unknown[]) => unknown;
+    expect(f(5, "extra")).toBeUndefined();
+    f("x");
+    f();
+    expect(seen).toMatchObject([{ kind: "ok", value: 5 }, { kind: "err", error: { code: "cast" } }, { kind: "err", error: { code: "cast" } }]);
+  });
   it("System has the six members; Log routes to the writers (Q059)", () => {
     const out: string[] = [], errs: string[] = [];
     const sys = createSystem((s) => out.push(s), (s) => errs.push(s));
