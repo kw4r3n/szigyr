@@ -104,10 +104,15 @@ static sts_slice sts_slice_in(napi_value o, uint32_t es, const char *desc) {
   uint32_t o32, len; off = sts_get(o, "off"); STS_OK(napi_get_value_uint32(sts_env, off, &o32)); STS_OK(napi_get_value_uint32(sts_env, sts_get(o, "length"), &len));
   return (sts_slice){ (char *)data + (size_t)o32 * es, len };
 }
-/** Packed element fields (SPEC §10.2). The layout aligns every field and buffers are at least 8-aligned, so typed access is valid;
- * (with -fno-strict-aliasing they may still alias the Vec header, D105). */
-#define STS_LD(T, p) (*(const T *)(p))
-#define STS_ST(p, T, v) (*(T *)(p) = (v))
+/** Packed element fields (SPEC §10.2). The layout aligns every field and buffers are at least 8-aligned, so the accesses are aligned.
+ * They go through may_alias types: an element's bytes are read and written as different C types (a union element changes member,
+ * so offset 4 may hold a float and later an int32_t), and may_alias keeps gcc from reordering those accesses (D105). */
+typedef float __attribute__((may_alias)) sts_ma_float; typedef double __attribute__((may_alias)) sts_ma_double;
+typedef int8_t __attribute__((may_alias)) sts_ma_int8_t; typedef uint8_t __attribute__((may_alias)) sts_ma_uint8_t;
+typedef int16_t __attribute__((may_alias)) sts_ma_int16_t; typedef uint16_t __attribute__((may_alias)) sts_ma_uint16_t;
+typedef int32_t __attribute__((may_alias)) sts_ma_int32_t; typedef uint32_t __attribute__((may_alias)) sts_ma_uint32_t;
+#define STS_LD(T, p) (*(const sts_ma_##T *)(p))
+#define STS_ST(p, T, v) (*(sts_ma_##T *)(p) = (v))
 static uint32_t sts_lidx(const int32_t *tbl, uint32_t n, int32_t id) { for (uint32_t i = 0; i < n; i++) if (tbl[i] == id) return i; sts_fail("bad literal"); return 0; }
 static void sts_chk(uint32_t i, uint32_t len, int pos) { if (__builtin_expect(i >= len, 0)) sts_trap(2, pos); }
 static sts_slice sts_sub(sts_slice s, uint32_t a, uint32_t b, size_t es, int pos) {

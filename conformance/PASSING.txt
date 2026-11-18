@@ -520,3 +520,4 @@ run/85-generic-vec-slice-to-c.ts
 run/86-generic-strict-vec-create.ts
 run/87-strict-nullable-union-member.ts
 run/88-strict-narrowed-fields.ts
+run/89-strict-packed-union-overwrite.ts
