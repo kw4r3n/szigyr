@@ -66,6 +66,12 @@ export const promiseOk = new WeakSet<Node>();
 const optCall = new WeakSet<Node>();
 /** Q130: these get their Promise type from a sub-expression, which is the one reported. */
 export const PROMISE_CONTAINERS = new Set<K>([K.ObjectLiteralExpression, K.ArrayLiteralExpression, K.ConditionalExpression, K.ParenthesizedExpression, K.BinaryExpression]);
+/** Q130: an `await` operand may be a conditional expression whose branches (nested conditionals included) are Promise expressions. */
+function allowAwaited(c: Checker, e: Node): void {
+  promiseOk.add(e);
+  if (e.kind === K.ParenthesizedExpression) allowAwaited(c, (e as ts.ParenthesizedExpression).expression);
+  else if (e.kind === K.ConditionalExpression) { allowAwaited(c, (e as ts.ConditionalExpression).whenTrue); allowAwaited(c, (e as ts.ConditionalExpression).whenFalse); }
+}
 /** A Promise, also inside `| null` or as array elements (`xs.map(g)`). Other holders only get one from a reported expression. */
 export function hasPromise(t: Type): boolean {
   if (t.k === "gen") return t.name === "Promise" || ((t.name === "Array" || t.name === "ReadonlyArray") && hasPromise(t.args[0]!));
@@ -107,7 +113,7 @@ function exprUnrecorded(c: Checker, e: ts.Expression, want?: Type): Type {
       }
       return STR;
     case K.AwaitExpression: {
-      promiseOk.add((e as ts.AwaitExpression).expression);
+      allowAwaited(c, (e as ts.AwaitExpression).expression);
       const t = expr(c, (e as ts.AwaitExpression).expression);
       if (t.k === "gen" && t.name === "Promise") return t.args[0]!;
       if (!isErr(t)) c.at("E2002", (e as ts.AwaitExpression).expression, "await needs a Promise");

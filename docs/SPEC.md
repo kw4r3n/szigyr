@@ -409,7 +409,7 @@ strict の規則に加えて、次を禁止する。
 - **`Array` のメンバ**: `length`、`push`、`pop`、`slice`、`map`、`filter`、`reduce`（初期値必須）、`forEach`、`find`、`findIndex`、`some`、`every`、`includes`、`indexOf`、`join`、`concat`、`reverse`、`sort`（比較関数必須）、`fill`。
 - **`Map` のメンバ**: `get`（`V | null`）、`set`、`has`、`delete`、`size`、`clear`、`keys`、`values`、`forEach`。反復の順序は挿入順。
 - **`Set` のメンバ**: `add`、`has`、`delete`、`size`、`clear`、`values`、`forEach`。
-- **`Promise`**: `await` と `Promise.all` のみ。
+- **`Promise`**: `await` と `Promise.all` のみ。`await` のオペランドには、両方の枝が Promise の式である条件式（`await (c ? g() : h())`）も書ける（Q130）。
 - **標準ライブラリの偽の権限**: `FakeClock`、`SeededRandom`、`MemoryLog`、`FakeFs`、`TestAlloc`。
 
 ## 13. 予約と未定
