@@ -75,7 +75,7 @@ it("managed DetMath calls run the JS version directly under --backend=c (§12, D
       orig.call(process, m, f, ...r);
       for (const k of Object.keys(m.exports)) {
         const fn = m.exports[k];
-        if (typeof fn === "function" && k !== "init" && !k.startsWith("sts_")) {
+        if (typeof fn === "function" && !["init", "sts_poll", "sts_finish"].includes(k)) { // the runtime exports; functions are sts_F<n>_<name>
           m.exports[k] = (...a) => { calls.push(k); return fn(...a); };
         }
       }
@@ -94,5 +94,5 @@ it("managed DetMath calls run the JS version directly under --backend=c (§12, D
   const res = JSON.parse(r.stdout);
   expect(res.managed).toEqual({ same: true, calls: [] });
   expect(res.mixed.same).toBe(true);
-  expect(res.mixed.calls).toEqual(["F0_s"]);
+  expect(res.mixed.calls).toEqual(["sts_F0_s"]);
 });

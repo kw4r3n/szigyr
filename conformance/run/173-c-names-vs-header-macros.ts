@@ -1,0 +1,30 @@
+// expect-output: 23
+// stage: 3
+// backend: c
+declare module "c:stscb:stscb_names.h" {
+  function stscb_names_call(ffi: Ffi, f: Ptr<(x: i32) => i32>, x: i32): i32;
+}
+import { stscb_names_call } from "c:stscb:stscb_names.h";
+type P = Struct<{ readonly x: i32; readonly y: i32 }>;
+type R = { readonly kind: "a"; readonly x: i32 } | { readonly kind: "b"; readonly y: i32 };
+function f(ffi: Ffi, alloc: Alloc, n: i32): i32 {
+  "use owned";
+  "use unsafe";
+  const p: P = { x: 1, y: 2 };
+  const r: R = { kind: "b", y: 4 };
+  const m: i32 | null = n > 0 ? n : null;
+  let s: i32 = 0;
+  for (let i: i32 = 0; i < 3; i += 1) { s += i; }
+  const five: i32 = 5;
+  const q = Ptr.box(alloc, Ptr.box(alloc, five));
+  const inner = q.read();
+  const k = r.kind === "b" ? r.y : 0;
+  return p.x + p.y + k + (m ?? 0) + s + inner.read() + stscb_names_call(ffi, cfn(inc), 6);
+}
+function inc(x: i32): i32 {
+  "use rt";
+  return x + 1;
+}
+export function main(sys: System): void {
+  sys.log.info(`${f(sys.ffi, sys.alloc, 1)}`);
+}

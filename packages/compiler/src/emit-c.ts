@@ -93,7 +93,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
   const queue: Inst[] = [];
   let fnIndex = 0;
   const fnBase = new Map<FnSym, string>();
-  const baseOf = (f: FnSym): string => { let b = fnBase.get(f); if (!b) fnBase.set(f, b = `F${fnIndex++}_${f.name}`); return b; };
+  const baseOf = (f: FnSym): string => { let b = fnBase.get(f); if (!b) fnBase.set(f, b = `sts_F${fnIndex++}_${f.name}`); return b; };
   /** The C function for `f` with type arguments `args` and function arguments `fnArgs` (D104 + Q189 (b)). */
   function inst(f: FnSym, args: Type[], fnArgs: Map<number, FnSym>, where: string): Inst {
     if (args.some(hasTParam)) throw new CUnsupported(where, "a generic instantiation that is not concrete");
@@ -184,7 +184,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         if (n && (n.k === "num" || isBool(n) || n.k === "lit" || (n.k === "union" && n.members.every((m) => m.k === "lit")) || (isStruct(n) && isCopy(n)) || isTaggedUnion(n) || (n.k === "gen" && (n.name === "Handle" || n.name === "ArenaBuf")))) {
           const key = ckey(t);
           let name = nullables.get(key);
-          if (!name) { const inner = ctype(n, where); name = `N${nullables.size}`; nullables.set(key, name); typedefs.push(`typedef struct { bool some; ${inner} v; } ${name};`); }
+          if (!name) { const inner = ctype(n, where); name = `sts_N${nullables.size}`; nullables.set(key, name); typedefs.push(`typedef struct { bool some; ${inner} v; } ${name};`); }
           return name;
         }
       }
@@ -206,7 +206,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     const key = show(f);
     let name = fps.get(key);
     if (!name) {
-      name = `FP${fps.size}`;
+      name = `sts_FP${fps.size}`;
       fps.set(key, name);
       typedefs.push(`typedef ${abiType(f.ret)} (*${name})(${f.params.map((x) => abiType(x)).join(", ") || "void"});`);
     }
@@ -236,7 +236,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     const have = structs.get(key);
     if (have) return have;
     const fs = cfields(t).map((f) => `${ctype(f.type, where)} f_${f.name};`); // nested types are defined first
-    const name = `S${structs.size}`;
+    const name = `sts_S${structs.size}`;
     structs.set(key, name);
     typedefs.push(`typedef struct { ${fs.join(" ")} } ${name};`);
     // JS <-> C conversion of the struct (boundary, D102). Keys are created in C field order (Q186).
@@ -252,7 +252,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     const have = unions.get(key);
     if (have) return have;
     const ms = umembers(t).map((m) => ctype(m, where));
-    const name = `U${unions.size}`;
+    const name = `sts_U${unions.size}`;
     unions.set(key, name);
     typedefs.push(`typedef union { int32_t kind; ${ms.map((m, i) => `${m} m${i};`).join(" ")} } ${name};`);
     const ks = umembers(t).map((m) => litId(kindOf(m)!));
@@ -297,7 +297,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       case "hdl": ld = "sts_handle r; memcpy(&r, p, 12); return r;"; st = "memcpy(p, &v, 12);"; break; // Q188 (a)
       case "abuf": ld = "sts_abuf r; memcpy(&r, p, 16); return r;"; st = "memcpy(p, &v, 16);"; break; // Q188 (b)
       case "lit": {
-        const tb = `L${packs.size}_${helpers.length}`;
+        const tb = `sts_L${packs.size}_${helpers.length}`;
         helpers.push(`static const int32_t ${tb}[] = {${l.v.map(litId).join(", ")}};`);
         ld = `return ${tb}[STS_LD(uint32_t, p)];`; st = `STS_ST(p, uint32_t, sts_lidx(${tb}, ${l.v.length}, v));`; break;
       }
@@ -334,7 +334,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     const have = ptrPacks.get(key);
     if (have) return have;
     const ct = ctype(t, where);
-    const name = `Q${ptrPacks.size}`;
+    const name = `sts_Q${ptrPacks.size}`;
     ptrPacks.set(key, name);
     helpers.push(`static ${ct} ld_${name}(const uint8_t *p) { ${ct} r; memcpy(&r, p, 8); return r; }`, `static void st_${name}(uint8_t *p, ${ct} v) { memcpy(p, &v, 8); }`);
     return name;
@@ -508,7 +508,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         let c: string;
         if (a.body.kind === K.Block) {
           c = `t${this.tmp++}`;
-          const end = `L${this.label++}`;
+          const end = `sts_L${this.label++}`;
           this.emit(`bool ${c} = false;`);
           const saved = this.pred;
           this.pred = { v: c, end };
@@ -572,7 +572,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
           return;
         }
         case K.WhileStatement: {
-          const w = s as ts.WhileStatement, cont = `L${this.label++}`;
+          const w = s as ts.WhileStatement, cont = `sts_L${this.label++}`;
           this.emit("for (;;) {");
           this.emit(`${cont}: ;`);
           const c = this.ex(w.expression); this.emit(`if (!${c}) break;`);
@@ -581,7 +581,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
           return;
         }
         case K.DoStatement: {
-          const w = s as ts.DoStatement, cont = `L${this.label++}`;
+          const w = s as ts.DoStatement, cont = `sts_L${this.label++}`;
           this.emit("for (;;) {");
           this.loops.push({ cont }); this.block(() => this.stmt(w.statement)); this.loops.pop();
           this.emit(`${cont}: ;`);
@@ -590,7 +590,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
           return;
         }
         case K.ForStatement: {
-          const fo = s as ts.ForStatement, cont = `L${this.label++}`;
+          const fo = s as ts.ForStatement, cont = `sts_L${this.label++}`;
           this.block(() => {
             if (fo.initializer) {
               if (fo.initializer.kind === K.VariableDeclarationList) for (const d of (fo.initializer as ts.VariableDeclarationList).declarations) this.varDecl(d);
