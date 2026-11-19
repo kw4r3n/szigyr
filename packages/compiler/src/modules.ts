@@ -5,7 +5,7 @@ import type { Diagnostic } from "./diagnostics.ts";
 import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { RESERVED, builtinType, isGenName } from "./builtins.ts";
 import {
-  ERROR, GEN_ARITY, NULL, VOID, gen, assignable, bindTParams, demand, fn, isTaggedUnion, hasAuthority, kindOf, layerOk, movesLike, needOk, ownedDeep, CONTAINERS, newTParam, nonNull, record, result, show, subst, union,
+  ERROR, GEN_ARITY, NULL, VOID, gen, assignable, bindTParams, demand, fn, isTaggedUnion, sendable, hasAuthority, kindOf, layerOk, movesLike, needOk, ownedDeep, CONTAINERS, newTParam, nonNull, record, result, show, subst, union,
   type ClassSym, type Field, type FnType, type IfaceSym, type TParam, type Type,
 } from "./types.ts";
 
@@ -154,6 +154,8 @@ export class Program {
   readonly rep: Reporter;
   /** Q127: every instantiation of a user type parameter, checked against its conditions once all bodies are checked. */
   readonly insts: { mod: Module; node: Node; p: TParam; arg: Type }[] = [];
+  /** §15.2: isolate entry functions by defining module path; the emitter exposes them to the isolate loader. */
+  readonly isolateEntries = new Map<string, Set<string>>();
   readonly substInsts: { mod: Module; node: Node; t: Type; args: Type[] }[] = [];
 
   constructor(files: ParsedFile[], display: (p: string) => string, rep: Reporter) {
@@ -352,7 +354,7 @@ export class Program {
       const bad = arg.k === "tparam" ? undefined : [...p.need ?? []].find((n) => !needOk(n, arg));
       const key = `${mod.file}:${node.pos}:${p.id}`;
       if (seen.has(key)) continue;
-      if (bad) { seen.add(key); this.rep.at(mod, bad === "copy" || bad === "field" ? "E4002" : "E2002", node, `'${show(arg)}' cannot instantiate '${p.name}' (${bad} condition)`); } // Q086: copy / field are §3.3 codes
+      if (bad) { seen.add(key); this.rep.at(mod, bad === "copy" || bad === "field" ? "E4002" : bad === "send" ? "E2010" : "E2002", node, `'${show(arg)}' cannot instantiate '${p.name}' (${bad} condition)`); } // Q086: copy / field are §3.3 codes; send is §15.2's
       else if (p.owner && p.owner !== "managed" && arg.k === "tparam" && arg.p.owner === "managed") { seen.add(key); this.rep.at(mod, "E4002", node, `the managed type parameter '${arg.p.name}' cannot instantiate '${p.name}' of a strict / rt function (§3.3 is not checked through it)`); }
       else if (p.owner === "rt" && hasAuthority(arg)) { seen.add(key); this.rep.at(mod, "E4006", node, `'${show(arg)}' cannot instantiate '${p.name}' of an rt function (§6)`); }
       else if (p.owner && p.owner !== "managed" && !layerOk(arg)) { seen.add(key); this.rep.at(mod, "E4002", node, `'${show(arg)}' cannot instantiate '${p.name}' of a strict / rt function (§3.3)`); }
@@ -485,6 +487,9 @@ export class Program {
           this.rep.at(e.mod, "E2002", argNodes![0]!, `${name}<T> needs an owned type or Slice`);
           return ERROR;
         }
+      }
+      if (name === "Port") { // §15.2 (Q200, Q210): both type arguments must be sendable, at every position a Port type is written
+        for (let i = 0; i < 2; i++) if (!sendable(args[i]!)) { this.rep.at(e.mod, "E2010", argNodes![i]!, `'${show(args[i]!)}' cannot be sent to an isolate (§15.2)`); return ERROR; }
       }
       if ((name === "RingTx" || name === "RingRx") && !demand(args[0]!, "noabuf")) { // §15.1 (Q210)
         this.rep.at(e.mod, "E2002", argNodes![0]!, `a ring element cannot be or contain an ArenaBuf, not '${show(args[0]!)}'`);

@@ -8,7 +8,7 @@ import { isDeterministic } from "./determinism.ts";
 import {
   BOOL, ERROR, ERROR_RECORD, F64, NEVER, NULL, NUM_NAMES, STR, UNKNOWN, USIZE, VOID, assignable, bindTParams, boxable, field, fn, gen, hasPtr, hasRawPtr, hasTParam,
   isBool, isCopy, isInt, isNull, isNum, isOwned, isStr, movesLike, ownedDeep, ptrTargetOk, isTaggedUnion, kindOf, literalFits, nonNull, nullable, num, opaque, result, resultParts,
-  same, show, subst, unify, union, unref, castable, demand, layerOk, type FnType, type NumName, type Type,
+  same, sendable, show, subst, unify, union, unref, castable, demand, layerOk, type FnType, type NumName, type Type,
 } from "./types.ts";
 
 const isId = (n: Node | undefined): n is ts.Identifier => n?.kind === K.Identifier;
@@ -638,6 +638,43 @@ export function checkArrow(c: Checker, e: ts.ArrowFunction | ts.FunctionExpressi
 }
 
 // ---- calls
+/** §15.2: `spawn.isolate(f)` calls the checker accepted: the entry function's module path and name. Read by the emitter. */
+export const isolateCalls = new WeakMap<Node, { path: string; name: string }>();
+
+/** §15.2 (Q200, Q207): `spawn.isolate<S, R>(f)`. The argument is the *name* of a module-level (imports
+ * included), non-generic, managed function `(port: Port<R, S>): void | Promise<void>`; any other
+ * expression or signature is E2011 at the argument. Explicit type arguments name the caller's
+ * `Port<S, R>` and must match the entry's own parameter. */
+function isolateCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpression): Type {
+  if (e.arguments.length !== 1) { c.at("E2011", p.name, `'isolate' takes one argument: the entry function's name`); return ERROR; }
+  const a = e.arguments[0]!;
+  const bad = (msg: string): Type => { c.at("E2011", a, msg); return ERROR; };
+  let S: Type | undefined, R: Type | undefined;
+  if (e.typeArguments) {
+    if (e.typeArguments.length !== 2) { c.at("E2002", p.name, `'isolate' takes 2 type argument(s)`); return ERROR; }
+    S = c.typeOf(e.typeArguments[0]!); R = c.typeOf(e.typeArguments[1]!);
+    [S, R].forEach((t, i) => { if (!isErr(t) && !sendable(t)) c.at("E2010", e.typeArguments![i]!, `'${show(t)}' cannot be sent to an isolate (§15.2)`); });
+    if (isErr(S) || isErr(R)) return ERROR;
+  }
+  if (!isId(a) || c.scope.lookup(a.text)) return bad(`'isolate' takes the name of a module-level managed function`);
+  const sym = c.prog.lookupValue(c.mod, a.text);
+  if (sym?.k !== "fn") return bad(`'${a.text}' is not a module-level function`);
+  if (sym.sig.tparams.length) return bad(`the isolate entry '${sym.name}' cannot be generic`);
+  if (sym.layer !== "managed") return bad(`the isolate entry '${sym.name}' is a ${sym.layer} function; isolates run managed functions`);
+  const sig = sym.sig;
+  const portT = sig.params.length === 1 ? unref(sig.params[0]!) : undefined;
+  if (portT && isErr(portT)) return ERROR; // the entry's own signature already reported (e.g. its E2010)
+  const retOk = same(sig.ret, VOID) || (sig.ret.k === "gen" && sig.ret.name === "Promise" && same(sig.ret.args[0]!, VOID));
+  if (!portT || portT.k !== "gen" || portT.name !== "Port" || !retOk) return bad(`the isolate entry '${sym.name}' must take one 'Port' parameter and return 'void' or 'Promise<void>'`);
+  const fR = portT.args[0]!, fS = portT.args[1]!; // the entry's Port<R, S>: it sends R, receives S
+  if ((S && !same(S, fS)) || (R && !same(R, fR))) return bad(`the isolate entry '${sym.name}' does not match the given type arguments`);
+  isolateCalls.set(e, { path: sym.mod.pf.path, name: sym.name });
+  const names = c.prog.isolateEntries.get(sym.mod.pf.path) ?? new Set<string>();
+  names.add(sym.name);
+  c.prog.isolateEntries.set(sym.mod.pf.path, names);
+  return gen("Port", fS, fR);
+}
+
 function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
   // `a?.m(args)`: the arguments may not run (Q133)
   if (e.flags & NodeFlags.OptionalChain && !optCall.has(e)) { optCall.add(e); return c.branch(() => call(c, e, want)); }
@@ -690,6 +727,14 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
       return F64;
     }
     if (m.kind === "method") {
+      const rt0 = exprTypes.get(p.expression);
+      const recvGen = rt0 && unref(rt0).k === "gen" ? (unref(rt0) as { name: string }).name : undefined;
+      if (p.name.text === "isolate" && rt0 && unref(rt0).k === "opaque" && (unref(rt0) as { name: string }).name === "Spawn") return isolateCall(c, e, p); // §15.2
+      if (p.name.text === "recv" && recvGen === "Port") {
+        const R = (unref(rt0!) as { args: Type[] }).args[1]!;
+        // §15.2 / §5.6: with an owned R, whether the Promise may sit here is P3's E3007 to judge, not Q130's E2002
+        if (isOwned(R) || ownedDeep(R)) promiseOk.add(e);
+      }
       if ((m.managedOnly || m.layer === "managed") && !c.callAllowed("managed")) c.at("E4001", p.name, `'${p.name.text}' is managed-only`); // Q044
       if (m.sig.tcheck === "trap" && e.arguments[0]) trapCode(c, e.arguments[0]);
       unsafeOp(c, p);

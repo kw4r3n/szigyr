@@ -113,6 +113,14 @@ class Flow {
   readonly e3005 = new Set<Node>();
   /** Where the current call's own entries start in `active`. */
   callMark = 0;
+  /** §15.2 / §5.6: expressions sitting in an `await` operand (through parentheses and conditionals,
+   * as in P2's allowAwaited): a `Port.recv` call there is the one place its Promise may sit. */
+  private readonly awaited = new WeakSet<Node>();
+  private markAwaited(e: Node): void {
+    this.awaited.add(e);
+    if (e.kind === K.ParenthesizedExpression) this.markAwaited((e as ts.ParenthesizedExpression).expression);
+    else if (e.kind === K.ConditionalExpression) { const cd = e as ts.ConditionalExpression; this.markAwaited(cd.whenTrue); this.markAwaited(cd.whenFalse); }
+  }
   readonly m: ModuleCheck;
   /** Function nesting depth, as P2 counts it in `LocalSym.fnDepth`. */
   readonly depth: number;
@@ -301,7 +309,7 @@ class Flow {
         return;
       }
       case K.PrefixUnaryExpression: this.ex((e as ts.PrefixUnaryExpression).operand, "read"); return;
-      case K.AwaitExpression: this.ex((e as ts.AwaitExpression).expression, "read"); return;
+      case K.AwaitExpression: this.markAwaited((e as ts.AwaitExpression).expression); this.ex((e as ts.AwaitExpression).expression, "read"); return;
       case K.TemplateExpression: for (const sp of (e as ts.TemplateExpression).templateSpans) this.ex(sp.expression, "read"); return;
       case K.ObjectLiteralExpression: {
         const t = exprTypes.get(e);
@@ -587,7 +595,10 @@ class Flow {
     const recv = callee.kind === K.PropertyAccessExpression ? exprTypes.get((callee as ts.PropertyAccessExpression).expression) : undefined;
     // Q174 (案2): an inferred container-of-owned type (a written one is P2's); a receiver of such a type was reported where it came from
     const res = exprTypes.get(e);
-    if (res && ownedDeep(res) && !(recv && ownedDeep(recv))) {
+    // §15.2 (Q207): `port.recv()` with an owned R is exempt as the operand of `await`, and E3007 everywhere else
+    const awaitedRecv = e.kind === K.CallExpression && callee.kind === K.PropertyAccessExpression &&
+      (callee as ts.PropertyAccessExpression).name.text === "recv" && genName(recv) === "Port" && this.awaited.has(e);
+    if (res && ownedDeep(res) && !(recv && ownedDeep(recv)) && !awaitedRecv) {
       const targ = e.typeArguments?.find((a) => this.m.prog.insts.some((x) => x.node === a && movesLike(x.arg)));
       this.m.at("E3007", targ ?? (e.kind === K.NewExpression && e.typeArguments ? e.typeArguments[e.typeArguments.length - 1]! : isId(callee) ? callee : callee.kind === K.PropertyAccessExpression ? (callee as ts.PropertyAccessExpression).name : callee), "this expression has a managed container type that holds an owned value (Q174)");
     }

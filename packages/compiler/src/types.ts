@@ -5,18 +5,18 @@ export type NumName = "f64" | "f32" | "i8" | "i16" | "i32" | "u8" | "u16" | "u32
 export const NUM_NAMES: readonly NumName[] = ["f64", "f32", "i8", "i16", "i32", "u8", "u16", "u32", "usize"];
 export type PrimName = "boolean" | "string" | "null" | "void" | "unknown" | "never";
 /** Builtin generic types (§3.2, §3.3). */
-export type GenName = "Array" | "ReadonlyArray" | "Map" | "Set" | "Promise" | "Vec" | "Slice" | "Pool" | "Handle" | "Arena" | "ArenaBuf" | "RingTx" | "RingRx" | "Ref" | "Mut" | "OwnedCell" | "Ptr" | "ConstPtr" | "CType" | "CHandle";
+export type GenName = "Array" | "ReadonlyArray" | "Map" | "Set" | "Promise" | "Vec" | "Slice" | "Pool" | "Handle" | "Arena" | "ArenaBuf" | "RingTx" | "RingRx" | "Ref" | "Mut" | "OwnedCell" | "Ptr" | "ConstPtr" | "CType" | "CHandle" | "Port";
 export const GEN_ARITY: Record<GenName, number> = {
-  Array: 1, ReadonlyArray: 1, Map: 2, Set: 1, Promise: 1, Vec: 1, Slice: 1, Pool: 1, Handle: 1, Arena: 0, ArenaBuf: 1, RingTx: 1, RingRx: 1, Ref: 1, Mut: 1, OwnedCell: 1, Ptr: 1, ConstPtr: 1, CType: 1, CHandle: 1,
+  Array: 1, ReadonlyArray: 1, Map: 2, Set: 1, Promise: 1, Vec: 1, Slice: 1, Pool: 1, Handle: 1, Arena: 0, ArenaBuf: 1, RingTx: 1, RingRx: 1, Ref: 1, Mut: 1, OwnedCell: 1, Ptr: 1, ConstPtr: 1, CType: 1, CHandle: 1, Port: 2,
 };
 /** Opaque builtin types: authorities (§7.1), Test, JsRef, the fakes (Q038). */
-export const AUTHORITIES = ["System", "Alloc", "Fs", "Clock", "Random", "Log", "Js", "Ffi"] as const; // Ffi: §14.2
+export const AUTHORITIES = ["System", "Alloc", "Fs", "Clock", "Random", "Log", "Js", "Ffi", "Spawn"] as const; // Ffi: §14.2; Spawn: §15.2
 export const OPAQUE_NAMES = new Set<string>([...AUTHORITIES, "JsRef", "Test", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs"]);
 
 export interface Field { name: string; type: Type; readonly: boolean }
 /** Q127: conditions a type parameter takes on from the positions it is used in, checked on every instantiation. */
 /** `nopromise`: every user type parameter has it (Q130 addendum): a Promise cannot hide behind a type parameter. */
-export type Need = "key" | "copy" | "field" | "borrow" | "eq" | "nopromise" | "noabuf";
+export type Need = "key" | "copy" | "field" | "borrow" | "eq" | "nopromise" | "noabuf" | "send";
 /** `owner`: the declaring layer for user type parameters (Q068 b): "managed" ones never take owned types, strict / rt ones may. */
 export interface TParam { name: string; id: number; constraint?: Type; need?: Set<Need>; owner?: "managed" | "strict" | "rt" }
 /** `min`: builtin optional trailing parameters (Q032). `prefix`: a builtin callback may take a prefix of the parameters. */
@@ -361,6 +361,7 @@ export function needOk(n: Need, t: Type): boolean {
     case "borrow": return t.k === "error" || isOwned(t) || (t.k === "gen" && t.name === "Slice");
     case "eq": return comparable(t);
     case "noabuf": return t.k === "error" || !hasArenaBuf(t);
+    case "send": return sendable(t);
     case "nopromise": return !promiseIn(t);
   }
 }
@@ -416,6 +417,38 @@ export function hasArenaBuf(t: Type): boolean {
     default: return false;
   }
 }
+/** §15.2: `t` is, or contains, a type that may not cross to an isolate: the arena / pool family
+ * (their ids are per-isolate), a CHandle, or one of the types §15.2 lists as unsendable. */
+function hasUnsendable(t: Type): boolean {
+  switch (t.k) {
+    case "gen": return t.name === "Pool" || t.name === "Arena" || t.name === "ArenaBuf" || t.name === "CHandle" ||
+      t.name === "Array" || t.name === "ReadonlyArray" || t.name === "Map" || t.name === "Set" || t.name === "Promise" ||
+      t.name === "Port" || t.name === "OwnedCell" || t.args.some(hasUnsendable);
+    case "record": return t.fields.some((f) => hasUnsendable(f.type));
+    case "union": return t.members.some(hasUnsendable);
+    case "fn": case "class": case "iface": case "opaque": return true;
+    case "prim": return t.name === "unknown";
+    default: return false;
+  }
+}
+
+/** §15.2 (Q200, Q210): the types a `Port<S, R>` may carry. A type parameter defers to the `send`
+ * condition (Q127), as do type parameters in the positions this type's sendability depends on. */
+export function sendable(t: Type): boolean {
+  switch (t.k) {
+    case "error": return true;
+    case "tparam": return demand(t, "send");
+    case "num": case "lit": return true;
+    case "prim": return t.name === "boolean" || t.name === "null" || t.name === "string";
+    case "union": return t.members.every(sendable);
+    case "record": return t.struct ? !hasUnsendable(t) : t.fields.every((f) => f.readonly && sendable(f.type));
+    case "gen":
+      if (t.name === "Vec" || t.name === "RingTx" || t.name === "RingRx") { t.args.forEach((a) => void sendable(a)); return !hasUnsendable(t); }
+      return t.name === "Handle";
+    default: return false;
+  }
+}
+
 /** §14.4: types that may sit behind Ptr / ConstPtr. Function types are Ptr-only; the caller decides those. */
 export function ptrTargetOk(t: Type): boolean {
   switch (t.k) {

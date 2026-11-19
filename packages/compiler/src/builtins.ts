@@ -6,7 +6,7 @@ import {
 import { DETMATH_BINARY, DETMATH_UNARY } from "./detmath.ts";
 
 /** Names reserved by §13 / Q011 that resolve to nothing (E2000). */
-export const RESERVED = new Set(["i64", "u64", "bigint", "undefined", "Net", "Spawn"]); // Ffi resolves since §14 (an opaque authority type)
+export const RESERVED = new Set(["i64", "u64", "bigint", "undefined", "Net"]); // Ffi resolves since §14, Spawn since §15.2 (opaque authority types)
 
 /** Q006: unresolved names that are global authorities (E5001). */
 export const GLOBAL_AUTHORITIES = new Set([
@@ -56,13 +56,16 @@ const FS: Record<string, Member> = { readText: m([STR], ioResult(STR)), writeTex
 function opaqueMember(name: string, member: string): Member | undefined {
   const lit = (v: string): Type => ({ k: "lit", value: v });
   const table: Record<string, () => Record<string, Member>> = {
-    System: () => ({ alloc: prop(opaque("Alloc")), fs: prop(opaque("Fs")), clock: prop(opaque("Clock")), random: prop(opaque("Random")), log: prop(opaque("Log")), js: prop(opaque("Js")), ffi: prop(opaque("Ffi")) }),
+    System: () => ({ alloc: prop(opaque("Alloc")), fs: prop(opaque("Fs")), clock: prop(opaque("Clock")), random: prop(opaque("Random")), log: prop(opaque("Log")), js: prop(opaque("Js")), ffi: prop(opaque("Ffi")), spawn: prop(opaque("Spawn")) }),
     Log: () => LOG,
     Clock: () => ({ nowMs: m([], F64) }),
     Random: () => RANDOM,
     Fs: () => FS,
     Alloc: () => ({}),
     Ffi: () => ({}), // §14: the Ffi value itself has no members; it is only passed to C functions
+    // §15.2: `isolate` never reaches callSig; expr.ts checks the call itself (E2011) because the
+    // argument is a function *name*, not a value. This entry only lets member() resolve the name.
+    Spawn: () => ({ isolate: m([UNKNOWN], VOID) }),
     JsRef: () => ({}),
     Js: () => {
       const J = opaque("JsRef"), jr = result(J, ERROR_RECORD);
@@ -200,6 +203,10 @@ export function genMember(t: { name: GenName; args: Type[] }, name: string): Mem
       return Object.hasOwn(sigs, name) ? sigs[name] : undefined;
     }
     case "CHandle": return name === "get" ? m([], gen("Ptr", a)) : undefined; // §14.5
+    case "Port": { // §15.2: S is sent, R is received; recv's Promise may be awaited (and, for an owned R, only awaited: §5.6)
+      const sigs: Record<string, Member> = { send: m([a], VOID), recv: m([], gen("Promise", nullable(b))), close: m([], VOID) };
+      return Object.hasOwn(sigs, name) ? sigs[name] : undefined;
+    }
     default: return undefined; // Promise: await and Promise.all only (§12); Ref / Mut are unwrapped before lookup
   }
 }

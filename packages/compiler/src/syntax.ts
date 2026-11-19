@@ -11,7 +11,7 @@ const BUILTIN_NAMES = new Set([
   "boolean", "string", "number", "f64", "f32", "i8", "i16", "i32", "u8", "u16", "u32", "usize", "null", "void", "unknown", "never",
   "Array", "ReadonlyArray", "Map", "Set", "Promise", "Result", "Struct", "Vec", "Slice", "Pool", "Handle", "Arena", "ArenaBuf", "Ref", "Mut", "OwnedCell",
   "System", "Alloc", "Fs", "Net", "Clock", "Random", "Log", "Js", "Ffi", "Spawn", "JsRef", "JsError", "CastError", "IoError", "Test",
-  "Ptr", "ConstPtr", "CType", "CHandle", "cfn",
+  "Ptr", "ConstPtr", "CType", "CHandle", "cfn", "Port",
   "wrapAdd", "wrapSub", "wrapMul", "divTrunc", "rem", "ok", "err", "panic", "cast", "requires", "ensures", "invariant", "test",
   "Math", "Number", "JSON", "String", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "TestAlloc", "DetMath",
 ]);

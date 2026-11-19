@@ -13,7 +13,7 @@ export function isDeterministic(sig: FnType, rtUnsafe = false): boolean {
       case "prim": return t.name === "unknown";
       case "record": return t.fields.some((f) => bad(f.type));
       case "union": return t.members.some(bad);
-      case "gen": return t.name === "Ptr" || t.name === "ConstPtr" || t.name === "CHandle" || t.name === "RingTx" || t.name === "RingRx" || t.args.some(bad); // §7.3 (RingTx / RingRx: §15.1)
+      case "gen": return t.name === "Ptr" || t.name === "ConstPtr" || t.name === "CHandle" || t.name === "RingTx" || t.name === "RingRx" || t.name === "Port" || t.args.some(bad); // §7.3 (RingTx / RingRx: §15.1; Port: §15.2)
       case "class": {
         if (seen.has(t.cls)) return false;
         seen.add(t.cls);
