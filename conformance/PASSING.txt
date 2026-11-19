@@ -163,6 +163,10 @@ reject/E2001-slice-push.ts
 reject/E2001-string-charat.ts
 reject/E2001-vec-insert.ts
 reject/E2001-write-through-constptr.ts
+reject/E2002-arena-alloc-generic-inferred.ts
+reject/E2002-arena-alloc-generic-managed.ts
+reject/E2002-arena-alloc-generic-nested.ts
+reject/E2002-arena-alloc-generic.ts
 reject/E2002-arenabuf-equality.ts
 reject/E2002-argument-string-for-number.ts
 reject/E2002-array-elem-type-mismatch.ts

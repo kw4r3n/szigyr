@@ -3,9 +3,9 @@
 // stage: 2
 // open-question: Q188
 // open-question: Q215
-function allocSum<T>(a: Mut<Arena>, n: usize, x: T): ArenaBuf<T> | null {
+function allocSum(a: Mut<Arena>, n: usize, x: f32): ArenaBuf<f32> | null {
   "use rt";
-  return a.alloc<T>(n, x);
+  return a.alloc<f32>(n, x); // Q215 (c): a concrete element; the views below stay generic
 }
 
 function head<T>(s: Ref<Slice<T>>): T {
@@ -34,12 +34,12 @@ function sumF(s: Ref<Slice<f32>>): f32 {
 
 export function main(sys: System): void {
   const a = Arena.create(sys.alloc, 64);
-  const b = allocSum<f32>(a, 2, 1.5);
+  const b = allocSum(a, 2, 1.5);
   if (b === null) {
     return;
   }
   sys.log.info(`v=${readG(a, b)} len=${b.length} head=${headG(a, b)}`);
-  const c = allocSum<f32>(a, 4, 2.5);
+  const c = allocSum(a, 4, 2.5);
   if (c === null) {
     return;
   }

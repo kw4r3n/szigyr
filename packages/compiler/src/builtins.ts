@@ -170,7 +170,7 @@ export function genMember(t: { name: GenName; args: Type[] }, name: string): Mem
       const T = newTParam("T"), tT: Type = { k: "tparam", p: T };
       const sigs: Record<string, Member> = {
         remaining: prop(USIZE), reset: m([], VOID),
-        alloc: m([USIZE, tT], nullable(gen("ArenaBuf", tT)), { tparams: [T], tcheck: "copy" }),
+        alloc: m([USIZE, tT], nullable(gen("ArenaBuf", tT)), { tparams: [T], tcheck: "alloc" }), // Q215 (c)
         view: m([gen("ArenaBuf", tT)], gen("Slice", tT), { tparams: [T], tcheck: "copy" }),
       };
       return Object.hasOwn(sigs, name) ? sigs[name] : undefined;

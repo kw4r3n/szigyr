@@ -8,7 +8,7 @@ import { isDeterministic } from "./determinism.ts";
 import {
   BOOL, ERROR, ERROR_RECORD, F64, NEVER, NULL, NUM_NAMES, STR, UNKNOWN, USIZE, VOID, assignable, bindTParams, boxable, field, fn, gen, hasPtr, hasRawPtr, hasTParam,
   isBool, isCopy, isInt, isNull, isNum, isOwned, isStr, movesLike, holdsOwned, ownedDeep, ptrTargetOk, isTaggedUnion, kindOf, literalFits, nonNull, nullable, num, opaque, result, resultParts,
-  same, sendable, show, subst, unify, union, unref, castable, demand, layerOk, type FnType, type NumName, type Type,
+  same, sendable, show, subst, unify, union, unref, castable, collectTParams, demand, layerOk, type FnType, type NumName, type Type,
 } from "./types.ts";
 
 const isId = (n: Node | undefined): n is ts.Identifier => n?.kind === K.Identifier;
@@ -836,7 +836,7 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
     }
   }
   const tc = sig.tcheck;
-  if ((tc === "cast" || tc === "eq" || tc === "copy" || tc === "box" || tc === "chandle" || tc === "castptr" || tc === "ring") && sig.tparams[0]) { // Q084, Q086; §14.4 / §14.5
+  if ((tc === "cast" || tc === "eq" || tc === "copy" || tc === "box" || tc === "chandle" || tc === "castptr" || tc === "ring" || tc === "alloc") && sig.tparams[0]) { // Q084, Q086; §14.4 / §14.5
     const b = m.get(sig.tparams[0].id)!;
     if (tc === "box") { // the anchor is the type argument, or the boxed value (DIAGNOSTICS E4007)
       if (!isErr(b) && !boxable(b)) { c.at("E4007", e.typeArguments?.[0] ?? args[1] ?? anchor, `'${show(b)}' cannot be boxed`); return ERROR; }
@@ -848,6 +848,9 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
     } else if (tc === "ring") { // §15.1 (Q199, Q210): the element is Copy (E4002, as Vec<T>) and not an ArenaBuf or containing one (E2002)
       if (!isErr(b) && !demand(b, "copy")) { c.at("E4002", e.typeArguments?.[0] ?? anchor, `'${show(b)}' is not allowed as the type argument here`); return ERROR; }
       if (!isErr(b) && !demand(b, "noabuf")) { c.at("E2002", e.typeArguments?.[0] ?? anchor, `a ring element cannot be or contain an ArenaBuf, not '${show(b)}'`); return ERROR; }
+    } else if (tc === "alloc") { // Q215 (c): no type parameter in the element, so JS and C size it alike; then Copy, as Vec<T> (E4002)
+      if (!isErr(b) && collectTParams(b).length) { c.at("E2002", e.typeArguments?.[0] ?? anchor, `the element of 'alloc' cannot be or contain a type parameter, not '${show(b)}'`); return ERROR; }
+      if (!isErr(b) && !demand(b, "copy")) { c.at("E4002", e.typeArguments?.[0] ?? anchor, `'${show(b)}' is not allowed as the type argument here`); return ERROR; }
     } else if (!isErr(b) && !(tc === "cast" ? castable(b) : demand(b, tc))) {
       c.at(tc === "copy" ? "E4002" : "E2002", e.typeArguments?.[0] ?? anchor, `'${show(b)}' is not allowed as the type argument here`); // Q086: `Vec.create` is §3.3
       return ERROR;

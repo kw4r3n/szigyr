@@ -24,7 +24,7 @@ export interface FnType {
   k: "fn"; tparams: TParam[]; params: Type[]; ret: Type; min?: number; prefix?: boolean;
   /** Builtin call-site conditions: `cast` / `eq` / `copy` constrain the first type argument (Q084, Q086); `trap` checks the code literal (Q058). */
   /** `box` / `chandle` / `castptr`: the §14.4 / §14.5 conditions on the type argument. */
-  tcheck?: "cast" | "eq" | "copy" | "trap" | "box" | "chandle" | "castptr" | "ring";
+  tcheck?: "cast" | "eq" | "copy" | "trap" | "box" | "chandle" | "castptr" | "ring" | "alloc";
 }
 
 export interface ClassSym {
