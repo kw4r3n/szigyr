@@ -704,6 +704,7 @@ run/168-shorthand-narrowed-field.ts
 run/169-string-literal-nul.ts
 run/17-trap-i32-add-overflow.ts
 run/170-string-literal-long.ts
+run/171-shadowed-strict-name.ts
 run/18-trap-i32-unary-minus.ts
 run/19-trap-divtrunc-overflow.ts
 run/20-trap-array-index.ts

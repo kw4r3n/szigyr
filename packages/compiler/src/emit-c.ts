@@ -2,7 +2,7 @@
 // plus a Node-API wrapper per function that managed JS calls. Every subexpression goes through a temporary, in source order (D103).
 import { readFileSync } from "node:fs";
 import { SyntaxKind as K, type Node, type ts } from "./parse.ts";
-import { callFnArgs, callTArgs, exprTypes } from "./expr.ts";
+import { callFnArgs, callFns, callTArgs, exprTypes } from "./expr.ts";
 import { sliceGroups } from "./ownership.ts";
 import type { CFnSym, FnSym, Module, Program } from "./modules.ts";
 import { layout, elemDesc, type Lay } from "./layout.ts";
@@ -127,7 +127,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     const walk = (n: Node): void => {
       if (n.kind === K.FunctionDeclaration && fns.some((f) => f.decl === n)) return;
       if (n.kind === K.CallExpression && (n as ts.CallExpression).expression.kind === K.Identifier) {
-        const fn = resolveFn(mod, ((n as ts.CallExpression).expression as ts.Identifier).text);
+        const fn = callFns.get(n); // as the checker resolved it: a local binding shadows the module name
         if (fn && fn.layer !== "managed" && (fn.sig.tparams.length || fnParamIdx(fn).length)) {
           const p = mod.pf.position(n.getStart(mod.sf));
           const where = `${mod.file}:${p.line}:${p.col}`;

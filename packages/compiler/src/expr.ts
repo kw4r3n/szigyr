@@ -68,6 +68,8 @@ export const callTArgs = new WeakMap<Node, Type[]>();
  * Read by the checker (E4005 per instantiation) and the C backend (the D104 key). */
 export type FnArgRef = { fn: FnSym } | { param: number };
 export const callFnArgs = new WeakMap<Node, Map<number, FnArgRef>>();
+/** A call whose callee name resolves to a module-level function (not shadowed by a local), with that function. */
+export const callFns = new WeakMap<Node, FnSym>();
 /** Q189 (b): identifiers used as the callee of a call: the one place besides a function-typed argument where a function-typed parameter may appear. */
 const fnCalleeIds = new WeakSet<Node>();
 /** Q130: the only expressions that may have a Promise type: `await` operands, `Promise.all` arguments, returns of Promise functions. */
@@ -688,6 +690,7 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
     const sym = c.prog.lookupValue(c.mod, callee.text);
     if (!sym && BUILTIN_FUNCTIONS.has(callee.text)) return builtinCall(c, e, callee, want);
     if (sym?.k === "fn") {
+      callFns.set(e, sym);
       if (!c.callCheck(sym)) c.at("E4001", callee, `a ${c.fx.layer} function cannot call the ${sym.layer} function '${sym.name}'`);
       if (sym.sig.params.some(hasRawPtr) || hasRawPtr(sym.sig.ret)) { // §14.4.3: an unsafe operation (Q218: a CHandle in the signature does not count)
         c.noteUnsafeOp(callee);
