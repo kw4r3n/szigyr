@@ -426,13 +426,15 @@ class Flow {
   private lhs(l: ts.Expression): ts.Expression | undefined {
     if (isId(l)) { const sym = localOf.get(l); if (sym) this.useCheck(l, sym); return undefined; }
     const obj = l.kind === K.PropertyAccessExpression ? (l as ts.PropertyAccessExpression).expression : (l as ts.ElementAccessExpression).expression;
+    const tmp = this.sliceCall(strip(obj)); // Q222 (b): a written `slice` / `view` is not a borrowed argument or a receiver
+    if (tmp) this.m.at("E3004", tmp.name, `'${tmp.name.text}' can only be a borrowed argument or a receiver`);
     const root = this.placeOf(obj);
     this.place(obj);
     const target = l.kind === K.PropertyAccessExpression ? this.placeOf(l) : this.placeOf(obj);
     if (root && this.active.some((x) => x.sym.id === root.sym.id && (!target || pathsOverlap(x.path, target.path)))) this.exclusive(l, root.sym); // Q170: a write under a borrow of the same place (Q190: a disjoint field is another place)
     if (root) this.active.push({ sym: root.sym, mode: "mut", node: root.id, base: true, path: root.path, slice: false }); // popped by the caller
     if (l.kind === K.ElementAccessExpression) this.ex((l as ts.ElementAccessExpression).argumentExpression, "read");
-    if (this.isReadOnly(obj)) this.m.at("E3006", l, root ? `cannot write through the Ref '${root.sym.name}'` : "cannot write through a Ref or ConstPtr");
+    if (!tmp && this.isReadOnly(obj)) this.m.at("E3006", l, root ? `cannot write through the Ref '${root.sym.name}'` : "cannot write through a Ref or ConstPtr");
     return obj;
   }
 

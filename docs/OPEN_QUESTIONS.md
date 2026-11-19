@@ -1398,6 +1398,7 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
   - (a) 現状どおり `Mut<Vec<T>>` / `Mut<Slice<T>>` への `slice(...)[i] = ...` を許す（`ConstPtr.slice(...)[i] = ...` と `Ref<Vec<T>>.slice(...)[i] = ...` は E3006 で拒否）。
   - (b) 添字代入の左辺の `slice` も実引数・メソッド受け手以外の位置とみなし、E3004 で拒否する。
 - 既定案: 未決（設計監査の修正 1 では SPEC が不明確なため挙動を変えず現状のまま残す）。
+- 2026-11-20 オーナー決定: (b)。代入の左辺の添字の `slice` と `view`（`v.slice(0, 4)[0] = 1`、`a.view(b)[0] = 1`、`p.slice(n)[0] = 1`）は、読む形と同じく E3004（アンカーはメンバ名）。`p.borrow().f = 1` はもとから E3004（`E3004-ptr-borrow-field-write`）。`ConstPtr` の形も E3004 になり、E3006 は出さない。SPEC §3.3 と §5.5 に書いた（D130）。該当ケースは reject の `E3004-slice-index-write`、`E3004-arena-view-index-write`、`E3004-ptr-slice-index-write`、`E3004-constptr-slice-index-write`（もとの `E3006-constptr-slice-index-write`）。
 
 ### Q223 重複した interface メソッド名と重複したオブジェクトリテラルのキーを許すか（設計監査 #31）
 - 関連: §3.2、§11、Q004、Q029、Q087
