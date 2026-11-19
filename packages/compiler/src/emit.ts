@@ -332,6 +332,7 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
     if (s.kind === K.ImportDeclaration) {
       const d = s as ts.ImportDeclaration;
       const spec = (d.moduleSpecifier as ts.StringLiteral).text;
+      if (spec.startsWith("c:")) continue; // §14: C functions have no JS value; calls to them live in strict / rt bodies, emitted to C
       const key = spec.startsWith("npm:") ? spec : resolve(dirname(pf.path), spec);
       imports.push(key);
       const els = (d.importClause!.namedBindings as ts.NamedImports).elements.map((x) => (x.propertyName ? `${x.propertyName.text}: ${x.name.text}` : x.name.text));

@@ -183,7 +183,7 @@ const HOST = {
 async function load(files: ParsedFile[], entryFile: string, tests: boolean, decls?: Decls, backend: Backend = "js"): Promise<Record<string, unknown>> {
   const entry = resolve(entryFile);
   const c = backend === "c" && decls ? emitC(decls, displayPath) : undefined;
-  const native = c ? loadNative(c.c, HOST) : undefined;
+  const native = c ? loadNative(c.c, HOST, c.pkgs) : undefined;
   const emitted = new Map(files.map((f) => [f.path, emitFile(f, displayPath(f.path), tests && f.path === entry, c?.keys as Map<never, string> | undefined)]));
   const npm = new Map<string, unknown>();
   for (const [path, e] of emitted) {

@@ -17,10 +17,18 @@ export class CBuildError extends Error {
 const loaded = new Map<string, Record<string, (...a: unknown[]) => unknown>>();
 
 /** Compiles (cached by source hash) and loads the addon; `host` is passed to its `init`. */
-export function loadNative(c: string, host: object): Record<string, (...a: unknown[]) => unknown> {
+export function loadNative(c: string, host: object, pkgs: string[] = []): Record<string, (...a: unknown[]) => unknown> {
   const inc = resolve(process.execPath, "../../include/node");
   if (!existsSync(join(inc, "node_api.h"))) throw new CBuildError(`C backend: Node-API headers not found at ${inc}`);
-  const hash = createHash("sha256").update(c).update(CFLAGS.join(" ")).update(process.version).digest("hex").slice(0, 24);
+  // §14.2: the `c:` declarations' packages contribute their cflags to the compile and their libs to the link.
+  let pkgCflags: string[] = [], pkgLibs: string[] = [];
+  if (pkgs.length) {
+    try {
+      pkgCflags = execFileSync("pkg-config", ["--cflags", ...pkgs], { encoding: "utf8" }).trim().split(/\s+/).filter(Boolean);
+      pkgLibs = execFileSync("pkg-config", ["--libs", ...pkgs], { encoding: "utf8" }).trim().split(/\s+/).filter(Boolean);
+    } catch { throw new CBuildError(`C backend: pkg-config could not resolve: ${pkgs.join(", ")}`); }
+  }
+  const hash = createHash("sha256").update(c).update(CFLAGS.join(" ")).update(pkgCflags.join(" ")).update(pkgLibs.join(" ")).update(process.version).digest("hex").slice(0, 24);
   let mod = loaded.get(hash);
   if (!mod) {
     // A per-user cache: a loaded addon runs native code, so the directory must be ours and closed to others.
@@ -33,7 +41,7 @@ export function loadNative(c: string, host: object): Record<string, (...a: unkno
       // Workers of one process share the pid, so the temporary names also carry the thread id (D111).
       const tmp = `${out}.${process.pid}.${threadId}.tmp`, src = `${tmp}.c`;
       writeFileSync(src, c);
-      try { execFileSync(process.env.CC ?? "cc", [...CFLAGS, `-I${inc}`, src, "-o", tmp, "-lm"], { stdio: ["ignore", "ignore", "pipe"] }); }
+      try { execFileSync(process.env.CC ?? "cc", [...CFLAGS, ...pkgCflags, `-I${inc}`, src, "-o", tmp, "-lm", ...pkgLibs], { stdio: ["ignore", "ignore", "pipe"] }); }
       catch (e) {
         const err = e as { code?: string; stderr?: Buffer };
         throw new CBuildError(err.code === "ENOENT" ? "C backend: no C compiler ('cc') found" : `C backend: compiling ${src} failed:\n${err.stderr?.toString() ?? String(e)}`);

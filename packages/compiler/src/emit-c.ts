@@ -4,9 +4,10 @@ import { readFileSync } from "node:fs";
 import { SyntaxKind as K, type Node, type ts } from "./parse.ts";
 import { callFnArgs, callTArgs, exprTypes } from "./expr.ts";
 import { sliceGroups } from "./ownership.ts";
-import type { FnSym, Module, Program } from "./modules.ts";
+import type { CFnSym, FnSym, Module, Program } from "./modules.ts";
 import { layout, elemDesc, type Lay } from "./layout.ts";
 import { DETMATH_PATH } from "./detmath.ts";
+import { cPointeeOf, parseCSpec } from "./cdecl.ts";
 import { AUTHORITIES, isCopy, isInt, isTaggedUnion, kindOf, nonNull, isNull, isBool, unref, show, subst, type Field, type NumName, type Type } from "./types.ts";
 
 /** A construct the C backend does not translate yet: the run stops with this error (never a silent fallback to JS). */
@@ -14,8 +15,9 @@ export class CUnsupported extends Error {
   constructor(where: string, what: string) { super(`C backend: ${what} is not supported (${where})`); this.name = "CUnsupported"; }
 }
 
-/** `keys`: strict / rt declarations and managed call sites of generic ones -> the addon export (`!generic`: no direct export). */
-export interface EmittedC { c: string; keys: Map<Node, string> }
+/** `keys`: strict / rt declarations and managed call sites of generic ones -> the addon export (`!generic`: no direct export).
+ * `pkgs`: the pkg-config packages of the program's `c:` declarations; the TU includes their headers and the link needs their flags (§14.2). */
+export interface EmittedC { c: string; keys: Map<Node, string>; pkgs: string[] }
 
 const RANGE: Record<string, [string, string]> = {
   i8: ["-128LL", "127LL"], i16: ["-32768LL", "32767LL"], i32: ["-2147483648LL", "2147483647LL"],
@@ -41,6 +43,11 @@ export function resolveFn(mod: Module, name: string): FnSym | undefined {
   const imp = mod.imports.get(name);
   if (imp) { const local = imp.mod.exports.get(imp.name); const w = local ? imp.mod.values.get(local) : undefined; if (w?.k === "fn") return w; }
   return undefined;
+}
+/** The C function a name refers to in `mod`: a `c:` declaration binds in its own file only (§14.1). */
+function resolveCFn(mod: Module, name: string): CFnSym | undefined {
+  const v = mod.values.get(name);
+  return v?.k === "cfn" ? v : undefined;
 }
 function resolveConst(mod: Module, name: string): Extract<Module["values"] extends Map<string, infer V> ? V : never, { k: "const" }> | undefined {
   const v = mod.values.get(name);
@@ -137,6 +144,11 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         if (t.name === "Handle") return "sts_handle";
         if (t.name === "Arena") return "sts_arena*";
         if (t.name === "ArenaBuf") return "sts_abuf";
+        if (t.name === "Ptr" || t.name === "ConstPtr") { // §14.2: the C type of a raw pointer, from the pointee
+          const p = elemOf(t);
+          if (unref(p).k === "fn") throw new CUnsupported(where, "a function pointer value (cfn is §14.6)");
+          return t.name === "Ptr" ? `${cPointeeOf(p)} *` : `const ${cPointeeOf(p)} *`;
+        }
         if (t.name === "Ref" || t.name === "Mut") { const a = elemOf(t); return isStruct(a) ? `${ctype(a, where)}*` : ctype(a, where); }
         break;
       case "opaque": if (AUTH.has(t.name)) return "napi_value"; break;
@@ -833,6 +845,8 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
           }
           const fn = resolveFn(this.mod, name);
           if (fn) return this.userCall(e, fn, stmt);
+          const cf = resolveCFn(this.mod, name);
+          if (cf) return this.cCall(e, cf, stmt);
         }
         throw this.no(callee, `calling '${name}'`);
       }
@@ -966,6 +980,24 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       throw this.no(p.name, `the method '${m}' on ${show(rt)}`);
     }
 
+    /** A call of a C function (§14.2): the included header's prototype converts the arguments;
+     * a `usize` result is range-checked before it narrows to 32 bits (T003, at the callee's name). */
+    cCall(e: ts.CallExpression, cf: CFnSym, stmt: boolean): string | undefined {
+      const off = this.f.layer === "rt" ? 1 : 0; // §14.3: an rt caller writes no Ffi argument
+      const mapped = e.arguments.map((a, i) => this.conv(this.ex(a), this.typeOf(a), cf.sig.params[i + off]!));
+      const args = off ? mapped : mapped.slice(1); // the Ffi value itself is not passed to C
+      const call = `${cf.name}(${args.join(", ")})`;
+      const ret = cf.sig.ret;
+      if (ret.k === "prim" && (ret.name === "void" || ret.name === "never")) { this.emit(`${call};`); return stmt ? undefined : "0"; }
+      if (ret.k === "num" && ret.name === "usize") {
+        const rv = `t${this.tmp++}`;
+        this.emit(`size_t ${rv} = ${call};`);
+        this.emit(`if (${rv} > 4294967295ULL) sts_trap(3, ${this.pos(e.expression)});`);
+        return this.t(ret, `(uint32_t)${rv}`, e);
+      }
+      return this.t(ret, call, e);
+    }
+
     userCall(e: ts.CallExpression, fn: FnSym, stmt: boolean): string | undefined {
       if (fn.layer === "managed") throw this.no(e, "a call to managed code");
       const targs = (callTArgs.get(e) ?? []).map((t) => (this.i.m.size ? subst(t, this.i.m) : t));
@@ -1012,6 +1044,10 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
   const protos = done.map((i) => `${proto(i)};`);
   const wrappers = done.map(wrapper);
 
+  // §14.2: the TU includes every declared `c:` header; the packages go to the link (native.ts).
+  const hdrs = new Set<string>(), pkgs = new Set<string>();
+  for (const mod of prog.mods) for (const spec of mod.cdecls.keys()) { const cs = parseCSpec(spec); if (cs) { hdrs.add(cs.header); pkgs.add(cs.pkg); } }
+
   const rtH = readFileSync(new URL("./c/sts_rt.h", import.meta.url), "utf8");
   const c = [
     `static const int STS_POS[][3] = {${poss.join(",") || "{0,0,0}"}};`,
@@ -1019,6 +1055,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     `static const char *const STS_LITS[] = {${lits.map((x) => JSON.stringify(x)).join(",") || "\"\""}};`,
     `#define STS_NLITS ${lits.length}`,
     rtH,
+    ...[...hdrs].map((h) => `#include <${h}>`),
     `static double sts_num(napi_value v) { double d; STS_OK(napi_get_value_double(sts_env, v, &d)); return d; }`,
     `static bool sts_bool(napi_value v) { bool b; STS_OK(napi_get_value_bool(sts_env, v, &b)); return b; }`,
     `static napi_value sts_mknum(double d) { napi_value r; STS_OK(napi_create_double(sts_env, d, &r)); return r; }`,
@@ -1036,7 +1073,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     `  return exports;`,
     `}`,
   ].join("\n");
-  return { c, keys };
+  return { c, keys, pkgs: [...pkgs] };
 
 }
 

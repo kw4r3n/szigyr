@@ -67,6 +67,7 @@ accept/65-unsafe-call-table.ts
 accept/66-chandle-and-box.ts
 accept/67-cfn-and-void-ptr.ts
 accept/68-c-backend.ts
+accept/69-extern-header-check.ts
 reject/E1000-array-suffix-type.ts
 reject/E1000-await-in-non-async-arrow.ts
 reject/E1000-await-outside-async.ts
@@ -313,6 +314,15 @@ reject/E2008-index-negative-literal.ts
 reject/E2008-return-literal-out-of-u16.ts
 reject/E2008-u32-negative-literal.ts
 reject/E2008-u8-literal-256.ts
+reject/E2009-arg-count.ts
+reject/E2009-arg-type.ts
+reject/E2009-missing-header.ts
+reject/E2009-return-type.ts
+reject/E2009-unknown-c-type.ts
+reject/E2009-unknown-function.ts
+reject/E2009-unknown-package.ts
+reject/E2009-variadic.ts
+reject/E2009-wrong-c-type.ts
 reject/E3001-assignment-as-argument.ts
 reject/E3001-assignment-as-initializer.ts
 reject/E3001-chained-assignment.ts
@@ -574,6 +584,8 @@ run/122-arena-view-bool-offset.ts
 run/123-arena-view-packed-read.ts
 run/124-arena-view-packed-write.ts
 run/125-c-only-declare.ts
+run/126-extern-sdl-io.ts
+run/127-extern-usize-trap.ts
 run/13-async-await.ts
 run/14-vec-slice.ts
 run/15-owned-cell.ts
