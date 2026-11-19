@@ -71,6 +71,17 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
   const skipWs = (i: number): number => { while (/\s/.test(text[i] ?? "")) i++; return i; };
   const backWs = (i: number): number => { while (i > 0 && /\s/.test(text[i - 1]!)) i--; return i; };
 
+  /** The `>` closing a type argument / parameter list, from `i` on, past whitespace, comments and a trailing comma. */
+  const closeAngle = (i: number, end: number): number => {
+    while (i < end) {
+      if (text.startsWith("/*", i)) i = text.indexOf("*/", i + 2) + 2;
+      else if (text.startsWith("//", i)) { const nl = text.indexOf("\n", i); if (nl < 0) return -1; i = nl; }
+      else if (text[i] === ">") return i;
+      else i++;
+    }
+    return -1;
+  };
+
   /** Default: the node's text with each child replaced by its emission and type syntax deleted. */
   function splice(n: Node): string {
     const a = n as AnyNode;
@@ -80,11 +91,10 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
       const list = lists.find((l) => l?.includes(c));
       if (list) {
         if (c !== list[0]) return;
-        const s = text.lastIndexOf("<", c.getStart(sf));
-        const e = skipWs(list.end);
-        cuts.push({ s, e: text[e] === ">" ? e + 1 : e, out: "" });
+        const e = closeAngle(list.end, n.end); // the list starts just after its `<` (a node's pos is the previous token's end)
+        cuts.push({ s: list.pos - 1, e: e < 0 ? list.end : e + 1, out: "" });
       } else if (a.type === c) {
-        cuts.push({ s: text.lastIndexOf(":", c.getStart(sf)), e: c.end, out: "" }); // `: T`
+        cuts.push({ s: c.pos - 1, e: c.end, out: "" }); // `: T`: the type starts just after its `:`
       } else if (DROP_MODS.has(c.kind) || c.kind === K.HeritageClause) {
         cuts.push({ s: c.getStart(sf), e: skipWs(c.end), out: "" });
       } else cuts.push({ s: c.getStart(sf), e: c.end, out: gen(c) });
