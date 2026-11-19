@@ -3,7 +3,7 @@
 // A build failure is not an error: the package simply stays missing and every case that
 // needs it is skipped by the usual rule (conformance/README.md).
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 const dir = join(import.meta.dirname, "../../../conformance/fixtures/stscb");
@@ -19,8 +19,8 @@ export function ensureStscb(): void {
       mkdirSync(buildDir, { recursive: true });
       execFileSync("cc", ["-std=gnu11", "-O2", "-shared", "-fPIC", join(dir, "stscb.c"), "-o", so, "-lpthread"], { stdio: "pipe" });
       copyFileSync(join(dir, "stscb.pc"), join(buildDir, "stscb.pc"));
-      copyFileSync(join(dir, "stscb.h"), join(buildDir, "stscb.h"));
     }
+    for (const h of readdirSync(dir).filter((x) => x.endsWith(".h"))) copyFileSync(join(dir, h), join(buildDir, h)); // header-only additions need no rebuild
     const prev = process.env.PKG_CONFIG_PATH;
     process.env.PKG_CONFIG_PATH = prev ? `${buildDir}:${prev}` : buildDir;
   } catch { /* the package stays missing; its cases skip */ }

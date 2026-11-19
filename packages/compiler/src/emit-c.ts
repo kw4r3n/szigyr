@@ -170,7 +170,8 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         if (t.name === "Ptr" || t.name === "ConstPtr") { // §14.2: the C type of a raw pointer, from the pointee
           const p = elemOf(t);
           if (unref(p).k === "fn") return fpType(p); // §14.6: a function pointer value is its typedef (Ptr and ConstPtr alike)
-          return t.name === "Ptr" ? `${cPointeeOf(p)} *` : `const ${cPointeeOf(p)} *`;
+          const q = isGen(p, "Ptr") || isGen(p, "ConstPtr"); // a nested pointer composes through its own C type (cdecl.ts)
+          return t.name === "Ptr" ? `${q ? ctype(p, where) : cPointeeOf(p)} *` : q ? `${ctype(p, where)} const *` : `const ${cPointeeOf(p)} *`;
         }
         if (t.name === "Ref" || t.name === "Mut") { const a = elemOf(t); return isStruct(a) ? `${ctype(a, where)}*` : ctype(a, where); }
         break;
@@ -196,7 +197,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
    * function pointer value written as its typedef so the type composes in any position. */
   function abiType(t: Type): string {
     const u = unref(t);
-    if (u.k === "gen" && (u.name === "Ptr" || u.name === "ConstPtr") && unref(elemOf(u)).k === "fn") return fpType(elemOf(u));
+    if (u.k === "gen" && (u.name === "Ptr" || u.name === "ConstPtr")) return ctype(u, "a C boundary type"); // nested function pointers through their typedefs
     return cTypeOf(u);
   }
   /** `typedef R (*FPn)(params)` for a function type, from the §14.2 boundary mapping. */

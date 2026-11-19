@@ -39,21 +39,27 @@ const CINT: Record<NumName, string> = {
 
 /** The C type of a declared parameter or return (§14.2's table). */
 export function cTypeOf(t: Type): string {
-  switch (t.k) {
-    case "num": return CINT[t.name];
-    case "prim": return t.name === "boolean" ? "bool" : "void";
-    case "gen":
-      if (t.name === "Ptr") { const a = t.args[0]!; return a.k === "fn" ? cPointeeOf(a) : `${cPointeeOf(a)} *`; }
-      if (t.name === "ConstPtr") return `const ${cPointeeOf(t.args[0]!)} *`;
-      return "void";
-    case "fn": return cPointeeOf(t); // not a legal value position; keeps the mapping total
-    default: return "void";
+  return cDecl(t, "");
+}
+
+/** The C declaration of `d` with the STS type `t`, built inside out so nested pointers compose:
+ * `ConstPtr<Ptr<i32>>` is `int32_t *const *`, `Ptr<Ptr<(x: i32) => i32>>` is `int32_t (**)(int32_t)`.
+ * `const` qualifies the pointee of a `ConstPtr` (a function has no qualifier). */
+function cDecl(t: Type, d: string): string {
+  if (t.k === "fn") return cDecl({ k: "gen", name: "Ptr", args: [t] }, d); // not a legal value position; keeps the mapping total
+  if (t.k === "gen" && (t.name === "Ptr" || t.name === "ConstPtr")) {
+    const p = t.args[0]!, c = t.name === "ConstPtr" ? "const " : "";
+    if (p.k === "fn") return cDecl(p.ret, `(*${d})(${p.params.map((x) => cDecl(x, "")).join(", ") || "void"})`);
+    if (p.k === "gen" && (p.name === "Ptr" || p.name === "ConstPtr")) return cDecl(p, `${c}*${d}`);
+    return `${c}${cPointeeOf(p)} *${d}`;
   }
+  const b = t.k === "num" ? CINT[t.name] : t.k === "prim" && t.name === "boolean" ? "bool" : "void";
+  return d ? `${b} ${d}` : b;
 }
 
 /** The C type a Ptr / ConstPtr points at (§14.2): the table again for numbers and boolean,
- * `void` for void, the literal name for CType, recursion for a nested pointer, a function
- * pointer for a function type, and `void` for any other STS type. */
+ * `void` for void, the literal name for CType, the full type for a nested pointer or a function
+ * pointer, and `void` for any other STS type. */
 export function cPointeeOf(t: Type): string {
   switch (t.k) {
     case "num": return CINT[t.name];
@@ -63,7 +69,7 @@ export function cPointeeOf(t: Type): string {
       if (t.name === "Ptr" || t.name === "ConstPtr") return cTypeOf(t);
       return "void";
     }
-    case "fn": return `${cTypeOf(t.ret)} (*)(${t.params.map(cTypeOf).join(", ") || "void"})`;
+    case "fn": return cTypeOf(t);
     default: return "void";
   }
 }
