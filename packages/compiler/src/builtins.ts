@@ -194,6 +194,7 @@ export function genMember(t: { name: GenName; args: Type[] }, name: string): Mem
       const sigs: Record<string, Member> = {
         isNull: m([], BOOL), read: m([], a),
         offset: m([USIZE], gen("ConstPtr", a)), slice: m([USIZE], gen("Slice", a)),
+        borrow: m([], a),
         cast: m([], gen("ConstPtr", tU), { tparams: [U], tcheck: "castptr" }),
       };
       return Object.hasOwn(sigs, name) ? sigs[name] : undefined;

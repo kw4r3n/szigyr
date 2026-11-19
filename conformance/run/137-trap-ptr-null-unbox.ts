@@ -1,4 +1,4 @@
-// expect-trap: T015 @ 12:16
+// expect-trap: T015 @ 12:17
 // stage: 3
 // backend: c
 declare module "c:sqlite3:sqlite3.h" {

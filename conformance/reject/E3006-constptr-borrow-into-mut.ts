@@ -1,4 +1,4 @@
-// expect: E3006 @ 1:1
+// expect: E3006 @ 9:8
 // stage: 3
 function poke(rx: Mut<RingRx<i32>>): void {
   "use rt";

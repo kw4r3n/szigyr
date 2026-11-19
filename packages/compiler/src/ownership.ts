@@ -469,7 +469,7 @@ class Flow {
     if (p.kind !== K.PropertyAccessExpression) return undefined;
     const g = genName(exprTypes.get((p as ts.PropertyAccessExpression).expression));
     if ((p as ts.PropertyAccessExpression).name.text === "slice") return g === "Vec" || g === "Slice" || g === "Ptr" || g === "ConstPtr" ? p as ts.PropertyAccessExpression : undefined;
-    if ((p as ts.PropertyAccessExpression).name.text === "borrow") return g === "Ptr" ? p as ts.PropertyAccessExpression : undefined; // §14.4
+    if ((p as ts.PropertyAccessExpression).name.text === "borrow") return g === "Ptr" || g === "ConstPtr" ? p as ts.PropertyAccessExpression : undefined; // §14.4
     if ((p as ts.PropertyAccessExpression).name.text === "view") return g === "Arena" ? p as ts.PropertyAccessExpression : undefined;
     return undefined;
   }
@@ -505,7 +505,7 @@ class Flow {
     if (mode === "mut" && borrowMode(r.sym.declared) === "ref") this.m.at("E3006", member ?? strip(e), `'${r.sym.name}' is borrowed as Ref and cannot be passed as Mut`);
     if (mode === "mut" && r.ptrSlice) { // §14.4: a ConstPtr slice stays a Ref borrow
       const sc = this.sliceCall(strip(e));
-      if (sc && genName(exprTypes.get(sc.expression)) === "ConstPtr") this.m.at("E3006", member ?? strip(e), "a 'ConstPtr' slice cannot be passed as Mut");
+      if (sc && genName(exprTypes.get(sc.expression)) === "ConstPtr") this.m.at("E3006", member ?? strip(e), `a 'ConstPtr' ${sc.name.text} cannot be passed as Mut`);
     }
     return { sym: r.sym, mode, node, path: r.path, slice: r.slice, arg, sliceName: r.sliceName, ptrSlice: r.ptrSlice };
   }

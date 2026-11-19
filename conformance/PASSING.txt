@@ -70,6 +70,7 @@ accept/68-c-backend.ts
 accept/69-extern-header-check.ts
 accept/70-ring.ts
 accept/71-ptr-box-state.ts
+accept/72-constptr-borrow.ts
 reject/E1000-array-suffix-type.ts
 reject/E1000-await-in-non-async-arrow.ts
 reject/E1000-await-outside-async.ts
@@ -396,6 +397,7 @@ reject/E3005-same-field-twice.ts
 reject/E3005-slice-and-root-same-root.ts
 reject/E3005-slices-and-root-same-root.ts
 reject/E3006-arena-alloc-through-ref.ts
+reject/E3006-constptr-borrow-into-mut.ts
 reject/E3006-fill-through-ref-slice.ts
 reject/E3006-pool-insert-through-ref.ts
 reject/E3006-push-through-ref-receiver.ts
