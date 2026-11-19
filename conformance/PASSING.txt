@@ -677,6 +677,7 @@ run/152-arena-remaining-side-effect.ts
 run/153-f32-compound-assign-precedence.ts
 run/154-optional-chain-slice-args-once.ts
 run/155-ptr-unbox-as-arg.ts
+run/156-generic-nullable-null-arg.ts
 run/16-struct-f32.ts
 run/17-trap-i32-add-overflow.ts
 run/18-trap-i32-unary-minus.ts

@@ -202,7 +202,7 @@ export function unify(p: Type, a: Type, m: Map<number, Type>, ids: Set<number>):
       return;
     case "union": {
       const inner = nonNull(p);
-      if (inner) { unify(inner, nonNull(a) ?? a, m, ids); return; } // T | null
+      if (inner) { if (!isNull(a)) unify(inner, nonNull(a) ?? a, m, ids); return; } // T | null: bare null carries no T binding
       const as = a.k === "union" ? a.members : [a]; // tagged unions (Result): match members by kind
       for (const pm of p.members) {
         const k = kindOf(pm);
