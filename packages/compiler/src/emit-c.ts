@@ -7,7 +7,7 @@ import { sliceGroups } from "./ownership.ts";
 import type { CFnSym, FnSym, Module, Program } from "./modules.ts";
 import { layout, elemDesc, type Lay } from "./layout.ts";
 import { DETMATH_PATH } from "./detmath.ts";
-import { cPointeeOf, parseCSpec } from "./cdecl.ts";
+import { cPointeeOf, cTypeOf, parseCSpec } from "./cdecl.ts";
 import { AUTHORITIES, isCopy, isInt, isTaggedUnion, kindOf, nonNull, isNull, isBool, unref, show, subst, type Field, type NumName, type Type } from "./types.ts";
 
 /** A construct the C backend does not translate yet: the run stops with this error (never a silent fallback to JS). */
@@ -148,7 +148,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         if (t.name === "ArenaBuf") return "sts_abuf";
         if (t.name === "Ptr" || t.name === "ConstPtr") { // §14.2: the C type of a raw pointer, from the pointee
           const p = elemOf(t);
-          if (unref(p).k === "fn") throw new CUnsupported(where, "a function pointer value (cfn is §14.6)");
+          if (unref(p).k === "fn") return fpType(p); // §14.6: a function pointer value is its typedef (Ptr and ConstPtr alike)
           return t.name === "Ptr" ? `${cPointeeOf(p)} *` : `const ${cPointeeOf(p)} *`;
         }
         if (t.name === "Ref" || t.name === "Mut") { const a = elemOf(t); return isStruct(a) ? `${ctype(a, where)}*` : ctype(a, where); }
@@ -168,6 +168,45 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       }
     }
     throw new CUnsupported(where, `the type '${show(t)}'`);
+  }
+
+  const fps = new Map<string, string>();
+  /** The C type of a function at the §14.2 boundary: the boundary mapping (cdecl), with a
+   * function pointer value written as its typedef so the type composes in any position. */
+  function abiType(t: Type): string {
+    const u = unref(t);
+    if (u.k === "gen" && (u.name === "Ptr" || u.name === "ConstPtr") && unref(elemOf(u)).k === "fn") return fpType(elemOf(u));
+    return cTypeOf(u);
+  }
+  /** `typedef R (*FPn)(params)` for a function type, from the §14.2 boundary mapping. */
+  function fpType(fnT: Type): string {
+    const f = unref(fnT) as Extract<Type, { k: "fn" }>;
+    const key = show(f);
+    let name = fps.get(key);
+    if (!name) {
+      name = `FP${fps.size}`;
+      fps.set(key, name);
+      typedefs.push(`typedef ${abiType(f.ret)} (*${name})(${f.params.map((x) => abiType(x)).join(", ") || "void"});`);
+    }
+    return name;
+  }
+
+  /** Registers a trap position (the same table FnGen.pos feeds). */
+  function posOf(mod: Module, n: Node): number {
+    const p = mod.pf.position(n.getStart(mod.sf));
+    let fi = files.indexOf(mod.file);
+    if (fi < 0) { files.push(mod.file); fi = files.length - 1; }
+    poss.push(`{${fi},${p.line},${p.col}}`);
+    return poss.length - 1;
+  }
+
+  // §14.6: one trampoline per function named by `cfn`, keyed by its instantiation.
+  const tramps = new Map<string, { i: Inst; name: string }>();
+  function trampoline(f: FnSym, where: string): string {
+    const i = inst(f, [], new Map(), where);
+    let tr = tramps.get(i.name);
+    if (!tr) { tr = { i, name: `cb_${i.name}` }; tramps.set(i.name, tr); }
+    return tr.name;
   }
 
   /** Fields in C order: `kind` first (the common initial sequence of a union's members, D104), then by name. */
@@ -377,7 +416,9 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       `  fr->ok = 0; ${wb.join(" ")}`,
       `  napi_value res = ${isVoid ? "0" : outConv(ret, "r", where)};`,
       `  if (!res) napi_get_undefined(env, &res);`,
-      `  sts_vec_sync(); sts_pool_sync(); sts_arena_sync(); free(fr); return res;`,
+      `  sts_vec_sync(); sts_pool_sync(); sts_arena_sync();`,
+      `  { int fc, fp; if (sts_take_ftrap(&fc, &fp)) { sts_trap_code = fc; sts_trap_pos = fp; free(fr); return sts_throw(); } }`, // §15.4 (1): a foreign trap surfaces as this call returns
+      `  free(fr); return res;`,
       `}`,
     ].join("\n");
   }
@@ -877,6 +918,13 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
               const a = this.ex(e.arguments[0]!), b = this.ex(e.arguments[1]!);
               return this.t(num!, `STS_${name === "rem" ? "REM" : "DIV"}(${CNUM[num!.name]}, ${a}, ${b}, ${this.pos(callee)})`, e); // in the operand type, so loops can vectorize (D108)
             }
+            case "cfn": { // §14.6: the trampoline for a module-level rt function, as a Ptr to it
+              const a = e.arguments[0]!;
+              if (a.kind !== K.Identifier) throw this.no(a, "'cfn' of a non-name");
+              const fn = resolveFn(this.mod, (a as ts.Identifier).text);
+              if (!fn) throw this.no(a, "'cfn' of an unknown function");
+              return this.t(t, trampoline(fn, this.where), e);
+            }
             case "panic": this.emit(`sts_trap(6, ${this.pos(callee)});`); return stmt ? undefined : "0";
             case "ok": case "err": { // Result (Q043): a member of the union
               if (t.k !== "union" || !isTaggedUnion(t)) throw this.no(e, `'${name}' of type ${show(t)}`);
@@ -1203,6 +1251,36 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
   const protos = done.map((i) => `${proto(i)};`);
   const wrappers = done.map(wrapper);
 
+  /** §14.6: the trampoline C calls. It converts the arguments (§14.2, with the usize rule),
+   * calls f under its own trap frame on the calling thread, and answers the type's zero
+   * once the end flag is up or when f traps (the trap itself is claimed in sts_trap). */
+  function trampBody(i: Inst, name: string): string {
+    const f = i.f, where = `${f.mod.file}: ${f.name}`;
+    const ret = i.ret, isVoid = ret.k === "prim" && (ret.name === "void" || ret.name === "never");
+    const zero = isVoid ? "return;" : `return (${abiType(ret)})0;`;
+    const ps = i.params.map((pt, k) => `${abiType(pt)} a${k}`);
+    const lines: string[] = [
+      `static ${abiType(ret)} ${name}(${ps.join(", ") || "void"}) {`,
+      `  if (atomic_load(&sts_done)) ${zero}`,
+      `  struct { jmp_buf jb; int depth; } *fr = calloc(1, sizeof *fr); if (!fr) ${zero}`,
+      `  memcpy(fr->jb, sts_jb, sizeof fr->jb); fr->depth = sts_depth;`,
+      `  if (!sts_stack_lim) sts_tramp_stack_init();`,
+      `  if (setjmp(sts_jb)) { memcpy(sts_jb, fr->jb, sizeof sts_jb); sts_depth = fr->depth; free(fr); ${zero} }`,
+    ];
+    i.params.forEach((pt, k) => {
+      if (pt.k === "num" && pt.name === "usize") lines.push(`  if (a${k} > (size_t)4294967295ULL) sts_trap(3, ${posOf(f.mod, f.decl.parameters[k]!.name)});`);
+    });
+    lines.push(`  if (++sts_depth > 10000 || STS_STACK_LOW()) sts_trap(6, ${posOf(f.mod, f.decl.name!)});`);
+    const args = i.params.map((pt, k) => (pt.k === "num" && pt.name === "usize" ? `(uint32_t)a${k}` : `a${k}`));
+    lines.push(isVoid ? `  ${i.name}(${args.join(", ")});` : `  ${ctype(ret, where)} r = ${i.name}(${args.join(", ")});`);
+    lines.push(`  memcpy(sts_jb, fr->jb, sizeof sts_jb); sts_depth = fr->depth; free(fr);`);
+    if (!isVoid) lines.push(`  return r;`);
+    lines.push(`}`);
+    return lines.join("\n");
+  }
+  const trampProtos = [...tramps.values()].map(({ i, name }) => `static ${abiType(i.ret)} ${name}(${i.params.map((pt) => abiType(pt)).join(", ") || "void"});`);
+  const trampBodies = [...tramps.values()].map(({ i, name }) => trampBody(i, name));
+
   // §14.2: the TU includes every declared `c:` header; the packages go to the link (native.ts).
   const hdrs = new Set<string>(), pkgs = new Set<string>();
   for (const mod of prog.mods) for (const spec of mod.cdecls.keys()) { const cs = parseCSpec(spec); if (cs) { hdrs.add(cs.header); pkgs.add(cs.pkg); } }
@@ -1225,9 +1303,10 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     `static int32_t sts_lit_in(napi_value v) { char b[256]; size_t n; STS_OK(napi_get_value_string_utf8(sts_env, v, b, sizeof b, &n)); for (int32_t i = 0; i < STS_NLITS; i++) if (strcmp(b, STS_LITS[i]) == 0) return i; sts_fail("unknown string literal"); }`,
     `/** A method of an authority (Q040): a call back into the JS host. */`,
     `static napi_value sts_callm(napi_value o, const char *m, size_t n, napi_value *a) { napi_value f, r; f = sts_get(o, m); STS_OK(napi_call_function(sts_env, o, f, n, a, &r)); return r; }`,
-    ...typedefs, ...helpers, ...protos, ...out, THROW, ...wrappers,
+    ...typedefs, ...helpers, ...protos, ...trampProtos, ...out, ...trampBodies, THROW, FTRAP, ...wrappers,
     `NAPI_MODULE_INIT() {`,
     `  napi_value f; STS_INIT_EXPORT("init", sts_init);`,
+    `  STS_INIT_EXPORT("sts_poll", sts_poll); STS_INIT_EXPORT("sts_finish", sts_finish);`,
     ...done.map((x) => `  STS_INIT_EXPORT("${x.name}", w_${x.name});`),
     `  return exports;`,
     `}`,
@@ -1237,6 +1316,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
 }
 
 const THROW = `static napi_value sts_throw(void) {
+  if (!sts_err && sts_trap_code >= 1) { int fc, fp; if (sts_take_ftrap(&fc, &fp)) { sts_trap_code = fc; sts_trap_pos = fp; } } // §15.4: the first trap to claim the record is the reported one
   if (sts_err) { napi_throw_error(sts_env, "STS_INTERNAL", sts_err); return 0; }
   napi_value host, f, args[4], r;
   napi_get_reference_value(sts_env, sts_host, &host); napi_get_named_property(sts_env, host, "trap", &f);
@@ -1250,8 +1330,28 @@ const THROW = `static napi_value sts_throw(void) {
 }
 static napi_value sts_init(napi_env env, napi_callback_info info) {
   size_t argc = 1; napi_value h; napi_get_cb_info(env, info, &argc, &h, 0, 0);
-  napi_create_reference(env, h, 1, &sts_host); return 0;
+  napi_create_reference(env, h, 1, &sts_host); sts_ftrap_reset(); return 0;
 }
 #define STS_INIT_EXPORT(n, fn) napi_create_function(env, n, NAPI_AUTO_LENGTH, fn, 0, &f); napi_set_named_property(env, exports, n, f)`;
+
+/** §15.4 (2) and (3): the host polls for a recorded foreign trap at a task boundary
+ * (sts_poll) and at the end of main (sts_finish, which also claims the end). The answer
+ * is [code, file, line, col], or null when no trap is waiting. */
+const FTRAP = `static napi_value sts_ftrap_value(napi_env env) {
+  int c, p; napi_value r, v;
+  if (!sts_take_ftrap(&c, &p)) { napi_get_null(env, &r); return r; }
+  napi_create_array_with_length(env, 4, &r);
+  napi_create_int32(env, c, &v); napi_set_element(env, r, 0, v);
+  napi_create_string_utf8(env, p >= 0 ? STS_FILES[STS_POS[p][0]] : "", NAPI_AUTO_LENGTH, &v); napi_set_element(env, r, 1, v);
+  napi_create_int32(env, p >= 0 ? STS_POS[p][1] : 0, &v); napi_set_element(env, r, 2, v);
+  napi_create_int32(env, p >= 0 ? STS_POS[p][2] : 0, &v); napi_set_element(env, r, 3, v);
+  return r;
+}
+static napi_value sts_poll(napi_env env, napi_callback_info info) { (void)info; return sts_ftrap_value(env); }
+static napi_value sts_finish(napi_env env, napi_callback_info info) {
+  (void)info;
+  pthread_mutex_lock(&sts_ftrap_mu); atomic_store(&sts_done, 1); pthread_mutex_unlock(&sts_ftrap_mu);
+  return sts_ftrap_value(env);
+}`;
 
 export const TRAP_CODES = TRAP;
