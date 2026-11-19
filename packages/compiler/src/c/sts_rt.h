@@ -20,7 +20,39 @@ static _Thread_local jmp_buf sts_jb;
 static _Thread_local int sts_trap_code, sts_trap_pos, sts_depth;
 static _Thread_local const char *sts_err; // internal (non-trap) error message
 
-__attribute__((cold)) _Noreturn static void sts_trap(int code, int pos) { sts_trap_code = code; sts_trap_pos = pos; longjmp(sts_jb, 1); }
+// The program's end flag and the first trap (SPEC 14.6 / 15.4): one flag per program,
+// shared by every thread. It is set when any thread traps and when main ends. The first
+// trap to claim the record is the one reported trap; later claims are discarded. The
+// record is written before the flag is stored, under the same mutex, so a reader that
+// sees the flag up can take the record.
+static _Atomic int sts_done;
+static pthread_mutex_t sts_ftrap_mu = PTHREAD_MUTEX_INITIALIZER;
+static int sts_ftrap_code, sts_ftrap_pos, sts_ftrap_taken;
+static _Atomic int sts_ftrap_ready;
+static void sts_claim_trap(int code, int pos) {
+  pthread_mutex_lock(&sts_ftrap_mu);
+  if (!atomic_load(&sts_ftrap_ready)) { sts_ftrap_code = code; sts_ftrap_pos = pos; sts_ftrap_taken = 0; atomic_store(&sts_ftrap_ready, 1); }
+  atomic_store(&sts_done, 1);
+  pthread_mutex_unlock(&sts_ftrap_mu);
+}
+/** Takes the recorded trap if it has not been reported yet (15.4: exactly one is reported). */
+static int sts_take_ftrap(int *code, int *pos) {
+  if (!atomic_load(&sts_ftrap_ready)) return 0;
+  pthread_mutex_lock(&sts_ftrap_mu);
+  int got = atomic_load(&sts_ftrap_ready) && !sts_ftrap_taken;
+  if (got) { *code = sts_ftrap_code; *pos = sts_ftrap_pos; sts_ftrap_taken = 1; }
+  pthread_mutex_unlock(&sts_ftrap_mu);
+  return got;
+}
+static void sts_ftrap_reset(void) {
+  pthread_mutex_lock(&sts_ftrap_mu);
+  sts_ftrap_code = 0; sts_ftrap_pos = 0; sts_ftrap_taken = 0;
+  atomic_store(&sts_ftrap_ready, 0);
+  atomic_store(&sts_done, 0);
+  pthread_mutex_unlock(&sts_ftrap_mu);
+}
+
+__attribute__((cold)) _Noreturn static void sts_trap(int code, int pos) { if (code >= 1) sts_claim_trap(code, pos); sts_trap_code = code; sts_trap_pos = pos; longjmp(sts_jb, 1); }
 _Noreturn static void sts_fail(const char *msg) { sts_err = msg; sts_trap(0, 0); }
 #define STS_OK(call) do { if ((call) != napi_ok) sts_fail(#call); } while (0)
 /** Q182: calls trap T006 once the stack is within a margin of this thread's real limit, so a large frame cannot overflow it. */
@@ -33,6 +65,18 @@ static void sts_stack_init(void) {
   sts_stack_lim = (uintptr_t)lo + margin;
 }
 #define STS_STACK_LOW() ((uintptr_t)__builtin_frame_address(0) < sts_stack_lim)
+/** A thread C created (14.6): the stack bounds come from the OS where they can be read.
+ * Where they cannot, the limit is 1, which no frame address is below, so only the depth
+ * limit applies (14.4's undefined behavior 10 covers a stack that is really too small). */
+static void sts_tramp_stack_init(void) {
+  pthread_attr_t a; void *lo; size_t n;
+  if (pthread_getattr_np(pthread_self(), &a) != 0) { sts_stack_lim = 1; return; }
+  int ok = pthread_attr_getstack(&a, &lo, &n) == 0;
+  pthread_attr_destroy(&a);
+  if (!ok) { sts_stack_lim = 1; return; }
+  size_t margin = n / 8 > (size_t)256 << 10 ? n / 8 : (size_t)256 << 10;
+  sts_stack_lim = (uintptr_t)lo + margin;
+}
 
 // Vec handles live until the boundary call returns; the list is reset per entry.
 static _Thread_local sts_vec **sts_vecs; static _Thread_local size_t sts_nvecs, sts_capvecs;
