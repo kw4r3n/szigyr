@@ -203,7 +203,11 @@ static sts_slice sts_slice_in(napi_value o, uint32_t es, const char *desc) {
   }
   napi_typedarray_type tt; size_t n, boff; void *data; napi_value ab; STS_OK(napi_get_typedarray_info(sts_env, buf, &tt, &n, &data, &ab, &boff));
   uint32_t o32, len; off = sts_get(o, "off"); STS_OK(napi_get_value_uint32(sts_env, off, &o32)); STS_OK(napi_get_value_uint32(sts_env, sts_get(o, "length"), &len));
-  return (sts_slice){ (char *)data + (size_t)o32 * es, len };
+  // A packed view whose head is not a multiple of the element size (an Arena view, D116) carries the
+  // head byte offset in the Slice's boff property, not in off; numeric views bake it into the TypedArray.
+  uint32_t boff2 = 0; bool hasb; STS_OK(napi_has_named_property(sts_env, o, "boff", &hasb));
+  if (hasb) boff2 = (uint32_t)sts_pnum(o, "boff");
+  return (sts_slice){ (char *)data + boff2 + (size_t)o32 * es, len };
 }
 /** Packed element fields (SPEC §10.2). The layout aligns every field and buffers are at least 8-aligned, so the accesses are aligned.
  * They go through may_alias types: an element's bytes are read and written as different C types (a union element changes member,

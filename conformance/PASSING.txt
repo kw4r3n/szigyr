@@ -528,6 +528,9 @@ run/119-detmath-special.ts
 run/12-string-ops.ts
 run/120-detmath-large.ts
 run/121-detmath-rt.ts
+run/122-arena-view-bool-offset.ts
+run/123-arena-view-packed-read.ts
+run/124-arena-view-packed-write.ts
 run/13-async-await.ts
 run/14-vec-slice.ts
 run/15-owned-cell.ts
