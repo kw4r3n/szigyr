@@ -201,6 +201,25 @@ export class Vec<T = unknown> {
   }
   /** Whole-vector view, for passing a Vec where a Slice parameter is expected. */
   view(): Slice<T> { return new Slice(this.buf, 0, this.len, this.cod, this); }
+  /** §15.2: the wire form for an isolate boundary. Numeric / packed storage crosses as an exact-length
+   * ArrayBuffer (the channel transfers it, so the region moves); "other" storage as its items. */
+  pack(): { elem: ElemKind; buf?: ArrayBuffer; items?: unknown[] } {
+    if (this.elem === "other") return { elem: this.elem, items: (this.buf as T[]).slice(0, this.len) };
+    const live = this.cod
+      ? (this.buf as Uint8Array).subarray(0, this.len * this.cod.z)
+      : new Uint8Array((this.buf as ArrayBufferView).buffer, (this.buf as ArrayBufferView).byteOffset, this.len * (this.buf as unknown as { BYTES_PER_ELEMENT: number }).BYTES_PER_ELEMENT);
+    const buf = new ArrayBuffer(live.byteLength);
+    new Uint8Array(buf).set(live);
+    return { elem: this.elem, buf };
+  }
+  static unpack<T>(w: { elem: ElemKind; buf?: ArrayBuffer; items?: unknown[] }): Vec<T> {
+    if (w.elem === "other") { const v = new Vec<T>(w.items!.slice() as T[], w.elem); v.len = w.items!.length; return v; }
+    if (w.elem.startsWith("{")) { const c = codecOf(w.elem); const v = new Vec<T>(new Uint8Array(w.buf!), w.elem, c); v.len = w.buf!.byteLength / c.z; return v; }
+    const ta = new (TYPED[w.elem as NumType] as unknown as new (b: ArrayBuffer) => ArrayBufferView)(w.buf!);
+    const v = new Vec<T>(ta as Buf<T>, w.elem);
+    v.len = w.buf!.byteLength / (ta as unknown as { BYTES_PER_ELEMENT: number }).BYTES_PER_ELEMENT;
+    return v;
+  }
 }
 
 /** a[i] / a[i] = x for Array, Vec and Slice (T002). */
@@ -388,7 +407,7 @@ export class Arena {
  * plain queue until the C boundary adopts a concrete representation, like Vec (D105).
  */
 const RING_ELEMS = 8; // bytes 0..3: head, 4..7: tail
-interface RingShared<T> {
+export interface RingShared<T> {
   sab: SharedArrayBuffer | null;
   cap: number;
   elem: ElemKind;
@@ -422,6 +441,8 @@ function ringAlloc<T>(cap: number, elem: ElemKind): SharedArrayBuffer {
 export class RingTx<T = unknown> {
   private s: RingShared<T>;
   constructor(s: RingShared<T>) { this.s = s; }
+  /** The shared state itself, for the isolate transport (§15.2). */
+  get shared(): RingShared<T> { return this.s; }
   /** The buffer the C backend works on (sts_ring_in); null until a type-parameter element adopts one. */
   get sab(): SharedArrayBuffer | null { return this.s.sab; }
   /** The capacity the C backend reads (sts_ring_in). */
@@ -454,6 +475,8 @@ export class RingTx<T = unknown> {
 export class RingRx<T = unknown> {
   private s: RingShared<T>;
   constructor(s: RingShared<T>) { this.s = s; }
+  /** The shared state itself, for the isolate transport (§15.2). */
+  get shared(): RingShared<T> { return this.s; }
   /** The buffer the C backend works on (sts_ring_in); null until a type-parameter element adopts one. */
   get sab(): SharedArrayBuffer | null { return this.s.sab; }
   /** The capacity the C backend reads (sts_ring_in). */
@@ -494,6 +517,18 @@ export class Ring {
     ringAttach(s, sab, elem);
     return { tx: new RingTx<T>(s), rx: new RingRx<T>(s) };
   }
+}
+
+/** §15.2: the wire form of a ring's shared state. With a buffer, the far side's endpoints attach to
+ * the same SharedArrayBuffer; in queue mode ("other" elements, no buffer yet) the buffered items move. */
+export interface RingWire { sab: SharedArrayBuffer | null; cap: number; elem: ElemKind; queue: unknown[] }
+export function ringPack<T>(s: RingShared<T>): RingWire {
+  return { sab: s.sab, cap: s.cap, elem: s.elem, queue: s.sab ? [] : (s.queue.splice(0) as unknown[]) };
+}
+export function ringUnpack(w: RingWire): RingShared<unknown> {
+  const s: RingShared<unknown> = { sab: null, cap: w.cap, elem: w.elem, cod: undefined, view: undefined, dv: undefined, pos: undefined, queue: w.queue.slice() };
+  if (w.sab) ringAttach(s, w.sab, w.elem);
+  return s;
 }
 
 export class OwnedCell<T> {

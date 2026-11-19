@@ -26,6 +26,14 @@ export function setForeignTrapCheck(f: (() => void) | undefined): void { foreign
 /** §15.4 (2): a value reaches its await resumption only after the foreign-trap check. */
 export function task<T>(v: T): T { foreignTrapCheck?.(); return v; }
 
+/** A trap from another thread or isolate, on its way to the managed side (§15.4). */
+export interface ForeignTrap { code: string; file?: string; line?: number; col?: number }
+let isolateTrap: ForeignTrap | undefined;
+/** §15.4: the first foreign trap recorded wins; later ones are dropped. */
+export function noteIsolateTrap(t: ForeignTrap): void { isolateTrap ??= t; }
+/** Claims the recorded isolate trap, if any (the surfacing points of §15.4). */
+export function takeIsolateTrap(): ForeignTrap | undefined { const t = isolateTrap; isolateTrap = undefined; return t; }
+
 let stackLocator: ((e: Error) => Pos | undefined) | undefined;
 /** The host maps a JS stack-overflow error to the source call where it happened (Q035, D032). */
 export function setStackLocator(f: ((e: Error) => Pos | undefined) | undefined): void { stackLocator = f; }
