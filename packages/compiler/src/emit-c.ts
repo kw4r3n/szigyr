@@ -883,6 +883,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     /** A local of declared type `decl` read where the checker narrowed it to `now`: `T | null` -> `.v`, a union -> its member. */
     narrow(c: string, decl: Type, now: Type): string {
       if (decl.k !== "union") return c;
+      if (isNull(now)) return "((sts_null){ false })"; // `T | null` narrowed to `null`
       const inner = nonNull(decl);
       if (inner) {
         if (now.k === "union" && now.members.some(isNull)) return cvt(c, decl, now, this.where); // still `T | null`
