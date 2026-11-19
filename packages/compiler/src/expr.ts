@@ -6,8 +6,8 @@ import { tparamShells, type FnSym, type Layer, type LocalSym } from "./modules.t
 import { BUILTIN_FUNCTIONS, GLOBAL_AUTHORITIES, NAMESPACES, RESERVED, genMember, nsMember, opaqueMember, stringMember, type Member } from "./builtins.ts";
 import { isDeterministic } from "./determinism.ts";
 import {
-  BOOL, ERROR, ERROR_RECORD, F64, NEVER, NULL, NUM_NAMES, STR, UNKNOWN, USIZE, VOID, assignable, bindTParams, field, fn, gen, hasTParam,
-  isBool, isInt, isNull, isNum, isOwned, isStr, movesLike, ownedDeep, isTaggedUnion, kindOf, literalFits, nonNull, nullable, num, opaque, result, resultParts,
+  BOOL, ERROR, ERROR_RECORD, F64, NEVER, NULL, NUM_NAMES, STR, UNKNOWN, USIZE, VOID, assignable, bindTParams, boxable, field, fn, gen, hasPtr, hasTParam,
+  isBool, isCopy, isInt, isNull, isNum, isOwned, isStr, movesLike, ownedDeep, ptrTargetOk, isTaggedUnion, kindOf, literalFits, nonNull, nullable, num, opaque, result, resultParts,
   same, show, subst, unify, union, unref, castable, demand, layerOk, type FnType, type NumName, type Type,
 } from "./types.ts";
 
@@ -178,6 +178,7 @@ function ident(c: Checker, id: ts.Identifier): Type {
         if (c.fx.layer !== "managed" || sym.layer !== "managed") c.at("E4003", id, `the function '${name}' cannot be used as a value here`); // §2, Q045
         if (c.fx.contract) c.at("E6002", id, `a contract cannot refer to the function value '${name}'`);
         return sym.sig;
+      case "cfn": c.at("E4003", id, `the C function '${name}' can only be called`); return sym.sig; // §14.1
       case "class": c.at("E2002", id, `class '${name}' is not a value`); return ERROR;
       case "jsref":
         if (c.fx.contract) c.at("E6002", id, `a contract cannot refer to '${name}'`);
@@ -625,9 +626,10 @@ export function checkArrow(c: Checker, e: ts.ArrowFunction | ts.FunctionExpressi
   e.typeParameters?.forEach((d, i) => { if (d.constraint) { const t = c.typeOf(d.constraint); if (t.k === "iface") tps[i]!.constraint = t; else if (!isErr(t)) c.at("E2002", d.constraint, "a constraint must be an interface"); } });
   const params = e.parameters.map((p) => {
     if (!p.type) { c.at("E2006", p.name, "parameter needs a type annotation"); return ERROR; }
+    c.walkTypePos(p.type, "sig", { unsafe: c.fx.unsafe, cdecl: false });
     return c.typeOf(p.type);
   });
-  let ret = e.type ? c.typeOf(e.type, true) : undefined;
+  let ret = e.type ? (c.walkTypePos(e.type, "sig", { unsafe: c.fx.unsafe, cdecl: false }), c.typeOf(e.type, true)) : undefined;
   c.fx.tparams = outerTps;
   if (!ret && want && !inferRet) ret = want.ret;
   const sig = fn(params, ret ?? ERROR, tps);
@@ -644,11 +646,17 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
     const sym = c.prog.lookupValue(c.mod, callee.text);
     if (!sym && BUILTIN_FUNCTIONS.has(callee.text)) return builtinCall(c, e, callee, want);
     if (sym?.k === "fn") {
-      if (!c.callAllowed(sym.layer)) c.at("E4001", callee, `a ${c.fx.layer} function cannot call the ${sym.layer} function '${sym.name}'`);
-      if (c.fx.contract && !isDeterministic(sym.sig)) c.at("E6002", callee, `a contract can only call deterministic functions ('${sym.name}' is not)`);
+      if (!c.callCheck(sym)) c.at("E4001", callee, `a ${c.fx.layer} function cannot call the ${sym.layer} function '${sym.name}'`);
+      if (!c.fx.unsafe && (sym.sig.params.some(hasPtr) || hasPtr(sym.sig.ret))) c.at("E4008", callee, `'${sym.name}' has Ptr in its signature; calling it is an unsafe operation`);
+      if (c.fx.contract && !isDeterministic(sym.sig, sym.layer === "rt" && sym.unsafe)) c.at("E6002", callee, `a contract can only call deterministic functions ('${sym.name}' is not)`);
       const got = callSig(c, sym.sig, e, callee, want, sym.layer === "managed" ? undefined : sym.layer);
       if (sym.layer !== "managed") c.fnSites.push({ from: c.fn, callee: sym, refs: callFnArgs.get(e) ?? new Map(), node: callee, mod: c.mod }); // Q189 (b): E4005 per instantiation
       return got;
+    }
+    if (sym?.k === "cfn") { // §14.1 / §14.3: unsafe callers only; rt + unsafe drops the Ffi argument
+      if (!c.fx.unsafe) c.at("E4008", callee, `the C function '${sym.name}' can only be called from a function with 'use unsafe'`);
+      const sig = c.fx.layer === "rt" ? { ...sym.sig, params: sym.sig.params.slice(1) } : sym.sig;
+      return callSig(c, sig, e, callee, want);
     }
     if (sym?.k === "class") { c.at("E2002", callee, `use 'new ${callee.text}(...)'`); return ERROR; }
     if (!sym) { unresolved(c, callee); return ERROR; }
@@ -667,6 +675,8 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
       const pool = isId(p.expression) && p.expression.text === "Pool" && isNamespace(c, p.expression);
       const arena = isId(p.expression) && p.expression.text === "Arena" && isNamespace(c, p.expression);
       if (((vec || pool || arena) && p.name.text === "create") || (rt && unref(rt).k === "gen" && (unref(rt) as { name: string }).name === "Vec" && p.name.text === "push")) c.at("E4004", p.name, `'${p.name.text}' allocates`);
+      if (isId(p.expression) && p.expression.text === "Ptr" && isNamespace(c, p.expression) && p.name.text === "box") c.at("E4004", p.name, "'Ptr.box' allocates"); // §14.4
+      if (rt && unref(rt).k === "gen" && (unref(rt) as { name: string }).name === "Ptr" && p.name.text === "unbox") c.at("E4004", p.name, "'unbox' allocates"); // §14.4
     }
     if (m.kind === "error") return ERROR;
     if (m.kind === "variadic") { // Math.min / Math.max (Q033)
@@ -677,6 +687,7 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
     if (m.kind === "method") {
       if ((m.managedOnly || m.layer === "managed") && !c.callAllowed("managed")) c.at("E4001", p.name, `'${p.name.text}' is managed-only`); // Q044
       if (m.sig.tcheck === "trap" && e.arguments[0]) trapCode(c, e.arguments[0]);
+      unsafeOp(c, p);
       return callSig(c, m.sig, e, p.name, want);
     }
     if (m.type.k === "fn") return callSig(c, m.type, e, p.name, want);
@@ -709,6 +720,7 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
   }
   const ids = new Set(sig.tparams.map((p) => p.id));
   const m = new Map<number, Type>();
+  if (e.typeArguments) for (const t of e.typeArguments) c.walkTypePos(t, "typearg", { unsafe: c.fx.unsafe, cdecl: false }); // §14.4
   if (e.typeArguments) {
     if (e.typeArguments.length !== sig.tparams.length) { c.at("E2002", anchor, `expects ${sig.tparams.length} type argument(s)`); return ERROR; }
     sig.tparams.forEach((p, i) => m.set(p.id, c.typeOf(e.typeArguments![i]!)));
@@ -766,9 +778,16 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
     }
   }
   const tc = sig.tcheck;
-  if ((tc === "cast" || tc === "eq" || tc === "copy") && sig.tparams[0]) { // Q084, Q086
+  if ((tc === "cast" || tc === "eq" || tc === "copy" || tc === "box" || tc === "chandle" || tc === "castptr") && sig.tparams[0]) { // Q084, Q086; §14.4 / §14.5
     const b = m.get(sig.tparams[0].id)!;
-    if (!isErr(b) && !(tc === "cast" ? castable(b) : demand(b, tc))) {
+    if (tc === "box") { // the anchor is the type argument, or the boxed value (DIAGNOSTICS E4007)
+      if (!isErr(b) && !boxable(b)) { c.at("E4007", e.typeArguments?.[0] ?? args[1] ?? anchor, `'${show(b)}' cannot be boxed`); return ERROR; }
+    } else if (tc === "chandle") {
+      if (!isErr(b) && (b.k === "fn" || hasPtr(b))) { c.at("E4008", e.typeArguments?.[0] ?? anchor, `'${show(b)}' cannot sit inside CHandle`); return ERROR; }
+      if (!isErr(b) && !ptrTargetOk(b)) { c.at("E4007", e.typeArguments?.[0] ?? anchor, `'${show(b)}' cannot sit inside CHandle`); return ERROR; }
+    } else if (tc === "castptr") {
+      if (!isErr(b) && (b.k === "fn" || !ptrTargetOk(b))) { c.at("E2001", e.typeArguments?.[0] ?? anchor, `cannot cast a pointer to '${show(b)}'`); return ERROR; }
+    } else if (!isErr(b) && !(tc === "cast" ? castable(b) : demand(b, tc))) {
       c.at(tc === "copy" ? "E4002" : "E2002", e.typeArguments?.[0] ?? anchor, `'${show(b)}' is not allowed as the type argument here`); // Q086: `Vec.create` is §3.3
       return ERROR;
     }
@@ -804,6 +823,7 @@ function fnArgRef(c: Checker, a: ts.Expression, target: Layer): { ref: FnArgRef;
       const sym = c.prog.lookupValue(c.mod, a.text);
       if (sym?.k === "fn") {
         if (sym.sig.tparams.length) { c.at("E4003", a, `the generic function '${sym.name}' cannot be used as a function argument`); return undefined; }
+        if (sym.layer === "rt" && sym.unsafe) { c.at("E4001", a, `the rt + unsafe function '${sym.name}' can only be passed to 'cfn'`); return undefined; } // §14.6
         if (sym.layer === "managed" || (target === "rt" && sym.layer !== "rt"))
           c.at("E4001", a, `a ${target} function parameter cannot take the ${sym.layer} function '${sym.name}'`);
         return { ref: { fn: sym }, t: sym.sig };
@@ -844,6 +864,29 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
       if (!parts) { if (!isErr(want)) c.at("E2002", e, `'${name}(...)' is not a '${show(want)}'`); return ERROR; }
       checkTo(c, args[0]!, name === "ok" ? parts.ok : parts.err);
       return nonNull(want) ?? want;
+    }
+    case "cfn": { // §14.6: the name of a module-level rt function, as a Ptr to it
+      if (!c.fx.unsafe) c.at("E4008", callee, "'cfn' can only be used in a function with 'use unsafe'");
+      if (!arity(1)) return ERROR;
+      const a = args[0]!;
+      const pointeeOk = (t: Type): boolean => {
+        const x = t.k === "gen" ? t.args[0]! : undefined;
+        if (!x) return true;
+        if (x.k === "num" && x.name === "usize") return false;
+        return x.k === "gen" && (x.name === "Ptr" || x.name === "ConstPtr") ? pointeeOk(x) : true;
+      };
+      const boundary = (t: Type): boolean =>
+        t.k === "num" || isBool(t) || (t.k === "gen" && (t.name === "Ptr" || t.name === "ConstPtr") && pointeeOk(t));
+      if (!isId(a) || c.scope.lookup(a.text)) { c.at("E4003", a, "'cfn' takes the name of a module-level rt function"); return ERROR; }
+      const sym = c.prog.lookupValue(c.mod, a.text);
+      if (sym?.k !== "fn") { c.at("E4003", a, "'cfn' takes the name of a module-level rt function"); return ERROR; }
+      if (sym.sig.tparams.length) { c.at("E4003", a, `'cfn' cannot take the generic function '${sym.name}'`); return ERROR; }
+      if (sym.layer !== "rt") { c.at("E4001", a, `'cfn' takes an rt function, not the ${sym.layer} function '${sym.name}'`); return ERROR; }
+      if (sym.sig.params.some((p) => !boundary(p)) || !(boundary(sym.sig.ret) || (sym.sig.ret.k === "prim" && sym.sig.ret.name === "void"))) {
+        c.at("E4007", a, `the signature of '${sym.name}' cannot cross the C boundary`);
+        return ERROR;
+      }
+      return gen("Ptr", sym.sig);
     }
     case "panic":
       if (args[0]?.kind === K.StringLiteral || args[0]?.kind === K.NoSubstitutionTemplateLiteral) panicLits.add(args[0]); // Q042
@@ -933,6 +976,7 @@ function newExpr(c: Checker, e: ts.NewExpression, want: Type | undefined): Type 
     const n = id.text === "Map" ? 2 : 1;
     if (e.typeArguments) {
       if (e.typeArguments.length !== n) { c.at("E2002", id, `'${id.text}' takes ${n} type argument(s)`); return ERROR; }
+      for (const t of e.typeArguments) c.walkTypePos(t, "typearg", { unsafe: c.fx.unsafe, cdecl: false }); // §14.4
       const targs = e.typeArguments.map((t) => c.typeOf(t));
       if (!demand(targs[0]!, "key")) { c.at("E2002", e.typeArguments[0]!, `a ${id.text} ${id.text === "Map" ? "key" : "element"} is a string, number, boolean or string literal union`); return ERROR; } // Q081
       return gen(id.text, ...targs);
@@ -948,3 +992,31 @@ function newExpr(c: Checker, e: ts.NewExpression, want: Type | undefined): Type 
   return ERROR;
 }
 
+
+/** §14.4 / §14.5: the unsafe operations reached through a member call. `Ptr.box`, `CHandle.create`,
+ * and every Ptr / ConstPtr / CHandle member need an unsafe function (E4008, anchor: the member name);
+ * which Ptr members a pointee type allows is the §14.4 table (E2001, anchor: the member name). */
+function unsafeOp(c: Checker, p: ts.PropertyAccessExpression): void {
+  const name = p.name.text;
+  const recvNode = p.expression;
+  if (isId(recvNode) && isNamespace(c, recvNode) && (recvNode.text === "Ptr" || recvNode.text === "CHandle")) {
+    if (!c.fx.unsafe) c.at("E4008", p.name, `'${recvNode.text}.${name}' can only be used in a function with 'use unsafe'`);
+    return;
+  }
+  const rt = exprTypes.get(recvNode);
+  const recv = rt ? unref(rt) : undefined;
+  if (recv?.k !== "gen" || (recv.name !== "Ptr" && recv.name !== "ConstPtr" && recv.name !== "CHandle")) return;
+  if (!c.fx.unsafe) { c.at("E4008", p.name, `'${name}' can only be used in a function with 'use unsafe'`); return; }
+  if (recv.name === "CHandle") return;
+  const T = recv.args[0]!;
+  const bad = (): void => c.at("E2001", p.name, `'${name}' cannot be used on '${show(recv)}'`);
+  switch (name) {
+    case "isNull": case "cast": return; // cast's target is callSig's `castptr` check
+    case "read": case "write": case "offset": case "slice":
+      if (T.k === "tparam") { demand(T, "copy"); return; }
+      if (!isCopy(T)) bad();
+      return;
+    case "borrow": if (!movesLike(T)) bad(); return;
+    case "unbox": if (!boxable(T)) bad(); return;
+  }
+}

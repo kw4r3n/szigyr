@@ -6,7 +6,7 @@ import {
 import { DETMATH_BINARY, DETMATH_UNARY } from "./detmath.ts";
 
 /** Names reserved by §13 / Q011 that resolve to nothing (E2000). */
-export const RESERVED = new Set(["i64", "u64", "bigint", "undefined", "Net", "Ffi", "Spawn"]);
+export const RESERVED = new Set(["i64", "u64", "bigint", "undefined", "Net", "Spawn"]); // Ffi resolves since §14 (an opaque authority type)
 
 /** Q006: unresolved names that are global authorities (E5001). */
 export const GLOBAL_AUTHORITIES = new Set([
@@ -16,9 +16,9 @@ export const GLOBAL_AUTHORITIES = new Set([
 ]);
 
 /** Namespace objects (Q034). */
-export const NAMESPACES = new Set(["Math", "Number", "JSON", "String", "Promise", "Vec", "Pool", "Arena", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "TestAlloc", "DetMath"]);
+export const NAMESPACES = new Set(["Math", "Number", "JSON", "String", "Promise", "Vec", "Pool", "Arena", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "TestAlloc", "DetMath", "Ptr", "CHandle"]);
 /** Builtin functions handled by the checker (§12). */
-export const BUILTIN_FUNCTIONS = new Set([...NUM_NAMES, "wrapAdd", "wrapSub", "wrapMul", "divTrunc", "rem", "ok", "err", "panic", "cast", "requires", "ensures", "invariant", "test"]);
+export const BUILTIN_FUNCTIONS = new Set([...NUM_NAMES, "wrapAdd", "wrapSub", "wrapMul", "divTrunc", "rem", "ok", "err", "panic", "cast", "requires", "ensures", "invariant", "test", "cfn"]);
 
 /** Builtin type names (§12) that are not generic constructors. Struct and Result are handled by the resolver. */
 export function builtinType(name: string): Type | undefined {
@@ -56,12 +56,13 @@ const FS: Record<string, Member> = { readText: m([STR], ioResult(STR)), writeTex
 function opaqueMember(name: string, member: string): Member | undefined {
   const lit = (v: string): Type => ({ k: "lit", value: v });
   const table: Record<string, () => Record<string, Member>> = {
-    System: () => ({ alloc: prop(opaque("Alloc")), fs: prop(opaque("Fs")), clock: prop(opaque("Clock")), random: prop(opaque("Random")), log: prop(opaque("Log")), js: prop(opaque("Js")) }),
+    System: () => ({ alloc: prop(opaque("Alloc")), fs: prop(opaque("Fs")), clock: prop(opaque("Clock")), random: prop(opaque("Random")), log: prop(opaque("Log")), js: prop(opaque("Js")), ffi: prop(opaque("Ffi")) }),
     Log: () => LOG,
     Clock: () => ({ nowMs: m([], F64) }),
     Random: () => RANDOM,
     Fs: () => FS,
     Alloc: () => ({}),
+    Ffi: () => ({}), // §14: the Ffi value itself has no members; it is only passed to C functions
     JsRef: () => ({}),
     Js: () => {
       const J = opaque("JsRef"), jr = result(J, ERROR_RECORD);
@@ -176,6 +177,26 @@ export function genMember(t: { name: GenName; args: Type[] }, name: string): Mem
       const sigs: Record<string, Member> = { take: m([], a), put: m([a], VOID), isEmpty: m([], BOOL) };
       return Object.hasOwn(sigs, name) ? sigs[name] : undefined;
     }
+    case "Ptr": { // §14.4: which of these a given T allows is the checker's E2001 table, not this list
+      const U = newTParam("U"), tU: Type = { k: "tparam", p: U };
+      const sigs: Record<string, Member> = {
+        isNull: m([], BOOL), read: m([], a), write: m([a], VOID),
+        offset: m([USIZE], gen("Ptr", a)), slice: m([USIZE], gen("Slice", a)),
+        borrow: m([], a), unbox: m([], a),
+        cast: m([], gen("Ptr", tU), { tparams: [U], tcheck: "castptr" }),
+      };
+      return Object.hasOwn(sigs, name) ? sigs[name] : undefined;
+    }
+    case "ConstPtr": {
+      const U = newTParam("U"), tU: Type = { k: "tparam", p: U };
+      const sigs: Record<string, Member> = {
+        isNull: m([], BOOL), read: m([], a),
+        offset: m([USIZE], gen("ConstPtr", a)), slice: m([USIZE], gen("Slice", a)),
+        cast: m([], gen("ConstPtr", tU), { tparams: [U], tcheck: "castptr" }),
+      };
+      return Object.hasOwn(sigs, name) ? sigs[name] : undefined;
+    }
+    case "CHandle": return name === "get" ? m([], gen("Ptr", a)) : undefined; // §14.5
     default: return undefined; // Promise: await and Promise.all only (§12); Ref / Mut are unwrapped before lookup
   }
 }
@@ -219,6 +240,8 @@ export function nsMember(ns: string, name: string): Member | "variadic" | undefi
     case "Pool": return name === "create" ? m([opaque("Alloc"), USIZE], gen("Pool", tT), { tparams: [T], tcheck: "copy" }) : undefined;
     case "Arena": return name === "create" ? m([opaque("Alloc"), USIZE], gen("Arena")) : undefined;
     case "OwnedCell": return name === "create" ? m([tT], gen("OwnedCell", tT), { tparams: [T] }) : undefined;
+    case "Ptr": return name === "box" ? m([opaque("Alloc"), tT], gen("Ptr", tT), { tparams: [T], tcheck: "box" }) : undefined; // §14.4
+    case "CHandle": return name === "create" ? m([gen("Ptr", tT)], gen("CHandle", tT), { tparams: [T], tcheck: "chandle" }) : undefined; // §14.5
     case "FakeClock": return name === "create" ? mo(m([F64], opaque("FakeClock"))) : undefined;
     case "SeededRandom": return name === "create" ? mo(m([num("u32")], opaque("SeededRandom"))) : undefined;
     case "MemoryLog": return name === "create" ? mo(m([], opaque("MemoryLog"))) : undefined;

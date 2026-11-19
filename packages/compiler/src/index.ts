@@ -118,7 +118,7 @@ export function deterministicFunctions(entryFile: string): Record<string, boolea
   const prog = loadProgram(entryFile);
   const decls = new Decls(prog.files, displayPath, new Reporter());
   const entry = decls.mods.find((m) => m.pf.path === resolve(entryFile))!;
-  return Object.fromEntries(decls.fns.filter((f) => f.mod === entry).map((f) => [f.name, isDeterministic(f.sig)]));
+  return Object.fromEntries(decls.fns.filter((f) => f.mod === entry).map((f) => [f.name, isDeterministic(f.sig, f.layer === "rt" && f.unsafe)]));
 }
 
 /** §6 (stage 2): for each rt function of the entry file, where it can trap. Throws if the program does not check. */

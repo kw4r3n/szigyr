@@ -12,13 +12,13 @@ const copy = (s: State): State => s && new Map(s);
 /** read: used only. move: §5.2 (initializers, right sides, by-value arguments, return, Struct fields, spread / destructuring sources). store: a managed container (E3007). */
 type Ctx = "read" | "move" | "store";
 type Mode = "ref" | "mut" | "move";
-interface Use { sym: LocalSym; mode: Mode; node: Node; path: string[]; slice: boolean; arg: number; sliceName?: Node }
+interface Use { sym: LocalSym; mode: Mode; node: Node; path: string[]; slice: boolean; arg: number; sliceName?: Node; ptrSlice?: boolean }
 /** A place (§5.5): its root local, the field path from the root, and whether it is a `v.slice(a, b)` of that path (Q190). */
-interface Place { sym: LocalSym; id: ts.Identifier; path: string[]; slice: boolean; sliceName?: ts.Identifier }
+interface Place { sym: LocalSym; id: ts.Identifier; path: string[]; slice: boolean; sliceName?: ts.Identifier; ptrSlice?: boolean }
 /** Two field paths denote overlapping places when one is a prefix of the other (Q190 (a)). */
 const pathsOverlap = (a: string[], b: string[]): boolean => { const n = Math.min(a.length, b.length); for (let i = 0; i < n; i++) if (a[i] !== b[i]) return false; return true; };
 /** A pair of uses of one root in one call conflicts (E3005) when their places overlap (Q190 (a)) and they are not both `slice` arguments — that pair is decided by the runtime overlap check instead (Q190 (b), T013). */
-const placesConflict = (a: Use, b: Use): boolean => !(a.slice && b.slice) && pathsOverlap(a.path, b.path);
+const placesConflict = (a: Use, b: Use): boolean => !(a.slice && b.slice && !a.ptrSlice && !b.ptrSlice) && pathsOverlap(a.path, b.path); // §14.4: no runtime check for Ptr slices
 
 /** One slice argument of a runtime-checked group (Q190 (b)): its index, its mode, and its `slice` member name (the T013 anchor). */
 export interface SliceGroupEntry { arg: number; mut: boolean; name: Node }
@@ -87,7 +87,7 @@ class ModuleCheck {
       } else if (name === "Slice") {
         const q = r.parent as ts.TypeReferenceNode;
         const outer = q.kind === K.TypeReference && isId(q.typeName) ? q.typeName.text : undefined;
-        if (outer !== "Ref" && outer !== "Mut") this.at("E3004", r, "'Slice' can only appear as 'Ref<Slice<T>>' or 'Mut<Slice<T>>' (§3.2, Q173)");
+        if (outer !== "Ref" && outer !== "Mut" && outer !== "Ptr" && outer !== "ConstPtr") this.at("E3004", r, "'Slice' can only appear as 'Ref<Slice<T>>' or 'Mut<Slice<T>>' (§3.2, Q173)");
       }
     }
     n.forEachChild((c) => this.typePositions(c));
@@ -107,7 +107,9 @@ class Flow {
    * root of an element access (`ref`) or of an assignment target (`mut`, a `base`). A move of the variable meanwhile is
    * E3005 (E3001 for a base); an inner `Mut` borrow of it is E3005. Reads and inner `Ref` borrows stay allowed (Q065, Q067).
    */
-  readonly active: { sym: LocalSym; mode: "ref" | "mut"; node: Node; base: boolean; path: string[]; slice: boolean }[] = [];
+  readonly active: { sym: LocalSym; mode: "ref" | "mut"; node: Node; base: boolean; path: string[]; slice: boolean; ptrSlice?: boolean }[] = [];
+  /** Roots `unbox`ed by an earlier argument of the call being walked (§14.4): a later borrow of one is E3005. */
+  readonly pendingMut: LocalSym[] = [];
   readonly e3005 = new Set<Node>();
   /** Where the current call's own entries start in `active`. */
   callMark = 0;
@@ -437,8 +439,26 @@ class Flow {
     const slice = this.sliceCall(e);
     if (slice) {
       const name = sliceName ?? (slice.name as ts.Identifier);
+      const g = genName(exprTypes.get(slice.expression));
+      if (g === "Ptr" || g === "ConstPtr") { // §14.4: the root is a variable or parameter, through offset / cast only
+        const root = this.ptrRoot(slice.expression);
+        return root && { ...root, slice: true, ptrSlice: true, sliceName: name };
+      }
       const inner = this.placeOf(slice.expression, name);
       return inner && { ...inner, slice: true, sliceName: name };
+    }
+    return undefined;
+  }
+  /** The root of a Ptr place (§14.4): a local or parameter, or that under `.offset(...)` / `.cast()` calls. */
+  private ptrRoot(e0: ts.Expression): Place | undefined {
+    const e = strip(e0);
+    if (isId(e)) { const sym = localOf.get(e); return sym && { sym, id: e, path: [], slice: false }; }
+    if (e.kind === K.CallExpression) {
+      const p = (e as ts.CallExpression).expression;
+      if (p.kind === K.PropertyAccessExpression && ((p as ts.PropertyAccessExpression).name.text === "offset" || (p as ts.PropertyAccessExpression).name.text === "cast")) {
+        const g = genName(exprTypes.get((p as ts.PropertyAccessExpression).expression));
+        if (g === "Ptr" || g === "ConstPtr") return this.ptrRoot((p as ts.PropertyAccessExpression).expression);
+      }
     }
     return undefined;
   }
@@ -448,7 +468,8 @@ class Flow {
     const p = (e as ts.CallExpression).expression;
     if (p.kind !== K.PropertyAccessExpression) return undefined;
     const g = genName(exprTypes.get((p as ts.PropertyAccessExpression).expression));
-    if ((p as ts.PropertyAccessExpression).name.text === "slice") return g === "Vec" || g === "Slice" ? p as ts.PropertyAccessExpression : undefined;
+    if ((p as ts.PropertyAccessExpression).name.text === "slice") return g === "Vec" || g === "Slice" || g === "Ptr" || g === "ConstPtr" ? p as ts.PropertyAccessExpression : undefined;
+    if ((p as ts.PropertyAccessExpression).name.text === "borrow") return g === "Ptr" ? p as ts.PropertyAccessExpression : undefined; // §14.4
     if ((p as ts.PropertyAccessExpression).name.text === "view") return g === "Arena" ? p as ts.PropertyAccessExpression : undefined;
     return undefined;
   }
@@ -477,11 +498,16 @@ class Flow {
     // Q190: disjoint field paths are different places (a); a sibling pair of `slice` arguments is left to the runtime check (b).
     if (this.active.some((x, i) => x.sym.id === r.sym.id && pathsOverlap(x.path, r.path)
       && (mode === "mut" || (i >= this.callMark && x.mode === "mut"))
-      && !(i >= this.callMark && x.slice && r.slice))) this.exclusive(node, r.sym);
-    this.active.push({ sym: r.sym, mode, node, base: false, path: r.path, slice: r.slice }); // popped by `call`; active while `slice` bounds are evaluated
+      && !(i >= this.callMark && x.slice && r.slice && !x.ptrSlice && !r.ptrSlice))) this.exclusive(node, r.sym);
+    if (this.pendingMut.some((s) => s.id === r.sym.id)) this.exclusive(node, r.sym); // §14.4: an earlier `unbox` of this call
+    this.active.push({ sym: r.sym, mode, node, base: false, path: r.path, slice: r.slice, ptrSlice: r.ptrSlice }); // popped by `call`; active while `slice` bounds are evaluated
     this.place(e);
     if (mode === "mut" && borrowMode(r.sym.declared) === "ref") this.m.at("E3006", member ?? strip(e), `'${r.sym.name}' is borrowed as Ref and cannot be passed as Mut`);
-    return { sym: r.sym, mode, node, path: r.path, slice: r.slice, arg, sliceName: r.sliceName };
+    if (mode === "mut" && r.ptrSlice) { // §14.4: a ConstPtr slice stays a Ref borrow
+      const sc = this.sliceCall(strip(e));
+      if (sc && genName(exprTypes.get(sc.expression)) === "ConstPtr") this.m.at("E3006", member ?? strip(e), "a 'ConstPtr' slice cannot be passed as Mut");
+    }
+    return { sym: r.sym, mode, node, path: r.path, slice: r.slice, arg, sliceName: r.sliceName, ptrSlice: r.ptrSlice };
   }
 
   // ---- calls
@@ -493,11 +519,20 @@ class Flow {
     const mark = this.active.length;
     const outerMark = this.callMark;
     this.callMark = mark;
+    const pmMark = this.pendingMut.length;
     let store = false;
     if (callee.kind === K.PropertyAccessExpression) {
       const p = callee as ts.PropertyAccessExpression;
       const g = genName(exprTypes.get(p.expression));
-      if ((g === "Vec" || g === "Slice" || g === "Pool" || g === "Arena") && e.kind === K.CallExpression) {
+      if ((g === "Ptr" || g === "ConstPtr") && e.kind === K.CallExpression && (p.name.text === "slice" || p.name.text === "borrow")) {
+        this.m.at("E3004", p.name, `'${p.name.text}' can only be a borrowed argument or a receiver`); // §14.4
+        this.ex(p.expression, "read");
+      } else if (g === "Ptr" && e.kind === K.CallExpression && p.name.text === "unbox") {
+        const root = this.ptrRoot(p.expression); // §14.4: the receiver form, and Mut use of the root
+        if (!root) this.m.at("E3008", strip(p.expression), "'unbox' needs a variable or parameter, optionally through 'offset' / 'cast'");
+        else if (this.active.some((x) => x.sym.id === root.sym.id) || this.pendingMut.some((s) => s.id === root.sym.id)) this.exclusive(e, root.sym);
+        this.ex(p.expression, "read");
+      } else if ((g === "Vec" || g === "Slice" || g === "Pool" || g === "Arena") && e.kind === K.CallExpression) {
         if (p.name.text === "slice" || (g === "Arena" && p.name.text === "view")) this.m.at("E3004", p.name, `'${p.name.text}' can only be a borrowed argument or a receiver`); // Q013; view: Q188 (b)
         const u = this.borrow(p.expression, MUT_METHODS.has(p.name.text) ? "mut" : "ref", p.name as ts.Identifier);
         if (u) uses.push(u);
@@ -513,6 +548,13 @@ class Flow {
       const mode = borrowMode(p);
       if (mode) { const u = this.borrow(a, mode, undefined, i); if (u) uses.push(u); return; }
       const x = strip(a);
+      if (x.kind === K.CallExpression) { // §14.4: `p.unbox()` as a whole argument counts as a Mut use of `p`
+        const cp = (x as ts.CallExpression).expression;
+        if (cp.kind === K.PropertyAccessExpression && (cp as ts.PropertyAccessExpression).name.text === "unbox" && genName(exprTypes.get((cp as ts.PropertyAccessExpression).expression)) === "Ptr") {
+          const root = this.ptrRoot((cp as ts.PropertyAccessExpression).expression);
+          if (root) { uses.push({ sym: root.sym, mode: "mut", node: x, path: root.path, slice: false, arg: i }); this.pendingMut.push(root.sym); }
+        }
+      }
       if (isId(x) && !store) {
         const sym = localOf.get(x);
         const before = sym && this.state?.get(sym.id);
@@ -530,7 +572,7 @@ class Flow {
     });
     // Q190 (b): record the slice groups the emitters must check at runtime (T013).
     const byRoot = new Map<number, Use[]>();
-    for (const u of uses) if (u.slice && u.arg >= 0) { const l = byRoot.get(u.sym.id) ?? []; l.push(u); byRoot.set(u.sym.id, l); }
+    for (const u of uses) if (u.slice && !u.ptrSlice && u.arg >= 0) { const l = byRoot.get(u.sym.id) ?? []; l.push(u); byRoot.set(u.sym.id, l); }
     const groups: SliceGroupEntry[][] = [];
     for (const l of byRoot.values()) {
       if (l.length < 2) continue;
@@ -541,6 +583,7 @@ class Flow {
     if (groups.length) sliceGroups.set(e, groups);
     this.active.length = mark;
     this.callMark = outerMark;
+    this.pendingMut.length = pmMark;
     const recv = callee.kind === K.PropertyAccessExpression ? exprTypes.get((callee as ts.PropertyAccessExpression).expression) : undefined;
     // Q174 (案2): an inferred container-of-owned type (a written one is P2's); a receiver of such a type was reported where it came from
     const res = exprTypes.get(e);

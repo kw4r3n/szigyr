@@ -5,12 +5,12 @@ export type NumName = "f64" | "f32" | "i8" | "i16" | "i32" | "u8" | "u16" | "u32
 export const NUM_NAMES: readonly NumName[] = ["f64", "f32", "i8", "i16", "i32", "u8", "u16", "u32", "usize"];
 export type PrimName = "boolean" | "string" | "null" | "void" | "unknown" | "never";
 /** Builtin generic types (§3.2, §3.3). */
-export type GenName = "Array" | "ReadonlyArray" | "Map" | "Set" | "Promise" | "Vec" | "Slice" | "Pool" | "Handle" | "Arena" | "ArenaBuf" | "Ref" | "Mut" | "OwnedCell";
+export type GenName = "Array" | "ReadonlyArray" | "Map" | "Set" | "Promise" | "Vec" | "Slice" | "Pool" | "Handle" | "Arena" | "ArenaBuf" | "Ref" | "Mut" | "OwnedCell" | "Ptr" | "ConstPtr" | "CType" | "CHandle";
 export const GEN_ARITY: Record<GenName, number> = {
-  Array: 1, ReadonlyArray: 1, Map: 2, Set: 1, Promise: 1, Vec: 1, Slice: 1, Pool: 1, Handle: 1, Arena: 0, ArenaBuf: 1, Ref: 1, Mut: 1, OwnedCell: 1,
+  Array: 1, ReadonlyArray: 1, Map: 2, Set: 1, Promise: 1, Vec: 1, Slice: 1, Pool: 1, Handle: 1, Arena: 0, ArenaBuf: 1, Ref: 1, Mut: 1, OwnedCell: 1, Ptr: 1, ConstPtr: 1, CType: 1, CHandle: 1,
 };
 /** Opaque builtin types: authorities (§7.1), Test, JsRef, the fakes (Q038). */
-export const AUTHORITIES = ["System", "Alloc", "Fs", "Clock", "Random", "Log", "Js"] as const;
+export const AUTHORITIES = ["System", "Alloc", "Fs", "Clock", "Random", "Log", "Js", "Ffi"] as const; // Ffi: §14.2
 export const OPAQUE_NAMES = new Set<string>([...AUTHORITIES, "JsRef", "Test", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs"]);
 
 export interface Field { name: string; type: Type; readonly: boolean }
@@ -23,7 +23,8 @@ export interface TParam { name: string; id: number; constraint?: Type; need?: Se
 export interface FnType {
   k: "fn"; tparams: TParam[]; params: Type[]; ret: Type; min?: number; prefix?: boolean;
   /** Builtin call-site conditions: `cast` / `eq` / `copy` constrain the first type argument (Q084, Q086); `trap` checks the code literal (Q058). */
-  tcheck?: "cast" | "eq" | "copy" | "trap";
+  /** `box` / `chandle` / `castptr`: the §14.4 / §14.5 conditions on the type argument. */
+  tcheck?: "cast" | "eq" | "copy" | "trap" | "box" | "chandle" | "castptr";
 }
 
 export interface ClassSym {
@@ -148,6 +149,7 @@ export function assignable(s: Type, t: Type, arg = false): boolean {
   if (s.k === "lit" && t.k === "prim" && t.name === "string") return true;
   if (s.k === "gen" && t.k === "gen") {
     if (t.name === "ReadonlyArray" && (s.name === "Array" || s.name === "ReadonlyArray")) return assignable(s.args[0]!, t.args[0]!);
+    if (s.name === "Ptr" && t.name === "ConstPtr") return same(s.args[0]!, t.args[0]!); // §14.4: Ptr reads as ConstPtr, never back
     if (arg && t.name === "Slice" && s.name === "Vec") return same(s.args[0]!, t.args[0]!);
     return false;
   }
@@ -230,7 +232,7 @@ export function unify(p: Type, a: Type, m: Map<number, Type>, ids: Set<number>):
 export function isCopy(t: Type): boolean {
   switch (t.k) {
     case "num": case "lit": return true;
-    case "gen": return t.name === "Handle" || t.name === "ArenaBuf"; // Q188: a handle is three u32s, an ArenaBuf four
+    case "gen": return t.name === "Handle" || t.name === "ArenaBuf" || t.name === "Ptr" || t.name === "ConstPtr"; // Q188: a handle is three u32s, an ArenaBuf four; §14.4: raw pointers are Copy
     case "prim": return t.name === "boolean" || t.name === "null";
     case "record": return t.fields.every((f) => f.readonly && isCopy(f.type));
     case "union": return t.members.every(isCopy);
@@ -238,7 +240,7 @@ export function isCopy(t: Type): boolean {
   }
 }
 /** Owned types (§5.1): non-Copy Structs and Vec. */
-export const isOwned = (t: Type): boolean => (t.k === "gen" && (t.name === "Vec" || t.name === "Pool" || t.name === "Arena")) || (t.k === "record" && t.struct && !isCopy(t));
+export const isOwned = (t: Type): boolean => (t.k === "gen" && (t.name === "Vec" || t.name === "Pool" || t.name === "Arena" || t.name === "CHandle")) || (t.k === "record" && t.struct && !isCopy(t)); // CHandle: §14.5
 /**
  * P3: values that move. Owned types, unions holding one, and strict / rt type parameters (Q049; managed ones never are, Q068 b)
  * unless their instantiations cannot be owned: an interface constraint (only classes implement one), or a `key` / `copy` / `eq` condition (Q153).
@@ -284,7 +286,7 @@ export function layerOk(t: Type): boolean {
     case "prim": return t.name === "boolean" || t.name === "null" || t.name === "void" || t.name === "never";
     case "record": return t.struct ? t.fields.every((f) => layerOk(f.type)) : isCopy(t); // Q043
     case "union": return t.members.every((m) => isCopy(m) && layerOk(m));
-    case "gen": return t.name === "Vec" || t.name === "Slice" || t.name === "Pool" || t.name === "Handle" || t.name === "Arena" || t.name === "ArenaBuf" || ((t.name === "Ref" || t.name === "Mut") && layerOk(t.args[0]!));
+    case "gen": return t.name === "Vec" || t.name === "Slice" || t.name === "Pool" || t.name === "Handle" || t.name === "Arena" || t.name === "ArenaBuf" || t.name === "Ptr" || t.name === "ConstPtr" || t.name === "CType" || t.name === "CHandle" || ((t.name === "Ref" || t.name === "Mut") && layerOk(t.args[0]!)); // §14: pointer types are layer-legal; their positions are E4007 / E4008
     case "opaque": return isAuthority(t);
     default: return false;
   }
@@ -335,7 +337,7 @@ export function comparable(t: Type): boolean {
 }
 
 /** Struct field types (§3.3, Q086): numbers, boolean, Struct, Vec. */
-export const structField = (t: Type): boolean => t.k === "error" || t.k === "tparam" || t.k === "num" || isBool(t) || (t.k === "record" && t.struct) || (t.k === "gen" && (t.name === "Vec" || t.name === "Pool" || t.name === "Handle" || t.name === "Arena" || t.name === "ArenaBuf")); // Arena as a field: Q214
+export const structField = (t: Type): boolean => t.k === "error" || t.k === "tparam" || t.k === "num" || isBool(t) || (t.k === "record" && t.struct) || (t.k === "gen" && (t.name === "Vec" || t.name === "Pool" || t.name === "Handle" || t.name === "Arena" || t.name === "ArenaBuf" || t.name === "CHandle" || t.name === "Ptr" || t.name === "ConstPtr" || t.name === "CType")); // Arena as a field: Q214; CHandle as a field: §14.5. Ptr / CType in a field are the checker's E4008 / E4007, not E4002
 
 /** Integer ranges (§3.1). */
 export const INT_RANGE: Partial<Record<NumName, [number, number]>> = {
@@ -376,4 +378,36 @@ export function demand(t: Type, n: Need): boolean {
   if (t.k !== "tparam") return needOk(n, t);
   (t.p.need ??= new Set()).add(n);
   return true;
+}
+
+/** §14.4 / §7.3: `t` mentions Ptr, ConstPtr or CHandle anywhere (function types included). */
+export function hasPtr(t: Type): boolean {
+  switch (t.k) {
+    case "gen": return t.name === "Ptr" || t.name === "ConstPtr" || t.name === "CHandle" || t.args.some(hasPtr);
+    case "record": return t.fields.some((f) => hasPtr(f.type));
+    case "union": return t.members.some(hasPtr);
+    case "fn": return t.params.some(hasPtr) || hasPtr(t.ret);
+    case "class": case "iface": return t.args.some(hasPtr);
+    default: return false;
+  }
+}
+/** §14.4: types that may sit behind Ptr / ConstPtr. Function types are Ptr-only; the caller decides those. */
+export function ptrTargetOk(t: Type): boolean {
+  switch (t.k) {
+    case "error": case "num": case "tparam": return true;
+    case "prim": return t.name === "boolean" || t.name === "void" || t.name === "null";
+    case "record": return true;
+    case "union": return t.members.every(ptrTargetOk);
+    case "gen":
+      return t.name === "CType" || t.name === "Vec" || t.name === "Pool" || t.name === "Handle" || t.name === "Arena" || t.name === "ArenaBuf" || t.name === "CHandle" ||
+        ((t.name === "Ptr" || t.name === "ConstPtr") && ptrTargetOk(t.args[0]!));
+    default: return false;
+  }
+}
+/** §14.4 (Q209, Q210): types `Ptr.box` accepts: Copy types, CHandle, and Structs whose fields are all boxable. */
+export function boxable(t: Type): boolean {
+  if (isCopy(t)) return true;
+  if (t.k === "gen" && t.name === "CHandle") return true;
+  if (t.k === "record" && t.struct) return t.fields.every((f) => boxable(f.type));
+  return false;
 }

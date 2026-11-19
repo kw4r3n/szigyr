@@ -11,7 +11,9 @@ import {
 
 export type Layer = "managed" | "strict" | "rt";
 
-export interface FnSym { k: "fn"; name: string; decl: ts.FunctionDeclaration; mod: Module; layer: Layer; sig: FnType }
+export interface FnSym { k: "fn"; name: string; decl: ts.FunctionDeclaration; mod: Module; layer: Layer; sig: FnType; unsafe: boolean }
+/** A C function from a `declare module "c:..."` block (§14.1): callable, never a value. */
+export interface CFnSym { k: "cfn"; name: string; decl: ts.FunctionDeclaration; mod: Module; spec: string; sig: FnType }
 export interface ConstSym { k: "const"; decl: ts.VariableDeclaration; mod: Module; type: Type }
 export interface ClassValueSym { k: "class"; cls: ClassSym; mod: Module }
 /** `declared`: the annotated type before Ref / Mut are read through (contracts, Q056). */
@@ -20,7 +22,7 @@ export interface LocalSym {
   /** Captured by a nested function and assigned after its declaration: never narrowed (Q122). */
   unstable?: boolean;
 }
-export type ValueSym = FnSym | ConstSym | ClassValueSym | { k: "jsref" } | LocalSym;
+export type ValueSym = FnSym | ConstSym | ClassValueSym | CFnSym | { k: "jsref" } | LocalSym;
 
 export type TypeSym =
   | { k: "alias"; decl: ts.TypeAliasDeclaration; mod: Module; tparams?: TParam[]; body?: Type; busy?: boolean }
@@ -39,6 +41,8 @@ export interface Module {
   exports: Map<string, string>;
   /** local name -> imported module and exported name (relative imports only) */
   imports: Map<string, { mod: Module; name: string }>;
+  /** `declare module "c:..."` blocks of this file: specifier -> C function name -> symbol (§14.1). */
+  cdecls: Map<string, Map<string, CFnSym>>;
 }
 
 export class Reporter {
@@ -55,11 +59,23 @@ export class Reporter {
 }
 
 const DIRECTIVE_LAYER: Record<string, Layer> = { "use owned": "strict", "use rt": "rt" };
-/** The directive of a statement list (first statement, Q039), if any. */
+/** The layer directive of a statement list (Q039): the first layer directive among the leading
+ * string literals ("use unsafe" may sit before it, §14.4). */
 export function directiveOf(list: readonly ts.Statement[]): Layer | undefined {
-  const s = list[0];
-  if (s?.kind !== K.ExpressionStatement || (s as ts.ExpressionStatement).expression.kind !== K.StringLiteral) return undefined;
-  return DIRECTIVE_LAYER[((s as ts.ExpressionStatement).expression as ts.StringLiteral).text];
+  for (const s of list) {
+    if (s.kind !== K.ExpressionStatement || (s as ts.ExpressionStatement).expression.kind !== K.StringLiteral) break;
+    const layer = DIRECTIVE_LAYER[((s as ts.ExpressionStatement).expression as ts.StringLiteral).text];
+    if (layer) return layer;
+  }
+  return undefined;
+}
+/** Whether a statement list carries the `"use unsafe"` modifier among its leading directives (§14.4). */
+export function unsafeOf(list: readonly ts.Statement[]): boolean {
+  for (const s of list) {
+    if (s.kind !== K.ExpressionStatement || (s as ts.ExpressionStatement).expression.kind !== K.StringLiteral) break;
+    if (((s as ts.ExpressionStatement).expression as ts.StringLiteral).text === "use unsafe") return true;
+  }
+  return false;
 }
 
 const hasMod = (n: Node, k: K): boolean => !!(n as Node & { modifiers?: ts.NodeArray<ts.ModifierLike> }).modifiers?.some((m) => m.kind === k);
@@ -146,7 +162,7 @@ export class Program {
       const sf = pf.sourceFile;
       const mod: Module = {
         pf, sf, file: display(pf.path), layer: directiveOf(sf.statements) ?? "managed",
-        values: new Map(), types: new Map(), exports: exportTable(sf), imports: new Map(),
+        values: new Map(), types: new Map(), exports: exportTable(sf), imports: new Map(), cdecls: new Map(),
       };
       this.mods.push(mod);
       this.byPath.set(pf.path, mod);
@@ -157,6 +173,21 @@ export class Program {
   }
 
   private shells(mod: Module): void {
+    // §14.1: `declare module "c:..."` blocks first, so a `c:` import binds wherever it is written
+    for (const s of mod.sf.statements) {
+      if (s.kind !== K.ModuleDeclaration) continue;
+      const d = s as ts.ModuleDeclaration;
+      if (d.name.kind !== K.StringLiteral || d.body?.kind !== K.ModuleBlock) continue;
+      const spec = (d.name as ts.StringLiteral).text;
+      if (!spec.startsWith("c:")) continue;
+      const table = mod.cdecls.get(spec) ?? new Map<string, CFnSym>();
+      mod.cdecls.set(spec, table);
+      for (const st of (d.body as ts.ModuleBlock).statements) {
+        if (st.kind !== K.FunctionDeclaration) continue;
+        const f = st as ts.FunctionDeclaration;
+        if (f.name && !table.has(f.name.text)) table.set(f.name.text, { k: "cfn", name: f.name.text, decl: f, mod, spec, sig: fn([], ERROR) });
+      }
+    }
     for (const s of mod.sf.statements) {
       switch (s.kind) {
         case K.ImportDeclaration: {
@@ -164,6 +195,14 @@ export class Program {
           const spec = (d.moduleSpecifier as ts.StringLiteral).text;
           const nb = d.importClause?.namedBindings as ts.NamedImports;
           const target = this.byPath.get(resolve(dirname(mod.pf.path), spec));
+          if (spec.startsWith("c:")) { // §14.1: binds this file's own declarations, never another file
+            const table = mod.cdecls.get(spec);
+            for (const e of nb.elements) {
+              const cs = table?.get(((e.propertyName ?? e.name) as ts.Identifier).text);
+              if (cs) mod.values.set(e.name.text, cs);
+            }
+            break;
+          }
           for (const e of nb.elements) {
             if (spec.startsWith("npm:")) mod.values.set(e.name.text, { k: "jsref" }); // §7.4
             else if (target) mod.imports.set(e.name.text, { mod: target, name: ((e.propertyName ?? e.name) as ts.Identifier).text });
@@ -185,7 +224,7 @@ export class Program {
         }
         case K.FunctionDeclaration: {
           const d = s as ts.FunctionDeclaration;
-          const f: FnSym = { k: "fn", name: d.name!.text, decl: d, mod, layer: directiveOf(d.body!.statements) ?? mod.layer, sig: fn([], ERROR) };
+          const f: FnSym = { k: "fn", name: d.name!.text, decl: d, mod, layer: directiveOf(d.body!.statements) ?? mod.layer, sig: fn([], ERROR), unsafe: unsafeOf(d.body!.statements) };
           mod.values.set(f.name, f);
           this.fns.push(f);
           break;
@@ -219,6 +258,7 @@ export class Program {
         }
       }
     }
+    for (const table of mod.cdecls.values()) for (const cs of table.values()) cs.sig = this.signature(cs.decl, cs.decl.name!, env());
     for (const v of mod.values.values()) {
       if (v.k === "fn" && v.mod === mod) { v.sig = this.signature(v.decl, v.decl.name!, env()); for (const p of v.sig.tparams) p.owner = v.layer; }
       else if (v.k === "class" && v.mod === mod) this.classMembers(v.cls, env(v.cls.tparams));
@@ -397,7 +437,7 @@ export class Program {
 
   typeRef(id: ts.Identifier, argNodes: ts.NodeArray<ts.TypeNode> | undefined, whole: Node, e: TypeEnv): Type {
     const name = id.text;
-    const args = (argNodes ?? []).map((a) => (name === "Struct" ? ERROR : this.typeOf(a, e, name === "Promise"))); // `Promise<void>` (Q028)
+    const args = (argNodes ?? []).map((a) => (name === "Struct" ? ERROR : this.typeOf(a, e, name === "Promise" || name === "Ptr" || name === "ConstPtr" || name === "CHandle"))); // `Promise<void>` (Q028); `Ptr<void>` (§14.4)
     const arity = (n: number): boolean => {
       if (args.length === n) return true;
       this.rep.at(e.mod, "E2002", whole, `'${name}' takes ${n} type argument(s)`);

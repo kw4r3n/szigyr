@@ -3,7 +3,7 @@ import { NodeFlags, SyntaxKind as K, type Node, type ts } from "./parse.ts";
 import { Program, legalUnion, type ClassValueSym, type FnSym, type Layer, type LocalSym, type Module, type ValueSym } from "./modules.ts";
 import { PROMISE_CONTAINERS, assignTarget, checkTo, exprTypes, hasPromise, cond, expr, isLitOnly, localOf, promiseOk, type FnArgRef } from "./expr.ts";
 import {
-  AUTHORITIES, ERROR, NEVER, NULL, STR, VOID, assignable, hasAuthority, layerOk, field, isErr, isNull, isTaggedUnion, kindOf, nonNull, same, show, subst, bindTParams, unref, union,
+  AUTHORITIES, ERROR, NEVER, NULL, STR, VOID, assignable, hasAuthority, hasPtr, layerOk, ptrTargetOk, field, isBool, isErr, isNull, isTaggedUnion, kindOf, nonNull, same, show, subst, bindTParams, unref, union,
   type ClassSym, type FnType, type TParam, type Type,
 } from "./types.ts";
 
@@ -25,6 +25,8 @@ export interface FnCtx {
   params?: ts.NodeArray<ts.ParameterDeclaration>;
   /** The function-like node being checked (Q122). */
   node?: Node;
+  /** §14.4: the enclosing function carries the `"use unsafe"` modifier (inherited by nested functions). */
+  unsafe: boolean;
 }
 
 export class Scope {
@@ -192,9 +194,10 @@ export class Checker {
 
   // ---- modules
   private module(mod: Module): void {
+    this.unsafeTypes(mod);
     this.unstable = capturedAssigned(mod.sf);
     for (const s of mod.sf.statements) {
-      this.fx = { mod, layer: "managed", ret: undefined, returns: [], async: false, inCtor: false, tparams: new Map(), depth: 0 };
+      this.fx = { mod, layer: "managed", ret: undefined, returns: [], async: false, inCtor: false, tparams: new Map(), depth: 0, unsafe: false };
       this.scope = new Scope();
       this.narrow = new Map();
       switch (s.kind) {
@@ -203,7 +206,7 @@ export class Checker {
           if (sym?.k !== "fn") break;
           this.fn = sym;
           if (sym.layer !== "managed") this.layerSig(sym);
-          this.fnBody(s as ts.FunctionDeclaration, sym.sig, { layer: sym.layer, params: (s as ts.FunctionDeclaration).parameters });
+          this.fnBody(s as ts.FunctionDeclaration, sym.sig, { layer: sym.layer, unsafe: sym.unsafe, params: (s as ts.FunctionDeclaration).parameters });
           this.fn = undefined;
           break;
         }
@@ -323,7 +326,7 @@ export class Checker {
   fnBody(
     d: ts.FunctionDeclaration | ts.MethodDeclaration | ts.ConstructorDeclaration | ts.ArrowFunction | ts.FunctionExpression,
     sig: FnType,
-    o: { layer?: Layer; thisType?: Type; cls?: ClassSym; inCtor?: boolean; inferRet?: boolean; params?: ts.NodeArray<ts.ParameterDeclaration> },
+    o: { layer?: Layer; unsafe?: boolean; thisType?: Type; cls?: ClassSym; inCtor?: boolean; inferRet?: boolean; params?: ts.NodeArray<ts.ParameterDeclaration> },
   ): Type {
     const outer = { fx: this.fx, scope: this.scope, narrow: this.narrow };
     const isAsync = hasMod(d, K.AsyncKeyword);
@@ -335,6 +338,7 @@ export class Checker {
     this.fx = {
       mod: outer.fx.mod,
       layer: o.layer ?? (nested ? outer.fx.layer : "managed"),
+      unsafe: o.unsafe ?? (nested ? outer.fx.unsafe : false),
       ret, returns: [], async: isAsync,
       inCtor: !!o.inCtor, tparams, depth: nested ? outer.fx.depth + 1 : 0,
       ...(o.thisType ? { thisType: o.thisType } : d.kind === K.ArrowFunction && outer.fx.thisType ? { thisType: outer.fx.thisType } : {}), // Q120
@@ -538,7 +542,7 @@ export class Checker {
         const saved = this.scope;
         this.scope = new Scope(saved);
         const d = (x.initializer as ts.VariableDeclarationList).declarations[0]!;
-        if (d.type) { const at = this.typeOf(d.type); if (!assignable(elem, at)) this.at("E2002", d.name, "element type does not match the annotation"); elem = at; }
+        if (d.type) { const at = this.typeOf(d.type); this.walkTypePos(d.type, "local", { unsafe: this.fx.unsafe, cdecl: false }); if (!assignable(elem, at)) this.at("E2002", d.name, "element type does not match the annotation"); elem = at; }
         if (isId(d.name)) this.declare(d.name, elem);
         this.loopEntry(x.statement);
         this.loopBody(x.statement, new Map());
@@ -674,6 +678,7 @@ export class Checker {
       let t: Type;
       if (d.type) {
         const declared = this.typeOf(d.type);
+        this.walkTypePos(d.type, "local", { unsafe: this.fx.unsafe, cdecl: false });
         if (this.fx.layer !== "managed") this.layerType(declared, d.type, this.fx.layer);
         checkTo(this, init, unref(declared));
         t = unref(declared);
@@ -728,6 +733,207 @@ export class Checker {
     const from = this.fx.layer;
     return from === "managed" || (from === "strict" && callee !== "managed") || (from === "rt" && callee === "rt");
   }
+  /** §2 + §14.3: a direct call to `callee`. An rt + unsafe callee forms its own column of the table:
+   * only an rt + unsafe caller reaches it directly; everyone else may only name it to `cfn`. */
+  callCheck(callee: FnSym): boolean {
+    if (callee.layer === "rt" && callee.unsafe) return this.fx.layer === "rt" && this.fx.unsafe;
+    return this.callAllowed(callee.layer);
+  }
+
+  // ---- §14: Ptr / ConstPtr / CType / CHandle in written type positions
+  /** Walks every written type position of a module once (signatures, aliases, fields, module consts,
+   * and the `declare module "c:..."` blocks), reporting E4007 / E4008. Locals are walked in `varList`. */
+  unsafeTypes(mod: Module): void {
+    const saved = this.fx;
+    this.fx = { mod, layer: "managed", ret: undefined, returns: [], async: false, inCtor: false, tparams: new Map(), depth: 0, unsafe: false };
+    const sig = { unsafe: false, cdecl: false };
+    for (const s of mod.sf.statements) {
+      switch (s.kind) {
+        case K.FunctionDeclaration: {
+          const d = s as ts.FunctionDeclaration;
+          const sym = mod.values.get(d.name!.text);
+          if (sym?.k !== "fn") break;
+          this.fx.tparams = new Map(sym.sig.tparams.map((p) => [p.name, p]));
+          const ctx = { unsafe: sym.unsafe, cdecl: false };
+          d.parameters.forEach((p) => { if (p.type) this.walkTypePos(p.type, "sig", ctx); });
+          if (d.type) this.walkTypePos(d.type, "sig", ctx);
+          break;
+        }
+        case K.ModuleDeclaration: {
+          const d = s as ts.ModuleDeclaration;
+          if (d.name.kind !== K.StringLiteral || d.body?.kind !== K.ModuleBlock) break;
+          const table = mod.cdecls.get((d.name as ts.StringLiteral).text);
+          this.fx.tparams = new Map();
+          for (const st of (d.body as ts.ModuleBlock).statements) {
+            if (st.kind !== K.FunctionDeclaration) continue;
+            const f = st as ts.FunctionDeclaration;
+            const cs = f.name ? table?.get(f.name.text) : undefined;
+            if (cs) this.walkCDecl(f, cs.sig);
+          }
+          break;
+        }
+        case K.TypeAliasDeclaration: {
+          const d = s as ts.TypeAliasDeclaration;
+          const sym = mod.types.get(d.name.text);
+          this.fx.tparams = sym?.k === "alias" && sym.tparams ? new Map(sym.tparams.map((p) => [p.name, p])) : new Map();
+          this.walkTypePos(d.type, "alias", sig);
+          break;
+        }
+        case K.ClassDeclaration: {
+          const d = s as ts.ClassDeclaration;
+          const sym = mod.values.get(d.name!.text);
+          this.fx.tparams = sym?.k === "class" ? new Map(sym.cls.tparams.map((p) => [p.name, p])) : new Map();
+          for (const m of d.members) {
+            if (m.kind === K.PropertyDeclaration) { const p = m as ts.PropertyDeclaration; if (p.type) this.walkTypePos(p.type, "field", sig); }
+            else if (m.kind === K.MethodDeclaration || m.kind === K.Constructor) {
+              const md = m as ts.FunctionLikeDeclaration;
+              md.parameters.forEach((p) => { if (p.type) this.walkTypePos(p.type, "sig", sig); });
+              if (md.type) this.walkTypePos(md.type, "sig", sig);
+            }
+          }
+          break;
+        }
+        case K.InterfaceDeclaration: {
+          const d = s as ts.InterfaceDeclaration;
+          const sym = mod.types.get(d.name.text);
+          this.fx.tparams = sym?.k === "iface" ? new Map(sym.iface.tparams.map((p) => [p.name, p])) : new Map();
+          for (const m of d.members) {
+            const ms = m as ts.MethodSignatureDeclaration;
+            ms.parameters.forEach((p) => { if (p.type) this.walkTypePos(p.type, "sig", sig); });
+            if (ms.type) this.walkTypePos(ms.type, "sig", sig);
+          }
+          break;
+        }
+        case K.VariableStatement:
+          this.fx.tparams = new Map();
+          for (const d of (s as ts.VariableStatement).declarationList.declarations) if (d.type) this.walkTypePos(d.type, "local", sig);
+          break;
+      }
+    }
+    this.fx = saved;
+  }
+
+  /** §14.2: a C declaration takes `ffi: Ffi` first; the rest is numbers, boolean, void (return), Ptr, ConstPtr. */
+  private walkCDecl(d: ts.FunctionDeclaration, sig: FnType): void {
+    const ctx = { unsafe: true, cdecl: true };
+    d.parameters.forEach((p) => { if (p.type) this.walkTypePos(p.type, "sig", ctx); });
+    if (d.type) this.walkTypePos(d.type, "sig", ctx);
+    const first = d.parameters[0];
+    const ft = sig.params[0];
+    if (!first || !(ft?.k === "opaque" && ft.name === "Ffi")) {
+      if (first) this.at("E4007", first.name, "the first parameter of a C function must be 'ffi: Ffi'");
+      else this.at("E4007", d.name!, "the first parameter of a C function must be 'ffi: Ffi'");
+    }
+    d.parameters.forEach((p, i) => { if (i > 0 && p.type) this.checkBoundary(p.type, sig.params[i] ?? ERROR, false); });
+    if (d.type) this.checkBoundary(d.type, sig.ret, true);
+  }
+  private checkBoundary(node: ts.TypeNode, t: Type, isRet: boolean): void {
+    if (t.k === "error" || t.k === "num" || isBool(t)) return;
+    if (isRet && t.k === "prim" && t.name === "void") return;
+    if (t.k === "gen" && (t.name === "Ptr" || t.name === "ConstPtr")) {
+      const argNode = (node as ts.TypeReferenceNode).typeArguments?.[0];
+      if (argNode) this.checkPointee(argNode, t.args[0]!);
+      return;
+    }
+    this.at("E4007", node, `'${show(t)}' cannot cross the C boundary`);
+  }
+  /** A pointee maps to void* whatever it is (§14.2), except `usize` anywhere inside it and an
+   * unmappable function type's own parameters / return. */
+  private checkPointee(node: ts.TypeNode, t: Type): void {
+    if (t.k === "num" && t.name === "usize") { this.at("E4007", node, "'usize' cannot sit behind a pointer at the C boundary"); return; }
+    if (t.k === "gen" && (t.name === "Ptr" || t.name === "ConstPtr")) {
+      const argNode = (node as ts.TypeReferenceNode).typeArguments?.[0];
+      if (argNode) this.checkPointee(argNode, t.args[0]!);
+      return;
+    }
+    if (t.k === "fn" && node.kind === K.FunctionType) {
+      const f = node as ts.FunctionTypeNode;
+      f.parameters.forEach((p, i) => { if (p.type) this.checkBoundary(p.type, t.params[i] ?? ERROR, false); });
+      if (f.type) this.checkBoundary(f.type, t.ret, true);
+    }
+  }
+
+  /** One written type node in position `place`. `ptrarg`: the argument of Ptr / ConstPtr; `chandlearg`: of CHandle. */
+  walkTypePos(node: ts.TypeNode, place: "sig" | "local" | "alias" | "field" | "typearg" | "ptrarg" | "chandlearg", ctx: { unsafe: boolean; cdecl: boolean }): void {
+    switch (node.kind) {
+      case K.TypeReference: {
+        const r = node as ts.TypeReferenceNode;
+        const name = isId(r.typeName) ? r.typeName.text : "";
+        const arg = r.typeArguments?.[0];
+        if (name === "Ptr" || name === "ConstPtr") {
+          if (place === "field" || place === "typearg" || place === "alias" || place === "chandlearg") {
+            this.at("E4008", r.typeName, `'${name}' cannot be written in this position`);
+          } else if (!ctx.cdecl && !ctx.unsafe) {
+            this.at("E4008", r.typeName, `'${name}' can only be written in a function with 'use unsafe'`);
+          }
+          if (arg) {
+            if (!ctx.cdecl) {
+              const t = this.typeOf(arg, true); // a pointee may be void (§14.4)
+              if (t.k === "fn") { if (name === "ConstPtr") this.at("E4007", arg, "a function type can only sit behind Ptr"); }
+              else if (t.k !== "error" && !ptrTargetOk(t)) this.at("E4007", arg, `'${show(t)}' cannot sit behind ${name}`);
+            }
+            this.walkTypePos(arg, "ptrarg", ctx);
+          }
+          return;
+        }
+        if (name === "CType") {
+          if (place !== "ptrarg" && place !== "chandlearg") this.at("E4007", r, "'CType' can only be a type argument of Ptr, ConstPtr or CHandle");
+          const lit = arg?.kind === K.LiteralType ? (arg as ts.LiteralTypeNode).literal : undefined;
+          const v = lit?.kind === K.StringLiteral ? (lit as ts.StringLiteral).text : undefined;
+          if (arg && (v === undefined || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(v) || v === "bool" || C_RESERVED.has(v))) {
+            this.at("E4007", arg, `'${v ?? "?"}' is not a usable C type name`);
+          }
+          return;
+        }
+        if (name === "CHandle") {
+          if (arg) {
+            const t = this.typeOf(arg, true);
+            if (t.k === "fn" || hasPtr(t)) this.at("E4008", findPtrRef(arg) ?? arg, "'CHandle' cannot wrap a function type or a type holding Ptr / ConstPtr");
+            else if (t.k !== "error" && !ptrTargetOk(t)) this.at("E4007", arg, `'${show(t)}' cannot sit inside CHandle`);
+            this.walkTypePos(arg, "chandlearg", ctx);
+          }
+          return;
+        }
+        for (const a of r.typeArguments ?? []) this.walkTypePos(a, "typearg", ctx);
+        return;
+      }
+      case K.TypeLiteral:
+        for (const m of (node as ts.TypeLiteralNode).members) {
+          const p = m as ts.PropertySignatureDeclaration;
+          if (p.type) this.walkTypePos(p.type, "field", ctx);
+        }
+        return;
+      case K.UnionType:
+        for (const u of (node as ts.UnionTypeNode).types) this.walkTypePos(u, "typearg", ctx);
+        return;
+      case K.FunctionType: {
+        const f = node as ts.FunctionTypeNode;
+        for (const p of f.parameters) if (p.type) this.walkTypePos(p.type, place, ctx);
+        if (f.type) this.walkTypePos(f.type, place, ctx);
+        return;
+      }
+      case K.ParenthesizedType: this.walkTypePos((node as ts.ParenthesizedTypeNode).type, place, ctx); return;
+      default: return;
+    }
+  }
+}
+
+/** C keywords (§14.2): a `CType` name must be a C identifier that is none of these (nor `bool`). */
+const C_RESERVED = new Set([
+  "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else", "enum", "extern",
+  "float", "for", "goto", "if", "inline", "int", "long", "register", "restrict", "return", "short", "signed",
+  "sizeof", "static", "struct", "switch", "typedef", "union", "unsigned", "void", "volatile", "while",
+  "_Alignas", "_Alignof", "_Atomic", "_Bool", "_Complex", "_Generic", "_Imaginary", "_Noreturn", "_Static_assert", "_Thread_local",
+]);
+/** The first Ptr / ConstPtr type name inside a type node (the E4008 anchor for a CHandle argument). */
+function findPtrRef(n: Node): Node | undefined {
+  if (n.kind === K.TypeReference) {
+    const r = n as ts.TypeReferenceNode;
+    if (isId(r.typeName) && (r.typeName.text === "Ptr" || r.typeName.text === "ConstPtr")) return r.typeName;
+  }
+  let out: Node | undefined;
+  n.forEachChild((ch) => { out ??= findPtrRef(ch); });
+  return out;
 }
 
 function isAssignOp(k: K): boolean {

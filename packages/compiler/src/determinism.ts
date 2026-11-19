@@ -4,7 +4,7 @@ import { AUTHORITIES, bindTParams, subst, type FnType, type Type } from "./types
 
 const NONDET_OPAQUE = new Set<string>([...AUTHORITIES, "JsRef", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs"]);
 
-export function isDeterministic(sig: FnType): boolean {
+export function isDeterministic(sig: FnType, rtUnsafe = false): boolean {
   const seen = new Set<unknown>();
   const bad = (t: Type): boolean => {
     switch (t.k) {
@@ -13,7 +13,7 @@ export function isDeterministic(sig: FnType): boolean {
       case "prim": return t.name === "unknown";
       case "record": return t.fields.some((f) => bad(f.type));
       case "union": return t.members.some(bad);
-      case "gen": return t.args.some(bad);
+      case "gen": return t.name === "Ptr" || t.name === "ConstPtr" || t.name === "CHandle" || t.args.some(bad); // §7.3
       case "class": {
         if (seen.has(t.cls)) return false;
         seen.add(t.cls);
@@ -24,5 +24,5 @@ export function isDeterministic(sig: FnType): boolean {
       default: return false;
     }
   };
-  return !sig.params.some(bad);
+  return !rtUnsafe && !sig.params.some(bad); // §7.3: rt + unsafe is never deterministic
 }
