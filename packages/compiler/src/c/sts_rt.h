@@ -144,6 +144,53 @@ static napi_value sts_hdl_out(sts_handle h) {
   STS_OK(napi_create_uint32(sts_env, h.idx, &v)); sts_set(o, "idx", v);
   return o;
 }
+typedef struct { uint32_t arena, gen, off, len; } sts_abuf; // an ArenaBuf: four u32s, 16 bytes (Q188 (b))
+static sts_abuf sts_abuf_in(napi_value o) { sts_abuf b; b.arena = (uint32_t)sts_pnum(o, "arena"); b.gen = (uint32_t)sts_pnum(o, "gen"); b.off = (uint32_t)sts_pnum(o, "off"); b.len = (uint32_t)sts_pnum(o, "length"); return b; }
+static napi_value sts_abuf_out(sts_abuf b) {
+  napi_value o, v; STS_OK(napi_create_object(sts_env, &o));
+  STS_OK(napi_create_uint32(sts_env, b.arena, &v)); sts_set(o, "arena", v);
+  STS_OK(napi_create_uint32(sts_env, b.gen, &v)); sts_set(o, "gen", v);
+  STS_OK(napi_create_uint32(sts_env, b.off, &v)); sts_set(o, "off", v);
+  STS_OK(napi_create_uint32(sts_env, b.len, &v)); sts_set(o, "length", v);
+  return o;
+}
+// Arena handles live until the boundary call returns, like Pool handles; the list is reset per entry.
+typedef struct { napi_value obj; void *data; uint32_t cap, used, gen, id; } sts_arena;
+static _Thread_local sts_arena **sts_arenas; static _Thread_local size_t sts_narenas, sts_caparenas;
+static sts_arena *sts_arena_new(void) {
+  if (sts_narenas == sts_caparenas) { sts_caparenas = sts_caparenas ? sts_caparenas * 2 : 16; sts_arenas = realloc(sts_arenas, sts_caparenas * sizeof *sts_arenas); if (!sts_arenas) sts_fail("out of memory"); }
+  sts_arena *a = calloc(1, sizeof *a); if (!a) sts_fail("out of memory");
+  return sts_arenas[sts_narenas++] = a;
+}
+static sts_arena *sts_arena_in(napi_value o) {
+  sts_arena *a = sts_arena_new(); a->obj = o;
+  napi_value buf = sts_get(o, "buf"); napi_typedarray_type tt; size_t n, off; napi_value ab;
+  STS_OK(napi_get_typedarray_info(sts_env, buf, &tt, &n, &a->data, &ab, &off));
+  a->cap = (uint32_t)n;
+  a->used = (uint32_t)sts_pnum(o, "used"); a->gen = (uint32_t)sts_pnum(o, "gen"); a->id = (uint32_t)sts_pnum(o, "id");
+  return a;
+}
+static sts_arena *sts_arena_create(napi_value alloc, uint32_t bytes, int pos) {
+  napi_value host, f = sts_hostf("createArena", &host), args[2], r;
+  args[0] = alloc; STS_OK(napi_create_uint32(sts_env, bytes, &args[1]));
+  sts_alloc_ok(napi_call_function(sts_env, host, f, 2, args, &r), pos);
+  return sts_arena_in(r);
+}
+/** Boundary exit: `used` and `gen` changed in C go back to the JS object. The bytes are shared. */
+static void sts_arena_sync(void) {
+  for (size_t i = 0; i < sts_narenas; i++) {
+    sts_arena *a = sts_arenas[i]; napi_value n;
+    if (napi_create_double(sts_env, (double)a->used, &n) == napi_ok) napi_set_named_property(sts_env, a->obj, "used", n);
+    if (napi_create_double(sts_env, (double)a->gen, &n) == napi_ok) napi_set_named_property(sts_env, a->obj, "gen", n);
+    free(a);
+  }
+  sts_narenas = 0;
+}
+/** Q188 (b): a buf of another arena, or one taken before `reset`, traps T012 at the member name `view`. */
+static sts_slice sts_arena_view(sts_arena *a, sts_abuf b, int pos) {
+  if (b.arena != a->id || b.gen != a->gen) sts_trap(12, pos);
+  return (sts_slice){ (char *)a->data + b.off, b.len };
+}
 static sts_slice sts_vslice(sts_vec *v) { return (sts_slice){ v->data, v->len }; }
 static sts_slice sts_slice_in(napi_value o, uint32_t es, const char *desc) {
   napi_value off; bool has; STS_OK(napi_has_named_property(sts_env, o, "off", &has));

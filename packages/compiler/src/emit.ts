@@ -21,7 +21,7 @@ const P = `${RUNTIME_GLOBAL}_P`, AP = `${RUNTIME_GLOBAL}_ap`, ENS = `${RUNTIME_G
 // Synthetic parameters: user code inside the right side / ensures predicates must not see them.
 const O = `${RUNTIME_GLOBAL}_o`, KEY = `${RUNTIME_GLOBAL}_k`, V = `${RUNTIME_GLOBAL}_v`, R = `${RUNTIME_GLOBAL}_r`;
 /** Builtin namespaces that are runtime values (the rest are JS globals). */
-const RT_NAMESPACES = ["Vec", "Pool", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "TestAlloc"];
+const RT_NAMESPACES = ["Vec", "Pool", "Arena", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "TestAlloc"];
 const DROP_MODS = new Set<K>([K.ExportKeyword, K.ReadonlyKeyword, K.PrivateKeyword, K.PublicKeyword, K.ProtectedKeyword, K.DeclareKeyword, K.AbstractKeyword, K.OverrideKeyword]);
 const COMPOUND: Partial<Record<K, string>> = {
   [K.PlusEqualsToken]: "+", [K.MinusEqualsToken]: "-", [K.AsteriskEqualsToken]: "*",
@@ -261,6 +261,7 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
       const el = self?.k === "gen" ? self.args[0] : undefined;
       return withArgs([q(elemDesc(el))]);
     }
+    if (recv.kind === K.Identifier && (recv as ts.Identifier).text === "Arena" && m === "create" && !typeOf(recv)) return withArgs([]); // no element type (Q188 (b))
     const r0 = typeOf(recv);
     const r = r0 && (nonNull(r0) ?? r0);
     const ns = recv.kind === K.Identifier && !r0 ? (recv as ts.Identifier).text : undefined;
@@ -278,6 +279,8 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
       if ((r.name === "Vec" || r.name === "Slice") && m === "slice") return nn(withArgs([at(p.name)]));
       if (r.name === "OwnedCell" && (m === "take" || m === "put")) return nn(withArgs([at(p.name)]));
       if (r.name === "Pool" && (m === "get" || m === "set" || m === "remove")) return nn(withArgs([at(p.name)])); // T011 at the member name (Q188 (a))
+      if (r.name === "Arena" && m === "alloc") { const nn2 = self && nonNull(self); const el = nn2?.k === "gen" ? nn2.args[0] : undefined; return nn(withArgs([q(elemDesc(el))])); } // Q188 (b)
+      if (r.name === "Arena" && m === "view") { const el = self?.k === "gen" ? self.args[0] : undefined; return nn(withArgs([q(elemDesc(el)), at(p.name)])); } // T012 at the member name (Q188 (b))
     } else if (r && isStr(r)) {
       if (m === "indexOf") return nn(`${RT}.idxOrNull(${withArgs([])})`);
       if (m === "codePointAt") return nn(`${RT}.nn(${withArgs([])})`);

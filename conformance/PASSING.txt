@@ -510,6 +510,13 @@ run/108-trap-pool-set-after-reuse.ts
 run/109-pool-rt-packed.ts
 run/11-contracts-pass.ts
 run/110-pool-generic.ts
+run/111-arena-basic.ts
+run/112-trap-arena-stale-view.ts
+run/113-trap-arena-other-arena.ts
+run/114-arena-views-disjoint.ts
+run/115-trap-arena-view-overlap.ts
+run/116-arena-rt-packed.ts
+run/117-arena-generic.ts
 run/12-string-ops.ts
 run/13-async-await.ts
 run/14-vec-slice.ts

@@ -15,7 +15,7 @@ export type ElemKind = NumType | "other" | `{${string}`;
 type Lay =
   | { t: "num"; n: NumType; z: number } | { t: "bool"; z: number } | { t: "lit"; v: string[]; z: number }
   | { t: "rec"; f: { n: string; o: number; l: Lay }[]; z: number } | { t: "uni"; m: Lay[]; z: number } | { t: "opt"; o: number; l: Lay; z: number }
-  | { t: "hdl"; z: number };
+  | { t: "hdl"; z: number } | { t: "abuf"; z: number };
 interface Codec { readonly z: number; rd(d: DataView, p: number): unknown; wr(d: DataView, p: number, x: unknown): void }
 const LE = true;
 const NUM_RW: Record<NumType, [(d: DataView, p: number) => number, (d: DataView, p: number, x: number) => void]> = {
@@ -52,6 +52,12 @@ function codec(l: Lay): Codec {
         rd: (d, p) => ({ pool: d.getUint32(p, LE), gen: d.getUint32(p + 4, LE), idx: d.getUint32(p + 8, LE) }),
         wr: (d, p, x) => { const h = x as PoolHandle; d.setUint32(p, h.pool, LE); d.setUint32(p + 4, h.gen, LE); d.setUint32(p + 8, h.idx, LE); },
       };
+    case "abuf": // Q188 (b): an ArenaBuf is four u32s (arena id, generation, head byte position, length)
+      return {
+        z: 16,
+        rd: (d, p) => ({ arena: d.getUint32(p, LE), gen: d.getUint32(p + 4, LE), off: d.getUint32(p + 8, LE), length: d.getUint32(p + 12, LE) }),
+        wr: (d, p, x) => { const b = x as ArenaBuf; d.setUint32(p, b.arena, LE); d.setUint32(p + 4, b.gen, LE); d.setUint32(p + 8, b.off, LE); d.setUint32(p + 12, b.length, LE); },
+      };
   }
 }
 const codecs = new Map<string, Codec>();
@@ -68,7 +74,11 @@ export class Slice<T = unknown> {
   private cod: Codec | undefined;
   /** The Vec this views, so a view of a type-parameter Vec can switch representation with it (D105). */
   private readonly owner: Vec<T> | undefined;
-  constructor(buf: Buf<T>, off: number, length: number, cod?: Codec, owner?: Vec<T>) { this.buf = buf; this.off = off; this.length = length; this.cod = cod; this.owner = owner; }
+  /** Extra byte offset of element 0, for a packed view whose head is not a multiple of the element size (Arena, Q188 (b)). */
+  private readonly boff: number;
+  /** Byte range within a root allocation, for the T013 check across element types (Arena views, Q188 (b)). */
+  readonly span: { root: object; lo: number; hi: number; z: number } | undefined;
+  constructor(buf: Buf<T>, off: number, length: number, cod?: Codec, owner?: Vec<T>, boff = 0, span?: { root: object; lo: number; hi: number; z: number }) { this.buf = buf; this.off = off; this.length = length; this.cod = cod; this.owner = owner; this.boff = boff; this.span = span; }
   /** C boundary: a view of a Vec made with a type parameter as its element type ("other") adopts `elem` together with that Vec. */
   adopt(elem: ElemKind): void {
     if (!this.owner || !Array.isArray(this.buf)) return;
@@ -78,12 +88,12 @@ export class Slice<T = unknown> {
   }
   get(i: number, pos?: Pos): T {
     if (!inBounds(i, this.length)) trap("T002", `index ${i} out of range (length ${this.length})`, pos);
-    if (this.cod) return this.cod.rd(dvOf(this.buf as Uint8Array), (this.off + i) * this.cod.z) as T;
+    if (this.cod) return this.cod.rd(dvOf(this.buf as Uint8Array), this.boff + (this.off + i) * this.cod.z) as T;
     return this.buf[this.off + i] as T;
   }
   set(i: number, x: T, pos?: Pos): void {
     if (!inBounds(i, this.length)) trap("T002", `index ${i} out of range (length ${this.length})`, pos);
-    if (this.cod) this.cod.wr(dvOf(this.buf as Uint8Array), (this.off + i) * this.cod.z, x);
+    if (this.cod) this.cod.wr(dvOf(this.buf as Uint8Array), this.boff + (this.off + i) * this.cod.z, x);
     else (this.buf as T[])[this.off + i] = x;
   }
   fill(x: T): void {
@@ -93,10 +103,13 @@ export class Slice<T = unknown> {
   slice(start: number, end: number, pos?: Pos): Slice<T> {
     if (!(Number.isInteger(start) && Number.isInteger(end) && start >= 0 && start <= end && end <= this.length))
       trap("T002", `slice ${start}..${end} out of range (length ${this.length})`, pos);
-    return new Slice(this.buf, this.off + start, end - start, this.cod, this.owner);
+    const span = this.span ? { root: this.span.root, lo: this.span.lo + start * this.span.z, hi: this.span.lo + end * this.span.z, z: this.span.z } : undefined;
+    return new Slice(this.buf, this.off + start, end - start, this.cod, this.owner, this.boff, span);
   }
   /** Q190 (b): same underlying Vec (or, failing that, same buffer) and overlapping element ranges; a zero-length range overlaps nothing. Element ranges stand in for byte ranges: one root has one element size. */
   overlaps(o: Slice<T>): boolean {
+    if (this.span && o.span) return this.span.root === o.span.root && Math.max(this.span.lo, o.span.lo) < Math.min(this.span.hi, o.span.hi);
+    if (this.span || o.span) return false; // a byte view and a value view never share an allocation
     const a: object = this.owner ?? this.buf;
     const b: object = o.owner ?? o.buf;
     return a === b && Math.max(this.off, o.off) < Math.min(this.off + this.length, o.off + o.length);
@@ -207,8 +220,8 @@ export function setAt<T>(a: T[] | Vec<T> | Slice<T>, i: number, x: T, pos?: Pos)
 
 /** A Pool handle (Q188 (a)): pool id, generation, slot index. A plain object; STS code cannot see the fields. */
 export interface PoolHandle { pool: number; gen: number; idx: number }
-/** Pool and Arena ids come from one host counter, starting at 1 (Q188). The Arena half is not implemented yet. */
-let nextPoolId = 1;
+/** Pool and Arena ids come from one host counter, starting at 1 (Q188). */
+let nextHostId = 1;
 
 /**
  * Fixed-capacity pool (Q188 (a)). Storage mirrors Vec (a TypedArray, a packed Uint8Array, or a plain
@@ -229,7 +242,7 @@ export class Pool<T = unknown> {
   private readonly cap: number;
   private constructor(buf: Buf<T>, elem: ElemKind, cap: number, cod?: Codec) {
     this.buf = buf; this.elem = elem; this.cap = cap; this.cod = cod;
-    this.id = nextPoolId++;
+    this.id = nextHostId++;
     this.gens = new Uint32Array(cap); this.occ = new Uint8Array(cap); this.nextFree = new Int32Array(cap);
   }
   /** `alloc` is accepted for the signature only. The capacity is fixed: the pool never grows. */
@@ -291,6 +304,77 @@ export class Pool<T = unknown> {
     return x;
   }
   has(h: PoolHandle): boolean { return this.valid(h); }
+}
+
+/** An ArenaBuf handle (Q188 (b)): arena id, generation, head byte position, element count. A plain object; STS code sees only `length`. */
+export interface ArenaBuf { arena: number; gen: number; off: number; length: number }
+
+const NUM_SIZE: Record<string, number> = { i8: 1, u8: 1, i16: 2, u16: 2, i32: 4, u32: 4, usize: 4, f32: 4, f64: 8 };
+type TypedView = { [i: number]: number; fill(v: number): void };
+const typedView = (elem: string, buf: Uint8Array, off: number, n: number): TypedView =>
+  new (TYPED[elem as NumType] as unknown as new (b: ArrayBufferLike, o: number, n: number) => TypedView)(buf.buffer, off, n);
+
+/**
+ * A bump arena over one host ArrayBuffer (Q188 (b), D102). Allocations are byte ranges handed out in
+ * order; `reset` bumps the generation (a u32, wrapping) and rewinds. An allocation whose element type
+ * is a type parameter ("other") keeps its values in a side array until a concrete `view` packs them
+ * into the bytes; a concrete `view` of a packed side array unpacks it again (D116).
+ * The fields `buf` / `used` / `gen` / `id` are read and written back by the C backend, like Pool's.
+ */
+export class Arena {
+  readonly id: number;
+  private buf: Uint8Array;
+  private used = 0;
+  private gen = 0;
+  private recs = new Map<number, { elem: ElemKind; arr: unknown[] | null }>();
+  private constructor(bytes: number) { this.id = nextHostId++; this.buf = new Uint8Array(bytes); }
+  /** `alloc` is accepted for the signature only: the region is one ArrayBuffer of `bytes` bytes. */
+  static create(_alloc: unknown, bytes: number): Arena { return new Arena(bytes); }
+  get remaining(): number { return this.buf.length - this.used; }
+  private sizeOf(elem: ElemKind): { z: number; a: number } {
+    if (elem === "other") return { z: 8, a: 8 }; // a type parameter's size is nominal until a concrete view fixes it (D116)
+    if (elem.startsWith("{")) { const l = JSON.parse(elem) as { z: number; a: number }; return { z: l.z, a: l.a }; }
+    const z = NUM_SIZE[elem]!; return { z, a: z };
+  }
+  private writeAt(b: ArenaBuf, i: number, x: unknown, elem: ElemKind): void {
+    if (elem.startsWith("{")) codecOf(elem).wr(dvOf(this.buf), b.off + i * codecOf(elem).z, x);
+    else typedView(elem, this.buf, b.off, b.length)[i] = x as number;
+  }
+  private readAt(b: ArenaBuf, i: number, elem: ElemKind): unknown {
+    if (elem.startsWith("{")) return codecOf(elem).rd(dvOf(this.buf), b.off + i * codecOf(elem).z);
+    return typedView(elem, this.buf, b.off, b.length)[i];
+  }
+  alloc<T>(n: number, init: T, elem: ElemKind = "other"): ArenaBuf | null {
+    const { z, a } = this.sizeOf(elem);
+    const off = Math.ceil(this.used / a) * a;
+    if (off + n * z > this.buf.length) return null;
+    this.used = off + n * z;
+    const b: ArenaBuf = { arena: this.id, gen: this.gen, off, length: n };
+    if (elem === "other") this.recs.set(off, { elem, arr: new Array(n).fill(init) });
+    else { this.recs.set(off, { elem, arr: null }); for (let i = 0; i < n; i++) this.writeAt(b, i, init, elem); }
+    return b;
+  }
+  view<T>(b: ArenaBuf, elem: ElemKind = "other", pos?: Pos): Slice<T> {
+    if (!b || b.arena !== this.id || b.gen !== this.gen) trap("T012", "invalid ArenaBuf", pos);
+    const rec = this.recs.get(b.off);
+    if (elem === "other") {
+      if (rec) {
+        if (!rec.arr) { const arr = new Array(b.length); for (let i = 0; i < b.length; i++) arr[i] = this.readAt(b, i, rec.elem); rec.arr = arr; }
+        return new Slice(rec.arr as T[], 0, b.length);
+      }
+      return new Slice(new Array(b.length) as T[], 0, b.length); // made on the C side; its values live in the bytes (D116)
+    }
+    if (rec?.arr) { for (let i = 0; i < b.length; i++) this.writeAt(b, i, rec.arr[i], elem); rec.elem = elem; rec.arr = null; }
+    const { z } = this.sizeOf(elem);
+    const span = { root: this as object, lo: b.off, hi: b.off + b.length * z, z };
+    if (elem.startsWith("{")) return new Slice(this.buf as unknown as Buf<T>, 0, b.length, codecOf(elem), undefined, b.off, span);
+    return new Slice(typedView(elem, this.buf, b.off, b.length) as unknown as Buf<T>, 0, b.length, undefined, undefined, 0, span);
+  }
+  reset(): void {
+    this.gen = (this.gen + 1) >>> 0; // wraps to 0, like a Pool slot generation (Q188 (a))
+    this.used = 0;
+    this.recs.clear();
+  }
 }
 
 export class OwnedCell<T> {

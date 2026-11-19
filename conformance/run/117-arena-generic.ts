@@ -1,0 +1,47 @@
+// expect-output: v=3 len=2 head=1.5
+// expect-output: w=10 len=4
+// stage: 2
+// open-question: Q188
+// open-question: Q215
+function allocSum<T>(a: Mut<Arena>, n: usize, x: T): ArenaBuf<T> | null {
+  "use rt";
+  return a.alloc<T>(n, x);
+}
+
+function head<T>(s: Ref<Slice<T>>): T {
+  "use rt";
+  return s[0];
+}
+
+function headG<T>(a: Ref<Arena>, b: ArenaBuf<T>): T {
+  "use rt";
+  return head(a.view(b));
+}
+
+function readG(a: Ref<Arena>, b: ArenaBuf<f32>): f32 {
+  "use rt";
+  return sumF(a.view(b));
+}
+
+function sumF(s: Ref<Slice<f32>>): f32 {
+  "use rt";
+  let acc: f32 = 0;
+  for (let i: usize = 0; i < s.length; i += 1) {
+    acc += s[i];
+  }
+  return acc;
+}
+
+export function main(sys: System): void {
+  const a = Arena.create(sys.alloc, 64);
+  const b = allocSum<f32>(a, 2, 1.5);
+  if (b === null) {
+    return;
+  }
+  sys.log.info(`v=${readG(a, b)} len=${b.length} head=${headG(a, b)}`);
+  const c = allocSum<f32>(a, 4, 2.5);
+  if (c === null) {
+    return;
+  }
+  sys.log.info(`w=${readG(a, c)} len=${c.length}`);
+}

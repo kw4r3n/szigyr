@@ -134,6 +134,8 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         }
         if (t.name === "Pool") { const e = elemOf(t); if (!layout(e)) throw new CUnsupported(where, `Pool<${show(e)}> (an element type without a byte layout, D105)`); return "sts_pool*"; }
         if (t.name === "Handle") return "sts_handle";
+        if (t.name === "Arena") return "sts_arena*";
+        if (t.name === "ArenaBuf") return "sts_abuf";
         if (t.name === "Ref" || t.name === "Mut") { const a = elemOf(t); return isStruct(a) ? `${ctype(a, where)}*` : ctype(a, where); }
         break;
       case "opaque": if (AUTH.has(t.name)) return "napi_value"; break;
@@ -142,7 +144,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         const lu = t as Extract<Type, { k: "union" }>;
         if (lu.members.every((m) => m.k === "lit")) { for (const m of lu.members) litId((m as { value: string }).value); return "int32_t"; }
         const n = nonNull(t);
-        if (n && (n.k === "num" || isBool(n) || n.k === "lit" || (n.k === "union" && n.members.every((m) => m.k === "lit")) || (isStruct(n) && isCopy(n)) || isTaggedUnion(n) || (n.k === "gen" && n.name === "Handle"))) {
+        if (n && (n.k === "num" || isBool(n) || n.k === "lit" || (n.k === "union" && n.members.every((m) => m.k === "lit")) || (isStruct(n) && isCopy(n)) || isTaggedUnion(n) || (n.k === "gen" && (n.name === "Handle" || n.name === "ArenaBuf")))) {
           const key = show(t);
           let name = nullables.get(key);
           if (!name) { const inner = ctype(n, where); name = `N${nullables.size}`; nullables.set(key, name); typedefs.push(`typedef struct { bool some; ${inner} v; } ${name};`); }
@@ -201,6 +203,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       case "num": ld = `return STS_LD(${ct}, p);`; st = `STS_ST(p, ${ct}, v);`; break;
       case "bool": ld = "return p[0] != 0;"; st = "p[0] = v ? 1 : 0;"; break;
       case "hdl": ld = "sts_handle r; memcpy(&r, p, 12); return r;"; st = "memcpy(p, &v, 12);"; break; // Q188 (a)
+      case "abuf": ld = "sts_abuf r; memcpy(&r, p, 16); return r;"; st = "memcpy(p, &v, 16);"; break; // Q188 (b)
       case "lit": {
         const tb = `L${packs.size}_${helpers.length}`;
         helpers.push(`static const int32_t ${tb}[] = {${l.v.map(litId).join(", ")}};`);
@@ -250,6 +253,8 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     if (isGen(t, "Vec")) { ctype(t, where); return `sts_vec_in(${v}, ${eargs(elemOf(t))})`; }
     if (isGen(t, "Pool")) { ctype(t, where); return `sts_pool_in(${v}, ${eargs(elemOf(t))})`; }
     if (isGen(t, "Handle")) return `sts_hdl_in(${v})`;
+    if (isGen(t, "Arena")) { ctype(t, where); return `sts_arena_in(${v})`; }
+    if (isGen(t, "ArenaBuf")) return `sts_abuf_in(${v})`;
     if (isGen(t, "Slice")) { ctype(t, where); return `sts_slice_in(${v}, ${eargs(elemOf(t))})`; }
     if (t.k === "opaque" && AUTH.has(t.name)) return v;
     if ((t as Type).k === "union" && nonNull(t)) { const n = ctype(t, where); return `({ napi_value x_ = ${v}; sts_isnull(x_) ? (${n}){ .some = false } : (${n}){ .some = true, .v = ${inConv(nonNull(t)!, "x_", where)} }; })`; }
@@ -263,6 +268,8 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     if (isGen(t, "Vec")) return `(${v})->obj`;
     if (isGen(t, "Pool")) return `(${v})->obj`;
     if (isGen(t, "Handle")) return `sts_hdl_out(${v})`;
+    if (isGen(t, "Arena")) return `(${v})->obj`;
+    if (isGen(t, "ArenaBuf")) return `sts_abuf_out(${v})`;
     if (t.k === "opaque" && AUTH.has(t.name)) return v;
     if ((t as Type).k === "union" && nonNull(t)) { const n = nonNull(t)!; ctype(t, where); return `((${v}).some ? ${outConv(n, `(${v}).v`, where)} : sts_mknull())`; }
     throw new CUnsupported(where, `passing '${show(t)}' between C and managed code`);
@@ -302,14 +309,14 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       `  sts_env = env; sts_depth = 0; sts_err = 0; sts_nvecs = 0; if (!sts_stack_lim) sts_stack_init();`,
       `  size_t argc = ${n}; napi_value argv[${Math.max(n, 1)}]; napi_get_cb_info(env, info, &argc, argv, 0, 0);`,
       `  struct { int ok; ${frame.join(" ")} } *volatile fr = calloc(1, sizeof *fr);`,
-      `  if (setjmp(sts_jb)) { if (fr->ok) { fr->ok = 0; ${wb.join(" ")} } sts_vec_sync(); sts_pool_sync(); free(fr); return sts_throw(); }`,
+      `  if (setjmp(sts_jb)) { if (fr->ok) { fr->ok = 0; ${wb.join(" ")} } sts_vec_sync(); sts_pool_sync(); sts_arena_sync(); free(fr); return sts_throw(); }`,
       ...lines,
       `  fr->ok = 1;`,
       isVoid ? `  ${i.name}(${args.join(", ")});` : `  ${ctype(ret, where)} r = ${i.name}(${args.join(", ")});`,
       `  fr->ok = 0; ${wb.join(" ")}`,
       `  napi_value res = ${isVoid ? "0" : outConv(ret, "r", where)};`,
       `  if (!res) napi_get_undefined(env, &res);`,
-      `  sts_vec_sync(); sts_pool_sync(); free(fr); return res;`,
+      `  sts_vec_sync(); sts_pool_sync(); sts_arena_sync(); free(fr); return res;`,
       `}`,
     ].join("\n");
   }
@@ -753,6 +760,8 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       const rt = this.typeOf(p.expression);
       if ((isGen(rt, "Vec") || isGen(rt, "Slice")) && name === "length") { const s = this.seq(p.expression); return this.t({ k: "num", name: "usize" }, s.len, p); }
       if (isGen(rt, "Pool") && (name === "length" || name === "capacity")) return this.t({ k: "num", name: "usize" }, `${this.ex(p.expression)}->${name === "length" ? "len" : "cap"}`, p);
+      if (isGen(rt, "Arena") && name === "remaining") return this.t({ k: "num", name: "usize" }, `${this.ex(p.expression)}->cap - ${this.ex(p.expression)}->used`, p);
+      if (isGen(rt, "ArenaBuf") && name === "length") return this.t({ k: "num", name: "usize" }, `${this.ex(p.expression)}.len`, p);
       if (isStruct(rt)) {
         const t = this.typeOf(p);
         const base = this.placeOrValue(p.expression), ft = rt.fields.find((f) => f.name === name)?.type;
@@ -849,6 +858,11 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
           const a = this.ex(e.arguments[0]!), n = this.ex(e.arguments[1]!);
           return this.t(t, `sts_pool_create(${a}, ${n}, ${cstr(elemDesc(el))}, ${layout(el)!.z}, ${this.pos(p.name)})`, e);
         }
+        if (ns === "Arena" && m === "create") {
+          ctype(t, this.where);
+          const a = this.ex(e.arguments[0]!), n = this.ex(e.arguments[1]!);
+          return this.t(t, `sts_arena_create(${a}, ${n}, ${this.pos(p.name)})`, e);
+        }
         throw this.no(p.name, `'${ns}.${m}'`);
       }
       const rt = this.typeOf(p.expression);
@@ -890,6 +904,27 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
             return this.t(t, r, e);
           }
           case "has": return this.t(t, `sts_pool_valid(${pv}, ${hv()})`, e);
+        }
+        throw this.no(p.name, `the method '${m}' on ${show(rt)}`);
+      }
+      if (isGen(rt, "Arena")) {
+        const pv = `t${this.tmp++}`;
+        this.emit(`sts_arena *${pv} = ${this.ex(p.expression)};`);
+        switch (m) {
+          case "alloc": {
+            const et = elemOf(nonNull(t)!), el = elem(et, this.where), lay = layout(et)!;
+            const n = this.ex(e.arguments[0]!);
+            const x = this.t(et, this.conv(this.ex(e.arguments[1]!), this.typeOf(e.arguments[1]!), et), e);
+            const nct = ctype(t, this.where), r = `t${this.tmp++}`;
+            this.emit(`${nct} ${r};`);
+            this.emit(`{ uint32_t ao = (${pv}->used + ${lay.a - 1}) & ~${lay.a - 1}u; if ((size_t)ao + (size_t)(${n}) * ${lay.z} > ${pv}->cap) { ${r}.some = false; } else { for (uint32_t k = 0; k < ${n}; k++) ${el.st(`((uint8_t *)${pv}->data + ao)`, "k", x)} ${pv}->used = ao + (${n}) * ${lay.z}; ${r}.some = true; ${r}.v.arena = ${pv}->id; ${r}.v.gen = ${pv}->gen; ${r}.v.off = ao; ${r}.v.len = ${n}; } }`);
+            return this.t(t, r, e);
+          }
+          case "view": {
+            const b = this.ex(e.arguments[0]!);
+            return this.t(t, `sts_arena_view(${pv}, ${b}, ${this.pos(p.name)})`, e);
+          }
+          case "reset": this.emit(`${pv}->gen += 1; ${pv}->used = 0;`); return stmt ? undefined : "0";
         }
         throw this.no(p.name, `the method '${m}' on ${show(rt)}`);
       }
