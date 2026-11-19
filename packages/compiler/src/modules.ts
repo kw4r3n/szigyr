@@ -443,7 +443,7 @@ export class Program {
         this.rep.at(e.mod, "E2002", argNodes![0]!, `a ${name} ${name === "Map" ? "key" : "element"} is a string, number, boolean or string literal union, not '${show(args[0]!)}'`);
         return ERROR;
       }
-      if ((name === "Vec" || name === "Slice" || name === "Pool" || name === "Handle") && !demand(args[0]!, "copy")) { // §3.3, Q086, Q127 (Pool / Handle: Q188 (a))
+      if ((name === "Vec" || name === "Slice" || name === "Pool" || name === "Handle" || name === "ArenaBuf") && !demand(args[0]!, "copy")) { // §3.3, Q086, Q127 (Pool / Handle: Q188 (a), ArenaBuf: Q188 (b))
         this.rep.at(e.mod, "E4002", argNodes![0]!, `${name}<T> needs a Copy element type, not '${show(args[0]!)}'`);
         return ERROR;
       }

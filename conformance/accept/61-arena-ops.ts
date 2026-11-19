@@ -1,0 +1,91 @@
+// expect: ok
+// stage: 2
+// open-question: Q188
+// open-question: Q214
+type Cell = Struct<{ readonly b: ArenaBuf<f32>; readonly tag: u32 }>;
+type Box = Struct<{ arena: Arena; n: u32 }>;
+
+export function make(alloc: Alloc, bytes: usize): Arena {
+  "use owned";
+  return Arena.create(alloc, bytes);
+}
+
+export function grab(a: Mut<Arena>, n: usize, x: f32): ArenaBuf<f32> | null {
+  "use rt";
+  return a.alloc<f32>(n, x);
+}
+
+function readSum(s: Ref<Slice<f32>>): f32 {
+  "use rt";
+  let acc: f32 = 0;
+  for (let i: usize = 0; i < s.length; i += 1) {
+    acc += s[i];
+  }
+  return acc;
+}
+
+function fillAll(s: Mut<Slice<f32>>, x: f32): void {
+  "use rt";
+  s.fill(x);
+}
+
+function copyInto(dst: Mut<Slice<f32>>, src: Ref<Slice<f32>>): void {
+  "use rt";
+  for (let i: usize = 0; i < dst.length; i += 1) {
+    dst[i] = src[i];
+  }
+}
+
+export function readBuf(a: Ref<Arena>, b: ArenaBuf<f32>): f32 {
+  "use rt";
+  return readSum(a.view(b));
+}
+
+export function fillBuf(a: Mut<Arena>, b: ArenaBuf<f32>, x: f32): void {
+  "use rt";
+  fillAll(a.view(b), x);
+}
+
+export function moveWithin(a: Mut<Arena>, dst: ArenaBuf<f32>, src: ArenaBuf<f32>): void {
+  "use rt";
+  copyInto(a.view(dst), a.view(src));
+}
+
+export function fillDirect(a: Mut<Arena>, b: ArenaBuf<f32>, x: f32): void {
+  "use rt";
+  a.view(b).fill(x);
+}
+
+export function tailSum(a: Ref<Arena>, b: ArenaBuf<f32>): f32 {
+  "use rt";
+  return readSum(a.view(b).slice(1, 2));
+}
+
+export function wipe(a: Mut<Arena>): void {
+  "use rt";
+  a.reset();
+}
+
+export function left(a: Ref<Arena>): usize {
+  "use rt";
+  return a.remaining;
+}
+
+export function bufLen(b: ArenaBuf<f32>): usize {
+  "use rt";
+  return b.length;
+}
+
+export function roundTrip(alloc: Alloc): f32 {
+  "use owned";
+  const a = Arena.create(alloc, 64);
+  const b = a.alloc<f32>(2, 1.5);
+  if (b === null) {
+    return 0;
+  }
+  const c: Cell = { b, tag: 3 };
+  const bs = Vec.create<ArenaBuf<f32>>(alloc, 1);
+  bs.push(c.b);
+  const box: Box = { arena: a, n: 1 };
+  return readBuf(box.arena, bs[0]);
+}

@@ -7,7 +7,7 @@ import { RUNTIME_GLOBAL } from "./names.ts";
 /** §12 global names; declaring any of them is E1000 (Q010). */
 const BUILTIN_NAMES = new Set([
   "boolean", "string", "number", "f64", "f32", "i8", "i16", "i32", "u8", "u16", "u32", "usize", "null", "void", "unknown", "never",
-  "Array", "ReadonlyArray", "Map", "Set", "Promise", "Result", "Struct", "Vec", "Slice", "Pool", "Handle", "Ref", "Mut", "OwnedCell",
+  "Array", "ReadonlyArray", "Map", "Set", "Promise", "Result", "Struct", "Vec", "Slice", "Pool", "Handle", "Arena", "ArenaBuf", "Ref", "Mut", "OwnedCell",
   "System", "Alloc", "Fs", "Net", "Clock", "Random", "Log", "Js", "Ffi", "Spawn", "JsRef", "JsError", "CastError", "IoError", "Test",
   "wrapAdd", "wrapSub", "wrapMul", "divTrunc", "rem", "ok", "err", "panic", "cast", "requires", "ensures", "invariant", "test",
   "Math", "Number", "JSON", "String", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "TestAlloc",
@@ -25,7 +25,7 @@ const SPECIAL_MEMBERS = new Set(["__proto__", "constructor", "prototype", "then"
 const DIRECTIVES = new Set(["use owned", "use rt"]);
 const CONTRACTS = new Set(["requires", "ensures", "invariant"]);
 /** Q054: annotation heads that make a module-level const mutable. */
-const MUTABLE_TYPES = new Set(["Array", "Map", "Set", "Vec", "Pool"]);
+const MUTABLE_TYPES = new Set(["Array", "Map", "Set", "Vec", "Pool", "Arena"]);
 // Bitwise compound and logical assignments are not in SPEC (Q071): they fall to E1000.
 const BINARY_OPS = new Set<K>([
   K.PlusToken, K.MinusToken, K.AsteriskToken, K.SlashToken, K.PercentToken, K.AsteriskAsteriskToken,

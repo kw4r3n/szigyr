@@ -482,10 +482,10 @@ function eqable(t: Type): boolean {
   return isNum(a) || isBool(a) || isStr(a) || a.k === "class";
 }
 
-/** Q058: the first argument of `t.traps` is a string literal naming an implemented trap (T001 - T010, T013 since Q190). */
+/** Q058: the first argument of `t.traps` is a string literal naming an implemented trap (T001 - T013). */
 function trapCode(c: Checker, a: ts.Expression): void {
-  const ok = (a.kind === K.StringLiteral || a.kind === K.NoSubstitutionTemplateLiteral) && /^T(00[1-9]|010|011|013)$/.test((a as ts.StringLiteral).text);
-  if (!ok) c.at("E2002", a, "the first argument of 'traps' must be a trap code literal \"T001\" - \"T011\" or \"T013\"");
+  const ok = (a.kind === K.StringLiteral || a.kind === K.NoSubstitutionTemplateLiteral) && /^T(00[1-9]|01[0-3])$/.test((a as ts.StringLiteral).text);
+  if (!ok) c.at("E2002", a, "the first argument of 'traps' must be a trap code literal \"T001\" - \"T013\"");
 }
 
 /** Q017: which types `===` / `!==` accept. */
@@ -665,7 +665,8 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
       const rt = exprTypes.get(p.expression);
       const vec = isId(p.expression) && p.expression.text === "Vec" && isNamespace(c, p.expression);
       const pool = isId(p.expression) && p.expression.text === "Pool" && isNamespace(c, p.expression);
-      if (((vec || pool) && p.name.text === "create") || (rt && unref(rt).k === "gen" && (unref(rt) as { name: string }).name === "Vec" && p.name.text === "push")) c.at("E4004", p.name, `'${p.name.text}' allocates`);
+      const arena = isId(p.expression) && p.expression.text === "Arena" && isNamespace(c, p.expression);
+      if (((vec || pool || arena) && p.name.text === "create") || (rt && unref(rt).k === "gen" && (unref(rt) as { name: string }).name === "Vec" && p.name.text === "push")) c.at("E4004", p.name, `'${p.name.text}' allocates`);
     }
     if (m.kind === "error") return ERROR;
     if (m.kind === "variadic") { // Math.min / Math.max (Q033)

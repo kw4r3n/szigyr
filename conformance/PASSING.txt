@@ -59,6 +59,8 @@ accept/57-fn-param-strict.ts
 accept/58-fn-param-forward.ts
 accept/59-fn-param-rt-slice.ts
 accept/60-pool-ops.ts
+accept/61-arena-ops.ts
+accept/62-arena-trap-test.ts
 reject/E1000-array-suffix-type.ts
 reject/E1000-await-in-non-async-arrow.ts
 reject/E1000-await-outside-async.ts
@@ -120,6 +122,8 @@ reject/E2000-number-conversion-function.ts
 reject/E2000-reserved-i64-type.ts
 reject/E2000-undefined-variable.ts
 reject/E2000-unknown-type-name.ts
+reject/E2001-arena-clear.ts
+reject/E2001-arenabuf-member.ts
 reject/E2001-array-flatmap.ts
 reject/E2001-handle-member.ts
 reject/E2001-map-entries.ts
@@ -129,6 +133,7 @@ reject/E2001-readonly-array-push.ts
 reject/E2001-slice-push.ts
 reject/E2001-string-charat.ts
 reject/E2001-vec-insert.ts
+reject/E2002-arenabuf-equality.ts
 reject/E2002-argument-string-for-number.ts
 reject/E2002-array-elem-type-mismatch.ts
 reject/E2002-array-spread-not-array.ts
@@ -318,6 +323,8 @@ reject/E3003-partial-move-by-return.ts
 reject/E3003-partial-move-into-struct-literal.ts
 reject/E3003-partial-move-nested-struct.ts
 reject/E3003-partial-move-to-local.ts
+reject/E3004-arena-view-statement.ts
+reject/E3004-arena-view-stored.ts
 reject/E3004-async-borrow-parameter.ts
 reject/E3004-borrow-captured-by-closure.ts
 reject/E3004-borrow-parameter-reassigned.ts
@@ -333,6 +340,7 @@ reject/E3004-borrow-type-as-type-argument.ts
 reject/E3004-mut-borrow-saved-in-local.ts
 reject/E3004-slice-bound-to-local.ts
 reject/E3004-slice-by-value-parameter.ts
+reject/E3005-arena-view-and-root.ts
 reject/E3005-field-and-subfield-same-root.ts
 reject/E3005-field-reassign-while-borrowed.ts
 reject/E3005-move-inside-later-argument.ts
@@ -353,6 +361,7 @@ reject/E3005-root-and-slice-same-root.ts
 reject/E3005-same-field-twice.ts
 reject/E3005-slice-and-root-same-root.ts
 reject/E3005-slices-and-root-same-root.ts
+reject/E3006-arena-alloc-through-ref.ts
 reject/E3006-fill-through-ref-slice.ts
 reject/E3006-pool-insert-through-ref.ts
 reject/E3006-push-through-ref-receiver.ts
@@ -363,6 +372,7 @@ reject/E3006-write-field-through-ref.ts
 reject/E3006-write-index-through-ref.ts
 reject/E3007-alias-instantiation-inside-array.ts
 reject/E3007-alias-record-field-container-of-owned.ts
+reject/E3007-arena-in-array.ts
 reject/E3007-async-returns-owned.ts
 reject/E3007-cast-target-holds-owned.ts
 reject/E3007-container-alias-of-owned.ts
@@ -403,6 +413,8 @@ reject/E4001-strict-calls-managed-only-builtin.ts
 reject/E4001-strict-calls-managed.ts
 reject/E4001-strict-function-to-rt-param.ts
 reject/E4001-strict-param-forwarded-to-rt.ts
+reject/E4002-arena-alloc-owned.ts
+reject/E4002-arenabuf-string.ts
 reject/E4002-array-param-in-strict.ts
 reject/E4002-async-in-strict.ts
 reject/E4002-managed-type-parameter-into-strict-generic.ts
@@ -430,6 +442,7 @@ reject/E4003-function-type-return-in-strict.ts
 reject/E4003-generic-function-as-fn-arg.ts
 reject/E4003-managed-function-value-in-strict.ts
 reject/E4003-strict-function-as-value.ts
+reject/E4004-arena-create-in-rt.ts
 reject/E4004-pool-create-in-rt.ts
 reject/E4004-push-in-rt-loop.ts
 reject/E4004-push-in-rt.ts
