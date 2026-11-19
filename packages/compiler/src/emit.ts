@@ -96,7 +96,7 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
 
   function gen(n: Node): string {
     switch (n.kind) {
-      case K.TypeAliasDeclaration: case K.InterfaceDeclaration: return "";
+      case K.TypeAliasDeclaration: case K.InterfaceDeclaration: case K.ModuleDeclaration: return ""; // ModuleDeclaration: `declare module "c:..."` (§14.1) declares C functions and has no runtime form
       case K.NumericLiteral: return numName(n) === "f32" ? `${RT}.f32(${splice(n)})` : splice(n); // Q015
       case K.PrefixUnaryExpression: return prefix(n as ts.PrefixUnaryExpression);
       case K.BinaryExpression: return binary(n as ts.BinaryExpression);

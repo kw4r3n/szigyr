@@ -198,3 +198,59 @@ it("two Workers run C-backend strict code at the same time without sharing runti
   const one = `${"400000\n".repeat(40)}|T001@15`;
   expect(JSON.parse(r.stdout)).toEqual([Array(8).fill(one), Array(8).fill(one)]);
 }, 120_000);
+
+// §14.7 (Q196): a C-only program stops with E4009 on the JS backend, before executing
+// anything; `check` never reports E4009, and the C backend runs the program.
+const C_ONLY = `declare module "c:sqlite3:sqlite3.h" {
+  function sqlite3_libversion_number(ffi: Ffi): i32;
+}
+function add(a: i32, b: i32): i32 {
+  "use owned";
+  return a + b;
+}
+export function main(sys: System): void {
+  sys.log.info(\`\${add(20, 22)}\`);
+}
+test("in main", (t: Test) => {
+  t.eq(add(1, 2), 3);
+});
+`;
+
+it("run / test of a C-only program stop with E4009 on js and both; check is clean; C runs it", () => {
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-conly-`));
+  const f = join(dir, "conly.ts");
+  writeFileSync(f, C_ONLY);
+  expect(sts("check", f)).toEqual({ code: 0, out: "", err: "" });
+  const r = sts("run", "--json", f);
+  expect(r.code).toBe(1);
+  expect(r.out).toBe("");
+  expect(jsonLines(r.err)[0]).toMatchObject({ code: "E4009", range: { start: { line: 1, col: 16 } } });
+  expect(sts("run", "--backend=both", f).code).toBe(1);
+  const rc = sts("run", "--backend=c", f);
+  expect(rc.code).toBe(0);
+  expect(rc.out).toBe("42\n");
+  const t = sts("test", "--json", f);
+  expect(t.code).toBe(1);
+  expect(jsonLines(t.out)[0]).toMatchObject({ code: "E4009" });
+  const tc = sts("test", "--json", "--backend=c", f);
+  expect(tc.code).toBe(0);
+  expect(jsonLines(tc.out).at(-1)).toEqual({ kind: "summary", passed: 1, failed: 0 });
+});
+
+it("E4009 anchors at the first unsafe operation when there is no c: module", () => {
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-conly2-`));
+  const f = join(dir, "op.ts");
+  writeFileSync(f, `function take(p: Ptr<i32>): i32 {
+  "use owned";
+  "use unsafe";
+  return p.read();
+}
+export function main(sys: System): void {
+  sys.log.info("x");
+}
+`);
+  const r = sts("run", "--json", f);
+  expect(r.code).toBe(1);
+  expect(jsonLines(r.err)[0]).toMatchObject({ code: "E4009", range: { start: { line: 1, col: 18 } } });
+  expect(sts("check", f).code).toBe(0);
+});

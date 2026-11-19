@@ -647,13 +647,17 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
     if (!sym && BUILTIN_FUNCTIONS.has(callee.text)) return builtinCall(c, e, callee, want);
     if (sym?.k === "fn") {
       if (!c.callCheck(sym)) c.at("E4001", callee, `a ${c.fx.layer} function cannot call the ${sym.layer} function '${sym.name}'`);
-      if (!c.fx.unsafe && (sym.sig.params.some(hasPtr) || hasPtr(sym.sig.ret))) c.at("E4008", callee, `'${sym.name}' has Ptr in its signature; calling it is an unsafe operation`);
+      if (sym.sig.params.some(hasPtr) || hasPtr(sym.sig.ret)) { // §14.4.3: an unsafe operation
+        c.noteUnsafeOp(callee);
+        if (!c.fx.unsafe) c.at("E4008", callee, `'${sym.name}' has Ptr in its signature; calling it is an unsafe operation`);
+      }
       if (c.fx.contract && !isDeterministic(sym.sig, sym.layer === "rt" && sym.unsafe)) c.at("E6002", callee, `a contract can only call deterministic functions ('${sym.name}' is not)`);
       const got = callSig(c, sym.sig, e, callee, want, sym.layer === "managed" ? undefined : sym.layer);
       if (sym.layer !== "managed") c.fnSites.push({ from: c.fn, callee: sym, refs: callFnArgs.get(e) ?? new Map(), node: callee, mod: c.mod }); // Q189 (b): E4005 per instantiation
       return got;
     }
     if (sym?.k === "cfn") { // §14.1 / §14.3: unsafe callers only; rt + unsafe drops the Ffi argument
+      c.noteUnsafeOp(callee); // §14.4.2
       if (!c.fx.unsafe) c.at("E4008", callee, `the C function '${sym.name}' can only be called from a function with 'use unsafe'`);
       const sig = c.fx.layer === "rt" ? { ...sym.sig, params: sym.sig.params.slice(1) } : sym.sig;
       return callSig(c, sig, e, callee, want);
@@ -866,6 +870,7 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
       return nonNull(want) ?? want;
     }
     case "cfn": { // §14.6: the name of a module-level rt function, as a Ptr to it
+      c.noteUnsafeOp(callee); // §14.4.4
       if (!c.fx.unsafe) c.at("E4008", callee, "'cfn' can only be used in a function with 'use unsafe'");
       if (!arity(1)) return ERROR;
       const a = args[0]!;
@@ -1000,12 +1005,14 @@ function unsafeOp(c: Checker, p: ts.PropertyAccessExpression): void {
   const name = p.name.text;
   const recvNode = p.expression;
   if (isId(recvNode) && isNamespace(c, recvNode) && (recvNode.text === "Ptr" || recvNode.text === "CHandle")) {
+    c.noteUnsafeOp(p.name); // §14.4.4: Ptr.box, CHandle.create
     if (!c.fx.unsafe) c.at("E4008", p.name, `'${recvNode.text}.${name}' can only be used in a function with 'use unsafe'`);
     return;
   }
   const rt = exprTypes.get(recvNode);
   const recv = rt ? unref(rt) : undefined;
   if (recv?.k !== "gen" || (recv.name !== "Ptr" && recv.name !== "ConstPtr" && recv.name !== "CHandle")) return;
+  c.noteUnsafeOp(p.name); // §14.4.4: a member of Ptr / ConstPtr / CHandle
   if (!c.fx.unsafe) { c.at("E4008", p.name, `'${name}' can only be used in a function with 'use unsafe'`); return; }
   if (recv.name === "CHandle") return;
   const T = recv.args[0]!;

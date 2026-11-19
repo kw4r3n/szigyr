@@ -59,6 +59,11 @@ export class Checker {
    * `callee` is a module function, or the index of a function-typed parameter of `from`; `refs` resolves the
    * callee's function-typed parameters (by their index) to module functions or parameters of `from`. */
   readonly fnSites: FnSite[] = [];
+  /** §14.7 (Q196): the E4008 anchor of every unsafe operation (§14.4) recognised, in visit
+   * order. Only `run` / `test` read this (they turn the first one, in path order, into
+   * E4009); `check` never reports E4009. */
+  readonly unsafeOps: { mod: Module; node: Node }[] = [];
+  noteUnsafeOp(node: Node): void { this.unsafeOps.push({ mod: this.fx.mod, node }); }
 
   readonly prog: Program;
   constructor(prog: Program) { this.prog = prog; }
@@ -861,6 +866,10 @@ export class Checker {
         const name = isId(r.typeName) ? r.typeName.text : "";
         const arg = r.typeArguments?.[0];
         if (name === "Ptr" || name === "ConstPtr") {
+          // §14.4.1: writing Ptr / ConstPtr in a position where it may appear at all is an
+          // unsafe operation, in whichever context it is written (a C declaration's types
+          // belong to the `c:` specifier instead, so cdecl is excluded).
+          if (!ctx.cdecl && place !== "field" && place !== "typearg" && place !== "alias" && place !== "chandlearg") this.noteUnsafeOp(r.typeName);
           if (place === "field" || place === "typearg" || place === "alias" || place === "chandlearg") {
             this.at("E4008", r.typeName, `'${name}' cannot be written in this position`);
           } else if (!ctx.cdecl && !ctx.unsafe) {

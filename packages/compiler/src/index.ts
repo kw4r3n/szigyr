@@ -3,7 +3,7 @@ import type { Diagnostic, RunResult } from "./diagnostics.ts";
 import { createParser, SyntaxKind, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { DETMATH_PATH } from "./detmath.ts";
 import { checkSyntax } from "./syntax.ts";
-import { Program as Decls, Reporter, checkImportNames } from "./modules.ts";
+import { Program as Decls, Reporter, checkImportNames, type Module } from "./modules.ts";
 import { Checker } from "./checker.ts";
 import { checkOwnership } from "./ownership.ts";
 import { trapSites, type TrapSite } from "./traps.ts";
@@ -98,19 +98,51 @@ export function check(entryFile: string): Diagnostic[] {
 }
 
 /** P1 + P2 + P3 over the program; on success the expression types are in `exprTypes` for the emitter. */
-function analyze(entryFile: string): { files: ParsedFile[]; diagnostics: Diagnostic[]; warnings?: Diagnostic[]; decls?: Decls } {
+function analyze(entryFile: string): { files: ParsedFile[]; diagnostics: Diagnostic[]; warnings?: Diagnostic[]; decls?: Decls; unsafeOps?: { mod: Module; node: Node }[] } {
   const prog = loadProgram(entryFile);
   const p1 = [...prog.missing, ...prog.files.flatMap((f) => checkSyntax(f, displayPath(f.path)))];
   if (!p1.length) p1.push(...checkImportNames(prog.files, displayPath));
   if (p1.length) return { files: prog.files, diagnostics: p1 };
   const rep = new Reporter();
   const decls = new Decls(prog.files, displayPath, rep);
-  new Checker(decls).run();
+  const chk = new Checker(decls);
+  chk.run();
   if (!rep.out.length) checkOwnership(decls);
-  if (rep.out.length) return { files: prog.files, diagnostics: rep.out, decls };
+  if (rep.out.length) return { files: prog.files, diagnostics: rep.out, decls, unsafeOps: chk.unsafeOps };
   const warns = new Reporter();
   loopBoundaryWarnings(decls, warns);
-  return { files: prog.files, diagnostics: [], warnings: warns.out, decls };
+  return { files: prog.files, diagnostics: [], warnings: warns.out, decls, unsafeOps: chk.unsafeOps };
+}
+
+/** §14.7 (Q196): a program is C-only when one of its files declares a `c:` module or uses an
+ * unsafe operation (§14.4). The E4009 anchor is the first `c:` specifier or unsafe operation
+ * found in the program's files in path order (an operation's anchor is its E4008 anchor).
+ * Only `run` / `test` report this, before executing; `check` never does. */
+function cOnlyDiagnostic(files: ParsedFile[], ops: { mod: Module; node: Node }[]): Diagnostic | undefined {
+  let best: { pf: ParsedFile; node: Node } | undefined;
+  const offer = (pf: ParsedFile, node: Node): void => {
+    if (!best || pf.path < best.pf.path || (pf.path === best.pf.path && node.getStart(pf.sourceFile) < best.node.getStart(best.pf.sourceFile))) best = { pf, node };
+  };
+  for (const pf of files) {
+    for (const s of pf.sourceFile.statements) {
+      if (s.kind === SyntaxKind.ModuleDeclaration) {
+        const name = (s as ts.ModuleDeclaration).name;
+        if (name.kind === SyntaxKind.StringLiteral && (name as ts.StringLiteral).text.startsWith("c:")) offer(pf, name);
+      } else if (s.kind === SyntaxKind.ImportDeclaration) {
+        const spec = (s as ts.ImportDeclaration).moduleSpecifier;
+        if (spec.kind === SyntaxKind.StringLiteral && (spec as ts.StringLiteral).text.startsWith("c:")) offer(pf, spec);
+      }
+    }
+  }
+  for (const op of ops) offer(op.mod.pf, op.node);
+  if (!best) return undefined;
+  const { pf, node } = best;
+  return {
+    code: "E4009", severity: "error",
+    message: "program is C-only (a 'c:' module or an unsafe operation); run it with --backend=c",
+    file: displayPath(pf.path),
+    range: { start: pf.position(node.getStart(pf.sourceFile)), end: pf.position(node.end) },
+  };
 }
 
 /** §7.3 query (Q062): for each top-level function of the entry file, whether it is deterministic. Assumes P1 passes. */
@@ -206,6 +238,8 @@ export const run = (entryFile: string, opts: RunOptions = {}): Promise<RunResult
 async function runNow(entryFile: string, backend?: Backend): Promise<RunResult> {
   const a = analyze(entryFile);
   if (a.diagnostics.length) return { diagnostics: a.diagnostics, stdout: "", trap: null };
+  const e4009 = backend !== "c" ? cOnlyDiagnostic(a.files, a.unsafeOps ?? []) : undefined; // §14.7
+  if (e4009) return { diagnostics: [e4009], stdout: "", trap: null };
   const main = (await loadChecked(a.files, entryFile, false, a.decls, backend)).main;
   if (typeof main !== "function") throw new Error(`${entryFile}: no exported function 'main'`); // Q061: a CLI error, not a diagnostic
   const r = await runMain(main as Parameters<typeof runMain>[0]);
@@ -219,6 +253,8 @@ export const runTestFile = (entryFile: string, opts: RunOptions = {}): Promise<{
 async function runTestFileNow(entryFile: string, backend?: Backend): Promise<{ diagnostics: Diagnostic[]; results: rt.TestResult[] }> {
   const a = analyze(entryFile);
   if (a.diagnostics.length) return { diagnostics: a.diagnostics, results: [] };
+  const e4009 = backend !== "c" ? cOnlyDiagnostic(a.files, a.unsafeOps ?? []) : undefined; // §14.7
+  if (e4009) return { diagnostics: [e4009], results: [] };
   rt.clearTests();
   await loadChecked(a.files, entryFile, true, a.decls, backend);
   try { return { diagnostics: [], results: await rt.runTests() }; } finally { rt.clearTests(); }
