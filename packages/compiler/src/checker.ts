@@ -369,16 +369,18 @@ export class Checker {
     } else {
       const reach = this.block((body as ts.Block).statements, true);
       const r = this.fx.ret;
+      const anchor = d.kind === K.ArrowFunction ? (d as ts.ArrowFunction).equalsGreaterThanToken : (d as { name?: Node }).name ?? d;
       if (r && reach && !isVoidish(r) && r.k !== "error") {
-        const anchor = d.kind === K.ArrowFunction ? (d as ts.ArrowFunction).equalsGreaterThanToken : (d as { name?: Node }).name ?? d;
         this.at("E2002", anchor, "function can reach its end without returning a value");
       }
       if (!r) {
         const rs = this.fx.returns.filter((t) => !(t.k === "prim" && t.name === "never"));
         result = rs.length ? union(rs) : this.fx.returns.length ? NEVER : VOID;
         if (result.k === "union" && !legalUnion(result) && !rs.some((t) => t.k === "error")) { // Q126
-          const anchor = d.kind === K.ArrowFunction ? (d as ts.ArrowFunction).equalsGreaterThanToken : (d as { name?: Node }).name ?? d;
           this.at("E2002", anchor, `the inferred return type '${show(result)}' is not an allowed union; annotate the return type`);
+          result = ERROR;
+        } else if (reach && !isVoidish(result) && result.k !== "error" && !rs.some((t) => t.k === "error")) { // Q221
+          this.at("E2002", anchor, "function can reach its end without returning a value");
           result = ERROR;
         }
       }

@@ -160,6 +160,7 @@ reject/E2002-arenabuf-equality.ts
 reject/E2002-argument-string-for-number.ts
 reject/E2002-array-elem-type-mismatch.ts
 reject/E2002-array-spread-not-array.ts
+reject/E2002-arrow-inferred-missing-return.ts
 reject/E2002-assign-boolean-to-number-var.ts
 reject/E2002-await-conditional-null-branch.ts
 reject/E2002-cast-class-target.ts
