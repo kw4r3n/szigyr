@@ -592,11 +592,12 @@ class Flow {
       const mode = borrowMode(p);
       if (mode) { const u = this.borrow(a, mode, undefined, i); if (u) uses.push(u); return; }
       const x = strip(a);
+      let unboxRoot: LocalSym | undefined;
       if (x.kind === K.CallExpression) { // §14.4: `p.unbox()` as a whole argument counts as a Mut use of `p`
         const cp = (x as ts.CallExpression).expression;
         if (cp.kind === K.PropertyAccessExpression && (cp as ts.PropertyAccessExpression).name.text === "unbox" && genName(exprTypes.get((cp as ts.PropertyAccessExpression).expression)) === "Ptr") {
           const root = this.ptrRoot((cp as ts.PropertyAccessExpression).expression);
-          if (root) { uses.push({ sym: root.sym, mode: "mut", node: x, path: root.path, slice: false, arg: i }); this.pendingMut.push(root.sym); }
+          if (root) { uses.push({ sym: root.sym, mode: "mut", node: x, path: root.path, slice: false, arg: i }); unboxRoot = root.sym; }
         }
       }
       if (isId(x) && !store) {
@@ -607,6 +608,7 @@ class Flow {
         return;
       }
       this.ex(a, store ? "store" : "move");
+      if (unboxRoot) this.pendingMut.push(unboxRoot); // push after evaluating this argument so `p.unbox()` does not conflict with itself
     });
     // E3005 (§5.5): a variable passed as Mut takes part in no other argument; moving it while borrowed is rejected too (Q152).
     // Q190 (a): places are field paths, not just roots.
