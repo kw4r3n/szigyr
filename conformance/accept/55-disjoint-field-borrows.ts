@@ -1,0 +1,51 @@
+// expect: ok
+// stage: 2
+// open-question: Q190
+type Pair = Struct<{ a: Vec<f32>; b: Vec<f32> }>;
+type Inner = Struct<{ x: Vec<f32>; y: Vec<f32> }>;
+type Outer = Struct<{ inner: Inner; other: Vec<f32> }>;
+
+function copyV(dst: Mut<Vec<f32>>, src: Ref<Vec<f32>>): void {
+  "use owned";
+  for (let i: usize = 0; i < dst.length; i += 1) {
+    dst[i] = src[i];
+  }
+}
+
+function swapV(a: Mut<Vec<f32>>, b: Mut<Vec<f32>>): void {
+  "use owned";
+  for (let i: usize = 0; i < a.length; i += 1) {
+    const t: f32 = a[i];
+    a[i] = b[i];
+    b[i] = t;
+  }
+}
+
+// 同じ根でも、重ならないフィールドパスは別の場所 (Q190 (a))
+function g(p: Mut<Pair>): void {
+  "use owned";
+  copyV(p.a, p.b);
+  swapV(p.a, p.b);
+}
+
+// 入れ子のパスどうしも、どちらも他方の前置でなければよい
+function h(o: Mut<Outer>): void {
+  "use owned";
+  copyV(o.inner.x, o.inner.y);
+  copyV(o.inner.x, o.other);
+  copyV(o.other, o.inner.y);
+}
+
+test("disjoint field borrows", (t: Test) => {
+  const alloc = TestAlloc.create();
+  const a = Vec.create<f32>(alloc, 2);
+  a.push(1); a.push(2);
+  const b = Vec.create<f32>(alloc, 2);
+  b.push(3); b.push(4);
+  const p: Pair = { a, b };
+  g(p);
+  t.eq(p.a[0], 3);
+  t.eq(p.a[1], 4);
+  t.eq(p.b[0], 3);
+  t.eq(p.b[1], 4);
+});

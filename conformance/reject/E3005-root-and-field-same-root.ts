@@ -1,0 +1,11 @@
+// expect: E3005 @ 10:11
+// stage: 2
+// open-question: Q190
+type Pair = Struct<{ a: Vec<f32>; b: Vec<f32> }>;
+function both(s: Mut<Pair>, v: Mut<Vec<f32>>): void {
+  "use owned";
+}
+function g(p: Mut<Pair>): void {
+  "use owned";
+  both(p, p.a);
+}

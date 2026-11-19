@@ -53,6 +53,7 @@ accept/52-owned-types-shapes.ts
 accept/53-cast-after-unwrapping-result.ts
 accept/54-alias-copy-instantiation.ts
 accept/54-loop-boundary-warning.ts
+accept/55-disjoint-field-borrows.ts
 reject/E1000-array-suffix-type.ts
 reject/E1000-await-in-non-async-arrow.ts
 reject/E1000-await-outside-async.ts
@@ -323,8 +324,8 @@ reject/E3004-borrow-type-as-type-argument.ts
 reject/E3004-mut-borrow-saved-in-local.ts
 reject/E3004-slice-bound-to-local.ts
 reject/E3004-slice-by-value-parameter.ts
-reject/E3005-disjoint-fields-same-root.ts
 reject/E3005-disjoint-slices-same-root.ts
+reject/E3005-field-and-subfield-same-root.ts
 reject/E3005-field-reassign-while-borrowed.ts
 reject/E3005-move-inside-later-argument.ts
 reject/E3005-move-inside-receiver-argument.ts
@@ -338,6 +339,8 @@ reject/E3005-mut-borrow-inside-slice-bound.ts
 reject/E3005-reassign-while-borrowed.ts
 reject/E3005-ref-and-move-same-variable.ts
 reject/E3005-ref-then-mut-same-variable.ts
+reject/E3005-root-and-field-same-root.ts
+reject/E3005-same-field-twice.ts
 reject/E3006-fill-through-ref-slice.ts
 reject/E3006-push-through-ref-receiver.ts
 reject/E3006-push-through-ref-struct-field.ts
