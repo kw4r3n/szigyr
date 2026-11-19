@@ -38,7 +38,7 @@ const strip = (e: ts.Expression): ts.Expression => {
 const genName = (t: Type | undefined): string | undefined => { const u = t && unref(t); return u?.k === "gen" ? u.name : undefined; };
 const borrowMode = (t: Type | undefined): "ref" | "mut" | undefined => (t?.k === "gen" && t.name === "Ref" ? "ref" : t?.k === "gen" && t.name === "Mut" ? "mut" : undefined);
 /** Vec / Slice methods that need `Mut` of the receiver (§3.3). */
-const MUT_METHODS = new Set(["push", "pop", "clear", "fill"]);
+const MUT_METHODS = new Set(["push", "pop", "clear", "fill", "insert", "set", "remove"]);
 const FN_EXPR = new Set<K>([K.ArrowFunction, K.FunctionExpression]);
 const isNever = (t: Type | undefined): boolean => t?.k === "prim" && t.name === "never";
 
@@ -495,7 +495,7 @@ class Flow {
     if (callee.kind === K.PropertyAccessExpression) {
       const p = callee as ts.PropertyAccessExpression;
       const g = genName(exprTypes.get(p.expression));
-      if ((g === "Vec" || g === "Slice") && e.kind === K.CallExpression) {
+      if ((g === "Vec" || g === "Slice" || g === "Pool") && e.kind === K.CallExpression) {
         if (p.name.text === "slice") this.m.at("E3004", p.name, "'slice' can only be a borrowed argument or a receiver"); // Q013
         const u = this.borrow(p.expression, MUT_METHODS.has(p.name.text) ? "mut" : "ref", p.name as ts.Identifier);
         if (u) uses.push(u);
