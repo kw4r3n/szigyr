@@ -8,6 +8,7 @@
 #include <string.h>
 #include <math.h>
 #include <setjmp.h>
+#include <stdatomic.h>
 
 typedef struct { napi_value obj; void *data; uint32_t len, cap, esize; napi_typedarray_type tt; } sts_vec;
 typedef struct { void *data; uint32_t len; } sts_slice;
@@ -190,6 +191,34 @@ static void sts_arena_sync(void) {
 static sts_slice sts_arena_view(sts_arena *a, sts_abuf b, int pos) {
   if (b.arena != a->id || b.gen != a->gen) sts_trap(12, pos);
   return (sts_slice){ (char *)a->data + b.off, b.len };
+}
+
+/** §15.1 (Q199): a ring endpoint. All state lives in the SharedArrayBuffer — the head counter at
+ * byte 0, the tail counter at byte 4, the elements at byte 8 in the §10.2 layout — so there is
+ * nothing to sync back at the boundary, and the positions are read and written with C11 atomics
+ * (acquire / release), the same operations the JS side does with Atomics (D122). */
+typedef struct { napi_value obj; uint8_t *base; uint32_t cap, esize; } sts_ring;
+static sts_ring sts_ring_in(napi_value o, uint32_t es, const char *desc) {
+  napi_value sab = sts_get(o, "sab");
+  napi_valuetype vt; STS_OK(napi_typeof(sts_env, sab, &vt));
+  if (vt == napi_null || vt == napi_undefined) { // an element type that was a type parameter: adopt its representation (D105)
+    napi_value host, f = sts_hostf("adoptRing", &host), args[2] = { o }, r;
+    STS_OK(napi_create_string_utf8(sts_env, desc, NAPI_AUTO_LENGTH, &args[1]));
+    STS_OK(napi_call_function(sts_env, host, f, 2, args, &r));
+    sab = sts_get(o, "sab");
+  }
+  void *data; size_t len;
+  STS_OK(napi_get_arraybuffer_info(sts_env, sab, &data, &len));
+  sts_ring r; r.obj = o; r.base = (uint8_t *)data; r.cap = (uint32_t)sts_pnum(o, "cap"); r.esize = es;
+  return r;
+}
+/** The pair object { tx, rx } the host made; the caller converts its fields with sts_ring_in. */
+static napi_value sts_ring_create(napi_value alloc, uint32_t cap, const char *elem, int pos) {
+  if (cap == 0 || cap > 0x80000000u || (cap & (cap - 1)) != 0) sts_trap(14, pos); // T014 (§15.1)
+  napi_value host, f = sts_hostf("createRing", &host), args[3], r;
+  args[0] = alloc; STS_OK(napi_create_uint32(sts_env, cap, &args[1])); STS_OK(napi_create_string_utf8(sts_env, elem, NAPI_AUTO_LENGTH, &args[2]));
+  sts_alloc_ok(napi_call_function(sts_env, host, f, 3, args, &r), pos);
+  return r;
 }
 static sts_slice sts_vslice(sts_vec *v) { return (sts_slice){ v->data, v->len }; }
 static sts_slice sts_slice_in(napi_value o, uint32_t es, const char *desc) {

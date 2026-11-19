@@ -24,7 +24,7 @@ const RANGE: Record<string, [string, string]> = {
   u8: ["0LL", "255LL"], u16: ["0LL", "65535LL"], u32: ["0LL", "4294967295LL"], usize: ["0LL", "4294967295LL"],
 };
 const CNUM: Record<NumName, string> = { f64: "double", f32: "float", i8: "int8_t", i16: "int16_t", i32: "int32_t", u8: "uint8_t", u16: "uint16_t", u32: "uint32_t", usize: "uint32_t" };
-const TRAP: Record<string, number> = { T001: 1, T002: 2, T003: 3, T004: 4, T005: 5, T006: 6, T007: 7, T008: 8, T009: 9, T010: 10, T011: 11, T013: 13 };
+const TRAP: Record<string, number> = { T001: 1, T002: 2, T003: 3, T004: 4, T005: 5, T006: 6, T007: 7, T008: 8, T009: 9, T010: 10, T011: 11, T013: 13, T014: 14 };
 const numText = (n: ts.NumericLiteral): number => Number(n.text.replace(/_/g, ""));
 const isGen = (t: Type, n: string): boolean => t.k === "gen" && t.name === n;
 /** Structs, and the all-readonly Copy records strict / rt accepts as Copy Structs (Q043). */
@@ -141,6 +141,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
           return t.name === "Vec" ? "sts_vec*" : "sts_slice";
         }
         if (t.name === "Pool") { const e = elemOf(t); if (!layout(e)) throw new CUnsupported(where, `Pool<${show(e)}> (an element type without a byte layout, D105)`); return "sts_pool*"; }
+        if (t.name === "RingTx" || t.name === "RingRx") { const e = elemOf(t); if (!layout(e)) throw new CUnsupported(where, `${t.name}<${show(e)}> (an element type without a byte layout, D105)`); return "sts_ring"; }
         if (t.name === "Handle") return "sts_handle";
         if (t.name === "Arena") return "sts_arena*";
         if (t.name === "ArenaBuf") return "sts_abuf";
@@ -265,6 +266,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     if (isStruct(t) || (t.k === "union" && isTaggedUnion(t))) return `in_${ctype(t, where)}(${v})`;
     if (isGen(t, "Vec")) { ctype(t, where); return `sts_vec_in(${v}, ${eargs(elemOf(t))})`; }
     if (isGen(t, "Pool")) { ctype(t, where); return `sts_pool_in(${v}, ${eargs(elemOf(t))})`; }
+    if (isGen(t, "RingTx") || isGen(t, "RingRx")) { ctype(t, where); return `sts_ring_in(${v}, ${eargs(elemOf(t))})`; }
     if (isGen(t, "Handle")) return `sts_hdl_in(${v})`;
     if (isGen(t, "Arena")) { ctype(t, where); return `sts_arena_in(${v})`; }
     if (isGen(t, "ArenaBuf")) return `sts_abuf_in(${v})`;
@@ -280,6 +282,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     if (isStruct(t) || (t.k === "union" && isTaggedUnion(t))) return `out_${ctype(t, where)}(${v})`;
     if (isGen(t, "Vec")) return `(${v})->obj`;
     if (isGen(t, "Pool")) return `(${v})->obj`;
+    if (isGen(t, "RingTx") || isGen(t, "RingRx")) return `(${v}).obj`;
     if (isGen(t, "Handle")) return `sts_hdl_out(${v})`;
     if (isGen(t, "Arena")) return `(${v})->obj`;
     if (isGen(t, "ArenaBuf")) return `sts_abuf_out(${v})`;
@@ -884,6 +887,13 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
           const a = this.ex(e.arguments[0]!), n = this.ex(e.arguments[1]!);
           return this.t(t, `sts_arena_create(${a}, ${n}, ${this.pos(p.name)})`, e);
         }
+        if (ns === "Ring" && m === "create") {
+          const pair = ctype(t, this.where); // registers the pair Struct and its in_ conversion
+          const txf = t.k === "record" ? t.fields.find((f) => f.name === "tx")?.type : undefined;
+          const el = txf?.k === "gen" ? txf.args[0]! : elemOf(t);
+          const a = this.ex(e.arguments[0]!), n = this.ex(e.arguments[1]!);
+          return this.t(t, `in_${pair}(sts_ring_create(${a}, ${n}, ${cstr(elemDesc(el))}, ${this.pos(p.name)}))`, e);
+        }
         throw this.no(p.name, `'${ns}.${m}'`);
       }
       const rt = this.typeOf(p.expression);
@@ -946,6 +956,31 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
             return this.t(t, `sts_arena_view(${pv}, ${b}, ${this.pos(p.name)})`, e);
           }
           case "reset": this.emit(`${pv}->gen += 1; ${pv}->used = 0;`); return stmt ? undefined : "0";
+        }
+        throw this.no(p.name, `the method '${m}' on ${show(rt)}`);
+      }
+      if (isGen(rt, "RingTx") || isGen(rt, "RingRx")) {
+        const et = elemOf(rt), el = elem(et, this.where);
+        const rv = `t${this.tmp++}`;
+        this.emit(`sts_ring ${rv} = ${this.ex(p.expression)};`);
+        const head = `atomic_load_explicit((_Atomic uint32_t *)(${rv}.base), memory_order_acquire)`;
+        const tail = `atomic_load_explicit((_Atomic uint32_t *)(${rv}.base + 4), memory_order_acquire)`;
+        if (m === "push") {
+          const x = this.t(et, this.conv(this.ex(e.arguments[0]!), this.typeOf(e.arguments[0]!), et), e);
+          const r = `t${this.tmp++}`;
+          this.emit(`bool ${r};`);
+          this.emit(`{ uint32_t tl = ${tail}; uint32_t hd = ${head}; if (tl - hd >= ${rv}.cap) { ${r} = false; } else { ${el.st(`${rv}.base + 8`, `tl & (${rv}.cap - 1)`, x)} atomic_store_explicit((_Atomic uint32_t *)(${rv}.base + 4), tl + 1, memory_order_release); ${r} = true; } }`);
+          return this.t(t, r, e);
+        }
+        if (m === "pop") {
+          const n = ctype(t, this.where), r = `t${this.tmp++}`;
+          this.emit(`${n} ${r};`);
+          if (nonNull(et)) { // the element is itself nullable: pop's T | null is the element type (as Vec.pop)
+            this.emit(`{ uint32_t hd = ${head}; uint32_t tl = ${tail}; if (hd == tl) { ${r}.some = false; } else { ${r} = ${el.ld(`${rv}.base + 8`, `hd & (${rv}.cap - 1)`)}; atomic_store_explicit((_Atomic uint32_t *)(${rv}.base), hd + 1, memory_order_release); } }`);
+          } else {
+            this.emit(`{ uint32_t hd = ${head}; uint32_t tl = ${tail}; if (hd == tl) { ${r}.some = false; } else { ${r}.some = true; ${r}.v = ${el.ld(`${rv}.base + 8`, `hd & (${rv}.cap - 1)`)}; atomic_store_explicit((_Atomic uint32_t *)(${rv}.base), hd + 1, memory_order_release); } }`);
+          }
+          return this.t(t, r, e);
         }
         throw this.no(p.name, `the method '${m}' on ${show(rt)}`);
       }

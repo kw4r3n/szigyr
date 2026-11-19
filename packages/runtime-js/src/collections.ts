@@ -377,6 +377,125 @@ export class Arena {
   }
 }
 
+
+/**
+ * SPSC ring buffer (SPEC 15.1, Q199). The storage is one SharedArrayBuffer: the head (read) and
+ * tail (write) positions are monotonic u32 counters at bytes 0 and 4, read and written with
+ * acquire / release ordering (Atomics here, C11 atomics in the C backend, D122), and the elements
+ * sit at byte 8 in the 10.2 layout, the slot of counter c being c & (capacity - 1). No state lives
+ * outside the buffer, so the endpoints work from any thread, and either side being dropped leaves
+ * the other usable. A ring whose element type is a type parameter ("other") keeps its values in a
+ * plain queue until the C boundary adopts a concrete representation, like Vec (D105).
+ */
+const RING_ELEMS = 8; // bytes 0..3: head, 4..7: tail
+interface RingShared<T> {
+  sab: SharedArrayBuffer | null;
+  cap: number;
+  elem: ElemKind;
+  cod: Codec | undefined;
+  view: TypedView | undefined; // numeric elements, over the SAB
+  dv: DataView | undefined;
+  pos: Uint32Array | undefined; // [head, tail] over the SAB
+  queue: T[]; // "other" mode only
+}
+function ringAttach<T>(s: RingShared<T>, sab: SharedArrayBuffer, elem: ElemKind): void {
+  s.sab = sab;
+  s.elem = elem;
+  s.cod = elem.startsWith("{") ? codecOf(elem) : undefined;
+  s.dv = new DataView(sab);
+  s.pos = new Uint32Array(sab, 0, 2);
+  s.view = s.cod ? undefined : new (TYPED[elem as NumType] as unknown as new (b: ArrayBufferLike, o: number, n: number) => TypedView)(sab, RING_ELEMS, s.cap);
+}
+function ringWrite<T>(s: RingShared<T>, slot: number, x: T): void {
+  if (s.cod) s.cod.wr(s.dv!, RING_ELEMS + slot * s.cod.z, x);
+  else s.view![slot] = x as number;
+}
+function ringRead<T>(s: RingShared<T>, slot: number): T {
+  if (s.cod) return s.cod.rd(s.dv!, RING_ELEMS + slot * s.cod.z) as T;
+  return s.view![slot] as T;
+}
+function ringAlloc<T>(cap: number, elem: ElemKind): SharedArrayBuffer {
+  const z = elem.startsWith("{") ? codecOf(elem).z : NUM_SIZE[elem]!;
+  return new SharedArrayBuffer(RING_ELEMS + cap * z);
+}
+
+export class RingTx<T = unknown> {
+  private s: RingShared<T>;
+  constructor(s: RingShared<T>) { this.s = s; }
+  /** The buffer the C backend works on (sts_ring_in); null until a type-parameter element adopts one. */
+  get sab(): SharedArrayBuffer | null { return this.s.sab; }
+  /** The capacity the C backend reads (sts_ring_in). */
+  get cap(): number { return this.s.cap; }
+  /** C boundary: switch a type-parameter element to its concrete representation (like Vec.adopt). */
+  adopt(elem: ElemKind): void {
+    const s = this.s;
+    if (s.sab || elem === "other") return;
+    ringAttach(s, ringAlloc(s.cap, elem), elem);
+    for (let i = 0; i < s.queue.length; i++) ringWrite(s, i, s.queue[i]!);
+    Atomics.store(s.pos!, 1, s.queue.length);
+    s.queue = [];
+  }
+  push(x: T): boolean {
+    const s = this.s;
+    if (!s.sab) {
+      if (s.queue.length >= s.cap) return false;
+      s.queue.push(x);
+      return true;
+    }
+    const tail = Atomics.load(s.pos!, 1);
+    const head = Atomics.load(s.pos!, 0);
+    if (((tail - head) >>> 0) >= s.cap) return false; // full, as far as this side can see (15.1)
+    ringWrite(s, tail & (s.cap - 1), x);
+    Atomics.store(s.pos!, 1, (tail + 1) >>> 0); // release: the element write above is visible first
+    return true;
+  }
+}
+
+export class RingRx<T = unknown> {
+  private s: RingShared<T>;
+  constructor(s: RingShared<T>) { this.s = s; }
+  /** The buffer the C backend works on (sts_ring_in); null until a type-parameter element adopts one. */
+  get sab(): SharedArrayBuffer | null { return this.s.sab; }
+  /** The capacity the C backend reads (sts_ring_in). */
+  get cap(): number { return this.s.cap; }
+  /** C boundary: switch a type-parameter element to its concrete representation (like Vec.adopt). */
+  adopt(elem: ElemKind): void {
+    const s = this.s;
+    if (s.sab || elem === "other") return;
+    ringAttach(s, ringAlloc(s.cap, elem), elem);
+    for (let i = 0; i < s.queue.length; i++) ringWrite(s, i, s.queue[i]!);
+    Atomics.store(s.pos!, 1, s.queue.length);
+    s.queue = [];
+  }
+  pop(): T | null {
+    const s = this.s;
+    if (!s.sab) return s.queue.length ? s.queue.shift()! : null;
+    const head = Atomics.load(s.pos!, 0);
+    const tail = Atomics.load(s.pos!, 1);
+    if (head === tail) return null; // empty, as far as this side can see (15.1)
+    const x = ringRead(s, head & (s.cap - 1));
+    Atomics.store(s.pos!, 0, (head + 1) >>> 0); // release: the slot is free for the writer
+    return x;
+  }
+}
+
+export class Ring {
+  /** `alloc` is accepted for the signature only. The capacity is fixed and must be a power of two. */
+  static create<T>(_alloc: unknown, capacity: number, elem: ElemKind = "other", pos?: Pos): { tx: RingTx<T>; rx: RingRx<T> } {
+    if (!Number.isInteger(capacity) || capacity <= 0 || capacity > 2 ** 31 || (capacity & (capacity - 1)) !== 0)
+      trap("T014", `invalid ring capacity ${capacity}`, pos);
+    const s: RingShared<T> = { sab: null, cap: capacity, elem, cod: undefined, view: undefined, dv: undefined, pos: undefined, queue: [] };
+    if (elem !== "other") ringAttach(s, ringAlloc(capacity, elem), elem);
+    return { tx: new RingTx<T>(s), rx: new RingRx<T>(s) };
+  }
+  /** Endpoints over an existing buffer (the two-Worker test; the isolate transport is 15.2's). */
+  static fromShared<T>(sab: SharedArrayBuffer, capacity: number, elem: ElemKind): { tx: RingTx<T>; rx: RingRx<T> } {
+    const s: RingShared<T> = { sab: null, cap: capacity, elem, cod: undefined, view: undefined, dv: undefined, pos: undefined, queue: [] };
+    ringAttach(s, sab, elem);
+    return { tx: new RingTx<T>(s), rx: new RingRx<T>(s) };
+  }
+}
+
 export class OwnedCell<T> {
   private value: T | undefined;
   private full: boolean;
