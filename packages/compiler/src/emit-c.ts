@@ -372,7 +372,9 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     const ce = ctype(et, where);
     if (et.k === "num") return { z: `sizeof(${ce})`, ld: (d, i) => `((${ce}*)${d})[${i}]`, st: (d, i, v) => `((${ce}*)${d})[${i}] = ${v};` };
     if (isPtrLike(et)) { const p = ptrPack(et, where), at = (d: string, i: string): string => `(uint8_t *)(${d}) + (size_t)(${i}) * 8`; return { z: "8", ld: (d, i) => `ld_${p}(${at(d, i)})`, st: (d, i, v) => `st_${p}(${at(d, i)}, ${v});` }; }
-    const l = layout(et)!, p = packed(l, et, where), at = (d: string, i: string): string => `(uint8_t *)(${d}) + (size_t)(${i}) * ${l.z}`;
+    const l = layout(et);
+    if (!l) throw new CUnsupported(where, `${show(et)} (an element type without a byte layout, D105)`); // Pool<null>, Arena.alloc<null> (Q229)
+    const p = packed(l, et, where), at = (d: string, i: string): string => `(uint8_t *)(${d}) + (size_t)(${i}) * ${l.z}`;
     return { z: `${l.z}`, ld: (d, i) => `ld_${p}(${at(d, i)})`, st: (d, i, v) => `st_${p}(${at(d, i)}, ${v});` };
   }
   /** Index of the member of tagged union `u` whose kind is `k`. */
