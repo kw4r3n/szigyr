@@ -1440,3 +1440,12 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
   - (a) 現状どおり `Ptr.box<Ptr<T>>` を E4008 で拒否する（`Ptr` は `box` でヒープに逃がさず、必要なら C 側の領域を使う）。
   - (b) `Ptr.box` の型引数に `Ptr<T>` / `ConstPtr<T>` を許す。
 - 既定案: 未決（設計監査の修正 2 では SPEC が不明確なため挙動を変えず現状のまま残す）。
+
+### Q229 バイト配置のない要素型（`null`）のコンテナを C で扱うか（設計監査 #21）
+- 関連: §3.3、§10.2、D105
+- 状況: `Vec<null>`、`Vec<Result<null, i32>>`、`Pool<null>`、`Arena.alloc<null>` は検査を通り、JS では動く。C バックエンドは「バイト配置のない要素型」（D105）として CUnsupported で止まる。§10.2 は `null` だけの値の配置を決めていない。`T | null` の配置はあるが、`null` そのものの配置はない。
+- 選択肢:
+  - (a) いまのまま。C では CUnsupported で止める（D105 の範囲の外として扱う）。
+  - (b) §10.2 に `null` の配置（大きさ 0 か 1 バイト）を足し、C でも動かす。
+  - (c) strict / rt で、要素型に `null` だけの型を書くことを禁止する（新しい拒否が要る）。
+- 既定案: (a)。挙動は変えない。設計監査の修正 3 で `null` の値に C の型（`sts_null`）を与えたので、`Pool<null>` と `Arena.alloc<null>` が TypeError にならず、これまでどおり CUnsupported で止まるようにした（`packages/compiler/test/emit.test.ts`）。
