@@ -66,7 +66,8 @@ const fnParamIdx = (f: FnSym): number[] => f.sig.params.flatMap((pt, i) => (unre
 
 export function emitC(prog: Program, display: (path: string) => string): EmittedC | undefined {
   void display;
-  const fns = prog.fns.filter((f) => f.layer !== "managed");
+  // §12 (D117): managed DetMath calls run the JS module directly; C compiles only DetMath functions reached from strict / rt.
+  const fns = prog.fns.filter((f) => f.layer !== "managed" && f.mod.pf.path !== DETMATH_PATH);
   if (!fns.length) return undefined;
   const keys = new Map<Node, string>();
   const insts = new Map<string, Inst>();
@@ -103,6 +104,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
   }
   // Managed call sites of generic strict / rt functions get the key of their instance (D104).
   for (const mod of prog.mods) {
+    if (mod.pf.path === DETMATH_PATH) continue;
     const walk = (n: Node): void => {
       if (n.kind === K.FunctionDeclaration && fns.some((f) => f.decl === n)) return;
       if (n.kind === K.CallExpression && (n as ts.CallExpression).expression.kind === K.Identifier) {

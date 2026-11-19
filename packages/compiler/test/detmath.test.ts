@@ -1,4 +1,5 @@
 // Q191 (§12): the DetMath namespace and the bundled module in packages/std/detmath.ts.
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -51,4 +52,47 @@ it("importing the bundled DetMath module is E7001 at the specifier", () => {
   writeFileSync(join(dir, "main.ts"), `import { sin } from "${spec}";\nexport function f(x: f64): f64 { return sin(x); }\n`);
   const got = check(join(dir, "main.ts")).map((d) => `${d.code} ${d.range.start.line}:${d.range.start.col}`);
   expect(got).toEqual(["E7001 1:21"]);
+});
+
+it("managed DetMath calls run the JS version directly under --backend=c (§12, D117)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "szigyr-detmath-c-"));
+  const managedOnly = join(dir, "managed.ts");
+  writeFileSync(managedOnly, 'export function main(sys: System): void {\n  sys.log.info(`${DetMath.sin(1)}`);\n}\n');
+  const mixed = join(dir, "mixed.ts");
+  writeFileSync(mixed, [
+    'function s(x: f64): f64 { "use owned"; return DetMath.sin(x); }',
+    "export function main(sys: System): void {",
+    "  sys.log.info(`${DetMath.sin(1)} ${s(1)}`);",
+    "}",
+    "",
+  ].join("\n"));
+  const idx = new URL("../src/index.ts", import.meta.url).href;
+  const probe = `
+    import { run } from ${JSON.stringify(idx)};
+    const orig = process.dlopen;
+    const calls = [];
+    process.dlopen = (m, f, ...r) => {
+      orig.call(process, m, f, ...r);
+      for (const k of Object.keys(m.exports)) {
+        const fn = m.exports[k];
+        if (typeof fn === "function" && k !== "init" && !k.startsWith("sts_")) {
+          m.exports[k] = (...a) => { calls.push(k); return fn(...a); };
+        }
+      }
+    };
+    const out = {};
+    for (const [label, file] of [["managed", ${JSON.stringify(managedOnly)}], ["mixed", ${JSON.stringify(mixed)}]]) {
+      const rj = await run(file, { backend: "js" });
+      calls.length = 0;
+      const rc = await run(file, { backend: "c" });
+      out[label] = { same: rj.stdout === rc.stdout, calls: [...calls] };
+    }
+    console.log(JSON.stringify(out));
+  `;
+  const r = spawnSync("node", ["--input-type=module", "-e", probe], { encoding: "utf8" });
+  expect(r.status, r.stderr).toBe(0);
+  const res = JSON.parse(r.stdout);
+  expect(res.managed).toEqual({ same: true, calls: [] });
+  expect(res.mixed.same).toBe(true);
+  expect(res.mixed.calls).toEqual(["F0_s"]);
 });
