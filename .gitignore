@@ -2,3 +2,6 @@ node_modules/
 dist/
 *.tsbuildinfo
 .yomiyasu/
+
+# stage 3-6 fixture build output (stscb)
+conformance/fixtures/stscb/.build/

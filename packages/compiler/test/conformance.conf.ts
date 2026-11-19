@@ -4,6 +4,10 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import * as compiler from "../src/index.ts";
 import { atCSpecifier, filterByStage, loadCases, missingCPackages, runCase } from "./harness.ts";
+import { ensureStscb } from "./stscb.ts";
+
+// The stscb fixture (stage 3-6) is built before the cases load, so its cases do not skip.
+ensureStscb();
 
 const root = fileURLToPath(new URL("../../../conformance", import.meta.url));
 const stage = process.env.STS_STAGE === undefined ? undefined : Number(process.env.STS_STAGE);
