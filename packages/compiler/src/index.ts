@@ -181,11 +181,16 @@ const HOST = {
   reserve: (v: rt.Vec, cap: number, len: number): void => v.reserve(cap, len),
 };
 
-/** Emits every file and evaluates them as module factories in memory (D031). Returns the entry's exports. */
-async function load(files: ParsedFile[], entryFile: string, tests: boolean, decls?: Decls, backend: Backend = "js"): Promise<Record<string, unknown>> {
+/** Emits every file and evaluates them as module factories in memory (D031). Returns the entry's exports and, for a C backend program, its native module. */
+async function load(files: ParsedFile[], entryFile: string, tests: boolean, decls?: Decls, backend: Backend = "js"): Promise<{ ex: Record<string, unknown>; native: Record<string, (...a: unknown[]) => unknown> | undefined }> {
   const entry = resolve(entryFile);
   const c = backend === "c" && decls ? emitC(decls, displayPath) : undefined;
   const native = c ? loadNative(c.c, HOST, c.pkgs) : undefined;
+  // §15.4 (2): while a C program runs, a trap recorded on a C thread is polled at every task boundary (emit wraps each await in rt.task).
+  rt.setForeignTrapCheck(native ? () => {
+    const v = native.sts_poll!();
+    if (Array.isArray(v)) rt.trap(`T${String(v[0]).padStart(3, "0")}` as rt.TrapCode, "trap in C", v[1] ? { file: v[1] as string, line: v[2] as number, col: v[3] as number } : undefined);
+  } : undefined);
   const emitted = new Map(files.map((f) => [f.path, emitFile(f, displayPath(f.path), tests && f.path === entry, c?.keys as Map<never, string> | undefined)]));
   const npm = new Map<string, unknown>();
   for (const [path, e] of emitted) {
@@ -217,7 +222,7 @@ async function load(files: ParsedFile[], entryFile: string, tests: boolean, decl
     f(native ? { ...RUNTIME, native } : RUNTIME, (k) => (k.startsWith("npm:") ? npm.get(k) : instantiate(k)), ex);
     return ex;
   };
-  return instantiate(entry);
+  return { ex: instantiate(entry), native };
 }
 
 /** The runtime object generated code receives: runtime-js plus the std fakes. */
@@ -232,11 +237,11 @@ function exclusive<T>(f: () => Promise<T>): Promise<T> {
 }
 
 /** `load`, then rethrows an unhandled rejection of the module bodies (Q140). */
-async function loadChecked(files: ParsedFile[], entryFile: string, tests: boolean, decls?: Decls, backend?: Backend): Promise<Record<string, unknown>> {
-  let ex: Record<string, unknown> = {};
-  const rejected = await rt.capturing(async () => { ex = await load(files, entryFile, tests, decls, backend); });
+async function loadChecked(files: ParsedFile[], entryFile: string, tests: boolean, decls?: Decls, backend?: Backend): Promise<{ ex: Record<string, unknown>; native: Record<string, (...a: unknown[]) => unknown> | undefined }> {
+  let out: { ex: Record<string, unknown>; native: Record<string, (...a: unknown[]) => unknown> | undefined } = { ex: {}, native: undefined };
+  const rejected = await rt.capturing(async () => { out = await load(files, entryFile, tests, decls, backend); });
   if (rejected.length) throw rejected[0];
-  return ex;
+  return out;
 }
 
 /** Checks, emits and runs `main(sys)` of the entry file with a real System (Q059, Q061). */
@@ -246,11 +251,16 @@ async function runNow(entryFile: string, backend?: Backend): Promise<RunResult> 
   if (a.diagnostics.length) return { diagnostics: a.diagnostics, stdout: "", trap: null };
   const e4009 = backend !== "c" ? cOnlyDiagnostic(a.files, a.unsafeOps ?? []) : undefined; // §14.7
   if (e4009) return { diagnostics: [e4009], stdout: "", trap: null };
-  const main = (await loadChecked(a.files, entryFile, false, a.decls, backend)).main;
+  const { ex, native } = await loadChecked(a.files, entryFile, false, a.decls, backend);
+  const main = ex.main;
   if (typeof main !== "function") throw new Error(`${entryFile}: no exported function 'main'`); // Q061: a CLI error, not a diagnostic
   const r = await runMain(main as Parameters<typeof runMain>[0]);
   // Only stack exhaustion outside any source call (Q035) has no position.
-  const trap = r.trap ? { code: r.trap.code, file: r.trap.pos?.file ?? "", line: r.trap.pos?.line ?? 0, col: r.trap.pos?.col ?? 0 } : null;
+  let trap = r.trap ? { code: r.trap.code, file: r.trap.pos?.file ?? "", line: r.trap.pos?.line ?? 0, col: r.trap.pos?.col ?? 0 } : null;
+  if (!trap && native) { // §15.4 (3): a foreign trap that never surfaced is reported when main ends (this also claims the end)
+    const v = native.sts_finish!();
+    if (Array.isArray(v)) trap = { code: `T${String(v[0]).padStart(3, "0")}`, file: v[1] as string, line: v[2] as number, col: v[3] as number };
+  }
   return { diagnostics: [], stdout: r.stdout, trap };
 }
 

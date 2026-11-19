@@ -19,6 +19,13 @@ export function trap(code: TrapCode, message: string, pos?: Pos): never {
   throw new Trap(code, message, pos);
 }
 
+let foreignTrapCheck: (() => void) | undefined;
+/** The host of a C backend program installs the §15.4 (2) check: it throws the trap recorded
+ * on another thread, if one is waiting. Installed per program load; unset for JS programs. */
+export function setForeignTrapCheck(f: (() => void) | undefined): void { foreignTrapCheck = f; }
+/** §15.4 (2): a value reaches its await resumption only after the foreign-trap check. */
+export function task<T>(v: T): T { foreignTrapCheck?.(); return v; }
+
 let stackLocator: ((e: Error) => Pos | undefined) | undefined;
 /** The host maps a JS stack-overflow error to the source call where it happened (Q035, D032). */
 export function setStackLocator(f: ((e: Error) => Pos | undefined) | undefined): void { stackLocator = f; }
