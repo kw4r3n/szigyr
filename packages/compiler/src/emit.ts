@@ -158,12 +158,12 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
   /** `l op r` for a numeric type: range check (int + - *), rounding (f32), u32 normalization, shifts. */
   function op(t: string | undefined, o: string, l: string, r: string, anchor: string): string {
     if (t && INT_OP[o] && t !== "f32" && t !== "f64") return `${RT}.${INT_OP[o]}(${JSON.stringify(t)}, ${l}, ${r}, ${anchor})`;
-    if (t === "f32" && ["+", "-", "*", "/", "%", "**"].includes(o)) return `${RT}.f32(${l} ${o} ${r})`;
+    if (t === "f32" && ["+", "-", "*", "/", "%", "**"].includes(o)) return `${RT}.f32((${l}) ${o} (${r}))`;
     if (o === "<<") return `${RT}.shl(${JSON.stringify(t)}, ${l}, ${r}, ${anchor})`;
     if (o === ">>") return `${RT}.shr(${l}, ${r}, ${anchor})`;
     if (o === ">>>") return `${RT}.ushr(${l}, ${r}, ${anchor})`;
-    if (t === "u32" && ["&", "|", "^"].includes(o)) return `${RT}.toU32(${l} ${o} ${r})`;
-    return `${l} ${o} ${r}`;
+    if (t === "u32" && ["&", "|", "^"].includes(o)) return `${RT}.toU32((${l}) ${o} (${r}))`;
+    return `((${l}) ${o} (${r}))`;
   }
 
   function binary(b: ts.BinaryExpression): string {
