@@ -60,6 +60,19 @@ describe("cast", () => {
     const r = cast([{ x: 1, y: 1 }, { x: "a", y: 1 }], { k: "arr", of: point });
     expect(r).toEqual({ kind: "err", error: { code: "cast", message: expect.stringContaining("$[1].x") } });
   });
+  it("catches exceptions thrown by getters, proxies, and array length; traps pass through (§7.4, D060)", () => {
+    const rec: TypeDesc = { k: "rec", f: { a: { k: "num", t: "i32" } } };
+    const getterThrows = { get a(): number { throw new Error("boom-getter"); } };
+    expect(cast(getterThrows, rec)).toEqual({ kind: "err", error: { code: "cast", message: "boom-getter" } });
+    const proxyOwnKeys = new Proxy({}, { ownKeys() { throw new Error("boom-keys"); } });
+    expect(cast(proxyOwnKeys, rec)).toEqual({ kind: "err", error: { code: "cast", message: "boom-keys" } });
+    const proxyGet = new Proxy({ a: 1 }, { get() { throw new Error("boom-get"); } });
+    expect(cast(proxyGet, rec)).toEqual({ kind: "err", error: { code: "cast", message: "boom-get" } });
+    const arrProxy = new Proxy([] as number[], { get(_, k) { if (k === "length") throw new Error("boom-len"); return undefined; } });
+    expect(cast(arrProxy, { k: "arr", of: { k: "num", t: "i32" } })).toEqual({ kind: "err", error: { code: "cast", message: "boom-len" } });
+    const trapGetter = { get a(): number { return panic("trap-in-getter"); } };
+    expect(() => cast(trapGetter, rec)).toThrow(Trap);
+  });
 });
 
 describe("test runner", () => {

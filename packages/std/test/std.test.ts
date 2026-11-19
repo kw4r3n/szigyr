@@ -77,6 +77,13 @@ describe("node authorities", () => {
     f("x");
     f();
     expect(seen).toMatchObject([{ kind: "ok", value: 5 }, { kind: "err", error: { code: "cast" } }, { kind: "err", error: { code: "cast" } }]);
+    const bad = { get a(): number { throw new Error("boom-cb"); } };
+    const recDesc = { k: "rec" as const, f: { a: { k: "num" as const, t: "i32" as const } } };
+    expect(nodeJs.decode(bad, recDesc)).toEqual({ kind: "err", error: { code: "cast", message: "boom-cb" } });
+    const cbSeen: unknown[] = [];
+    const cb = nodeJs.callback((r) => { cbSeen.push(r); }, recDesc) as (...a: unknown[]) => unknown;
+    cb(bad);
+    expect(cbSeen).toEqual([{ kind: "err", error: { code: "cast", message: "boom-cb" } }]);
   });
   it("System has the six members; Log routes to the writers (Q059)", () => {
     const out: string[] = [], errs: string[] = [];

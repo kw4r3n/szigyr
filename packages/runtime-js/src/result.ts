@@ -1,5 +1,5 @@
 import { RANGE, type NumType, type IntType } from "./num.ts";
-import { Trap, trap, type Pos } from "./trap.ts";
+import { isTrap, Trap, trap, type Pos } from "./trap.ts";
 
 export type Result<T, E> = { readonly kind: "ok"; readonly value: T } | { readonly kind: "err"; readonly error: E };
 export const ok = <T>(value: T): Result<T, never> => ({ kind: "ok", value });
@@ -59,8 +59,13 @@ function check(d: TypeDesc, x: unknown, path: string): string | null {
 
 /** cast<T>(x) with the descriptor of T. Returns x itself (no copy) when valid. */
 export function cast<T>(x: unknown, desc: TypeDesc): Result<T, CastError> {
-  const e = check(desc, x, "$");
-  return e === null ? ok(x as T) : err({ code: "cast", message: e });
+  try {
+    const e = check(desc, x, "$");
+    return e === null ? ok(x as T) : err({ code: "cast", message: e });
+  } catch (e) {
+    if (isTrap(e)) throw e;
+    return err({ code: "cast", message: e instanceof Error ? e.message : String(e) });
+  }
 }
 
 /** JSON.parse (Q035): a syntax error is `err({ code: "SyntaxError", message })`; any other exception (stack exhaustion) is a panic (T006). */
