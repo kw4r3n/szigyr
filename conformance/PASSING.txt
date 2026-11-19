@@ -72,6 +72,8 @@ accept/70-ring.ts
 accept/71-ptr-box-state.ts
 accept/72-constptr-borrow.ts
 accept/73-cfn-fn-ptr-local.ts
+accept/74-isolate-sendable-types.ts
+accept/75-isolate-spawn.ts
 reject/E1000-array-suffix-type.ts
 reject/E1000-await-in-non-async-arrow.ts
 reject/E1000-await-outside-async.ts
@@ -330,6 +332,16 @@ reject/E2009-unknown-function.ts
 reject/E2009-unknown-package.ts
 reject/E2009-variadic.ts
 reject/E2009-wrong-c-type.ts
+reject/E2010-port-arenabuf-record.ts
+reject/E2010-port-array.ts
+reject/E2010-port-map-receive.ts
+reject/E2010-port-ownedcell.ts
+reject/E2010-port-pool.ts
+reject/E2011-isolate-arrow.ts
+reject/E2011-isolate-bad-return.ts
+reject/E2011-isolate-generic.ts
+reject/E2011-isolate-strict.ts
+reject/E2011-isolate-typearg-mismatch.ts
 reject/E3001-assignment-as-argument.ts
 reject/E3001-assignment-as-initializer.ts
 reject/E3001-chained-assignment.ts
@@ -434,6 +446,7 @@ reject/E3007-owned-in-record-field.ts
 reject/E3007-owned-in-result.ts
 reject/E3007-owned-pushed-from-local.ts
 reject/E3007-pool-in-array.ts
+reject/E3007-recv-not-awaited.ts
 reject/E3008-call-result-as-mut-arg.ts
 reject/E3008-call-result-as-ref-arg.ts
 reject/E3008-call-result-as-slice-arg.ts
@@ -463,6 +476,7 @@ reject/E4002-managed-type-parameter-into-strict-generic.ts
 reject/E4002-owned-cell-in-strict.ts
 reject/E4002-pool-create-string.ts
 reject/E4002-pool-element-owned-struct.ts
+reject/E4002-port-in-strict.ts
 reject/E4002-ring-create-element-owned.ts
 reject/E4002-ring-element-owned.ts
 reject/E4002-strict-generic-type-argument-not-allowed.ts
@@ -626,7 +640,12 @@ run/142-cfn-trap-next-task.ts
 run/143-cfn-trap-main-end.ts
 run/144-cfn-trap-race.ts
 run/145-cfn-ring-thread-pop.ts
+run/146-isolate-echo
+run/147-isolate-vec-transfer.ts
+run/148-isolate-ring.ts
+run/149-isolate-trap.ts
 run/15-owned-cell.ts
+run/150-isolate-close.ts
 run/16-struct-f32.ts
 run/17-trap-i32-add-overflow.ts
 run/18-trap-i32-unary-minus.ts
