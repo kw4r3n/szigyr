@@ -67,6 +67,27 @@ it("run without an exported main is a CLI error, exit 2 (Q061)", () => {
   expect(sts("run", join(dir, "m.ts")).code).toBe(2);
 });
 
+it("run rejects main with wrong signature or non-managed layer with exit 2 (Q061)", () => {
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-main-`));
+  const bads: [string, string][] = [
+    ["param.ts", "export function main(x: i32): void { x + 1; }\n"],
+    ["ret.ts", 'export function main(sys: System): i32 { sys.log.info("side effect"); return 3; }\n'],
+    ["arity.ts", "export function main(): void {}\n"],
+    ["strict-file.ts", '"use owned";\nexport function main(sys: System): void {}\n'],
+    ["strict-fn.ts", 'export function main(sys: System): void { "use owned"; }\n'],
+    ["rt-fn.ts", 'export function main(): void { "use rt"; }\n'],
+    ["generic.ts", "export function main<T>(sys: System): void {}\n"],
+  ];
+  for (const [name, src] of bads) {
+    const f = join(dir, name);
+    writeFileSync(f, src);
+    const r = sts("run", f);
+    expect(r.code, name).toBe(2);
+    expect(r.out, name).toBe("");
+    expect(r.err, name).toContain(CLI_NAME);
+  }
+});
+
 // D101-D103: the same tests under the JS and the C backend. A trap in C is the same JS trap, `Mut` writes reach the caller,
 // and a Vec grown in C is the same JS object with the new buffer.
 const BOTH = `type Acc = Struct<{ n: i32; total: i32 }>;

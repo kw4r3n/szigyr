@@ -259,6 +259,21 @@ async function loadChecked(files: ParsedFile[], entryFile: string, tests: boolea
   return out;
 }
 
+/** Q061: `sts run` entry must be an exported managed `function main(sys: System): void | Promise<void>`. */
+function checkMain(decls: Decls, entryFile: string): void {
+  const mod = decls.mods.find((m) => m.pf.path === resolve(entryFile));
+  const local = mod?.exports.get("main");
+  const sym = local !== undefined ? decls.lookupValue(mod!, local) : undefined;
+  if (sym?.k !== "fn") throw new Error(`${entryFile}: no exported function 'main'`);
+  const { layer, sig } = sym;
+  const p0 = sig.params[0];
+  const retOk = (sig.ret.k === "prim" && sig.ret.name === "void") ||
+    (sig.ret.k === "gen" && sig.ret.name === "Promise" && sig.ret.args[0]?.k === "prim" && sig.ret.args[0].name === "void");
+  if (layer !== "managed" || sig.tparams.length !== 0 || sig.params.length !== 1 || p0?.k !== "opaque" || p0.name !== "System" || !retOk) {
+    throw new Error(`${entryFile}: invalid 'main' (must be managed '(sys: System): void | Promise<void>')`);
+  }
+}
+
 /** Checks, emits and runs `main(sys)` of the entry file with a real System (Q059, Q061). */
 export const run = (entryFile: string, opts: RunOptions = {}): Promise<RunResult> => exclusive(() => runNow(entryFile, opts.backend));
 async function runNow(entryFile: string, backend?: Backend): Promise<RunResult> {
@@ -266,6 +281,7 @@ async function runNow(entryFile: string, backend?: Backend): Promise<RunResult> 
   if (a.diagnostics.length) return { diagnostics: a.diagnostics, stdout: "", trap: null };
   const e4009 = backend !== "c" ? cOnlyDiagnostic(a.files, a.unsafeOps ?? []) : undefined; // §14.7
   if (e4009) return { diagnostics: [e4009], stdout: "", trap: null };
+  checkMain(a.decls!, entryFile);
   const { ex, native } = await loadChecked(a.files, entryFile, false, a.decls, backend);
   const main = ex.main;
   if (typeof main !== "function") throw new Error(`${entryFile}: no exported function 'main'`); // Q061: a CLI error, not a diagnostic

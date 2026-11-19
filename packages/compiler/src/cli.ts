@@ -80,7 +80,7 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
     return failed || bad ? 1 : 0;
   } catch (e) {
     if (e instanceof CUnsupported || e instanceof CBuildError) { err(`${CLI_NAME}: ${e.message}\n`); return 2; }
-    if (!(e instanceof CliError) && !(e instanceof Error && /no exported function 'main'/.test(e.message))) throw e; // internal errors keep their stack
+    if (!(e instanceof CliError) && !(e instanceof Error && /(?:no exported function|invalid) 'main'/.test(e.message))) throw e; // internal errors keep their stack
     err(`${CLI_NAME}: ${e.message}\n`);
     return 2;
   }
