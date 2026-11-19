@@ -285,3 +285,37 @@ static double sts_min(double a, double b) { if (isnan(a) || isnan(b)) return NAN
 static double sts_max(double a, double b) { if (isnan(a) || isnan(b)) return NAN; if (a == b) return signbit(a) ? b : a; return a > b ? a : b; }
 static double sts_sign(double x) { return isnan(x) ? x : x > 0 ? 1 : x < 0 ? -1 : x; }
 
+
+// §14.4 / §14.5: a raw C pointer crossing the JS boundary is a BigInt of its address.
+// Managed code can hold a CHandle (in a local, a Struct field, an OwnedCell) but cannot
+// make one, so this only has to round-trip losslessly.
+static void *sts_ptr_in(napi_value v) {
+  uint64_t x; bool lossless;
+  if (napi_get_value_bigint_uint64(sts_env, v, &x, &lossless) != napi_ok || !lossless) sts_fail("bad pointer value");
+  return (void *)(uintptr_t)x;
+}
+static napi_value sts_ptr_out(void *p) {
+  napi_value r; STS_OK(napi_create_bigint_uint64(sts_env, (uint64_t)(uintptr_t)p, &r)); return r;
+}
+// §14.4 (Q209): a ring endpoint inside a box keeps its SharedArrayBuffer alive through a
+// napi_ref created on the JS thread during the box call; the ref stands in the stored
+// descriptor's obj slot until unbox. Verified by experiment (D123): the buffer survives
+// GC with no JS handle left, the raw data pointer stays valid in later calls, and
+// deleting the ref at unbox makes the buffer collectable again.
+static napi_value sts_box_ref(napi_value obj) {
+  napi_ref r;
+  if (napi_create_reference(sts_env, obj, 1, &r) != napi_ok) sts_fail("box: cannot keep the value alive");
+  return (napi_value)(uintptr_t)(void *)r;
+}
+static napi_value sts_box_peek(napi_value fake) {
+  napi_value v;
+  if (napi_get_reference_value(sts_env, (napi_ref)(uintptr_t)(const void *)fake, &v) != napi_ok) sts_fail("borrow: the boxed value is gone");
+  return v;
+}
+static napi_value sts_box_unref(napi_value fake) {
+  napi_ref r = (napi_ref)(uintptr_t)(const void *)fake;
+  napi_value v;
+  if (napi_get_reference_value(sts_env, r, &v) != napi_ok) sts_fail("unbox: the boxed value is gone");
+  napi_delete_reference(sts_env, r);
+  return v;
+}

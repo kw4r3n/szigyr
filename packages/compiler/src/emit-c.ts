@@ -24,7 +24,7 @@ const RANGE: Record<string, [string, string]> = {
   u8: ["0LL", "255LL"], u16: ["0LL", "65535LL"], u32: ["0LL", "4294967295LL"], usize: ["0LL", "4294967295LL"],
 };
 const CNUM: Record<NumName, string> = { f64: "double", f32: "float", i8: "int8_t", i16: "int16_t", i32: "int32_t", u8: "uint8_t", u16: "uint16_t", u32: "uint32_t", usize: "uint32_t" };
-const TRAP: Record<string, number> = { T001: 1, T002: 2, T003: 3, T004: 4, T005: 5, T006: 6, T007: 7, T008: 8, T009: 9, T010: 10, T011: 11, T013: 13, T014: 14 };
+const TRAP: Record<string, number> = { T001: 1, T002: 2, T003: 3, T004: 4, T005: 5, T006: 6, T007: 7, T008: 8, T009: 9, T010: 10, T011: 11, T013: 13, T014: 14, T015: 15 };
 const numText = (n: ts.NumericLiteral): number => Number(n.text.replace(/_/g, ""));
 const isGen = (t: Type, n: string): boolean => t.k === "gen" && t.name === n;
 /** Structs, and the all-readonly Copy records strict / rt accepts as Copy Structs (Q043). */
@@ -143,6 +143,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         if (t.name === "Pool") { const e = elemOf(t); if (!layout(e)) throw new CUnsupported(where, `Pool<${show(e)}> (an element type without a byte layout, D105)`); return "sts_pool*"; }
         if (t.name === "RingTx" || t.name === "RingRx") { const e = elemOf(t); if (!layout(e)) throw new CUnsupported(where, `${t.name}<${show(e)}> (an element type without a byte layout, D105)`); return "sts_ring"; }
         if (t.name === "Handle") return "sts_handle";
+        if (t.name === "CHandle") return "void *"; // §14.5: the wrapped C pointer itself
         if (t.name === "Arena") return "sts_arena*";
         if (t.name === "ArenaBuf") return "sts_abuf";
         if (t.name === "Ptr" || t.name === "ConstPtr") { // §14.2: the C type of a raw pointer, from the pointee
@@ -249,10 +250,51 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     helpers.push(`static ${ct} ld_${name}(const uint8_t *p) { ${ld} }`, `static void st_${name}(uint8_t *p, ${ct} v) { ${st} }`);
     return name;
   }
+  const ptrPacks = new Map<string, string>();
+  /** ld_Q / st_Q: a pointer value (Ptr / ConstPtr / CHandle) as 8 raw bytes (§14.4's layout for read / write). */
+  function ptrPack(t: Type, where: string): string {
+    const key = show(t);
+    const have = ptrPacks.get(key);
+    if (have) return have;
+    const ct = ctype(t, where);
+    const name = `Q${ptrPacks.size}`;
+    ptrPacks.set(key, name);
+    helpers.push(`static ${ct} ld_${name}(const uint8_t *p) { ${ct} r; memcpy(&r, p, 8); return r; }`, `static void st_${name}(uint8_t *p, ${ct} v) { memcpy(p, &v, 8); }`);
+    return name;
+  }
+  const isPtrLike = (t: Type): boolean => t.k === "gen" && (t.name === "Ptr" || t.name === "ConstPtr" || t.name === "CHandle");
+  /** The ld/st pair for a Copy value's packed bytes: §10.2's layout, or ptrPack for a pointer value. */
+  function packOf(t: Type, where: string): string {
+    if (isPtrLike(t)) return ptrPack(t, where);
+    const l = layout(t);
+    if (!l) throw new CUnsupported(where, `'${show(t)}' has no byte layout`);
+    return packed(l, t, where);
+  }
+  /** The byte size of a Copy value's packed form (§10.2, or 8 for a pointer value). */
+  function packSize(t: Type, where: string): number {
+    if (isPtrLike(t)) return 8;
+    const l = layout(t);
+    if (!l) throw new CUnsupported(where, `'${show(t)}' has no byte layout`);
+    return l.z;
+  }
+  /** §14.4 (Q209): boxing a value that holds ring endpoints replaces each endpoint's obj
+   * with a keep-alive reference (keep); unbox restores it. Statements on the value at `place`. */
+  function boxFix(t: Type, place: string, keep: boolean, where: string): string[] {
+    if (isGen(t, "RingTx") || isGen(t, "RingRx")) return [`${place}.obj = ${keep ? "sts_box_ref" : "sts_box_unref"}(${place}.obj);`];
+    if (t.k === "record") return t.fields.flatMap((f) => boxFix(f.type, `${place}.f_${f.name}`, keep, where));
+    if (t.k === "union" && isTaggedUnion(t)) {
+      return t.members.flatMap((m, j) => {
+        const inner = boxFix(m, `${place}.m${j}`, keep, where);
+        return inner.length ? [`if (${place}.kind == ${litId(kindOf(m)!)}) { ${inner.join(" ")} }`] : [];
+      });
+    }
+    return [];
+  }
   /** Element access on a Vec / Slice data pointer: plain C arrays for numbers, ld_P / st_P otherwise. */
   function elem(et: Type, where: string): { z: string; ld: (d: string, i: string) => string; st: (d: string, i: string, v: string) => string } {
     const ce = ctype(et, where);
     if (et.k === "num") return { z: `sizeof(${ce})`, ld: (d, i) => `((${ce}*)${d})[${i}]`, st: (d, i, v) => `((${ce}*)${d})[${i}] = ${v};` };
+    if (isPtrLike(et)) { const p = ptrPack(et, where), at = (d: string, i: string): string => `(uint8_t *)(${d}) + (size_t)(${i}) * 8`; return { z: "8", ld: (d, i) => `ld_${p}(${at(d, i)})`, st: (d, i, v) => `st_${p}(${at(d, i)}, ${v});` }; }
     const l = layout(et)!, p = packed(l, et, where), at = (d: string, i: string): string => `(uint8_t *)(${d}) + (size_t)(${i}) * ${l.z}`;
     return { z: `${l.z}`, ld: (d, i) => `ld_${p}(${at(d, i)})`, st: (d, i, v) => `st_${p}(${at(d, i)}, ${v});` };
   }
@@ -267,6 +309,8 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     if (isGen(t, "Vec")) { ctype(t, where); return `sts_vec_in(${v}, ${eargs(elemOf(t))})`; }
     if (isGen(t, "Pool")) { ctype(t, where); return `sts_pool_in(${v}, ${eargs(elemOf(t))})`; }
     if (isGen(t, "RingTx") || isGen(t, "RingRx")) { ctype(t, where); return `sts_ring_in(${v}, ${eargs(elemOf(t))})`; }
+    if (isGen(t, "Ptr") || isGen(t, "ConstPtr")) { const ct = ctype(t, where); return `(${ct})sts_ptr_in(${v})`; }
+    if (isGen(t, "CHandle")) return `sts_ptr_in(${v})`;
     if (isGen(t, "Handle")) return `sts_hdl_in(${v})`;
     if (isGen(t, "Arena")) { ctype(t, where); return `sts_arena_in(${v})`; }
     if (isGen(t, "ArenaBuf")) return `sts_abuf_in(${v})`;
@@ -283,6 +327,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     if (isGen(t, "Vec")) return `(${v})->obj`;
     if (isGen(t, "Pool")) return `(${v})->obj`;
     if (isGen(t, "RingTx") || isGen(t, "RingRx")) return `(${v}).obj`;
+    if (isGen(t, "Ptr") || isGen(t, "ConstPtr") || isGen(t, "CHandle")) return `sts_ptr_out((void *)(uintptr_t)(${v}))`;
     if (isGen(t, "Handle")) return `sts_hdl_out(${v})`;
     if (isGen(t, "Arena")) return `(${v})->obj`;
     if (isGen(t, "ArenaBuf")) return `sts_abuf_out(${v})`;
@@ -894,6 +939,25 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
           const a = this.ex(e.arguments[0]!), n = this.ex(e.arguments[1]!);
           return this.t(t, `in_${pair}(sts_ring_create(${a}, ${n}, ${cstr(elemDesc(el))}, ${this.pos(p.name)}))`, e);
         }
+        if (ns === "Ptr" && m === "box") { // §14.4 (Q209): a Copy value is stored packed (§10.2), an owned value in its C form
+          this.ex(e.arguments[0]!); // the Alloc is a capability only; C needs nothing of it
+          const vt = this.typeOf(e.arguments[1]!);
+          const xv = this.t(vt, this.conv(this.ex(e.arguments[1]!), this.typeOf(e.arguments[1]!), vt), e);
+          const pos = this.pos(p.name), b = `t${this.tmp++}`;
+          if (isCopy(vt)) {
+            this.emit(`uint8_t *${b} = malloc(${packSize(vt, this.where)}); if (!${b}) sts_trap(6, ${pos});`);
+            this.emit(`st_${packOf(vt, this.where)}(${b}, ${xv});`);
+          } else {
+            const ct = ctype(vt, this.where);
+            this.emit(`${ct} *${b} = malloc(sizeof(${ct})); if (!${b}) sts_trap(6, ${pos});`);
+            this.emit(`*${b} = ${xv};`);
+            for (const fx of boxFix(vt, `(*${b})`, true, this.where)) this.emit(fx);
+          }
+          return this.t(t, `(${ctype(t, this.where)})${b}`, e);
+        }
+        if (ns === "CHandle" && m === "create") { // §14.5: no allocation; the handle is the pointer itself
+          return this.t(t, this.ex(e.arguments[0]!), e);
+        }
         throw this.no(p.name, `'${ns}.${m}'`);
       }
       const rt = this.typeOf(p.expression);
@@ -984,6 +1048,62 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         }
         throw this.no(p.name, `the method '${m}' on ${show(rt)}`);
       }
+      if (isGen(rt, "Ptr") || isGen(rt, "ConstPtr")) { // §14.4
+        const pt = elemOf(rt);
+        const pv = `t${this.tmp++}`;
+        this.emit(`${ctype(rt, this.where)} ${pv} = ${this.ex(p.expression)};`);
+        const chk = () => this.emit(`if (!${pv}) sts_trap(15, ${this.pos(p.name)});`); // T015 at the member name
+        switch (m) {
+          case "isNull": return this.t(t, `${pv} == NULL`, e);
+          case "cast": return this.t(t, `(${ctype(t, this.where)})${pv}`, e);
+          case "read": chk(); return this.t(t, `ld_${packOf(pt, this.where)}((const uint8_t *)${pv})`, e);
+          case "write": {
+            chk();
+            const x = this.t(pt, this.conv(this.ex(e.arguments[0]!), this.typeOf(e.arguments[0]!), pt), e);
+            this.emit(`st_${packOf(pt, this.where)}((uint8_t *)${pv}, ${x});`);
+            return stmt ? undefined : "0";
+          }
+          case "offset": {
+            chk();
+            const n = this.ex(e.arguments[0]!);
+            return this.t(t, `(${ctype(t, this.where)})((uint8_t *)${pv} + (size_t)(${n}) * ${packSize(pt, this.where)})`, e);
+          }
+          case "slice": {
+            chk();
+            const n = this.ex(e.arguments[0]!);
+            return this.t(t, `(sts_slice){ (uint8_t *)${pv}, (size_t)(${n}) }`, e);
+          }
+          case "borrow": { // reached as a borrowed argument (userCall); the value the parameter receives
+            chk();
+            if (isStruct(pt)) return `(${ctype(pt, this.where)} *)${pv}`;
+            if (isGen(pt, "RingTx") || isGen(pt, "RingRx")) {
+              const r = `t${this.tmp++}`;
+              this.emit(`sts_ring ${r} = *(sts_ring *)${pv};`);
+              this.emit(`${r}.obj = sts_box_peek(${r}.obj);`);
+              return this.t(t, r, e);
+            }
+            if (isGen(pt, "CHandle")) return this.t(t, `*(void **)${pv}`, e);
+            throw this.no(p.name, `borrowing a '${show(pt)}' out of a pointer`);
+          }
+          case "unbox": {
+            chk();
+            const r = `t${this.tmp++}`;
+            if (isCopy(pt)) {
+              this.emit(`${ctype(pt, this.where)} ${r} = ld_${packOf(pt, this.where)}((const uint8_t *)${pv});`);
+            } else {
+              this.emit(`${ctype(pt, this.where)} ${r} = *(${ctype(pt, this.where)} *)${pv};`);
+              for (const fx of boxFix(pt, r, false, this.where)) this.emit(fx);
+            }
+            this.emit(`free(${pv});`);
+            return this.t(t, r, e);
+          }
+        }
+        throw this.no(p.name, `the method '${m}' on ${show(rt)}`);
+      }
+      if (isGen(rt, "CHandle")) { // §14.5: the handle is the pointer itself; get just hands it back typed
+        if (m === "get") return this.t(t, this.ex(p.expression), e);
+        throw this.no(p.name, `the method '${m}' on ${show(rt)}`);
+      }
       if (isGen(rt, "Vec") || isGen(rt, "Slice")) {
         const s = this.seq(p.expression), el = elem(s.et, this.where);
         switch (m) {
@@ -1047,6 +1167,10 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       const args = e.arguments.map((a, i) => {
         const pt = callee.params[i]!, inner = unref(pt), mode = borrowMode(pt);
         if (inner.k === "fn") return ""; // Q189 (b): no runtime value (the slot keeps argument indices aligned)
+        if (a.kind === K.CallExpression && (a as ts.CallExpression).expression.kind === K.PropertyAccessExpression) {
+          const cp = (a as ts.CallExpression).expression as ts.PropertyAccessExpression;
+          if ((cp.name.text === "borrow" || cp.name.text === "slice") && (isGen(this.typeOf(cp.expression), "Ptr") || isGen(this.typeOf(cp.expression), "ConstPtr"))) return this.ex(a); // §14.4
+        }
         if (mode && isStruct(inner)) return `&${this.place(a)}`;
         if (isGen(inner, "Slice")) {
           const at = this.typeOf(a);
