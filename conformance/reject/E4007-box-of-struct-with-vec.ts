@@ -1,0 +1,8 @@
+// expect: E4007 @ 7:28
+// stage: 3
+type Bag = Struct<{ items: Vec<i32>; readonly n: i32 }>;
+export function f(alloc: Alloc, b: Bag): void {
+  "use owned";
+  "use unsafe";
+  const p = Ptr.box(alloc, b);
+}

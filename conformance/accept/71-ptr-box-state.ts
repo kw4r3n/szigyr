@@ -1,0 +1,30 @@
+// expect: ok
+// stage: 3
+type State = Struct<{ rx: RingRx<i32>; readonly tag: i32; h: CHandle<i32> }>;
+function useState(s: Mut<State>): i32 {
+  "use rt";
+  const v = s.rx.pop();
+  if (v === null) { return s.tag; }
+  return v + s.tag;
+}
+export function go(alloc: Alloc): i32 {
+  "use owned";
+  "use unsafe";
+  const { tx, rx } = Ring.create<i32>(alloc, 4);
+  tx.push(30);
+  const inner = Ptr.box<i32>(alloc, 3);
+  const st: State = { rx, tag: 12, h: CHandle.create(inner) };
+  const p = Ptr.box(alloc, st);
+  const a = useState(p.borrow());
+  const st2 = p.unbox();
+  const v = st2.rx.pop();
+  if (v === null) { return a; }
+  return a + v;
+}
+export function boxPair(alloc: Alloc): RingPair<i32> {
+  "use owned";
+  "use unsafe";
+  const pair = Ring.create<i32>(alloc, 2);
+  const p = Ptr.box(alloc, pair);
+  return p.unbox();
+}

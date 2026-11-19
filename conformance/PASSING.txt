@@ -69,6 +69,7 @@ accept/67-cfn-and-void-ptr.ts
 accept/68-c-backend.ts
 accept/69-extern-header-check.ts
 accept/70-ring.ts
+accept/71-ptr-box-state.ts
 reject/E1000-array-suffix-type.ts
 reject/E1000-await-in-non-async-arrow.ts
 reject/E1000-await-outside-async.ts
@@ -501,6 +502,8 @@ reject/E4006-fs-param-in-rt.ts
 reject/E4006-log-param-in-rt.ts
 reject/E4006-random-param-after-borrow-in-rt.ts
 reject/E4006-rt-generic-authority-type-argument.ts
+reject/E4007-box-of-arena.ts
+reject/E4007-box-of-struct-with-vec.ts
 reject/E4007-box-of-vec.ts
 reject/E4007-c-decl-first-param-not-ffi.ts
 reject/E4007-c-decl-pointee-usize.ts
@@ -601,6 +604,14 @@ run/128-trap-ring-capacity-zero.ts
 run/129-trap-ring-capacity-not-pow2.ts
 run/13-async-await.ts
 run/130-trap-ring-capacity-too-big.ts
+run/131-ptr-basic.ts
+run/132-ptr-box-ring.ts
+run/133-ptr-box-state.ts
+run/134-trap-ptr-null-read.ts
+run/135-trap-ptr-null-write.ts
+run/136-trap-ptr-null-borrow.ts
+run/137-trap-ptr-null-unbox.ts
+run/138-trap-ptr-null-slice.ts
 run/14-vec-slice.ts
 run/15-owned-cell.ts
 run/16-struct-f32.ts

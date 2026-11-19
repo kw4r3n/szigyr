@@ -1,0 +1,25 @@
+// expect-output: 11 22
+// stage: 3
+// backend: c
+type R = Struct<{ a: i32; b: i32 }>;
+function peek(rx: Mut<RingRx<i32>>): i32 {
+  "use rt";
+  const v = rx.pop();
+  return v === null ? 0 : v;
+}
+function go(alloc: Alloc): R {
+  "use owned";
+  "use unsafe";
+  const { tx, rx } = Ring.create<i32>(alloc, 4);
+  tx.push(11);
+  tx.push(22);
+  const p = Ptr.box(alloc, rx);
+  const a = peek(p.borrow());
+  const rx2 = p.unbox();
+  const v = rx2.pop();
+  return { a, b: v === null ? 0 : v };
+}
+export function main(sys: System): void {
+  const r = go(sys.alloc);
+  sys.log.info(`${r.a} ${r.b}`);
+}
