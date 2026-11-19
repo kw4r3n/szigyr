@@ -462,3 +462,14 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - 検証: managed の Worker 2 本（片方が push、片方が pop）で 100k 個の値が順序・合計とも正確だった（runtime-js の ring.test.ts、6 件）。C のスレッドからの pop のテストは 1245 の後に回した。bench は全カーネルの中央値が制限内（下の ROADMAP の証拠行。最悪は particles_aos_f32 の 1.47 倍で、単発では 1.56 倍と 1.53 倍が各 1 回あったが中央値は 1.5 倍以下）。
 - 実装中に見つけた不具合: emit-c の数値要素のアクセサはデータポインタをキャストする（`((int32_t*)d)[i]`）ため、`d` に `t.base + 8` を渡すと +8 が要素単位のポインタ演算になり、要素領域の先頭から 8×esize バイト先を書いてヒープを壊した（全ケースを 1 プロセスで回すと malloc の破壊で死ぬ）。括弧で囲った `(t.base + 8)` を渡す形で直した（commit `41da80d`。パック済み要素のアクセサは元々括弧つきで、`Vec` / `Slice` は素のポインタ式だったので当たらなかった）。
 - 既存の挙動（範囲外）: ジェネリックな strict 関数から `rx.pop()` で `T | null` を返す形は、`Vec<T>.pop` と同じ既存の E4002 になる（layerOk が素の型パラメータの union メンバを扱えないため）。accept ケースは push だけのジェネリックで固定した。
+
+## D123: 段階 3-5 の `Ptr` の操作と `box` / `CHandle`（T015）（2026-11-19）
+
+- 範囲: §14.4 の `Ptr` / `ConstPtr` の操作（`isNull`、`read`、`write`、`offset`、`slice`、`borrow`、`unbox`、`cast`）と `Ptr.box`、§14.5 の `CHandle`（`create` / `get`）の C バックエンド変換と、null ポインタのトラップ T015。`cfn` とコールバックは後続の依頼。
+- 実験（実装の前に確かめた）: リングの共有バッファを、C のヒープの box の背後に、JS のスレッドで作った Node-API の参照で生かし続ける仕組み。境界呼び出しの中で `napi_create_reference`（参照カウント 1）を作って box に保持すると、JS 側の強い参照が全て消えて GC を繰り返しても SharedArrayBuffer は生き残り、後の別の呼び出しから raw のデータポインタで読み書きでき、JS からも見える。`napi_get_reference_value` は同一のオブジェクトを返し、`unbox` で参照を消すとバッファは回収可能に戻る（WeakRef と FinalizationRegistry で確認）。D102 / D106 の「C の持つ JS の値は 1 回の境界呼び出しの間だけ」という前提の外側は、この参照が担う。
+- 表現: box の中身は、Copy 型は §10.2 の配置（`ld_P` / `st_P`。ポインタの値は 8 バイトの raw コピー）、所有型は C の表現そのもの。リング端点を含む値では、box のときに型をたどって（レコードのフィールド、タグつき union の有効なメンバ）端点ごとに obj を保持参照に置き換え、`unbox` のときに obj を戻して参照を消す。`borrow` で渡す端点の記述子は、参照から obj を復元したコピーにする（参照は消さない）。借用した Struct のリングフィールドの記述子には obj の位置に参照が残るが、借用からはフィールドの値を取り出せない（E3003）ため、obj が値として読まれる経路はない。`CHandle` の C 表現は、包んだポインタそのもの（`void *`）で、`create` / `get` は変換なし。
+- 境界の表現: `Ptr` / `ConstPtr` / `CHandle` が JS との境界を越えるときは、アドレスの BigInt で往復する（`sts_ptr_in` / `sts_ptr_out`）。Struct の変換子は全ての Struct に出るため、`CHandle` のフィールドにはこの変換が必須。managed のコードは `CHandle` を作れないので、これは往復の保存のためだけの表現である。
+- 検査器の直し: SPEC §14.4 は `ConstPtr` の `borrow` を `Ref` のパラメータにだけ許すが、組み込みのメンバ一覧に無く E2001 になっていた。`builtins.ts` の `ConstPtr` に `borrow` を足し、`ownership.ts` の `sliceCall` の `borrow` の特別扱いを `ConstPtr` にも広げた（`Mut` へは E3006 で、文言はメンバ名を出すようにした）。
+- T015: `read`、`write`、`offset`、`slice`、`borrow`、`unbox` の全てで、メンバ名の位置で検査する（SPEC §14.4 の一覧どおり。DIAGNOSTICS の予約行は `borrow` を欠いていたので、実装済みの表では足した）。`isNull` と `cast` はトラップしない。box の確保の失敗は T006（アンカーは `box`）。
+- 残した範囲（従来どおり）: `Slice` の要素がポインタ型になるのはジェネリックのインスタンス化でだけ生じうる（宣言の位置には `Ptr` を書けない。E4008）ため、その場合は CUnsupported のまま。nullable なリング端点は検査器が strict では E4002 にするので、C バックエンドには来ない。
+- 検証: conformance の run ケース 131〜138（`// backend: c`）。null ポインタは、実在の sqlite3 の `sqlite3_malloc(0)` が NULL を返すことで作った（`char*` を返す関数は `CType` の予約語のため宣言できない）。
