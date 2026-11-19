@@ -14,7 +14,8 @@ export type ElemKind = NumType | "other" | `{${string}`;
 
 type Lay =
   | { t: "num"; n: NumType; z: number } | { t: "bool"; z: number } | { t: "lit"; v: string[]; z: number }
-  | { t: "rec"; f: { n: string; o: number; l: Lay }[]; z: number } | { t: "uni"; m: Lay[]; z: number } | { t: "opt"; o: number; l: Lay; z: number };
+  | { t: "rec"; f: { n: string; o: number; l: Lay }[]; z: number } | { t: "uni"; m: Lay[]; z: number } | { t: "opt"; o: number; l: Lay; z: number }
+  | { t: "hdl"; z: number };
 interface Codec { readonly z: number; rd(d: DataView, p: number): unknown; wr(d: DataView, p: number, x: unknown): void }
 const LE = true;
 const NUM_RW: Record<NumType, [(d: DataView, p: number) => number, (d: DataView, p: number, x: number) => void]> = {
@@ -45,6 +46,12 @@ function codec(l: Lay): Codec {
       const c = codec(l.l), o = l.o;
       return { z: l.z, rd: (d, p) => (d.getUint8(p) ? c.rd(d, p + o) : null), wr: (d, p, x) => { d.setUint8(p, x === null ? 0 : 1); if (x !== null) c.wr(d, p + o, x); } };
     }
+    case "hdl": // Q188 (a): a Pool handle is three u32s (pool id, generation, index)
+      return {
+        z: 12,
+        rd: (d, p) => ({ pool: d.getUint32(p, LE), gen: d.getUint32(p + 4, LE), idx: d.getUint32(p + 8, LE) }),
+        wr: (d, p, x) => { const h = x as PoolHandle; d.setUint32(p, h.pool, LE); d.setUint32(p + 4, h.gen, LE); d.setUint32(p + 8, h.idx, LE); },
+      };
   }
 }
 const codecs = new Map<string, Codec>();
@@ -196,6 +203,94 @@ export function setAt<T>(a: T[] | Vec<T> | Slice<T>, i: number, x: T, pos?: Pos)
     if (!inBounds(i, a.length)) trap("T002", `index ${i} out of range (length ${a.length})`, pos);
     a[i] = x;
   } else (a as Vec<T>).set(i, x, pos);
+}
+
+/** A Pool handle (Q188 (a)): pool id, generation, slot index. A plain object; STS code cannot see the fields. */
+export interface PoolHandle { pool: number; gen: number; idx: number }
+/** Pool and Arena ids come from one host counter, starting at 1 (Q188). The Arena half is not implemented yet. */
+let nextPoolId = 1;
+
+/**
+ * Fixed-capacity pool (Q188 (a)). Storage mirrors Vec (a TypedArray, a packed Uint8Array, or a plain
+ * array for a type-parameter element). Slots are used in increasing index order first; removed slots are
+ * reused last-in-first-out, bumping the slot's generation (a u32, wrapping to 0) on each reuse.
+ */
+export class Pool<T = unknown> {
+  private buf: Buf<T>;
+  private elem: ElemKind;
+  private cod: Codec | undefined;
+  readonly id: number;
+  private gens: Uint32Array;
+  private occ: Uint8Array;
+  private nextFree: Int32Array;
+  private len = 0;
+  private freeHead = -1;
+  private nextFresh = 0;
+  private readonly cap: number;
+  private constructor(buf: Buf<T>, elem: ElemKind, cap: number, cod?: Codec) {
+    this.buf = buf; this.elem = elem; this.cap = cap; this.cod = cod;
+    this.id = nextPoolId++;
+    this.gens = new Uint32Array(cap); this.occ = new Uint8Array(cap); this.nextFree = new Int32Array(cap);
+  }
+  /** `alloc` is accepted for the signature only. The capacity is fixed: the pool never grows. */
+  static create<T>(_alloc: unknown, capacity: number, elem: ElemKind = "other"): Pool<T> {
+    if (elem === "other") return new Pool<T>(new Array(capacity) as Buf<T>, elem, capacity);
+    if (elem.startsWith("{")) { const c = codecOf(elem); return new Pool<T>(new Uint8Array(capacity * c.z) as Buf<T>, elem, capacity, c); }
+    return new Pool<T>(new TYPED[elem as NumType](capacity), elem, capacity);
+  }
+  /** A Pool made where its element type was a type parameter ("other") switches to the representation of `elem` (C boundary, like Vec.adopt). */
+  adopt(elem: ElemKind): void {
+    if (this.elem !== "other" || elem === "other") return;
+    const old = this.buf as T[];
+    if (elem.startsWith("{")) { this.cod = codecOf(elem); this.buf = new Uint8Array(this.cap * this.cod.z) as Buf<T>; }
+    else this.buf = new TYPED[elem as NumType](this.cap);
+    this.elem = elem;
+    for (let i = 0; i < this.cap; i++) if (this.occ[i]) this.write(i, old[i]!);
+  }
+  get length(): number { return this.len; }
+  get capacity(): number { return this.cap; }
+  private read(i: number): T {
+    if (this.cod) return this.cod.rd(dvOf(this.buf as Uint8Array), i * this.cod.z) as T;
+    return this.buf[i] as T;
+  }
+  private write(i: number, x: T): void {
+    if (this.cod) this.cod.wr(dvOf(this.buf as Uint8Array), i * this.cod.z, x);
+    else (this.buf as T[])[i] = x;
+  }
+  private valid(h: PoolHandle): boolean {
+    return !!h && h.pool === this.id && Number.isInteger(h.idx) && h.idx >= 0 && h.idx < this.cap && this.occ[h.idx] === 1 && this.gens[h.idx] === h.gen;
+  }
+  insert(x: T): PoolHandle | null {
+    if (this.len >= this.cap) return null;
+    let idx: number;
+    if (this.freeHead >= 0) {
+      idx = this.freeHead;
+      this.freeHead = this.nextFree[idx]!;
+      this.gens[idx] = (this.gens[idx]! + 1) >>> 0; // a reused slot's generation bumps (wraps to 0)
+    } else idx = this.nextFresh++;
+    this.occ[idx] = 1;
+    this.write(idx, x);
+    this.len++;
+    return { pool: this.id, gen: this.gens[idx]!, idx };
+  }
+  get(h: PoolHandle, pos?: Pos): T {
+    if (!this.valid(h)) trap("T011", "invalid pool handle", pos);
+    return this.read(h.idx);
+  }
+  set(h: PoolHandle, x: T, pos?: Pos): void {
+    if (!this.valid(h)) trap("T011", "invalid pool handle", pos);
+    this.write(h.idx, x);
+  }
+  remove(h: PoolHandle, pos?: Pos): T {
+    if (!this.valid(h)) trap("T011", "invalid pool handle", pos);
+    const x = this.read(h.idx);
+    this.occ[h.idx] = 0;
+    this.nextFree[h.idx] = this.freeHead;
+    this.freeHead = h.idx;
+    this.len--;
+    return x;
+  }
+  has(h: PoolHandle): boolean { return this.valid(h); }
 }
 
 export class OwnedCell<T> {

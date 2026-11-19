@@ -21,7 +21,7 @@ const RANGE: Record<string, [string, string]> = {
   u8: ["0LL", "255LL"], u16: ["0LL", "65535LL"], u32: ["0LL", "4294967295LL"], usize: ["0LL", "4294967295LL"],
 };
 const CNUM: Record<NumName, string> = { f64: "double", f32: "float", i8: "int8_t", i16: "int16_t", i32: "int32_t", u8: "uint8_t", u16: "uint16_t", u32: "uint32_t", usize: "uint32_t" };
-const TRAP: Record<string, number> = { T001: 1, T002: 2, T003: 3, T004: 4, T005: 5, T006: 6, T007: 7, T008: 8, T009: 9, T010: 10, T013: 13 };
+const TRAP: Record<string, number> = { T001: 1, T002: 2, T003: 3, T004: 4, T005: 5, T006: 6, T007: 7, T008: 8, T009: 9, T010: 10, T011: 11, T013: 13 };
 const numText = (n: ts.NumericLiteral): number => Number(n.text.replace(/_/g, ""));
 const isGen = (t: Type, n: string): boolean => t.k === "gen" && t.name === n;
 /** Structs, and the all-readonly Copy records strict / rt accepts as Copy Structs (Q043). */
@@ -132,6 +132,8 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
           if (!layout(e)) throw new CUnsupported(where, `${t.name}<${show(e)}> (an element type without a byte layout, D105)`);
           return t.name === "Vec" ? "sts_vec*" : "sts_slice";
         }
+        if (t.name === "Pool") { const e = elemOf(t); if (!layout(e)) throw new CUnsupported(where, `Pool<${show(e)}> (an element type without a byte layout, D105)`); return "sts_pool*"; }
+        if (t.name === "Handle") return "sts_handle";
         if (t.name === "Ref" || t.name === "Mut") { const a = elemOf(t); return isStruct(a) ? `${ctype(a, where)}*` : ctype(a, where); }
         break;
       case "opaque": if (AUTH.has(t.name)) return "napi_value"; break;
@@ -140,7 +142,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         const lu = t as Extract<Type, { k: "union" }>;
         if (lu.members.every((m) => m.k === "lit")) { for (const m of lu.members) litId((m as { value: string }).value); return "int32_t"; }
         const n = nonNull(t);
-        if (n && (n.k === "num" || isBool(n) || n.k === "lit" || (n.k === "union" && n.members.every((m) => m.k === "lit")) || (isStruct(n) && isCopy(n)) || isTaggedUnion(n))) {
+        if (n && (n.k === "num" || isBool(n) || n.k === "lit" || (n.k === "union" && n.members.every((m) => m.k === "lit")) || (isStruct(n) && isCopy(n)) || isTaggedUnion(n) || (n.k === "gen" && n.name === "Handle"))) {
           const key = show(t);
           let name = nullables.get(key);
           if (!name) { const inner = ctype(n, where); name = `N${nullables.size}`; nullables.set(key, name); typedefs.push(`typedef struct { bool some; ${inner} v; } ${name};`); }
@@ -198,6 +200,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     switch (l.t) {
       case "num": ld = `return STS_LD(${ct}, p);`; st = `STS_ST(p, ${ct}, v);`; break;
       case "bool": ld = "return p[0] != 0;"; st = "p[0] = v ? 1 : 0;"; break;
+      case "hdl": ld = "sts_handle r; memcpy(&r, p, 12); return r;"; st = "memcpy(p, &v, 12);"; break; // Q188 (a)
       case "lit": {
         const tb = `L${packs.size}_${helpers.length}`;
         helpers.push(`static const int32_t ${tb}[] = {${l.v.map(litId).join(", ")}};`);
@@ -245,6 +248,8 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     if (t.k === "lit" || (t.k === "union" && t.members.every((m) => m.k === "lit"))) { ctype(t, where); return `sts_lit_in(${v})`; }
     if (isStruct(t) || (t.k === "union" && isTaggedUnion(t))) return `in_${ctype(t, where)}(${v})`;
     if (isGen(t, "Vec")) { ctype(t, where); return `sts_vec_in(${v}, ${eargs(elemOf(t))})`; }
+    if (isGen(t, "Pool")) { ctype(t, where); return `sts_pool_in(${v}, ${eargs(elemOf(t))})`; }
+    if (isGen(t, "Handle")) return `sts_hdl_in(${v})`;
     if (isGen(t, "Slice")) { ctype(t, where); return `sts_slice_in(${v}, ${eargs(elemOf(t))})`; }
     if (t.k === "opaque" && AUTH.has(t.name)) return v;
     if ((t as Type).k === "union" && nonNull(t)) { const n = ctype(t, where); return `({ napi_value x_ = ${v}; sts_isnull(x_) ? (${n}){ .some = false } : (${n}){ .some = true, .v = ${inConv(nonNull(t)!, "x_", where)} }; })`; }
@@ -256,6 +261,8 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     if (t.k === "lit" || (t.k === "union" && t.members.every((m) => m.k === "lit"))) return `sts_mklit(${v})`;
     if (isStruct(t) || (t.k === "union" && isTaggedUnion(t))) return `out_${ctype(t, where)}(${v})`;
     if (isGen(t, "Vec")) return `(${v})->obj`;
+    if (isGen(t, "Pool")) return `(${v})->obj`;
+    if (isGen(t, "Handle")) return `sts_hdl_out(${v})`;
     if (t.k === "opaque" && AUTH.has(t.name)) return v;
     if ((t as Type).k === "union" && nonNull(t)) { const n = nonNull(t)!; ctype(t, where); return `((${v}).some ? ${outConv(n, `(${v}).v`, where)} : sts_mknull())`; }
     throw new CUnsupported(where, `passing '${show(t)}' between C and managed code`);
@@ -295,14 +302,14 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       `  sts_env = env; sts_depth = 0; sts_err = 0; sts_nvecs = 0; if (!sts_stack_lim) sts_stack_init();`,
       `  size_t argc = ${n}; napi_value argv[${Math.max(n, 1)}]; napi_get_cb_info(env, info, &argc, argv, 0, 0);`,
       `  struct { int ok; ${frame.join(" ")} } *volatile fr = calloc(1, sizeof *fr);`,
-      `  if (setjmp(sts_jb)) { if (fr->ok) { fr->ok = 0; ${wb.join(" ")} } sts_vec_sync(); free(fr); return sts_throw(); }`,
+      `  if (setjmp(sts_jb)) { if (fr->ok) { fr->ok = 0; ${wb.join(" ")} } sts_vec_sync(); sts_pool_sync(); free(fr); return sts_throw(); }`,
       ...lines,
       `  fr->ok = 1;`,
       isVoid ? `  ${i.name}(${args.join(", ")});` : `  ${ctype(ret, where)} r = ${i.name}(${args.join(", ")});`,
       `  fr->ok = 0; ${wb.join(" ")}`,
       `  napi_value res = ${isVoid ? "0" : outConv(ret, "r", where)};`,
       `  if (!res) napi_get_undefined(env, &res);`,
-      `  sts_vec_sync(); free(fr); return res;`,
+      `  sts_vec_sync(); sts_pool_sync(); free(fr); return res;`,
       `}`,
     ].join("\n");
   }
@@ -745,6 +752,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       }
       const rt = this.typeOf(p.expression);
       if ((isGen(rt, "Vec") || isGen(rt, "Slice")) && name === "length") { const s = this.seq(p.expression); return this.t({ k: "num", name: "usize" }, s.len, p); }
+      if (isGen(rt, "Pool") && (name === "length" || name === "capacity")) return this.t({ k: "num", name: "usize" }, `${this.ex(p.expression)}->${name === "length" ? "len" : "cap"}`, p);
       if (isStruct(rt)) {
         const t = this.typeOf(p);
         const base = this.placeOrValue(p.expression), ft = rt.fields.find((f) => f.name === name)?.type;
@@ -835,6 +843,12 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
           const a = this.ex(e.arguments[0]!), n = this.ex(e.arguments[1]!);
           return this.t(t, `sts_vec_create(${a}, ${n}, ${cstr(elemDesc(el))}, ${layout(el)!.z}, ${this.pos(p.name)})`, e);
         }
+        if (ns === "Pool" && m === "create") {
+          const el = elemOf(t);
+          ctype(t, this.where);
+          const a = this.ex(e.arguments[0]!), n = this.ex(e.arguments[1]!);
+          return this.t(t, `sts_pool_create(${a}, ${n}, ${cstr(elemDesc(el))}, ${layout(el)!.z}, ${this.pos(p.name)})`, e);
+        }
         throw this.no(p.name, `'${ns}.${m}'`);
       }
       const rt = this.typeOf(p.expression);
@@ -846,6 +860,38 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         const r = `sts_callm(${o}, "${m}", ${as.length}, ${arr})`;
         if (this.isVoidT(t)) { this.emit(`${r};`); return stmt ? undefined : "0"; }
         return this.t(t, inConv(t, r, this.where), e);
+      }
+      if (isGen(rt, "Pool")) {
+        const et = elemOf(rt), el = elem(et, this.where);
+        const pv = `t${this.tmp++}`;
+        this.emit(`sts_pool *${pv} = ${this.ex(p.expression)};`);
+        const hv = () => this.ex(e.arguments[0]!);
+        const chk = () => this.emit(`if (!sts_pool_valid(${pv}, ${hv()})) sts_trap(11, ${this.pos(p.name)});`); // T011 at the member name (Q188 (a))
+        switch (m) {
+          case "insert": {
+            const x = this.t(et, this.conv(this.ex(e.arguments[0]!), this.typeOf(e.arguments[0]!), et), e);
+            const n = ctype(t, this.where), r = `t${this.tmp++}`;
+            this.emit(`${n} ${r};`);
+            this.emit(`if (${pv}->len >= ${pv}->cap) { ${r}.some = false; } else { uint32_t pi; if (${pv}->freeHead >= 0) { pi = (uint32_t)${pv}->freeHead; ${pv}->freeHead = ${pv}->nextFree[pi]; ${pv}->gens[pi] += 1; } else pi = (uint32_t)${pv}->nextFresh++; ${pv}->occ[pi] = 1; ${el.st(`${pv}->data`, "pi", x)} ${pv}->len++; ${r}.some = true; ${r}.v.pool = ${pv}->id; ${r}.v.gen = ${pv}->gens[pi]; ${r}.v.idx = pi; }`);
+            return this.t(t, r, e);
+          }
+          case "get": chk(); return this.t(t, el.ld(`${pv}->data`, `${hv()}.idx`), e);
+          case "set": {
+            chk();
+            const x = this.t(et, this.conv(this.ex(e.arguments[1]!), this.typeOf(e.arguments[1]!), et), e);
+            this.emit(el.st(`${pv}->data`, `${hv()}.idx`, x));
+            return stmt ? undefined : "0";
+          }
+          case "remove": {
+            chk();
+            const ct = ctype(et, this.where), r = `t${this.tmp++}`;
+            this.emit(`${ct} ${r} = ${el.ld(`${pv}->data`, `${hv()}.idx`)};`);
+            this.emit(`${pv}->occ[${hv()}.idx] = 0; ${pv}->nextFree[${hv()}.idx] = (int32_t)${pv}->freeHead; ${pv}->freeHead = ${hv()}.idx; ${pv}->len--;`);
+            return this.t(t, r, e);
+          }
+          case "has": return this.t(t, `sts_pool_valid(${pv}, ${hv()})`, e);
+        }
+        throw this.no(p.name, `the method '${m}' on ${show(rt)}`);
       }
       if (isGen(rt, "Vec") || isGen(rt, "Slice")) {
         const s = this.seq(p.expression), el = elem(s.et, this.where);

@@ -8,7 +8,8 @@ export type Lay =
   | { t: "lit"; v: string[]; z: 4; a: 4 }
   | { t: "rec"; f: { n: string; o: number; l: Lay }[]; z: number; a: number }
   | { t: "uni"; m: Lay[]; z: number; a: number }
-  | { t: "opt"; o: number; l: Lay; z: number; a: number };
+  | { t: "opt"; o: number; l: Lay; z: number; a: number }
+  | { t: "hdl"; z: 12; a: 4 };
 
 const NUM_SIZE: Record<NumName, number> = { i8: 1, u8: 1, i16: 2, u16: 2, i32: 4, u32: 4, usize: 4, f32: 4, f64: 8 };
 const up = (n: number, a: number): number => Math.ceil(n / a) * a;
@@ -19,6 +20,7 @@ export function layout(t: Type, kinds?: string[]): Lay | undefined {
   if (t.k === "num") return { t: "num", n: t.name, z: NUM_SIZE[t.name], a: NUM_SIZE[t.name] };
   if (isBool(t)) return { t: "bool", z: 1, a: 1 };
   if (t.k === "lit") return { t: "lit", v: [t.value], z: 4, a: 4 };
+  if (t.k === "gen" && t.name === "Handle") return { t: "hdl", z: 12, a: 4 }; // Q188 (a): pool id, generation, index
   if (!isCopy(t)) return undefined;
   if (t.k === "record") {
     const fs = [...t.fields.filter((f) => f.name === "kind"), ...t.fields.filter((f) => f.name !== "kind")];

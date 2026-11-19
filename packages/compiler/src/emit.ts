@@ -21,7 +21,7 @@ const P = `${RUNTIME_GLOBAL}_P`, AP = `${RUNTIME_GLOBAL}_ap`, ENS = `${RUNTIME_G
 // Synthetic parameters: user code inside the right side / ensures predicates must not see them.
 const O = `${RUNTIME_GLOBAL}_o`, KEY = `${RUNTIME_GLOBAL}_k`, V = `${RUNTIME_GLOBAL}_v`, R = `${RUNTIME_GLOBAL}_r`;
 /** Builtin namespaces that are runtime values (the rest are JS globals). */
-const RT_NAMESPACES = ["Vec", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "TestAlloc"];
+const RT_NAMESPACES = ["Vec", "Pool", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "TestAlloc"];
 const DROP_MODS = new Set<K>([K.ExportKeyword, K.ReadonlyKeyword, K.PrivateKeyword, K.PublicKeyword, K.ProtectedKeyword, K.DeclareKeyword, K.AbstractKeyword, K.OverrideKeyword]);
 const COMPOUND: Partial<Record<K, string>> = {
   [K.PlusEqualsToken]: "+", [K.MinusEqualsToken]: "-", [K.AsteriskEqualsToken]: "*",
@@ -257,7 +257,7 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
     const withArgs = (extra: string[]): string => `${gen(callee)}(${[...args, ...extra].join(", ")})`;
     const nn = (s: string): string => (p.questionDotToken ? `${RT}.nn(${s})` : s);
     const awaited = e.arguments.some(hasAwait);
-    if (recv.kind === K.Identifier && (recv as ts.Identifier).text === "Vec" && m === "create" && !typeOf(recv)) {
+    if (recv.kind === K.Identifier && ((recv as ts.Identifier).text === "Vec" || (recv as ts.Identifier).text === "Pool") && m === "create" && !typeOf(recv)) {
       const el = self?.k === "gen" ? self.args[0] : undefined;
       return withArgs([q(elemDesc(el))]);
     }
@@ -277,6 +277,7 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
       if (r.name === "Map" && m === "get") return nn(`${RT}.nn(${withArgs([])})`);
       if ((r.name === "Vec" || r.name === "Slice") && m === "slice") return nn(withArgs([at(p.name)]));
       if (r.name === "OwnedCell" && (m === "take" || m === "put")) return nn(withArgs([at(p.name)]));
+      if (r.name === "Pool" && (m === "get" || m === "set" || m === "remove")) return nn(withArgs([at(p.name)])); // T011 at the member name (Q188 (a))
     } else if (r && isStr(r)) {
       if (m === "indexOf") return nn(`${RT}.idxOrNull(${withArgs([])})`);
       if (m === "codePointAt") return nn(`${RT}.nn(${withArgs([])})`);
