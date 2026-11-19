@@ -560,3 +560,7 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
   - #40（`run/173-c-names-vs-header-macros`）: ヘッダのマクロとぶつからないよう、生成する C の名前のうち大文字で始まるもの（`S<n>`、`U<n>`、`N<n>`、`FP<n>`、`Q<n>`、`L<n>` の表とラベル、`F<n>_<名前>` の関数）に `sts_` を付けた。接頭辞は C のランタイム（`sts_rt.h`）と同じ `sts_` を直接書く。`names.ts` の定数からは導かない（ランタイムの C もそう書いているため）。小文字で始まる名前（`t<n>`、`u_<名前>`、`a<k>`、`in_` / `out_` / `wb_` / `cv_` / `ld_` / `st_` / `cb_` / `w_` の付いた名前）は、そのまま残した。ヘッダは `stscb_names.h`。
   - #14（読んで直した。発動させる repro はない）: (1) ラッパの `sts_stack_init()` を `setjmp` の後に移した。前にあると、その中の `sts_fail` が、まだ設定していない `sts_jb` へ飛ぶ。(2) ラッパの `fr` の `calloc` の失敗を調べる。飛び先がまだないので、`sts_fail` ではなく `sts_err` を立てて `sts_throw` で戻る。(3) `sts_rt.h` の Vec / Pool / Arena の一覧の `p = realloc(p, ..)` を、一時変数で受けるようにした。失敗しても古い配列と古い容量が残るので、`setjmp` の側の `*_sync` が安全に回れる。
 - 検証: `pnpm typecheck` 成功、`pnpm test` 18 ファイル 217 件通過、`pnpm verify:conformance` accept=79 reject=536 run=161（PASSING 776 件）、`pnpm conformance` 905 件通過。`pnpm bench` の 5 回中央値は dot_f32 1.01、saxpy_f32 1.15、prefix_i32 1.25、stencil_f64 1.00、particles_aos_f32 1.39 倍（単発の最大は 1.43 倍）。
+
+## D130: 2026-11-20 のオーナー決定の記録と実装（設計監査の修正 4）
+
+- 記録だけのもの（挙動は変えない）: Q216 (a)、Q217 (a)、Q218 (a)、Q219 (a)、Q220 (a)、Q221 (a)、Q224 (a) をオーナーが決めた。どれも実装済み（D119、D124、D126、D127、D128）。SPEC が黙っていた箇所を先に書いた。§3.2 に戻り値と末尾の規則（Q023、Q126、Q221）、§5.3 に `?.` の合流（Q220）、§14.1 に指定子の制御文字（Q224）、§14.4 に指す先の誤りの E4007（Q216）、`cast` の型引数の `void`、`CType`、`Ptr`（Q217、Q219）、`CHandle` を数えない unsafe の呼び出し（Q218）。conformance は変えていない。
