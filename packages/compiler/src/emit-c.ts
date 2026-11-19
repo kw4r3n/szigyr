@@ -1241,8 +1241,8 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       for (const g of sliceGroups.get(e) ?? []) {
         for (let j = 1; j < g.length; j++) for (let i = 0; i < j; i++) {
           if (!g[i]!.mut && !g[j]!.mut) continue;
-          const z = layout(elemOf(unref(callee.params[g[j]!.arg]!)))!.z;
-          this.emit(`if (sts_ovl(${args[g[i]!.arg]}, ${args[g[j]!.arg]}, ${z})) sts_trap(13, ${this.pos(g[j]!.name)});`);
+          const z = (k: number): number => layout(elemOf(unref(callee.params[g[k]!.arg]!)))!.z;
+          this.emit(`if (sts_ovl(${args[g[i]!.arg]}, ${args[g[j]!.arg]}, ${z(i)}, ${z(j)})) sts_trap(13, ${this.pos(g[j]!.name)});`);
         }
       }
       this.emit(`if (++sts_depth > 10000 || STS_STACK_LOW()) sts_trap(6, ${this.pos(e.expression)});`);

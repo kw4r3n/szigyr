@@ -293,10 +293,10 @@ typedef int32_t __attribute__((may_alias)) sts_ma_int32_t; typedef uint32_t __at
 #define STS_ST(p, T, v) (*(sts_ma_##T *)(p) = (v))
 static uint32_t sts_lidx(const int32_t *tbl, uint32_t n, int32_t id) { for (uint32_t i = 0; i < n; i++) if (tbl[i] == id) return i; sts_fail("bad literal"); return 0; }
 static void sts_chk(uint32_t i, uint32_t len, int pos) { if (__builtin_expect(i >= len, 0)) sts_trap(2, pos); }
-/** Q190 (b): the byte ranges of two slices overlap; a zero-length range overlaps nothing. */
-static bool sts_ovl(sts_slice a, sts_slice b, size_t es) {
+/** Q190 (b): the byte ranges of two slices overlap; a zero-length range overlaps nothing. `az` / `bz`: each side's element size (arena views of different types). */
+static bool sts_ovl(sts_slice a, sts_slice b, size_t az, size_t bz) {
   uintptr_t a0 = (uintptr_t)a.data, b0 = (uintptr_t)b.data;
-  uintptr_t a1 = a0 + (size_t)a.len * es, b1 = b0 + (size_t)b.len * es;
+  uintptr_t a1 = a0 + (size_t)a.len * az, b1 = b0 + (size_t)b.len * bz;
   return (a0 > b0 ? a0 : b0) < (a1 < b1 ? a1 : b1);
 }
 static sts_slice sts_sub(sts_slice s, uint32_t a, uint32_t b, size_t es, int pos) {

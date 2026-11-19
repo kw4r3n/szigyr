@@ -690,6 +690,7 @@ run/155-ptr-unbox-as-arg.ts
 run/156-generic-nullable-null-arg.ts
 run/157-detmath-user-dm-name.ts
 run/158-reexport-strict-const
+run/159-arena-views-mixed-size.ts
 run/16-struct-f32.ts
 run/17-trap-i32-add-overflow.ts
 run/18-trap-i32-unary-minus.ts
