@@ -6,6 +6,7 @@ import { callFnArgs, callTArgs, exprTypes } from "./expr.ts";
 import { sliceGroups } from "./ownership.ts";
 import type { FnSym, Module, Program } from "./modules.ts";
 import { layout, elemDesc, type Lay } from "./layout.ts";
+import { DETMATH_PATH } from "./detmath.ts";
 import { AUTHORITIES, isCopy, isInt, isTaggedUnion, kindOf, nonNull, isNull, isBool, unref, show, subst, type Field, type NumName, type Type } from "./types.ts";
 
 /** A construct the C backend does not translate yet: the run stops with this error (never a silent fallback to JS). */
@@ -845,6 +846,12 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
           if (F[m]) return this.t(t, `${F[m]}(${as[0]})`, e);
           if (m === "fround") return this.t(t, `(float)${as[0]}`, e);
           if (m === "min" || m === "max") { let acc = as[0]!; for (const x of as.slice(1)) acc = this.t(t, `sts_${m}(${acc}, ${x})`, e); return acc; }
+        }
+        if (ns === "DetMath") { // §12 (Q191): a direct call of the bundled module's rt function
+          const dm = prog.mods.find((x) => x.pf.path === DETMATH_PATH);
+          const fn = dm ? resolveFn(dm, m) : undefined;
+          if (!fn) throw this.no(p.name, `'DetMath.${m}'`);
+          return this.userCall(e, fn, stmt);
         }
         if (ns === "Vec" && m === "create") {
           const el = elemOf(t);

@@ -61,6 +61,7 @@ accept/59-fn-param-rt-slice.ts
 accept/60-pool-ops.ts
 accept/61-arena-ops.ts
 accept/62-arena-trap-test.ts
+accept/63-detmath.ts
 reject/E1000-array-suffix-type.ts
 reject/E1000-await-in-non-async-arrow.ts
 reject/E1000-await-outside-async.ts
@@ -68,6 +69,7 @@ reject/E1000-break-in-arrow-inside-loop.ts
 reject/E1000-break-outside-loop.ts
 reject/E1000-class-extends.ts
 reject/E1000-continue-in-switch.ts
+reject/E1000-detmath-redeclare.ts
 reject/E1000-directive-after-first-statement.ts
 reject/E1000-duplicate-class-member.ts
 reject/E1000-duplicate-local.ts
@@ -125,6 +127,7 @@ reject/E2000-unknown-type-name.ts
 reject/E2001-arena-clear.ts
 reject/E2001-arenabuf-member.ts
 reject/E2001-array-flatmap.ts
+reject/E2001-detmath-unknown-member.ts
 reject/E2001-handle-member.ts
 reject/E2001-map-entries.ts
 reject/E2001-number-issafeinteger.ts
@@ -153,6 +156,8 @@ reject/E2002-ctor-reads-unassigned-after-assigned.ts
 reject/E2002-ctor-return-before-init.ts
 reject/E2002-ctor-this-escapes-before-init.ts
 reject/E2002-decode-map-target.ts
+reject/E2002-detmath-arg-type.ts
+reject/E2002-detmath-not-called.ts
 reject/E2002-ensures-void-with-parameter.ts
 reject/E2002-eq-owned-vec.ts
 reject/E2002-fn-arg-type-mismatch.ts
@@ -518,7 +523,11 @@ run/114-arena-views-disjoint.ts
 run/115-trap-arena-view-overlap.ts
 run/116-arena-rt-packed.ts
 run/117-arena-generic.ts
+run/118-detmath-values.ts
+run/119-detmath-special.ts
 run/12-string-ops.ts
+run/120-detmath-large.ts
+run/121-detmath-rt.ts
 run/13-async-await.ts
 run/14-vec-slice.ts
 run/15-owned-cell.ts

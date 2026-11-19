@@ -3,6 +3,7 @@ import {
   BOOL, ERROR_RECORD, F64, NULL, STR, UNKNOWN, USIZE, VOID, fn, gen, newTParam, nullable, num, opaque, result, record, ro,
   type FnType, type GenName, type NumName, type Type, NUM_NAMES, GEN_ARITY, OPAQUE_NAMES,
 } from "./types.ts";
+import { DETMATH_BINARY, DETMATH_UNARY } from "./detmath.ts";
 
 /** Names reserved by §13 / Q011 that resolve to nothing (E2000). */
 export const RESERVED = new Set(["i64", "u64", "bigint", "undefined", "Net", "Ffi", "Spawn"]);
@@ -15,7 +16,7 @@ export const GLOBAL_AUTHORITIES = new Set([
 ]);
 
 /** Namespace objects (Q034). */
-export const NAMESPACES = new Set(["Math", "Number", "JSON", "String", "Promise", "Vec", "Pool", "Arena", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "TestAlloc"]);
+export const NAMESPACES = new Set(["Math", "Number", "JSON", "String", "Promise", "Vec", "Pool", "Arena", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "TestAlloc", "DetMath"]);
 /** Builtin functions handled by the checker (§12). */
 export const BUILTIN_FUNCTIONS = new Set([...NUM_NAMES, "wrapAdd", "wrapSub", "wrapMul", "divTrunc", "rem", "ok", "err", "panic", "cast", "requires", "ensures", "invariant", "test"]);
 
@@ -210,6 +211,10 @@ export function nsMember(ns: string, name: string): Member | "variadic" | undefi
       return undefined;
     case "String": return name === "fromCodePoint" ? mo(m([num("u32")], STR)) : undefined;
     case "Promise": return name === "all" ? mo(m([gen("Array", gen("Promise", tT))], gen("Promise", gen("Array", tT)), { tparams: [T] })) : undefined;
+    case "DetMath": // §12 (Q191): rt functions, so callable from every layer; f64 only
+      if (DETMATH_UNARY.includes(name)) return m([F64], F64);
+      if (DETMATH_BINARY.includes(name)) return m([F64, F64], F64);
+      return undefined;
     case "Vec": return name === "create" ? m([opaque("Alloc"), USIZE], gen("Vec", tT), { tparams: [T], tcheck: "copy" }) : undefined;
     case "Pool": return name === "create" ? m([opaque("Alloc"), USIZE], gen("Pool", tT), { tparams: [T], tcheck: "copy" }) : undefined;
     case "Arena": return name === "create" ? m([opaque("Alloc"), USIZE], gen("Arena")) : undefined;

@@ -1,6 +1,8 @@
 // Phase P1 (Q003): the syntax allowlist. Every node kind is accepted only by an explicit case below;
 // anything else falls to a default branch that reports E1000. Anchors follow docs/DIAGNOSTICS.md.
+import { dirname, resolve } from "node:path";
 import type { Diagnostic } from "./diagnostics.ts";
+import { DETMATH_PATH } from "./detmath.ts";
 import { NodeFlags, SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { RUNTIME_GLOBAL } from "./names.ts";
 
@@ -10,7 +12,7 @@ const BUILTIN_NAMES = new Set([
   "Array", "ReadonlyArray", "Map", "Set", "Promise", "Result", "Struct", "Vec", "Slice", "Pool", "Handle", "Arena", "ArenaBuf", "Ref", "Mut", "OwnedCell",
   "System", "Alloc", "Fs", "Net", "Clock", "Random", "Log", "Js", "Ffi", "Spawn", "JsRef", "JsError", "CastError", "IoError", "Test",
   "wrapAdd", "wrapSub", "wrapMul", "divTrunc", "rem", "ok", "err", "panic", "cast", "requires", "ensures", "invariant", "test",
-  "Math", "Number", "JSON", "String", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "TestAlloc",
+  "Math", "Number", "JSON", "String", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "TestAlloc", "DetMath",
 ]);
 /** Q004: type names rejected as E1000 rather than E2000. */
 const E1000_TYPE_NAMES = new Set([
@@ -166,6 +168,11 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     }
     if (d.moduleSpecifier.kind !== K.StringLiteral || !specifierOk((d.moduleSpecifier as ts.StringLiteral).text)) {
       at("E7001", d.moduleSpecifier, "module specifier must be './x.ts', '../x.ts' or 'npm:name'");
+      return;
+    }
+    const specText = (d.moduleSpecifier as ts.StringLiteral).text;
+    if (!specText.startsWith("npm:") && resolve(dirname(pf.path), specText) === DETMATH_PATH) { // §12 (Q191)
+      at("E7001", d.moduleSpecifier, "the bundled DetMath module cannot be imported; use the DetMath namespace");
       return;
     }
     for (const e of (nb as ts.NamedImports).elements) { declName(e.name); topName(e.name); }

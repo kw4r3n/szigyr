@@ -1,0 +1,1074 @@
+// DetMath: the deterministic f64 math library of SPEC §12 (Q191), written in strict STS.
+// The compiler adds this module to a program that uses `DetMath.<name>`, imported under a
+// name users cannot write; users cannot import this module (§1, §12). Every function is
+// "use rt" and, by construction, has an empty trap list: only f64 arithmetic, comparisons,
+// the §10.1 Math functions and calls to the other functions of this module — no integer
+// arithmetic, no numeric conversions, no indexing, no recursion. The JS and C backends
+// therefore produce bit-identical results. Special values follow ECMAScript `Math.*`.
+//
+// The algorithms are ports of fdlibm (the FreeBSD libm sources, themselves from SunPro):
+// s_exp, s_expm1, s_log, s_atan, s_tan, k_sin, k_cos, k_tan, e_rem_pio2 and the Payne-Hanek
+// kernel of e_rem_pio2 (prec 2). log10, tanh and pow are assembled from double-double
+// (two-sum / two-product) pieces over the same kernels. The 2/pi bit sequence used by
+// Payne-Hanek is written out as f64 constants (ipio2At), because strict has no constant
+// tables; the same holds for the PIo2 pieces (pio2At) and the fixed-size work arrays of
+// the kernel (A20 with aget / aset).
+//
+// ====================================================
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunPro, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+
+type Dd = Struct<{ readonly hi: f64; readonly lo: f64 }>;
+type Fx = Struct<{ readonly m: f64; readonly e: f64 }>;
+type Rm = Struct<{ readonly n: f64; readonly y0: f64; readonly y1: f64 }>;
+type Lg = Struct<{ readonly mm: f64; readonly kk: f64 }>;
+type Lp = Struct<{ readonly f: f64; readonly hfsq: f64; readonly s: f64; readonly r: f64 }>;
+
+const EXP_OT: f64 = 7.09782712893383973096e+02;
+const EXP_UT: f64 = -7.45133219101941108420e+02;
+const LN2HI_E: f64 = 6.93147180369123816490e-01;
+const LN2LO_E: f64 = 1.90821492927058770002e-10;
+const INVLN2: f64 = 1.44269504088896338700e+00;
+const EP1: f64 = 1.66666666666666019037e-01;
+const EP2: f64 = -2.77777777770155933842e-03;
+const EP3: f64 = 6.61375632143793436117e-05;
+const EP4: f64 = -1.65339022054652515390e-06;
+const EP5: f64 = 4.13813679705723846039e-08;
+const LN2_HI_L: f64 = 6.93147180369123816490e-01;
+const LN2_LO_L: f64 = 1.90821492927058770002e-10;
+const LG1: f64 = 6.666666666666735130e-01;
+const LG2: f64 = 3.999999999940941908e-01;
+const LG3: f64 = 2.857142874366239149e-01;
+const LG4: f64 = 2.222219843214978396e-01;
+const LG5: f64 = 1.818357216161805012e-01;
+const LG6: f64 = 1.531383769920937332e-01;
+const LG7: f64 = 1.479819860511658591e-01;
+const KS1: f64 = -1.66666666666666324348e-01;
+const KS2: f64 = 8.33333333332248946124e-03;
+const KS3: f64 = -1.98412698298579493134e-04;
+const KS4: f64 = 2.75573137070700676789e-06;
+const KS5: f64 = -2.50507602534068634195e-08;
+const KS6: f64 = 1.58969099521155010221e-10;
+const KC1: f64 = 4.16666666666666019037e-02;
+const KC2: f64 = -1.38888888888741095749e-03;
+const KC3: f64 = 2.48015872894767294178e-05;
+const KC4: f64 = -2.75573143513906633035e-07;
+const KC5: f64 = 2.08757232129817482790e-09;
+const KC6: f64 = -1.13596475577881948265e-11;
+const INVPIO2: f64 = 6.36619772367581382433e-01;
+const PIO2_1: f64 = 1.57079632673412561417e+00;
+const PIO2_1T: f64 = 6.07710050650619224932e-11;
+const PIO2_2: f64 = 6.07710050630396597660e-11;
+const PIO2_2T: f64 = 2.02226624879595063154e-21;
+const PIO2_3: f64 = 2.02226624871116645580e-21;
+const PIO2_3T: f64 = 8.47842766036889956997e-32;
+const PI_C: f64 = 3.1415926535897931160E+00;
+const PI_LO_C: f64 = 1.2246467991473531772E-16;
+const ATANHI0: f64 = 4.63647609000806093515e-01;
+const ATANLO0: f64 = 2.26987774529616870924e-17;
+const ATANHI1: f64 = 7.85398163397448278999e-01;
+const ATANLO1: f64 = 3.06161699786838301793e-17;
+const ATANHI2: f64 = 9.82793723247329054082e-01;
+const ATANLO2: f64 = 1.39033110312309984516e-17;
+const ATANHI3: f64 = 1.57079632679489655800e+00;
+const ATANLO3: f64 = 6.12323399573676603587e-17;
+const AT0: f64 = 3.33333333333329318027e-01;
+const AT1: f64 = -1.99999999998764832476e-01;
+const AT2: f64 = 1.42857142725034663711e-01;
+const AT3: f64 = -1.11111104054623557880e-01;
+const AT4: f64 = 9.09088713343650656196e-02;
+const AT5: f64 = -7.69187620504482999495e-02;
+const AT6: f64 = 6.66107313738753120669e-02;
+const AT7: f64 = -5.83357013379057348645e-02;
+const AT8: f64 = 4.97687799461593236017e-02;
+const AT9: f64 = -3.65315727442169155270e-02;
+const AT10: f64 = 1.62858201153657823623e-02;
+const KT0: f64 = 3.33333333333334091986e-01;
+const KT1: f64 = 1.33333333333201242699e-01;
+const KT2: f64 = 5.39682539762260521377e-02;
+const KT3: f64 = 2.18694882948595424599e-02;
+const KT4: f64 = 8.86323982359930005737e-03;
+const KT5: f64 = 3.59207910759131235356e-03;
+const KT6: f64 = 1.45620945432529025516e-03;
+const KT7: f64 = 5.88041240820264096874e-04;
+const KT8: f64 = 2.46463134818469906812e-04;
+const KT9: f64 = 7.81794442939557092300e-05;
+const KT10: f64 = 7.14072491382608190305e-05;
+const KT11: f64 = -1.85586374855275456654e-05;
+const KT12: f64 = 2.59073051863633712884e-05;
+const PIO4_T: f64 = 7.85398163397448278999e-01;
+const PIO4LO_T: f64 = 3.06161699786838301793e-17;
+const Q1: f64 = -3.33333333333331316428e-02;
+const Q2: f64 = 1.58730158725481460165e-03;
+const Q3: f64 = -7.93650757867487942473e-05;
+const Q4: f64 = 4.00821782732936239552e-06;
+const Q5: f64 = -2.01099218183624371326e-07;
+const SQRT2: f64 = 1.41421356237309504880;
+const TWO54: f64 = 1.80143985094819840000e+16;
+const P512: f64 = 1.3407807929942597e154;
+const P512I: f64 = 7.458340731200207e-155;
+const TWO24: f64 = 16777216;
+const TWON24: f64 = 5.9604644775390625e-08;
+const PI4: f64 = 0.7853981633974483;
+
+function ipio2At(i: f64): f64 {
+  "use rt";
+  if (i === 0) return 10680707;
+  if (i === 1) return 7228996;
+  if (i === 2) return 1387004;
+  if (i === 3) return 2578385;
+  if (i === 4) return 16069853;
+  if (i === 5) return 12639074;
+  if (i === 6) return 9804092;
+  if (i === 7) return 4427841;
+  if (i === 8) return 16666979;
+  if (i === 9) return 11263675;
+  if (i === 10) return 12935607;
+  if (i === 11) return 2387514;
+  if (i === 12) return 4345298;
+  if (i === 13) return 14681673;
+  if (i === 14) return 3074569;
+  if (i === 15) return 13734428;
+  if (i === 16) return 16653803;
+  if (i === 17) return 1880361;
+  if (i === 18) return 10960616;
+  if (i === 19) return 8533493;
+  if (i === 20) return 3062596;
+  if (i === 21) return 8710556;
+  if (i === 22) return 7349940;
+  if (i === 23) return 6258241;
+  if (i === 24) return 3772886;
+  if (i === 25) return 3769171;
+  if (i === 26) return 3798172;
+  if (i === 27) return 8675211;
+  if (i === 28) return 12450088;
+  if (i === 29) return 3874808;
+  if (i === 30) return 9961438;
+  if (i === 31) return 366607;
+  if (i === 32) return 15675153;
+  if (i === 33) return 9132554;
+  if (i === 34) return 7151469;
+  if (i === 35) return 3571407;
+  if (i === 36) return 2607881;
+  if (i === 37) return 12013382;
+  if (i === 38) return 4155038;
+  if (i === 39) return 6285869;
+  if (i === 40) return 7677882;
+  if (i === 41) return 13102053;
+  if (i === 42) return 15825725;
+  if (i === 43) return 473591;
+  if (i === 44) return 9065106;
+  if (i === 45) return 15363067;
+  if (i === 46) return 6271263;
+  if (i === 47) return 9264392;
+  if (i === 48) return 5636912;
+  if (i === 49) return 4652155;
+  if (i === 50) return 7056368;
+  if (i === 51) return 13614112;
+  if (i === 52) return 10155062;
+  if (i === 53) return 1944035;
+  if (i === 54) return 9527646;
+  if (i === 55) return 15080200;
+  if (i === 56) return 6658437;
+  if (i === 57) return 6231200;
+  if (i === 58) return 6832269;
+  if (i === 59) return 16767104;
+  if (i === 60) return 5075751;
+  if (i === 61) return 3212806;
+  if (i === 62) return 1398474;
+  if (i === 63) return 7579849;
+  if (i === 64) return 6349435;
+  if (i === 65) return 12618859;
+  return 12618859;
+}
+
+function pio2At(i: f64): f64 {
+  "use rt";
+  if (i === 0) return 1.57079625129699707031e+00;
+  if (i === 1) return 7.54978941586159635335e-08;
+  if (i === 2) return 5.39030252995776476554e-15;
+  if (i === 3) return 3.28200341580791294123e-22;
+  if (i === 4) return 1.27065575308067607349e-29;
+  if (i === 5) return 1.22933308981111328932e-36;
+  if (i === 6) return 2.73370053816464559624e-44;
+  if (i === 7) return 2.16741683877804819444e-51;
+  return 2.16741683877804819444e-51;
+}
+
+function serAt(i: f64): Dd {
+  "use rt";
+  if (i === 0) return { hi: 1.0, lo: 0.0 };
+  if (i === 1) return { hi: 0.3333333333333333, lo: 1.850371707708594e-17 };
+  if (i === 2) return { hi: 0.2, lo: -1.1102230246251566e-17 };
+  if (i === 3) return { hi: 0.14285714285714285, lo: 7.93016446160826e-18 };
+  if (i === 4) return { hi: 0.1111111111111111, lo: 6.1679056923619804e-18 };
+  if (i === 5) return { hi: 0.09090909090909091, lo: -2.523234146875356e-18 };
+  if (i === 6) return { hi: 0.07692307692307693, lo: -4.270088556250602e-18 };
+  if (i === 7) return { hi: 0.06666666666666667, lo: 9.251858538542971e-19 };
+  if (i === 8) return { hi: 0.058823529411764705, lo: 8.163404592832033e-19 };
+  if (i === 9) return { hi: 0.05263157894736842, lo: 2.921639538487254e-18 };
+  if (i === 10) return { hi: 0.047619047619047616, lo: 2.64338815386942e-18 };
+  if (i === 11) return { hi: 0.043478260869565216, lo: 1.206764157201257e-18 };
+  if (i === 12) return { hi: 0.04, lo: -8.326672684688674e-19 };
+  if (i === 13) return { hi: 0.037037037037037035, lo: 2.05596856412066e-18 };
+  return { hi: 0.037037037037037035, lo: 2.05596856412066e-18 };
+}
+
+type A20 = Struct<{ readonly v0: f64; readonly v1: f64; readonly v2: f64; readonly v3: f64; readonly v4: f64; readonly v5: f64; readonly v6: f64; readonly v7: f64; readonly v8: f64; readonly v9: f64; readonly v10: f64; readonly v11: f64; readonly v12: f64; readonly v13: f64; readonly v14: f64; readonly v15: f64; readonly v16: f64; readonly v17: f64; readonly v18: f64; readonly v19: f64 }>;
+function a20zero(): A20 {
+  "use rt";
+  return { v0: 0, v1: 0, v2: 0, v3: 0, v4: 0, v5: 0, v6: 0, v7: 0, v8: 0, v9: 0, v10: 0, v11: 0, v12: 0, v13: 0, v14: 0, v15: 0, v16: 0, v17: 0, v18: 0, v19: 0 };
+}
+function aget(a: A20, i: f64): f64 {
+  "use rt";
+  if (i === 0) return a.v0;
+  if (i === 1) return a.v1;
+  if (i === 2) return a.v2;
+  if (i === 3) return a.v3;
+  if (i === 4) return a.v4;
+  if (i === 5) return a.v5;
+  if (i === 6) return a.v6;
+  if (i === 7) return a.v7;
+  if (i === 8) return a.v8;
+  if (i === 9) return a.v9;
+  if (i === 10) return a.v10;
+  if (i === 11) return a.v11;
+  if (i === 12) return a.v12;
+  if (i === 13) return a.v13;
+  if (i === 14) return a.v14;
+  if (i === 15) return a.v15;
+  if (i === 16) return a.v16;
+  if (i === 17) return a.v17;
+  if (i === 18) return a.v18;
+  if (i === 19) return a.v19;
+  return a.v19;
+}
+function aset(a: A20, i: f64, v: f64): A20 {
+  "use rt";
+  if (i === 0) return { v0: v, v1: a.v1, v2: a.v2, v3: a.v3, v4: a.v4, v5: a.v5, v6: a.v6, v7: a.v7, v8: a.v8, v9: a.v9, v10: a.v10, v11: a.v11, v12: a.v12, v13: a.v13, v14: a.v14, v15: a.v15, v16: a.v16, v17: a.v17, v18: a.v18, v19: a.v19 };
+  if (i === 1) return { v0: a.v0, v1: v, v2: a.v2, v3: a.v3, v4: a.v4, v5: a.v5, v6: a.v6, v7: a.v7, v8: a.v8, v9: a.v9, v10: a.v10, v11: a.v11, v12: a.v12, v13: a.v13, v14: a.v14, v15: a.v15, v16: a.v16, v17: a.v17, v18: a.v18, v19: a.v19 };
+  if (i === 2) return { v0: a.v0, v1: a.v1, v2: v, v3: a.v3, v4: a.v4, v5: a.v5, v6: a.v6, v7: a.v7, v8: a.v8, v9: a.v9, v10: a.v10, v11: a.v11, v12: a.v12, v13: a.v13, v14: a.v14, v15: a.v15, v16: a.v16, v17: a.v17, v18: a.v18, v19: a.v19 };
+  if (i === 3) return { v0: a.v0, v1: a.v1, v2: a.v2, v3: v, v4: a.v4, v5: a.v5, v6: a.v6, v7: a.v7, v8: a.v8, v9: a.v9, v10: a.v10, v11: a.v11, v12: a.v12, v13: a.v13, v14: a.v14, v15: a.v15, v16: a.v16, v17: a.v17, v18: a.v18, v19: a.v19 };
+  if (i === 4) return { v0: a.v0, v1: a.v1, v2: a.v2, v3: a.v3, v4: v, v5: a.v5, v6: a.v6, v7: a.v7, v8: a.v8, v9: a.v9, v10: a.v10, v11: a.v11, v12: a.v12, v13: a.v13, v14: a.v14, v15: a.v15, v16: a.v16, v17: a.v17, v18: a.v18, v19: a.v19 };
+  if (i === 5) return { v0: a.v0, v1: a.v1, v2: a.v2, v3: a.v3, v4: a.v4, v5: v, v6: a.v6, v7: a.v7, v8: a.v8, v9: a.v9, v10: a.v10, v11: a.v11, v12: a.v12, v13: a.v13, v14: a.v14, v15: a.v15, v16: a.v16, v17: a.v17, v18: a.v18, v19: a.v19 };
+  if (i === 6) return { v0: a.v0, v1: a.v1, v2: a.v2, v3: a.v3, v4: a.v4, v5: a.v5, v6: v, v7: a.v7, v8: a.v8, v9: a.v9, v10: a.v10, v11: a.v11, v12: a.v12, v13: a.v13, v14: a.v14, v15: a.v15, v16: a.v16, v17: a.v17, v18: a.v18, v19: a.v19 };
+  if (i === 7) return { v0: a.v0, v1: a.v1, v2: a.v2, v3: a.v3, v4: a.v4, v5: a.v5, v6: a.v6, v7: v, v8: a.v8, v9: a.v9, v10: a.v10, v11: a.v11, v12: a.v12, v13: a.v13, v14: a.v14, v15: a.v15, v16: a.v16, v17: a.v17, v18: a.v18, v19: a.v19 };
+  if (i === 8) return { v0: a.v0, v1: a.v1, v2: a.v2, v3: a.v3, v4: a.v4, v5: a.v5, v6: a.v6, v7: a.v7, v8: v, v9: a.v9, v10: a.v10, v11: a.v11, v12: a.v12, v13: a.v13, v14: a.v14, v15: a.v15, v16: a.v16, v17: a.v17, v18: a.v18, v19: a.v19 };
+  if (i === 9) return { v0: a.v0, v1: a.v1, v2: a.v2, v3: a.v3, v4: a.v4, v5: a.v5, v6: a.v6, v7: a.v7, v8: a.v8, v9: v, v10: a.v10, v11: a.v11, v12: a.v12, v13: a.v13, v14: a.v14, v15: a.v15, v16: a.v16, v17: a.v17, v18: a.v18, v19: a.v19 };
+  if (i === 10) return { v0: a.v0, v1: a.v1, v2: a.v2, v3: a.v3, v4: a.v4, v5: a.v5, v6: a.v6, v7: a.v7, v8: a.v8, v9: a.v9, v10: v, v11: a.v11, v12: a.v12, v13: a.v13, v14: a.v14, v15: a.v15, v16: a.v16, v17: a.v17, v18: a.v18, v19: a.v19 };
+  if (i === 11) return { v0: a.v0, v1: a.v1, v2: a.v2, v3: a.v3, v4: a.v4, v5: a.v5, v6: a.v6, v7: a.v7, v8: a.v8, v9: a.v9, v10: a.v10, v11: v, v12: a.v12, v13: a.v13, v14: a.v14, v15: a.v15, v16: a.v16, v17: a.v17, v18: a.v18, v19: a.v19 };
+  if (i === 12) return { v0: a.v0, v1: a.v1, v2: a.v2, v3: a.v3, v4: a.v4, v5: a.v5, v6: a.v6, v7: a.v7, v8: a.v8, v9: a.v9, v10: a.v10, v11: a.v11, v12: v, v13: a.v13, v14: a.v14, v15: a.v15, v16: a.v16, v17: a.v17, v18: a.v18, v19: a.v19 };
+  if (i === 13) return { v0: a.v0, v1: a.v1, v2: a.v2, v3: a.v3, v4: a.v4, v5: a.v5, v6: a.v6, v7: a.v7, v8: a.v8, v9: a.v9, v10: a.v10, v11: a.v11, v12: a.v12, v13: v, v14: a.v14, v15: a.v15, v16: a.v16, v17: a.v17, v18: a.v18, v19: a.v19 };
+  if (i === 14) return { v0: a.v0, v1: a.v1, v2: a.v2, v3: a.v3, v4: a.v4, v5: a.v5, v6: a.v6, v7: a.v7, v8: a.v8, v9: a.v9, v10: a.v10, v11: a.v11, v12: a.v12, v13: a.v13, v14: v, v15: a.v15, v16: a.v16, v17: a.v17, v18: a.v18, v19: a.v19 };
+  if (i === 15) return { v0: a.v0, v1: a.v1, v2: a.v2, v3: a.v3, v4: a.v4, v5: a.v5, v6: a.v6, v7: a.v7, v8: a.v8, v9: a.v9, v10: a.v10, v11: a.v11, v12: a.v12, v13: a.v13, v14: a.v14, v15: v, v16: a.v16, v17: a.v17, v18: a.v18, v19: a.v19 };
+  if (i === 16) return { v0: a.v0, v1: a.v1, v2: a.v2, v3: a.v3, v4: a.v4, v5: a.v5, v6: a.v6, v7: a.v7, v8: a.v8, v9: a.v9, v10: a.v10, v11: a.v11, v12: a.v12, v13: a.v13, v14: a.v14, v15: a.v15, v16: v, v17: a.v17, v18: a.v18, v19: a.v19 };
+  if (i === 17) return { v0: a.v0, v1: a.v1, v2: a.v2, v3: a.v3, v4: a.v4, v5: a.v5, v6: a.v6, v7: a.v7, v8: a.v8, v9: a.v9, v10: a.v10, v11: a.v11, v12: a.v12, v13: a.v13, v14: a.v14, v15: a.v15, v16: a.v16, v17: v, v18: a.v18, v19: a.v19 };
+  if (i === 18) return { v0: a.v0, v1: a.v1, v2: a.v2, v3: a.v3, v4: a.v4, v5: a.v5, v6: a.v6, v7: a.v7, v8: a.v8, v9: a.v9, v10: a.v10, v11: a.v11, v12: a.v12, v13: a.v13, v14: a.v14, v15: a.v15, v16: a.v16, v17: a.v17, v18: v, v19: a.v19 };
+  if (i === 19) return { v0: a.v0, v1: a.v1, v2: a.v2, v3: a.v3, v4: a.v4, v5: a.v5, v6: a.v6, v7: a.v7, v8: a.v8, v9: a.v9, v10: a.v10, v11: a.v11, v12: a.v12, v13: a.v13, v14: a.v14, v15: a.v15, v16: a.v16, v17: a.v17, v18: a.v18, v19: v };
+  return a;
+}
+
+// ---- double-double helpers (Dekker / Knuth two-sum, two-product) ----
+function twoSum(a: f64, b: f64): Dd {
+  "use rt";
+  const s = a + b;
+  const bb = s - a;
+  const e = (a - (s - bb)) + (b - bb);
+  return { hi: s, lo: e };
+}
+function quickTwoSum(a: f64, b: f64): Dd {
+  "use rt";
+  const s = a + b;
+  return { hi: s, lo: b - (s - a) };
+}
+function twoProd(a: f64, b: f64): Dd {
+  "use rt";
+  const p = a * b;
+  const ca = 134217729 * a;
+  const ah = ca - (ca - a);
+  const al = a - ah;
+  const cb = 134217729 * b;
+  const bh = cb - (cb - b);
+  const bl = b - bh;
+  const e = ((ah * bh - p) + ah * bl + al * bh) + al * bl;
+  return { hi: p, lo: e };
+}
+function ddFrom(x: f64): Dd {
+  "use rt";
+  return { hi: x, lo: 0 };
+}
+function ddNeg(a: Dd): Dd {
+  "use rt";
+  return { hi: -a.hi, lo: -a.lo };
+}
+function ddAdd(a: Dd, b: Dd): Dd {
+  "use rt";
+  const s = twoSum(a.hi, b.hi);
+  return quickTwoSum(s.hi, s.lo + (a.lo + b.lo));
+}
+function ddSub(a: Dd, b: Dd): Dd {
+  "use rt";
+  return ddAdd(a, ddNeg(b));
+}
+function ddMulF(a: Dd, b: f64): Dd {
+  "use rt";
+  const p = twoProd(a.hi, b);
+  return quickTwoSum(p.hi, p.lo + a.lo * b);
+}
+function ddMul(a: Dd, b: Dd): Dd {
+  "use rt";
+  const p = twoProd(a.hi, b.hi);
+  return quickTwoSum(p.hi, p.lo + (a.hi * b.lo + a.lo * b.hi));
+}
+function ddDiv(a: Dd, b: Dd): Dd {
+  "use rt";
+  const q1 = a.hi / b.hi;
+  const p = twoProd(q1, b.hi);
+  const r = ((a.hi - p.hi) - p.lo) + a.lo - q1 * b.lo;
+  return quickTwoSum(q1, r / b.hi);
+}
+function ln2dd(): Dd {
+  "use rt";
+  return { hi: 0.6931471805599453, lo: 2.3190468123462997e-17 };
+}
+function invln2dd(): Dd {
+  "use rt";
+  return { hi: 1.4426950408889634, lo: 2.0355273740931033e-17 };
+}
+function invln10dd(): Dd {
+  "use rt";
+  return { hi: 0.4342944819032518, lo: 1.098319650216765e-17 };
+}
+
+// ---- exact powers of two, exponent extraction by comparisons (no bit access in strict) ----
+function pow2pos(a: f64): f64 {
+  "use rt";
+  let r: f64 = 1;
+  let kk = a;
+  if (kk >= 512) { r *= P512; kk -= 512; }
+  if (kk >= 256) { r *= 1.157920892373162e77; kk -= 256; }
+  if (kk >= 128) { r *= 3.4028236692093846e38; kk -= 128; }
+  if (kk >= 64) { r *= 18446744073709551616; kk -= 64; }
+  if (kk >= 32) { r *= 4294967296; kk -= 32; }
+  if (kk >= 16) { r *= 65536; kk -= 16; }
+  if (kk >= 8) { r *= 256; kk -= 8; }
+  if (kk >= 4) { r *= 16; kk -= 4; }
+  if (kk >= 2) { r *= 4; kk -= 2; }
+  if (kk >= 1) { r *= 2; kk -= 1; }
+  return r;
+}
+function pow2i(k: f64): f64 {
+  "use rt";
+  if (k >= 0) return pow2pos(k);
+  if (k >= -1023) return 1 / pow2pos(-k);
+  return (1 / pow2pos(-(k + 512))) * P512I;
+}
+function scalbn(x: f64, k: f64): f64 {
+  "use rt";
+  const inf: f64 = 1 / 0;
+  if (x === 0 || x !== x || x === inf || x === -inf || k === 0) return x;
+  let r = x;
+  let kk = k;
+  while (kk > 1023) { r *= P512; kk -= 512; }
+  while (kk < -1074) { r *= P512I; kk += 512; }
+  return r * pow2i(kk);
+}
+function frexpParts(x: f64): Fx {
+  "use rt";
+  let m = x;
+  let e: f64 = 0;
+  const ax = Math.abs(x);
+  if (ax >= 1) {
+    if (m >= P512) { m /= P512; e += 512; }
+    if (m >= 1.157920892373162e77) { m /= 1.157920892373162e77; e += 256; }
+    if (m >= 3.4028236692093846e38) { m /= 3.4028236692093846e38; e += 128; }
+    if (m >= 18446744073709551616) { m /= 18446744073709551616; e += 64; }
+    if (m >= 4294967296) { m /= 4294967296; e += 32; }
+    if (m >= 65536) { m /= 65536; e += 16; }
+    if (m >= 256) { m /= 256; e += 8; }
+    if (m >= 16) { m /= 16; e += 4; }
+    if (m >= 4) { m /= 4; e += 2; }
+    if (m >= 2) { m /= 2; e += 1; }
+  } else {
+    if (m < P512I) { m *= P512; e -= 512; }
+    if (m < 8.636168555094445e-78) { m *= 1.157920892373162e77; e -= 256; }
+    if (m < 2.9387358770557188e-39) { m *= 3.4028236692093846e38; e -= 128; }
+    if (m < 5.421010862427522e-20) { m *= 18446744073709551616; e -= 64; }
+    if (m < 2.3283064365386963e-10) { m *= 4294967296; e -= 32; }
+    if (m < 1.52587890625e-05) { m *= 65536; e -= 16; }
+    if (m < 0.00390625) { m *= 256; e -= 8; }
+    if (m < 0.0625) { m *= 16; e -= 4; }
+    if (m < 0.25) { m *= 4; e -= 2; }
+    if (m < 0.5) { m *= 2; e -= 1; }
+    if (m < 1) { m *= 2; e -= 1; }
+  }
+  return { m: m, e: e };
+}
+function chop21(v: f64): f64 {
+  "use rt";
+  const inf: f64 = 1 / 0;
+  if (v === 0 || v !== v || v === inf || v === -inf) return v;
+  const sgn: f64 = v < 0 ? -1 : 1;
+  const fr = frexpParts(Math.abs(v));
+  const h = Math.floor(fr.m * 1048576);
+  return sgn * scalbn(h, fr.e - 20);
+}
+function roundHalfAway(v: f64): f64 {
+  "use rt";
+  return v >= 0 ? Math.floor(v + 0.5) : -Math.floor(-v + 0.5);
+}
+function expField(v: f64): f64 {
+  "use rt";
+  if (v === 0) return 0;
+  return frexpParts(Math.abs(v)).e + 1023;
+}
+
+// ---- exp (fdlibm s_exp) ----
+export function exp(x0: f64): f64 {
+  "use rt";
+  const inf: f64 = 1 / 0;
+  if (x0 !== x0) return x0;
+  if (x0 === inf) return inf;
+  if (x0 === -inf) return 0;
+  if (x0 > EXP_OT) return inf;
+  if (x0 < EXP_UT) return 0;
+  let k: f64 = 0;
+  let hi: f64 = x0;
+  let lo: f64 = 0;
+  let x: f64 = x0;
+  const ax = Math.abs(x0);
+  if (ax > 0.34657359027997265) {
+    if (ax < 1.0397207708399179) {
+      if (x0 > 0) { hi = x0 - LN2HI_E; lo = LN2LO_E; k = 1; }
+      else { hi = x0 + LN2HI_E; lo = -LN2LO_E; k = -1; }
+    } else {
+      k = roundHalfAway(x0 * INVLN2);
+      hi = x0 - k * LN2HI_E;
+      lo = k * LN2LO_E;
+    }
+    x = hi - lo;
+  } else if (ax < 3.725290298461914e-9) {
+    return 1 + x0;
+  }
+  const t = x * x;
+  const c = x - t * (EP1 + t * (EP2 + t * (EP3 + t * (EP4 + t * EP5))));
+  if (k === 0) return 1 - ((x * c) / (c - 2) - x);
+  const y = 1 - ((lo - (x * c) / (2 - c)) - hi);
+  return scalbn(y, k);
+}
+
+// ---- expm1 (fdlibm s_expm1); used by tanh ----
+function expm1(u: f64): f64 {
+  "use rt";
+  if (u === 0) return u;
+  let k: f64 = 0;
+  let hi: f64 = 0;
+  let lo: f64 = 0;
+  let c: f64 = 0;
+  let x: f64 = u;
+  const ax = Math.abs(u);
+  if (ax > 0.34657359027997265) {
+    if (ax < 1.0397207708399179) {
+      if (u > 0) { hi = u - LN2HI_E; lo = LN2LO_E; k = 1; }
+      else { hi = u + LN2HI_E; lo = -LN2LO_E; k = -1; }
+    } else {
+      k = roundHalfAway(u * INVLN2);
+      hi = u - k * LN2HI_E;
+      lo = k * LN2LO_E;
+    }
+    x = hi - lo;
+    c = (hi - x) - lo;
+  } else if (ax < 5.551115123125783e-17) {
+    return u;
+  }
+  const hfx = 0.5 * x;
+  const hxs = x * hfx;
+  const r1 = 1 + hxs * (Q1 + hxs * (Q2 + hxs * (Q3 + hxs * (Q4 + hxs * Q5))));
+  const t = 3 - r1 * hfx;
+  let e = hxs * ((r1 - t) / (6 - x * t));
+  if (k === 0) return x - (x * e - hxs);
+  e = x * (e - c) - c;
+  e -= hxs;
+  if (k === -1) return 0.5 * (x - e) - 0.5;
+  if (k === 1) {
+    if (x < -0.25) return -2 * (e - (x + 0.5));
+    return 1 + 2 * (x - e);
+  }
+  if (k <= -2 || k > 56) {
+    const y1 = 1 - (e - x);
+    return scalbn(y1, k) - 1;
+  }
+  if (k < 20) {
+    const tt = 1 - pow2i(-k);
+    const y2 = tt - (e - x);
+    return scalbn(y2, k);
+  }
+  const tt2 = pow2i(-k);
+  let y3 = x - (e + tt2);
+  y3 += 1;
+  return scalbn(y3, k);
+}
+
+// ---- log (fdlibm s_log) ----
+function logPieces(mm: f64): Lp {
+  "use rt";
+  const f = mm - 1;
+  const s = f / (2 + f);
+  const z = s * s;
+  const w = z * z;
+  const t1 = w * (LG2 + w * (LG4 + w * LG6));
+  const t2 = z * (LG1 + w * (LG3 + w * (LG5 + w * LG7)));
+  return { f: f, hfsq: 0.5 * f * f, s: s, r: t2 + t1 };
+}
+function logCore(mm: f64): f64 {
+  "use rt";
+  const p = logPieces(mm);
+  if (Math.abs(p.f) < 9.5367431640625e-7) {
+    if (p.f === 0) return 0;
+    return p.f - p.f * p.f * (0.5 - 0.33333333333333333 * p.f);
+  }
+  return p.f - (p.hfsq - p.s * (p.hfsq + p.r));
+}
+function logReduce(x: f64): Lg {
+  "use rt";
+  let kk: f64 = 0;
+  let xx: f64 = x;
+  if (xx < 2.2250738585072014e-308) { kk -= 54; xx *= TWO54; }
+  const fr = frexpParts(xx);
+  let mm = fr.m;
+  kk += fr.e;
+  if (mm >= SQRT2) { mm *= 0.5; kk += 1; }
+  return { mm: mm, kk: kk };
+}
+export function log(x: f64): f64 {
+  "use rt";
+  const inf: f64 = 1 / 0;
+  const nan: f64 = 0 / 0;
+  if (x !== x) return nan;
+  if (x < 0) return nan;
+  if (x === 0) return -inf;
+  if (x === inf) return inf;
+  const rd = logReduce(x);
+  const p = logPieces(rd.mm);
+  const kk = rd.kk;
+  if (Math.abs(p.f) < 9.5367431640625e-7) {
+    if (p.f === 0) {
+      if (kk === 0) return 0;
+      return kk * LN2_HI_L + kk * LN2_LO_L;
+    }
+    const rr = p.f * p.f * (0.5 - 0.33333333333333333 * p.f);
+    if (kk === 0) return p.f - rr;
+    return kk * LN2_HI_L - ((rr - kk * LN2_LO_L) - p.f);
+  }
+  if (kk === 0) return p.f - (p.hfsq - p.s * (p.hfsq + p.r));
+  return kk * LN2_HI_L - ((p.hfsq - (p.s * (p.hfsq + p.r) + kk * LN2_LO_L)) - p.f);
+}
+export function log10(x: f64): f64 {
+  "use rt";
+  const inf: f64 = 1 / 0;
+  const nan: f64 = 0 / 0;
+  if (x !== x) return nan;
+  if (x < 0) return nan;
+  if (x === 0) return -inf;
+  if (x === inf) return inf;
+  const rd = logReduce(x);
+  const l0 = logCore(rd.mm);
+  let n = ddMulF(ln2dd(), rd.kk);
+  n = ddAdd(n, ddFrom(l0));
+  const q = ddMul(n, invln10dd());
+  return q.hi + q.lo;
+}
+
+// ---- atan (fdlibm s_atan) ----
+export function atan(x: f64): f64 {
+  "use rt";
+  if (x !== x) return x + x;
+  const ax = Math.abs(x);
+  if (ax >= 1.8446744073709552e19) {
+    const z = ATANHI3 + ATANLO3;
+    return x < 0 ? -z : z;
+  }
+  let id: f64 = -1;
+  let xx: f64 = ax;
+  if (ax < 0.4375) {
+    if (ax < 1.862645149230957e-9) return x;
+  } else if (ax < 0.6875) { id = 0; xx = (2 * ax - 1) / (2 + ax); }
+  else if (ax < 1.1875) { id = 1; xx = (ax - 1) / (ax + 1); }
+  else if (ax < 2.4375) { id = 2; xx = (ax - 1.5) / (1 + 1.5 * ax); }
+  else { id = 3; xx = -1 / ax; }
+  const z = xx * xx;
+  const w = z * z;
+  const s1 = z * (AT0 + w * (AT2 + w * (AT4 + w * (AT6 + w * (AT8 + w * AT10)))));
+  const s2 = w * (AT1 + w * (AT3 + w * (AT5 + w * (AT7 + w * AT9))));
+  if (id < 0) return x - x * (s1 + s2);
+  let ahi: f64 = ATANHI0;
+  let alo: f64 = ATANLO0;
+  if (id === 1) { ahi = ATANHI1; alo = ATANLO1; }
+  else if (id === 2) { ahi = ATANHI2; alo = ATANLO2; }
+  else if (id === 3) { ahi = ATANHI3; alo = ATANLO3; }
+  const zz = ahi - ((xx * (s1 + s2) - alo) - xx);
+  return x < 0 ? -zz : zz;
+}
+export function atan2(y: f64, x: f64): f64 {
+  "use rt";
+  const inf: f64 = 1 / 0;
+  if (x !== x || y !== y) return x + y;
+  if (x === 1) return atan(y);
+  const yNeg = y < 0 || (y === 0 && 1 / y < 0);
+  const xNeg = x < 0 || (x === 0 && 1 / x < 0);
+  if (y === 0) {
+    if (!xNeg) return y;
+    return yNeg ? -PI_C : PI_C;
+  }
+  if (x === 0) return yNeg ? -ATANHI3 : ATANHI3;
+  if (x === inf || x === -inf) {
+    if (y === inf || y === -inf) {
+      if (!xNeg) return yNeg ? -ATANHI1 : ATANHI1;
+      return yNeg ? -(3 * ATANHI1) : 3 * ATANHI1;
+    }
+    if (!xNeg) return y * 0;
+    return yNeg ? -PI_C : PI_C;
+  }
+  if (y === inf || y === -inf) return yNeg ? -ATANHI3 : ATANHI3;
+  const ax = Math.abs(x);
+  const ay = Math.abs(y);
+  const k = frexpParts(ay).e - frexpParts(ax).e;
+  let z: f64 = 0;
+  if (k > 60) z = ATANHI3;
+  else if (xNeg && k < -60) z = 0;
+  else z = atan(ay / ax);
+  if (!xNeg) return yNeg ? -z : z;
+  return yNeg ? (z - PI_LO_C) - PI_C : PI_C - (z - PI_LO_C);
+}
+
+// ---- tanh ----
+function expKernelDD(r: Dd): Dd {
+  "use rt";
+  const t = ddMul(r, r);
+  let p = ddFrom(EP5);
+  p = ddAdd(ddMul(p, t), ddFrom(EP4));
+  p = ddAdd(ddMul(p, t), ddFrom(EP3));
+  p = ddAdd(ddMul(p, t), ddFrom(EP2));
+  p = ddAdd(ddMul(p, t), ddFrom(EP1));
+  const cp = ddSub(r, ddMul(t, p));
+  const q = ddDiv(ddMul(r, cp), ddSub(ddFrom(2), cp));
+  return ddAdd(ddAdd(ddFrom(1), r), q);
+}
+function expm1dd(u: f64): Dd {
+  "use rt";
+  let k: f64 = 0;
+  if (Math.abs(u) > 0.34657359027997265) k = roundHalfAway(u * INVLN2);
+  const r = ddSub(ddFrom(u), ddMulF(ln2dd(), k));
+  const yv = expKernelDD(r);
+  const e2: Dd = { hi: scalbn(yv.hi, k), lo: scalbn(yv.lo, k) };
+  return ddSub(e2, ddFrom(1));
+}
+export function tanh(x: f64): f64 {
+  "use rt";
+  const inf: f64 = 1 / 0;
+  const nan: f64 = 0 / 0;
+  if (x !== x) return nan;
+  if (x === inf) return 1;
+  if (x === -inf) return -1;
+  const ax = Math.abs(x);
+  if (ax >= 22) return x < 0 ? -1 : 1;
+  if (ax < 2.7755575615628914e-17) return x;
+  if (ax >= 1) {
+    const t = expm1(2 * ax);
+    const z = 1 - 2 / (t + 2);
+    return x < 0 ? -z : z;
+  }
+  const t = expm1dd(-2 * ax);
+  const z = ddDiv(ddNeg(t), ddAdd(t, ddFrom(2)));
+  const zz = z.hi + z.lo;
+  return x < 0 ? -zz : zz;
+}
+
+// ---- trig kernels (fdlibm k_sin, k_cos, k_tan) ----
+function kernelSin(x: f64, y: f64, hasY: boolean): f64 {
+  "use rt";
+  if (Math.abs(x) < 7.450580596923828e-9) return x;
+  const z = x * x;
+  const v = z * x;
+  const r = KS2 + z * (KS3 + z * (KS4 + z * (KS5 + z * KS6)));
+  if (!hasY) return x + v * (KS1 + z * r);
+  return x - ((z * (0.5 * y - v * r) - y) - v * KS1);
+}
+function kernelCos(x: f64, y: f64): f64 {
+  "use rt";
+  const ax = Math.abs(x);
+  if (ax < 7.450580596923828e-9) return 1;
+  const z = x * x;
+  const r = z * (KC1 + z * (KC2 + z * (KC3 + z * (KC4 + z * (KC5 + z * KC6)))));
+  if (ax < 0.2999999523162842) return 1 - (0.5 * z - (z * r - x * y));
+  const qx: f64 = ax > 0.78125 ? 0.28125 : chop21(ax * 0.25);
+  const hz = 0.5 * z - qx;
+  const a = 1 - qx;
+  return a - (hz - (z * r - x * y));
+}
+function kernelTan(x: f64, y: f64, iy: f64): f64 {
+  "use rt";
+  const hxNeg = x < 0;
+  const ax = Math.abs(x);
+  if (ax < 3.725290298461914e-9) {
+    if (x === 0 && iy === -1) return 1 / ax;
+    if (iy === 1) return x;
+    const w = x + y;
+    const zz = chop21(w);
+    const v = y - (zz - x);
+    const a = -1 / w;
+    const t = chop21(a);
+    const s = 1 + t * zz;
+    return t + a * (s + t * v);
+  }
+  let xx: f64 = x;
+  let yy: f64 = y;
+  let transformed = false;
+  if (ax >= 0.674285888671875) {
+    if (hxNeg) { xx = -x; yy = -y; }
+    const z0 = PIO4_T - xx;
+    const w0 = PIO4LO_T - yy;
+    xx = z0 + w0;
+    yy = 0;
+    transformed = true;
+  }
+  const z = xx * xx;
+  const w = z * z;
+  let r = KT1 + w * (KT3 + w * (KT5 + w * (KT7 + w * (KT9 + w * KT11))));
+  const v = z * (KT2 + w * (KT4 + w * (KT6 + w * (KT8 + w * (KT10 + w * KT12)))));
+  const s = z * xx;
+  r = yy + z * (s * (r + v) + yy);
+  r += KT0 * s;
+  const ww = xx + r;
+  if (transformed) {
+    const vv = iy;
+    return (hxNeg ? -1 : 1) * (vv - 2 * (xx - (ww * ww / (ww + vv) - r)));
+  }
+  if (iy === 1) return ww;
+  const zz2 = chop21(ww);
+  const v2 = r - (zz2 - xx);
+  const a2 = -1 / ww;
+  const t2 = chop21(a2);
+  const s2 = 1 + t2 * zz2;
+  return t2 + a2 * (s2 + t2 * v2);
+}
+
+// ---- argument reduction (fdlibm e_rem_pio2: medium Cody-Waite, then Payne-Hanek) ----
+function remPio2Medium(ax: f64): Rm {
+  "use rt";
+  const n = Math.floor(ax * INVPIO2 + 0.5);
+  const fn = n;
+  let r = ax - fn * PIO2_1;
+  let w = fn * PIO2_1T;
+  let y0 = r - w;
+  const j = expField(ax);
+  let i = j - expField(y0);
+  if (i > 16) {
+    const t = r;
+    w = fn * PIO2_2;
+    r = t - w;
+    w = fn * PIO2_2T - ((t - r) - w);
+    y0 = r - w;
+    i = j - expField(y0);
+    if (i > 49) {
+      const t2 = r;
+      w = fn * PIO2_3;
+      r = t2 - w;
+      w = fn * PIO2_3T - ((t2 - r) - w);
+      y0 = r - w;
+    }
+  }
+  const y1 = (r - y0) - w;
+  return { n: n % 4, y0: y0, y1: y1 };
+}
+function kernelRemPio2(tx: A20, e0in: f64, nx: f64): Rm {
+  "use rt";
+  const jk: f64 = 4;
+  const jp: f64 = 4;
+  const jx = nx - 1;
+  let jv = Math.trunc((e0in - 3) / 24);
+  if (jv < 0) jv = 0;
+  let q0 = e0in - 24 * (jv + 1);
+  let f = a20zero();
+  let q = a20zero();
+  let fq = a20zero();
+  let iq = a20zero();
+  let jj0 = jv - jx;
+  const m = jx + jk;
+  let i: f64 = 0;
+  while (i <= m) {
+    f = aset(f, i, jj0 < 0 ? 0 : ipio2At(jj0));
+    i += 1;
+    jj0 += 1;
+  }
+  i = 0;
+  while (i <= jk) {
+    let fw: f64 = 0;
+    let jj: f64 = 0;
+    while (jj <= jx) { fw += aget(tx, jj) * aget(f, jx + i - jj); jj += 1; }
+    q = aset(q, i, fw);
+    i += 1;
+  }
+  let jz: f64 = jk;
+  let n: f64 = 0;
+  let ih: f64 = 0;
+  let z: f64 = 0;
+  let done = false;
+  while (!done) {
+    let zz = aget(q, jz);
+    let i2: f64 = 0;
+    let jj2 = jz;
+    while (jj2 > 0) {
+      const fw = Math.floor(TWON24 * zz);
+      iq = aset(iq, i2, zz - TWO24 * fw);
+      zz = aget(q, jj2 - 1) + fw;
+      i2 += 1;
+      jj2 -= 1;
+    }
+    z = scalbn(zz, q0);
+    z -= 8 * Math.floor(z * 0.125);
+    n = Math.floor(z);
+    z -= n;
+    ih = 0;
+    if (q0 > 0) {
+      const i3 = Math.floor(aget(iq, jz - 1) / pow2pos(24 - q0));
+      n += i3;
+      iq = aset(iq, jz - 1, aget(iq, jz - 1) - i3 * pow2pos(24 - q0));
+      ih = Math.floor(aget(iq, jz - 1) / pow2pos(23 - q0));
+    } else if (q0 === 0) {
+      ih = Math.floor(aget(iq, jz - 1) / 8388608);
+    } else if (z >= 0.5) {
+      ih = 2;
+    }
+    let carry: f64 = 0;
+    if (ih > 0) {
+      n += 1;
+      carry = 0;
+      let i4: f64 = 0;
+      while (i4 < jz) {
+        const jv2 = aget(iq, i4);
+        if (carry === 0) {
+          if (jv2 !== 0) { carry = 1; iq = aset(iq, i4, 16777216 - jv2); }
+        } else {
+          iq = aset(iq, i4, 16777215 - jv2);
+        }
+        i4 += 1;
+      }
+      if (q0 === 1) iq = aset(iq, jz - 1, aget(iq, jz - 1) % 8388608);
+      else if (q0 === 2) iq = aset(iq, jz - 1, aget(iq, jz - 1) % 4194304);
+      if (ih === 2) {
+        z = 1 - z;
+        if (carry !== 0) z -= scalbn(1, q0);
+      }
+    }
+    done = true;
+    if (z === 0) {
+      let any = false;
+      let i5 = jz - 1;
+      while (i5 >= jk) { if (aget(iq, i5) !== 0) any = true; i5 -= 1; }
+      if (!any) {
+        let k: f64 = 1;
+        while (k <= jk && aget(iq, jk - k) === 0) k += 1;
+        if (k <= jk) {
+          let i6 = jz + 1;
+          while (i6 <= jz + k) {
+            f = aset(f, jx + i6, ipio2At(jv + i6));
+            let fw: f64 = 0;
+            let jj: f64 = 0;
+            while (jj <= jx) { fw += aget(tx, jj) * aget(f, jx + i6 - jj); jj += 1; }
+            q = aset(q, i6, fw);
+            i6 += 1;
+          }
+          jz += k;
+          done = false;
+        }
+      }
+    }
+  }
+  if (z === 0) {
+    jz -= 1;
+    q0 -= 24;
+    while (aget(iq, jz) === 0) { jz -= 1; q0 -= 24; }
+  } else {
+    z = scalbn(z, -q0);
+    if (z >= TWO24) {
+      const fw = Math.floor(TWON24 * z);
+      iq = aset(iq, jz, z - TWO24 * fw);
+      jz += 1;
+      q0 += 24;
+      iq = aset(iq, jz, fw);
+    } else {
+      iq = aset(iq, jz, Math.floor(z));
+    }
+  }
+  let fw = scalbn(1, q0);
+  let i7 = jz;
+  while (i7 >= 0) { q = aset(q, i7, fw * aget(iq, i7)); fw *= TWON24; i7 -= 1; }
+  let iA = jz;
+  while (iA >= 0) {
+    let s: f64 = 0;
+    let k2: f64 = 0;
+    while (k2 <= jp && k2 <= jz - iA) { s += pio2At(k2) * aget(q, iA + k2); k2 += 1; }
+    fq = aset(fq, jz - iA, s);
+    iA -= 1;
+  }
+  let fw2: f64 = 0;
+  let i9 = jz;
+  while (i9 >= 0) { fw2 += aget(fq, i9); i9 -= 1; }
+  const y0 = ih === 0 ? fw2 : -fw2;
+  let fw3 = aget(fq, 0) - fw2;
+  let i10: f64 = 1;
+  while (i10 <= jz) { fw3 += aget(fq, i10); i10 += 1; }
+  const y1 = ih === 0 ? fw3 : -fw3;
+  return { n: n % 8, y0: y0, y1: y1 };
+}
+function remPio2Large(ax: f64): Rm {
+  "use rt";
+  const e = frexpParts(ax).e;
+  const e0 = e - 23;
+  let zz = scalbn(ax, 23 - e);
+  let tx = a20zero();
+  let i: f64 = 0;
+  while (i < 2) {
+    tx = aset(tx, i, Math.floor(zz));
+    zz = (zz - aget(tx, i)) * 16777216;
+    i += 1;
+  }
+  tx = aset(tx, 2, zz);
+  let nx: f64 = 3;
+  while (nx > 1 && aget(tx, nx - 1) === 0) nx -= 1;
+  const r = kernelRemPio2(tx, e0, nx);
+  return { n: r.n % 4, y0: r.y0, y1: r.y1 };
+}
+function remPio2(ax: f64): Rm {
+  "use rt";
+  if (ax < 1647101) return remPio2Medium(ax);
+  return remPio2Large(ax);
+}
+function reduceTrig(x: f64): Rm {
+  "use rt";
+  const ax = Math.abs(x);
+  const r = remPio2(ax);
+  if (x < 0) return { n: (4 - r.n) % 4, y0: -r.y0, y1: -r.y1 };
+  return r;
+}
+export function sin(x: f64): f64 {
+  "use rt";
+  const inf: f64 = 1 / 0;
+  if (x !== x || x === inf || x === -inf) return x - x;
+  if (Math.abs(x) <= PI4) return kernelSin(x, 0, false);
+  const r = reduceTrig(x);
+  if (r.n === 0) return kernelSin(r.y0, r.y1, true);
+  if (r.n === 1) return kernelCos(r.y0, r.y1);
+  if (r.n === 2) return -kernelSin(r.y0, r.y1, true);
+  return -kernelCos(r.y0, r.y1);
+}
+export function cos(x: f64): f64 {
+  "use rt";
+  const inf: f64 = 1 / 0;
+  if (x !== x || x === inf || x === -inf) return x - x;
+  if (Math.abs(x) <= PI4) return kernelCos(x, 0);
+  const r = reduceTrig(x);
+  if (r.n === 0) return kernelCos(r.y0, r.y1);
+  if (r.n === 1) return -kernelSin(r.y0, r.y1, true);
+  if (r.n === 2) return -kernelCos(r.y0, r.y1);
+  return kernelSin(r.y0, r.y1, true);
+}
+export function tan(x: f64): f64 {
+  "use rt";
+  const inf: f64 = 1 / 0;
+  if (x !== x || x === inf || x === -inf) return x - x;
+  if (Math.abs(x) <= PI4) return kernelTan(x, 0, 1);
+  const r = reduceTrig(x);
+  return kernelTan(r.y0, r.y1, r.n % 2 === 0 ? 1 : -1);
+}
+
+// ---- pow: dd log2 (atanh series) and dd exp2 over the exp kernel ----
+function log2dd(ax: f64): Dd {
+  "use rt";
+  const rd = logReduce(ax);
+  const num = rd.mm - 1;
+  const den = twoSum(rd.mm, 1);
+  const ss = ddDiv(ddFrom(num), den);
+  const z = ddMul(ss, ss);
+  let poly = serAt(13);
+  let i: f64 = 12;
+  while (i >= 0) { poly = ddAdd(ddMul(poly, z), serAt(i)); i -= 1; }
+  const t = ddMul(ss, poly);
+  const w: Dd = { hi: t.hi * 2, lo: t.lo * 2 };
+  const prod = ddMul(w, invln2dd());
+  return ddAdd(ddFrom(rd.kk), prod);
+}
+function exp2dd(fr: Dd): Dd {
+  "use rt";
+  return expKernelDD(ddMul(fr, ln2dd()));
+}
+function intKind(y: f64): f64 {
+  "use rt";
+  if (y !== Math.floor(y)) return 0;
+  const ay = Math.abs(y);
+  if (ay >= 9007199254740992) return 2;
+  return ay * 0.5 === Math.floor(ay * 0.5) ? 2 : 1;
+}
+export function pow(x: f64, y: f64): f64 {
+  "use rt";
+  const inf: f64 = 1 / 0;
+  const nan: f64 = 0 / 0;
+  if (y !== y) return nan;
+  if (y === 0) return 1;
+  if (x !== x) return nan;
+  const ax = Math.abs(x);
+  if (ax > 1) {
+    if (y === inf) return inf;
+    if (y === -inf) return 0;
+  } else if (ax < 1) {
+    if (y === inf) return 0;
+    if (y === -inf) return inf;
+  } else {
+    if (y === inf || y === -inf) return nan;
+  }
+  if (x === inf) return y > 0 ? inf : 0;
+  if (x === -inf) {
+    const odd = intKind(y) === 1;
+    return y > 0 ? (odd ? -inf : inf) : (odd ? -0 : 0);
+  }
+  if (x === 0) {
+    const xNeg = 1 / x < 0;
+    if (!xNeg) return y > 0 ? 0 : inf;
+    const odd = intKind(y) === 1;
+    return y > 0 ? (odd ? -0 : 0) : (odd ? -inf : inf);
+  }
+  if (x === 1) return 1;
+  if (y === 1) return x;
+  if (y === -1) return 1 / x;
+  if (y === 2) return x * x;
+  if (y === 0.5) return Math.sqrt(x);
+  let neg = false;
+  let bx = x;
+  if (x < 0) {
+    const kind = intKind(y);
+    if (kind === 0) return nan;
+    neg = kind === 1;
+    bx = -x;
+  }
+  const L = log2dd(bx);
+  if (bx === 1) return neg ? -1 : 1;
+  if (Math.abs(y) > 1e290) {
+    const big = (y > 0 && L.hi > 0) || (y < 0 && L.hi < 0);
+    if (big) return neg ? -inf : inf;
+    return neg ? -0 : 0;
+  }
+  const pd = ddMulF(L, y);
+  if (pd.hi > 1024 || (pd.hi === 1024 && pd.lo > 0)) return neg ? -inf : inf;
+  if (pd.hi < -1075 || (pd.hi === -1075 && pd.lo < 0)) return neg ? -0 : 0;
+  const n = Math.round(pd.hi + pd.lo);
+  const fr = quickTwoSum(pd.hi - n, pd.lo);
+  const ev = exp2dd(fr);
+  const res = scalbn(ev.hi + ev.lo, n);
+  return neg ? -res : res;
+}

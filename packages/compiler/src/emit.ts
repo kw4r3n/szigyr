@@ -8,6 +8,7 @@ import { sliceGroups, type SliceGroupEntry } from "./ownership.ts";
 import { elemDesc } from "./layout.ts";
 import { NUM_NAMES, isInt, isStr, nonNull, resultParts, unref, type FnType, type Type } from "./types.ts";
 import { CLI_NAME, RUNTIME_GLOBAL } from "./names.ts";
+import { DETMATH_PATH, dmBinding } from "./detmath.ts";
 import type { Pos } from "../../runtime-js/src/index.ts";
 
 export const RT = RUNTIME_GLOBAL;
@@ -56,6 +57,7 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
   const mark = (n: Node): string => { const p = pf.position(n.getStart(sf)); marks.push({ file, line: p.line, col: p.col }); return `/*${MARK}${marks.length - 1}*/`; };
   const imports: string[] = [];
   const exported: string[] = [];
+  const dmUsed = new Set<string>(); // §12 (Q191): DetMath members this file calls
   let needAp = false;
 
   const pos = (offset: number): string => {
@@ -265,6 +267,7 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
     const r0 = typeOf(recv);
     const r = r0 && (nonNull(r0) ?? r0);
     const ns = recv.kind === K.Identifier && !r0 ? (recv as ts.Identifier).text : undefined;
+    if (ns === "DetMath") { dmUsed.add(m); return `${dmBinding(m)}(${args.join(", ")})`; } // §12 (Q191): the bundled module, imported below under a hidden name
     if (ns === "JSON" && m === "parse") return `${RT}.jsonParse(${args[0]}, ${at(p.name)})`; // Q035: a syntax error is an `err`, other exceptions are T006
     // Q035: builtins that can throw a JS exception panic (T006) at their name.
     const throws = ns ? THROWING[ns] : r?.k === "gen" ? THROWING[r.name] : r && isStr(r) ? THROWING.string : undefined;
@@ -351,6 +354,11 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
       if (ex.kind === K.CallExpression && (ex as ts.CallExpression).expression.kind === K.Identifier && ((ex as ts.CallExpression).expression as ts.Identifier).text === "test") continue; // §10.10
     }
     body.push(gen(s));
+  }
+  if (dmUsed.size) { // §12 (Q191): import the bundled DetMath module under names users cannot write
+    imports.push(DETMATH_PATH);
+    const els = [...dmUsed].sort().map((n) => `${n}: ${dmBinding(n)}`);
+    body.unshift(`const { ${els.join(", ")} } = ${IMP}(${JSON.stringify(DETMATH_PATH)});`);
   }
   const prelude = [
     `"use strict";`,
