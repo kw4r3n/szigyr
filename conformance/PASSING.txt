@@ -163,6 +163,7 @@ reject/E2002-array-spread-not-array.ts
 reject/E2002-arrow-inferred-missing-return.ts
 reject/E2002-assign-boolean-to-number-var.ts
 reject/E2002-await-conditional-null-branch.ts
+reject/E2002-bitop-non-numeric-rhs.ts
 reject/E2002-cast-class-target.ts
 reject/E2002-cast-of-result.ts
 reject/E2002-cast-type-parameter.ts
@@ -267,6 +268,7 @@ reject/E2002-ring-element-arenabuf.ts
 reject/E2002-ring-element-struct-arenabuf.ts
 reject/E2002-set-element-null-union.ts
 reject/E2002-set-element-record.ts
+reject/E2002-shift-non-numeric-rhs.ts
 reject/E2002-slice-to-vec-param.ts
 reject/E2002-string-concat-with-plus.ts
 reject/E2002-stringify-map.ts

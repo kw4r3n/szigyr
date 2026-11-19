@@ -463,7 +463,7 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
       if (isErr(lt) || isErr(rt)) return ERROR;
       if (isNum(lt) && isNum(rt) && lt.name !== rt.name) { c.at("E2003", op, `cannot mix '${lt.name}' and '${rt.name}'`); return ERROR; }
       const okTypes = k === K.GreaterThanGreaterThanToken ? ["i32"] : k === K.GreaterThanGreaterThanGreaterThanToken ? ["u32"] : ["i32", "u32"];
-      if (!isNum(lt) || !okTypes.includes(lt.name)) { c.at("E2002", op, `bit operator cannot be applied to '${show(lt)}'`); return ERROR; }
+      if (!isNum(lt) || !isNum(rt) || !okTypes.includes(lt.name)) { c.at("E2002", op, `bit operator cannot be applied to '${show(lt)}' and '${show(rt)}'`); return ERROR; }
       return lt;
     }
   }
