@@ -969,16 +969,16 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
           const x = this.t(et, this.conv(this.ex(e.arguments[0]!), this.typeOf(e.arguments[0]!), et), e);
           const r = `t${this.tmp++}`;
           this.emit(`bool ${r};`);
-          this.emit(`{ uint32_t tl = ${tail}; uint32_t hd = ${head}; if (tl - hd >= ${rv}.cap) { ${r} = false; } else { ${el.st(`${rv}.base + 8`, `tl & (${rv}.cap - 1)`, x)} atomic_store_explicit((_Atomic uint32_t *)(${rv}.base + 4), tl + 1, memory_order_release); ${r} = true; } }`);
+          this.emit(`{ uint32_t tl = ${tail}; uint32_t hd = ${head}; if (tl - hd >= ${rv}.cap) { ${r} = false; } else { ${el.st(`(${rv}.base + 8)`, `tl & (${rv}.cap - 1)`, x)} atomic_store_explicit((_Atomic uint32_t *)(${rv}.base + 4), tl + 1, memory_order_release); ${r} = true; } }`);
           return this.t(t, r, e);
         }
         if (m === "pop") {
           const n = ctype(t, this.where), r = `t${this.tmp++}`;
           this.emit(`${n} ${r};`);
           if (nonNull(et)) { // the element is itself nullable: pop's T | null is the element type (as Vec.pop)
-            this.emit(`{ uint32_t hd = ${head}; uint32_t tl = ${tail}; if (hd == tl) { ${r}.some = false; } else { ${r} = ${el.ld(`${rv}.base + 8`, `hd & (${rv}.cap - 1)`)}; atomic_store_explicit((_Atomic uint32_t *)(${rv}.base), hd + 1, memory_order_release); } }`);
+            this.emit(`{ uint32_t hd = ${head}; uint32_t tl = ${tail}; if (hd == tl) { ${r}.some = false; } else { ${r} = ${el.ld(`(${rv}.base + 8)`, `hd & (${rv}.cap - 1)`)}; atomic_store_explicit((_Atomic uint32_t *)(${rv}.base), hd + 1, memory_order_release); } }`);
           } else {
-            this.emit(`{ uint32_t hd = ${head}; uint32_t tl = ${tail}; if (hd == tl) { ${r}.some = false; } else { ${r}.some = true; ${r}.v = ${el.ld(`${rv}.base + 8`, `hd & (${rv}.cap - 1)`)}; atomic_store_explicit((_Atomic uint32_t *)(${rv}.base), hd + 1, memory_order_release); } }`);
+            this.emit(`{ uint32_t hd = ${head}; uint32_t tl = ${tail}; if (hd == tl) { ${r}.some = false; } else { ${r}.some = true; ${r}.v = ${el.ld(`(${rv}.base + 8)`, `hd & (${rv}.cap - 1)`)}; atomic_store_explicit((_Atomic uint32_t *)(${rv}.base), hd + 1, memory_order_release); } }`);
           }
           return this.t(t, r, e);
         }

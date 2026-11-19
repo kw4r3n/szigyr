@@ -68,6 +68,7 @@ accept/66-chandle-and-box.ts
 accept/67-cfn-and-void-ptr.ts
 accept/68-c-backend.ts
 accept/69-extern-header-check.ts
+accept/70-ring.ts
 reject/E1000-array-suffix-type.ts
 reject/E1000-await-in-non-async-arrow.ts
 reject/E1000-await-outside-async.ts
@@ -252,6 +253,9 @@ reject/E2002-ref-of-number.ts
 reject/E2002-relational-on-strings.ts
 reject/E2002-return-type-mismatch.ts
 reject/E2002-return-u32-from-usize.ts
+reject/E2002-ring-create-arenabuf.ts
+reject/E2002-ring-element-arenabuf.ts
+reject/E2002-ring-element-struct-arenabuf.ts
 reject/E2002-set-element-null-union.ts
 reject/E2002-set-element-record.ts
 reject/E2002-slice-to-vec-param.ts
@@ -454,6 +458,8 @@ reject/E4002-managed-type-parameter-into-strict-generic.ts
 reject/E4002-owned-cell-in-strict.ts
 reject/E4002-pool-create-string.ts
 reject/E4002-pool-element-owned-struct.ts
+reject/E4002-ring-create-element-owned.ts
+reject/E4002-ring-element-owned.ts
 reject/E4002-strict-generic-type-argument-not-allowed.ts
 reject/E4002-string-literal-local-in-strict.ts
 reject/E4002-string-param-in-rt.ts
@@ -482,6 +488,7 @@ reject/E4004-push-in-rt-loop.ts
 reject/E4004-push-in-rt.ts
 reject/E4004-push-through-struct-field-in-rt.ts
 reject/E4004-push-under-file-level-rt.ts
+reject/E4004-ring-create-in-rt.ts
 reject/E4004-unbox-in-rt.ts
 reject/E4005-direct-recursion.ts
 reject/E4005-mutual-recursion.ts
@@ -532,6 +539,7 @@ reject/E6002-invariant-mutating-method.ts
 reject/E6002-requires-mut-borrow.ts
 reject/E6002-requires-new-mut-borrow.ts
 reject/E6002-requires-nondeterministic-call.ts
+reject/E6002-requires-ring-nondeterministic.ts
 reject/E6003-test-in-function.ts
 reject/E6003-test-in-test.ts
 reject/E7001-default-import.ts
@@ -584,9 +592,15 @@ run/122-arena-view-bool-offset.ts
 run/123-arena-view-packed-read.ts
 run/124-arena-view-packed-write.ts
 run/125-c-only-declare.ts
+run/125-ring-basic.ts
 run/126-extern-sdl-io.ts
+run/126-ring-strict.ts
 run/127-extern-usize-trap.ts
+run/127-ring-rt.ts
+run/128-trap-ring-capacity-zero.ts
+run/129-trap-ring-capacity-not-pow2.ts
 run/13-async-await.ts
+run/130-trap-ring-capacity-too-big.ts
 run/14-vec-slice.ts
 run/15-owned-cell.ts
 run/16-struct-f32.ts
