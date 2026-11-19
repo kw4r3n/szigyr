@@ -113,8 +113,17 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
   let fileLayer: string | undefined;
   /** `declare module "c:..."` blocks of this file, specifier -> declared C function names (§14.1). */
   const cDeclares = new Map<string, Set<string>>();
+  const cImports = new Set<string>();
   const stmts = sf.statements;
-  for (const s0 of stmts) if (s0.kind === K.ModuleDeclaration) moduleDecl(s0 as ts.ModuleDeclaration); // §14.1: before imports resolve against it
+  for (const s0 of stmts) {
+    if (s0.kind === K.ModuleDeclaration) moduleDecl(s0 as ts.ModuleDeclaration); // §14.1: before imports resolve against it
+    else if (s0.kind === K.ImportDeclaration) {
+      const d = s0 as ts.ImportDeclaration, nb = d.importClause?.namedBindings;
+      if (d.moduleSpecifier.kind === K.StringLiteral && (d.moduleSpecifier as ts.StringLiteral).text.startsWith("c:") && nb?.kind === K.NamedImports) {
+        for (const e of (nb as ts.NamedImports).elements) cImports.add(e.name.text);
+      }
+    }
+  }
   for (let i = prologue(stmts, true, true); i < stmts.length; i++) {
     const s = stmts[i]!;
     switch (s.kind) {
@@ -258,6 +267,8 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       for (const e of (d.exportClause as ts.NamedExports).elements) {
         if (isId(e.name) && e.name.text === "default") { at("E1003", d, "default export is not allowed"); return; }
         if (e.isTypeOnly || !isId(e.name) || (e.propertyName && !isId(e.propertyName))) { at("E7001", d, "only 'export { a, b as c }' is allowed"); return; }
+        const local = (e.propertyName ?? e.name) as ts.Identifier;
+        if (cImports.has(local.text)) at("E7001", local, `cannot re-export C function '${local.text}' (§14.1)`);
       }
     }
   }

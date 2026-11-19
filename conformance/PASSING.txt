@@ -595,6 +595,7 @@ reject/E7001-default-import.ts
 reject/E7001-detmath-import.ts
 reject/E7001-dynamic-import.ts
 reject/E7001-namespace-import.ts
+reject/E7001-reexport-c-import.ts
 reject/E7001-reexport-from-c-module.ts
 reject/E7001-reexport.ts
 reject/E7001-require.ts
