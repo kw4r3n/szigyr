@@ -1,16 +1,18 @@
 // Phase P1 (Q003): the syntax allowlist. Every node kind is accepted only by an explicit case below;
 // anything else falls to a default branch that reports E1000. Anchors follow docs/DIAGNOSTICS.md.
+import { dirname, resolve } from "node:path";
 import type { Diagnostic } from "./diagnostics.ts";
+import { DETMATH_PATH } from "./detmath.ts";
 import { NodeFlags, SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { RUNTIME_GLOBAL } from "./names.ts";
 
 /** §12 global names; declaring any of them is E1000 (Q010). */
 const BUILTIN_NAMES = new Set([
   "boolean", "string", "number", "f64", "f32", "i8", "i16", "i32", "u8", "u16", "u32", "usize", "null", "void", "unknown", "never",
-  "Array", "ReadonlyArray", "Map", "Set", "Promise", "Result", "Struct", "Vec", "Slice", "Ref", "Mut", "OwnedCell",
+  "Array", "ReadonlyArray", "Map", "Set", "Promise", "Result", "Struct", "Vec", "Slice", "Pool", "Handle", "Arena", "ArenaBuf", "Ref", "Mut", "OwnedCell",
   "System", "Alloc", "Fs", "Net", "Clock", "Random", "Log", "Js", "Ffi", "Spawn", "JsRef", "JsError", "CastError", "IoError", "Test",
   "wrapAdd", "wrapSub", "wrapMul", "divTrunc", "rem", "ok", "err", "panic", "cast", "requires", "ensures", "invariant", "test",
-  "Math", "Number", "JSON", "String", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "TestAlloc",
+  "Math", "Number", "JSON", "String", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "TestAlloc", "DetMath",
 ]);
 /** Q004: type names rejected as E1000 rather than E2000. */
 const E1000_TYPE_NAMES = new Set([
@@ -25,7 +27,7 @@ const SPECIAL_MEMBERS = new Set(["__proto__", "constructor", "prototype", "then"
 const DIRECTIVES = new Set(["use owned", "use rt"]);
 const CONTRACTS = new Set(["requires", "ensures", "invariant"]);
 /** Q054: annotation heads that make a module-level const mutable. */
-const MUTABLE_TYPES = new Set(["Array", "Map", "Set", "Vec"]);
+const MUTABLE_TYPES = new Set(["Array", "Map", "Set", "Vec", "Pool", "Arena"]);
 // Bitwise compound and logical assignments are not in SPEC (Q071): they fall to E1000.
 const BINARY_OPS = new Set<K>([
   K.PlusToken, K.MinusToken, K.AsteriskToken, K.SlashToken, K.PercentToken, K.AsteriskAsteriskToken,
@@ -166,6 +168,11 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     }
     if (d.moduleSpecifier.kind !== K.StringLiteral || !specifierOk((d.moduleSpecifier as ts.StringLiteral).text)) {
       at("E7001", d.moduleSpecifier, "module specifier must be './x.ts', '../x.ts' or 'npm:name'");
+      return;
+    }
+    const specText = (d.moduleSpecifier as ts.StringLiteral).text;
+    if (!specText.startsWith("npm:") && resolve(dirname(pf.path), specText) === DETMATH_PATH) { // §12 (Q191)
+      at("E7001", d.moduleSpecifier, "the bundled DetMath module cannot be imported; use the DetMath namespace");
       return;
     }
     for (const e of (nb as ts.NamedImports).elements) { declName(e.name); topName(e.name); }

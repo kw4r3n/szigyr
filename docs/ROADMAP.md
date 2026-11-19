@@ -148,6 +148,9 @@
 
 - Q190（重ならない範囲への同時借用）は実装済み（2026-11-19、D113）: フィールドパスの静的判定（Q190 (a)）と `slice` の実行時重なり検査 T013（Q190 (b)）。証拠: `pnpm conformance` 589 件通過（accept 57 / reject 398 / run 82、run は JS と C の両バックエンドで同じ出力とトラップ）、`pnpm test` 189 件通過、`pnpm bench` の最悪は particles_aos_f32 の 1.43 倍（手書き C 比、制限 1.5 倍）。
 - Q189（strict / rt での関数値）は (b) コンパイル時の特殊化を実装済み（2026-11-19、D114）: 関数型パラメータ（実引数はモジュール直下の関数の名前か、呼び出し元自身の同じ型のパラメータだけ）、C は D104 の鍵に実引数の関数を足して単相化し、E4005 は具体化ごとの呼び出しグラフで判定する。証拠: `pnpm conformance` 611 件通過（accept 60 / reject 407 / run 87、run は JS と C の両バックエンドで同じ出力とトラップ）、`pnpm test` 189 件通過、`pnpm bench` の最悪は particles_aos_f32 の 1.44 倍（手書き C 比、制限 1.5 倍）。
+- Q188 (a)（固定容量プール）は実装済み（2026-11-19、D115）: `Pool<T>` と世代つき `Handle<T>`（12 バイト）、無効なハンドルの `get` / `set` / `remove` は T011、枠の再利用は LIFO で両バックエンド共通。証拠: `pnpm conformance` 637 件通過（accept 61 / reject 416 / run 95、run は JS と C の両バックエンドで同じ出力とトラップ）、`pnpm test` 189 件通過、`pnpm bench` の最悪は particles_aos_f32 の 1.40 倍（手書き C 比、制限 1.5 倍）。
+- Q188 (b)（アリーナ）は実装済み（2026-11-19、D116）: `Arena` と `ArenaBuf<T>`（16 バイト）、無効なハンドルの `view` は T012、同じアリーナのビュー 2 つには T013 の重なり検査を適用、番号のカウンタは Pool と共有。証拠: `pnpm conformance` 664 件通過（accept 63 / reject 427 / run 102、run は JS と C の両バックエンドで同じ出力とトラップ）、`pnpm test` 189 件通過、`pnpm bench` の最悪は particles_aos_f32 の 1.37 倍（手書き C 比、制限 1.5 倍）。
+- Q191 (a)（DetMath）は実装済み（2026-11-19、D117）: `DetMath` 名前空間（f64 の 10 関数。同梱モジュール `packages/std/detmath.ts` を隠れた名前で import し、利用者からは import できない。関数はすべて `"use rt"` でトラップの一覧は構成から空。特別な値は ECMAScript の `Math.*` どおり）。証拠: `pnpm conformance` 678 件通過（accept 64 / reject 432 / run 106、run は JS と C の両バックエンドで同じ出力）、`pnpm test` 195 件通過、MPFR 神託テスト（`node scripts/detmath-oracle.ts`、関数ごとに乱択 10 万点と難しい値、MPFR の 53 ビット最近接丸め）で全関数の最大誤差 1 ulp・1 ulp 超 0 件・不一致 0 件、JS と C はビット一致、`pnpm bench` の最悪は particles_aos_f32 の 1.38 倍（手書き C 比、制限 1.5 倍）。
 
 ## 段階 4: 契約の活用、性質テスト、ミューテーション
 

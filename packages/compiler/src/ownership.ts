@@ -38,7 +38,7 @@ const strip = (e: ts.Expression): ts.Expression => {
 const genName = (t: Type | undefined): string | undefined => { const u = t && unref(t); return u?.k === "gen" ? u.name : undefined; };
 const borrowMode = (t: Type | undefined): "ref" | "mut" | undefined => (t?.k === "gen" && t.name === "Ref" ? "ref" : t?.k === "gen" && t.name === "Mut" ? "mut" : undefined);
 /** Vec / Slice methods that need `Mut` of the receiver (§3.3). */
-const MUT_METHODS = new Set(["push", "pop", "clear", "fill"]);
+const MUT_METHODS = new Set(["push", "pop", "clear", "fill", "insert", "set", "remove", "alloc", "reset"]);
 const FN_EXPR = new Set<K>([K.ArrowFunction, K.FunctionExpression]);
 const isNever = (t: Type | undefined): boolean => t?.k === "prim" && t.name === "never";
 
@@ -442,13 +442,15 @@ class Flow {
     }
     return undefined;
   }
-  /** `X.slice(a, b)` on a Vec / Slice: its callee. */
+  /** A range-producing call's callee: `X.slice(a, b)` on a Vec / Slice (Q013), `a.view(b)` on an Arena (Q188 (b)). */
   private sliceCall(e: ts.Expression): ts.PropertyAccessExpression | undefined {
     if (e.kind !== K.CallExpression) return undefined;
     const p = (e as ts.CallExpression).expression;
-    if (p.kind !== K.PropertyAccessExpression || (p as ts.PropertyAccessExpression).name.text !== "slice") return undefined;
+    if (p.kind !== K.PropertyAccessExpression) return undefined;
     const g = genName(exprTypes.get((p as ts.PropertyAccessExpression).expression));
-    return g === "Vec" || g === "Slice" ? p as ts.PropertyAccessExpression : undefined;
+    if ((p as ts.PropertyAccessExpression).name.text === "slice") return g === "Vec" || g === "Slice" ? p as ts.PropertyAccessExpression : undefined;
+    if ((p as ts.PropertyAccessExpression).name.text === "view") return g === "Arena" ? p as ts.PropertyAccessExpression : undefined;
+    return undefined;
   }
   /** Walks a place in evaluation order: the root is used, `slice` bounds are read. */
   private place(e0: ts.Expression): void {
@@ -495,8 +497,8 @@ class Flow {
     if (callee.kind === K.PropertyAccessExpression) {
       const p = callee as ts.PropertyAccessExpression;
       const g = genName(exprTypes.get(p.expression));
-      if ((g === "Vec" || g === "Slice") && e.kind === K.CallExpression) {
-        if (p.name.text === "slice") this.m.at("E3004", p.name, "'slice' can only be a borrowed argument or a receiver"); // Q013
+      if ((g === "Vec" || g === "Slice" || g === "Pool" || g === "Arena") && e.kind === K.CallExpression) {
+        if (p.name.text === "slice" || (g === "Arena" && p.name.text === "view")) this.m.at("E3004", p.name, `'${p.name.text}' can only be a borrowed argument or a receiver`); // Q013; view: Q188 (b)
         const u = this.borrow(p.expression, MUT_METHODS.has(p.name.text) ? "mut" : "ref", p.name as ts.Identifier);
         if (u) uses.push(u);
       } else {

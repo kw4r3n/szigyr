@@ -5,9 +5,9 @@ export type NumName = "f64" | "f32" | "i8" | "i16" | "i32" | "u8" | "u16" | "u32
 export const NUM_NAMES: readonly NumName[] = ["f64", "f32", "i8", "i16", "i32", "u8", "u16", "u32", "usize"];
 export type PrimName = "boolean" | "string" | "null" | "void" | "unknown" | "never";
 /** Builtin generic types (§3.2, §3.3). */
-export type GenName = "Array" | "ReadonlyArray" | "Map" | "Set" | "Promise" | "Vec" | "Slice" | "Ref" | "Mut" | "OwnedCell";
+export type GenName = "Array" | "ReadonlyArray" | "Map" | "Set" | "Promise" | "Vec" | "Slice" | "Pool" | "Handle" | "Arena" | "ArenaBuf" | "Ref" | "Mut" | "OwnedCell";
 export const GEN_ARITY: Record<GenName, number> = {
-  Array: 1, ReadonlyArray: 1, Map: 2, Set: 1, Promise: 1, Vec: 1, Slice: 1, Ref: 1, Mut: 1, OwnedCell: 1,
+  Array: 1, ReadonlyArray: 1, Map: 2, Set: 1, Promise: 1, Vec: 1, Slice: 1, Pool: 1, Handle: 1, Arena: 0, ArenaBuf: 1, Ref: 1, Mut: 1, OwnedCell: 1,
 };
 /** Opaque builtin types: authorities (§7.1), Test, JsRef, the fakes (Q038). */
 export const AUTHORITIES = ["System", "Alloc", "Fs", "Clock", "Random", "Log", "Js"] as const;
@@ -230,6 +230,7 @@ export function unify(p: Type, a: Type, m: Map<number, Type>, ids: Set<number>):
 export function isCopy(t: Type): boolean {
   switch (t.k) {
     case "num": case "lit": return true;
+    case "gen": return t.name === "Handle" || t.name === "ArenaBuf"; // Q188: a handle is three u32s, an ArenaBuf four
     case "prim": return t.name === "boolean" || t.name === "null";
     case "record": return t.fields.every((f) => f.readonly && isCopy(f.type));
     case "union": return t.members.every(isCopy);
@@ -237,7 +238,7 @@ export function isCopy(t: Type): boolean {
   }
 }
 /** Owned types (§5.1): non-Copy Structs and Vec. */
-export const isOwned = (t: Type): boolean => (t.k === "gen" && t.name === "Vec") || (t.k === "record" && t.struct && !isCopy(t));
+export const isOwned = (t: Type): boolean => (t.k === "gen" && (t.name === "Vec" || t.name === "Pool" || t.name === "Arena")) || (t.k === "record" && t.struct && !isCopy(t));
 /**
  * P3: values that move. Owned types, unions holding one, and strict / rt type parameters (Q049; managed ones never are, Q068 b)
  * unless their instantiations cannot be owned: an interface constraint (only classes implement one), or a `key` / `copy` / `eq` condition (Q153).
@@ -283,7 +284,7 @@ export function layerOk(t: Type): boolean {
     case "prim": return t.name === "boolean" || t.name === "null" || t.name === "void" || t.name === "never";
     case "record": return t.struct ? t.fields.every((f) => layerOk(f.type)) : isCopy(t); // Q043
     case "union": return t.members.every((m) => isCopy(m) && layerOk(m));
-    case "gen": return t.name === "Vec" || t.name === "Slice" || ((t.name === "Ref" || t.name === "Mut") && layerOk(t.args[0]!));
+    case "gen": return t.name === "Vec" || t.name === "Slice" || t.name === "Pool" || t.name === "Handle" || t.name === "Arena" || t.name === "ArenaBuf" || ((t.name === "Ref" || t.name === "Mut") && layerOk(t.args[0]!));
     case "opaque": return isAuthority(t);
     default: return false;
   }
@@ -328,13 +329,13 @@ export function comparable(t: Type): boolean {
     case "fn": case "opaque": case "ns": case "iter": return false;
     case "record": return !isOwned(t) && t.fields.every((f) => comparable(f.type));
     case "union": return t.members.every(comparable);
-    case "gen": return t.name !== "Vec" && t.name !== "Slice" && t.name !== "OwnedCell" && t.name !== "Promise" && t.args.every(comparable);
+    case "gen": return t.name !== "Vec" && t.name !== "Slice" && t.name !== "Pool" && t.name !== "Arena" && t.name !== "OwnedCell" && t.name !== "Promise" && t.args.every(comparable);
     default: return true;
   }
 }
 
 /** Struct field types (§3.3, Q086): numbers, boolean, Struct, Vec. */
-export const structField = (t: Type): boolean => t.k === "error" || t.k === "tparam" || t.k === "num" || isBool(t) || (t.k === "record" && t.struct) || (t.k === "gen" && t.name === "Vec");
+export const structField = (t: Type): boolean => t.k === "error" || t.k === "tparam" || t.k === "num" || isBool(t) || (t.k === "record" && t.struct) || (t.k === "gen" && (t.name === "Vec" || t.name === "Pool" || t.name === "Handle" || t.name === "Arena" || t.name === "ArenaBuf")); // Arena as a field: Q214
 
 /** Integer ranges (§3.1). */
 export const INT_RANGE: Partial<Record<NumName, [number, number]>> = {

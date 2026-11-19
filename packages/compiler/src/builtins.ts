@@ -3,6 +3,7 @@ import {
   BOOL, ERROR_RECORD, F64, NULL, STR, UNKNOWN, USIZE, VOID, fn, gen, newTParam, nullable, num, opaque, result, record, ro,
   type FnType, type GenName, type NumName, type Type, NUM_NAMES, GEN_ARITY, OPAQUE_NAMES,
 } from "./types.ts";
+import { DETMATH_BINARY, DETMATH_UNARY } from "./detmath.ts";
 
 /** Names reserved by §13 / Q011 that resolve to nothing (E2000). */
 export const RESERVED = new Set(["i64", "u64", "bigint", "undefined", "Net", "Ffi", "Spawn"]);
@@ -15,7 +16,7 @@ export const GLOBAL_AUTHORITIES = new Set([
 ]);
 
 /** Namespace objects (Q034). */
-export const NAMESPACES = new Set(["Math", "Number", "JSON", "String", "Promise", "Vec", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "TestAlloc"]);
+export const NAMESPACES = new Set(["Math", "Number", "JSON", "String", "Promise", "Vec", "Pool", "Arena", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "TestAlloc", "DetMath"]);
 /** Builtin functions handled by the checker (§12). */
 export const BUILTIN_FUNCTIONS = new Set([...NUM_NAMES, "wrapAdd", "wrapSub", "wrapMul", "divTrunc", "rem", "ok", "err", "panic", "cast", "requires", "ensures", "invariant", "test"]);
 
@@ -153,6 +154,24 @@ export function genMember(t: { name: GenName; args: Type[] }, name: string): Mem
       };
       return Object.hasOwn(sigs, name) ? sigs[name] : undefined;
     }
+    case "Pool": {
+      const h = gen("Handle", a);
+      const sigs: Record<string, Member> = {
+        length: prop(USIZE), capacity: prop(USIZE),
+        insert: m([a], nullable(h)), get: m([h], a), set: m([h, a], VOID), remove: m([h], a), has: m([h], BOOL),
+      };
+      return Object.hasOwn(sigs, name) ? sigs[name] : undefined;
+    }
+    case "Arena": {
+      const T = newTParam("T"), tT: Type = { k: "tparam", p: T };
+      const sigs: Record<string, Member> = {
+        remaining: prop(USIZE), reset: m([], VOID),
+        alloc: m([USIZE, tT], nullable(gen("ArenaBuf", tT)), { tparams: [T], tcheck: "copy" }),
+        view: m([gen("ArenaBuf", tT)], gen("Slice", tT), { tparams: [T], tcheck: "copy" }),
+      };
+      return Object.hasOwn(sigs, name) ? sigs[name] : undefined;
+    }
+    case "ArenaBuf": return name === "length" ? prop(USIZE) : undefined;
     case "OwnedCell": {
       const sigs: Record<string, Member> = { take: m([], a), put: m([a], VOID), isEmpty: m([], BOOL) };
       return Object.hasOwn(sigs, name) ? sigs[name] : undefined;
@@ -192,7 +211,13 @@ export function nsMember(ns: string, name: string): Member | "variadic" | undefi
       return undefined;
     case "String": return name === "fromCodePoint" ? mo(m([num("u32")], STR)) : undefined;
     case "Promise": return name === "all" ? mo(m([gen("Array", gen("Promise", tT))], gen("Promise", gen("Array", tT)), { tparams: [T] })) : undefined;
+    case "DetMath": // §12 (Q191): rt functions, so callable from every layer; f64 only
+      if (DETMATH_UNARY.includes(name)) return m([F64], F64);
+      if (DETMATH_BINARY.includes(name)) return m([F64, F64], F64);
+      return undefined;
     case "Vec": return name === "create" ? m([opaque("Alloc"), USIZE], gen("Vec", tT), { tparams: [T], tcheck: "copy" }) : undefined;
+    case "Pool": return name === "create" ? m([opaque("Alloc"), USIZE], gen("Pool", tT), { tparams: [T], tcheck: "copy" }) : undefined;
+    case "Arena": return name === "create" ? m([opaque("Alloc"), USIZE], gen("Arena")) : undefined;
     case "OwnedCell": return name === "create" ? m([tT], gen("OwnedCell", tT), { tparams: [T] }) : undefined;
     case "FakeClock": return name === "create" ? mo(m([F64], opaque("FakeClock"))) : undefined;
     case "SeededRandom": return name === "create" ? mo(m([num("u32")], opaque("SeededRandom"))) : undefined;

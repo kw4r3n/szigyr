@@ -11,6 +11,7 @@
 
 typedef struct { napi_value obj; void *data; uint32_t len, cap, esize; napi_typedarray_type tt; } sts_vec;
 typedef struct { void *data; uint32_t len; } sts_slice;
+typedef struct { uint32_t pool, gen, idx; } sts_handle; // a Pool handle: three u32s, 12 bytes (Q188 (a))
 
 static _Thread_local napi_env sts_env;
 static _Thread_local napi_ref sts_host; // { trap(code, file, line, col), create(alloc, cap, elem) }
@@ -89,6 +90,106 @@ static void sts_vec_grow(sts_vec *v, int pos) {
 static void sts_vec_sync(void) {
   for (size_t i = 0; i < sts_nvecs; i++) { napi_value n; if (napi_create_uint32(sts_env, sts_vecs[i]->len, &n) == napi_ok) napi_set_named_property(sts_env, sts_vecs[i]->obj, "len", n); free(sts_vecs[i]); }
   sts_nvecs = 0;
+}
+// Pool handles live until the boundary call returns, like Vec handles; the list is reset per entry.
+typedef struct { napi_value obj; void *data; uint32_t len, cap, esize; uint32_t *gens; uint8_t *occ; int32_t *nextFree; int64_t freeHead, nextFresh; uint32_t id; } sts_pool;
+static _Thread_local sts_pool **sts_pools; static _Thread_local size_t sts_npools, sts_cappools;
+static sts_pool *sts_pool_new(void) {
+  if (sts_npools == sts_cappools) { sts_cappools = sts_cappools ? sts_cappools * 2 : 16; sts_pools = realloc(sts_pools, sts_cappools * sizeof *sts_pools); if (!sts_pools) sts_fail("out of memory"); }
+  sts_pool *p = calloc(1, sizeof *p); if (!p) sts_fail("out of memory");
+  return sts_pools[sts_npools++] = p;
+}
+static double sts_pnum(napi_value o, const char *k) { double d; STS_OK(napi_get_value_double(sts_env, sts_get(o, k), &d)); return d; }
+static void *sts_pta(napi_value o, const char *k) { napi_value buf = sts_get(o, k); napi_typedarray_type tt; size_t n, off; napi_value ab; void *d; STS_OK(napi_get_typedarray_info(sts_env, buf, &tt, &n, &d, &ab, &off)); return d; }
+/** `esize` and `desc` come from the static element type, as for Vec (SPEC §10.2, D105). */
+static void sts_pool_load(sts_pool *p, const char *desc) {
+  napi_value buf = sts_get(p->obj, "buf"); bool ta;
+  STS_OK(napi_is_typedarray(sts_env, buf, &ta));
+  if (!ta) { // made where the element type was a type parameter: switch it to its representation
+    napi_value host, f = sts_hostf("adoptPool", &host), args[2] = { p->obj }, r;
+    STS_OK(napi_create_string_utf8(sts_env, desc, NAPI_AUTO_LENGTH, &args[1])); STS_OK(napi_call_function(sts_env, host, f, 2, args, &r));
+    buf = sts_get(p->obj, "buf"); STS_OK(napi_is_typedarray(sts_env, buf, &ta)); if (!ta) sts_fail("Pool is not backed by a TypedArray");
+  }
+  napi_typedarray_type tt; size_t n, off; napi_value ab;
+  STS_OK(napi_get_typedarray_info(sts_env, buf, &tt, &n, &p->data, &ab, &off));
+  p->gens = (uint32_t *)sts_pta(p->obj, "gens"); p->occ = (uint8_t *)sts_pta(p->obj, "occ"); p->nextFree = (int32_t *)sts_pta(p->obj, "nextFree");
+  p->len = (uint32_t)sts_pnum(p->obj, "len"); p->cap = (uint32_t)sts_pnum(p->obj, "capacity");
+  p->freeHead = (int64_t)sts_pnum(p->obj, "freeHead"); p->nextFresh = (int64_t)sts_pnum(p->obj, "nextFresh");
+  p->id = (uint32_t)sts_pnum(p->obj, "id");
+}
+static sts_pool *sts_pool_in(napi_value o, uint32_t es, const char *desc) { sts_pool *p = sts_pool_new(); p->obj = o; p->esize = es; sts_pool_load(p, desc); return p; }
+static sts_pool *sts_pool_create(napi_value alloc, uint32_t cap, const char *elem, uint32_t es, int pos) {
+  napi_value host, f = sts_hostf("createPool", &host), args[3], r;
+  args[0] = alloc; STS_OK(napi_create_uint32(sts_env, cap, &args[1])); STS_OK(napi_create_string_utf8(sts_env, elem, NAPI_AUTO_LENGTH, &args[2]));
+  sts_alloc_ok(napi_call_function(sts_env, host, f, 3, args, &r), pos);
+  return sts_pool_in(r, es, elem);
+}
+/** Boundary exit: slot bookkeeping changed in C goes back to the JS object. Element bytes and the gens / occ / nextFree arrays are shared. */
+static void sts_pool_sync(void) {
+  for (size_t i = 0; i < sts_npools; i++) {
+    sts_pool *p = sts_pools[i]; napi_value n;
+    if (napi_create_double(sts_env, (double)p->len, &n) == napi_ok) napi_set_named_property(sts_env, p->obj, "len", n);
+    if (napi_create_double(sts_env, (double)p->freeHead, &n) == napi_ok) napi_set_named_property(sts_env, p->obj, "freeHead", n);
+    if (napi_create_double(sts_env, (double)p->nextFresh, &n) == napi_ok) napi_set_named_property(sts_env, p->obj, "nextFresh", n);
+    free(p);
+  }
+  sts_npools = 0;
+}
+static bool sts_pool_valid(sts_pool *p, sts_handle h) { return h.pool == p->id && h.idx < p->cap && p->occ[h.idx] && p->gens[h.idx] == h.gen; }
+static sts_handle sts_hdl_in(napi_value o) { sts_handle h; h.pool = (uint32_t)sts_pnum(o, "pool"); h.gen = (uint32_t)sts_pnum(o, "gen"); h.idx = (uint32_t)sts_pnum(o, "idx"); return h; }
+static napi_value sts_hdl_out(sts_handle h) {
+  napi_value o, v; STS_OK(napi_create_object(sts_env, &o));
+  STS_OK(napi_create_uint32(sts_env, h.pool, &v)); sts_set(o, "pool", v);
+  STS_OK(napi_create_uint32(sts_env, h.gen, &v)); sts_set(o, "gen", v);
+  STS_OK(napi_create_uint32(sts_env, h.idx, &v)); sts_set(o, "idx", v);
+  return o;
+}
+typedef struct { uint32_t arena, gen, off, len; } sts_abuf; // an ArenaBuf: four u32s, 16 bytes (Q188 (b))
+static sts_abuf sts_abuf_in(napi_value o) { sts_abuf b; b.arena = (uint32_t)sts_pnum(o, "arena"); b.gen = (uint32_t)sts_pnum(o, "gen"); b.off = (uint32_t)sts_pnum(o, "off"); b.len = (uint32_t)sts_pnum(o, "length"); return b; }
+static napi_value sts_abuf_out(sts_abuf b) {
+  napi_value o, v; STS_OK(napi_create_object(sts_env, &o));
+  STS_OK(napi_create_uint32(sts_env, b.arena, &v)); sts_set(o, "arena", v);
+  STS_OK(napi_create_uint32(sts_env, b.gen, &v)); sts_set(o, "gen", v);
+  STS_OK(napi_create_uint32(sts_env, b.off, &v)); sts_set(o, "off", v);
+  STS_OK(napi_create_uint32(sts_env, b.len, &v)); sts_set(o, "length", v);
+  return o;
+}
+// Arena handles live until the boundary call returns, like Pool handles; the list is reset per entry.
+typedef struct { napi_value obj; void *data; uint32_t cap, used, gen, id; } sts_arena;
+static _Thread_local sts_arena **sts_arenas; static _Thread_local size_t sts_narenas, sts_caparenas;
+static sts_arena *sts_arena_new(void) {
+  if (sts_narenas == sts_caparenas) { sts_caparenas = sts_caparenas ? sts_caparenas * 2 : 16; sts_arenas = realloc(sts_arenas, sts_caparenas * sizeof *sts_arenas); if (!sts_arenas) sts_fail("out of memory"); }
+  sts_arena *a = calloc(1, sizeof *a); if (!a) sts_fail("out of memory");
+  return sts_arenas[sts_narenas++] = a;
+}
+static sts_arena *sts_arena_in(napi_value o) {
+  sts_arena *a = sts_arena_new(); a->obj = o;
+  napi_value buf = sts_get(o, "buf"); napi_typedarray_type tt; size_t n, off; napi_value ab;
+  STS_OK(napi_get_typedarray_info(sts_env, buf, &tt, &n, &a->data, &ab, &off));
+  a->cap = (uint32_t)n;
+  a->used = (uint32_t)sts_pnum(o, "used"); a->gen = (uint32_t)sts_pnum(o, "gen"); a->id = (uint32_t)sts_pnum(o, "id");
+  return a;
+}
+static sts_arena *sts_arena_create(napi_value alloc, uint32_t bytes, int pos) {
+  napi_value host, f = sts_hostf("createArena", &host), args[2], r;
+  args[0] = alloc; STS_OK(napi_create_uint32(sts_env, bytes, &args[1]));
+  sts_alloc_ok(napi_call_function(sts_env, host, f, 2, args, &r), pos);
+  return sts_arena_in(r);
+}
+/** Boundary exit: `used` and `gen` changed in C go back to the JS object. The bytes are shared. */
+static void sts_arena_sync(void) {
+  for (size_t i = 0; i < sts_narenas; i++) {
+    sts_arena *a = sts_arenas[i]; napi_value n;
+    if (napi_create_double(sts_env, (double)a->used, &n) == napi_ok) napi_set_named_property(sts_env, a->obj, "used", n);
+    if (napi_create_double(sts_env, (double)a->gen, &n) == napi_ok) napi_set_named_property(sts_env, a->obj, "gen", n);
+    free(a);
+  }
+  sts_narenas = 0;
+}
+/** Q188 (b): a buf of another arena, or one taken before `reset`, traps T012 at the member name `view`. */
+static sts_slice sts_arena_view(sts_arena *a, sts_abuf b, int pos) {
+  if (b.arena != a->id || b.gen != a->gen) sts_trap(12, pos);
+  return (sts_slice){ (char *)a->data + b.off, b.len };
 }
 static sts_slice sts_vslice(sts_vec *v) { return (sts_slice){ v->data, v->len }; }
 static sts_slice sts_slice_in(napi_value o, uint32_t es, const char *desc) {

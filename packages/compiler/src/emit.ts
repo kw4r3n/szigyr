@@ -8,6 +8,7 @@ import { sliceGroups, type SliceGroupEntry } from "./ownership.ts";
 import { elemDesc } from "./layout.ts";
 import { NUM_NAMES, isInt, isStr, nonNull, resultParts, unref, type FnType, type Type } from "./types.ts";
 import { CLI_NAME, RUNTIME_GLOBAL } from "./names.ts";
+import { DETMATH_PATH, dmBinding } from "./detmath.ts";
 import type { Pos } from "../../runtime-js/src/index.ts";
 
 export const RT = RUNTIME_GLOBAL;
@@ -21,7 +22,7 @@ const P = `${RUNTIME_GLOBAL}_P`, AP = `${RUNTIME_GLOBAL}_ap`, ENS = `${RUNTIME_G
 // Synthetic parameters: user code inside the right side / ensures predicates must not see them.
 const O = `${RUNTIME_GLOBAL}_o`, KEY = `${RUNTIME_GLOBAL}_k`, V = `${RUNTIME_GLOBAL}_v`, R = `${RUNTIME_GLOBAL}_r`;
 /** Builtin namespaces that are runtime values (the rest are JS globals). */
-const RT_NAMESPACES = ["Vec", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "TestAlloc"];
+const RT_NAMESPACES = ["Vec", "Pool", "Arena", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "TestAlloc"];
 const DROP_MODS = new Set<K>([K.ExportKeyword, K.ReadonlyKeyword, K.PrivateKeyword, K.PublicKeyword, K.ProtectedKeyword, K.DeclareKeyword, K.AbstractKeyword, K.OverrideKeyword]);
 const COMPOUND: Partial<Record<K, string>> = {
   [K.PlusEqualsToken]: "+", [K.MinusEqualsToken]: "-", [K.AsteriskEqualsToken]: "*",
@@ -56,6 +57,7 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
   const mark = (n: Node): string => { const p = pf.position(n.getStart(sf)); marks.push({ file, line: p.line, col: p.col }); return `/*${MARK}${marks.length - 1}*/`; };
   const imports: string[] = [];
   const exported: string[] = [];
+  const dmUsed = new Set<string>(); // §12 (Q191): DetMath members this file calls
   let needAp = false;
 
   const pos = (offset: number): string => {
@@ -257,13 +259,15 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
     const withArgs = (extra: string[]): string => `${gen(callee)}(${[...args, ...extra].join(", ")})`;
     const nn = (s: string): string => (p.questionDotToken ? `${RT}.nn(${s})` : s);
     const awaited = e.arguments.some(hasAwait);
-    if (recv.kind === K.Identifier && (recv as ts.Identifier).text === "Vec" && m === "create" && !typeOf(recv)) {
+    if (recv.kind === K.Identifier && ((recv as ts.Identifier).text === "Vec" || (recv as ts.Identifier).text === "Pool") && m === "create" && !typeOf(recv)) {
       const el = self?.k === "gen" ? self.args[0] : undefined;
       return withArgs([q(elemDesc(el))]);
     }
+    if (recv.kind === K.Identifier && (recv as ts.Identifier).text === "Arena" && m === "create" && !typeOf(recv)) return withArgs([]); // no element type (Q188 (b))
     const r0 = typeOf(recv);
     const r = r0 && (nonNull(r0) ?? r0);
     const ns = recv.kind === K.Identifier && !r0 ? (recv as ts.Identifier).text : undefined;
+    if (ns === "DetMath") { dmUsed.add(m); return `${dmBinding(m)}(${args.join(", ")})`; } // §12 (Q191): the bundled module, imported below under a hidden name
     if (ns === "JSON" && m === "parse") return `${RT}.jsonParse(${args[0]}, ${at(p.name)})`; // Q035: a syntax error is an `err`, other exceptions are T006
     // Q035: builtins that can throw a JS exception panic (T006) at their name.
     const throws = ns ? THROWING[ns] : r?.k === "gen" ? THROWING[r.name] : r && isStr(r) ? THROWING.string : undefined;
@@ -277,6 +281,9 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
       if (r.name === "Map" && m === "get") return nn(`${RT}.nn(${withArgs([])})`);
       if ((r.name === "Vec" || r.name === "Slice") && m === "slice") return nn(withArgs([at(p.name)]));
       if (r.name === "OwnedCell" && (m === "take" || m === "put")) return nn(withArgs([at(p.name)]));
+      if (r.name === "Pool" && (m === "get" || m === "set" || m === "remove")) return nn(withArgs([at(p.name)])); // T011 at the member name (Q188 (a))
+      if (r.name === "Arena" && m === "alloc") { const nn2 = self && nonNull(self); const el = nn2?.k === "gen" ? nn2.args[0] : undefined; return nn(withArgs([q(elemDesc(el))])); } // Q188 (b)
+      if (r.name === "Arena" && m === "view") { const el = self?.k === "gen" ? self.args[0] : undefined; return nn(withArgs([q(elemDesc(el)), at(p.name)])); } // T012 at the member name (Q188 (b))
     } else if (r && isStr(r)) {
       if (m === "indexOf") return nn(`${RT}.idxOrNull(${withArgs([])})`);
       if (m === "codePointAt") return nn(`${RT}.nn(${withArgs([])})`);
@@ -347,6 +354,11 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
       if (ex.kind === K.CallExpression && (ex as ts.CallExpression).expression.kind === K.Identifier && ((ex as ts.CallExpression).expression as ts.Identifier).text === "test") continue; // §10.10
     }
     body.push(gen(s));
+  }
+  if (dmUsed.size) { // §12 (Q191): import the bundled DetMath module under names users cannot write
+    imports.push(DETMATH_PATH);
+    const els = [...dmUsed].sort().map((n) => `${n}: ${dmBinding(n)}`);
+    body.unshift(`const { ${els.join(", ")} } = ${IMP}(${JSON.stringify(DETMATH_PATH)});`);
   }
   const prelude = [
     `"use strict";`,

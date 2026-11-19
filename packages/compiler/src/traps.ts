@@ -43,6 +43,14 @@ export function trapSites(pf: ParsedFile): Record<string, TrapSite[]> {
           const r = exprTypes.get((c as ts.PropertyAccessExpression).expression);
           const u = r && unref(r);
           if (u?.k === "gen" && (u.name === "Vec" || u.name === "Slice")) add("T002", (c as ts.PropertyAccessExpression).name);
+        } else if (c.kind === K.PropertyAccessExpression && ["get", "set", "remove"].includes((c as ts.PropertyAccessExpression).name.text)) {
+          const r = exprTypes.get((c as ts.PropertyAccessExpression).expression);
+          const u = r && unref(r);
+          if (u?.k === "gen" && u.name === "Pool") add("T011", (c as ts.PropertyAccessExpression).name); // Q188 (a)
+        } else if (c.kind === K.PropertyAccessExpression && (c as ts.PropertyAccessExpression).name.text === "view") {
+          const r = exprTypes.get((c as ts.PropertyAccessExpression).expression);
+          const u = r && unref(r);
+          if (u?.k === "gen" && u.name === "Arena") add("T012", (c as ts.PropertyAccessExpression).name); // Q188 (b)
         }
         // Q190 (b): a runtime-checked slice group can trap T013 at each later entry that may overlap an earlier Mut pair.
         for (const g of sliceGroups.get(n) ?? []) for (let j = 1; j < g.length; j++) if (g.slice(0, j).some((w) => w.mut || g[j]!.mut)) add("T013", g[j]!.name);

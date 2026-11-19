@@ -1,0 +1,63 @@
+// expect-output: pts=1,2,3,4 sum=10
+// expect-output: via-vec=9 holder=9
+// stage: 2
+// open-question: Q188
+type Pt = Struct<{ readonly x: f32; readonly y: f32 }>;
+type Holder = Struct<{ b: ArenaBuf<f32>; tag: u32 }>;
+
+function setPts(s: Mut<Slice<Pt>>): void {
+  "use rt";
+  s[0] = { x: 1, y: 2 };
+  s[1] = { x: 3, y: 4 };
+}
+
+function sumPt(s: Ref<Slice<Pt>>): f32 {
+  "use rt";
+  let acc: f32 = 0;
+  for (let i: usize = 0; i < s.length; i += 1) {
+    acc += s[i].x + s[i].y;
+  }
+  return acc;
+}
+
+function ptX(s: Ref<Slice<Pt>>, i: usize): f32 {
+  "use rt";
+  return s[i].x;
+}
+
+function ptY(s: Ref<Slice<Pt>>, i: usize): f32 {
+  "use rt";
+  return s[i].y;
+}
+
+function allocPts(a: Mut<Arena>): ArenaBuf<Pt> | null {
+  "use rt";
+  return a.alloc<Pt>(2, { x: 0, y: 0 });
+}
+
+function sumF(s: Ref<Slice<f32>>): f32 {
+  "use rt";
+  let acc: f32 = 0;
+  for (let i: usize = 0; i < s.length; i += 1) {
+    acc += s[i];
+  }
+  return acc;
+}
+
+export function main(sys: System): void {
+  const a = Arena.create(sys.alloc, 128);
+  const pts = allocPts(a);
+  if (pts === null) {
+    return;
+  }
+  setPts(a.view(pts));
+  sys.log.info(`pts=${ptX(a.view(pts), 0)},${ptY(a.view(pts), 0)},${ptX(a.view(pts), 1)},${ptY(a.view(pts), 1)} sum=${sumPt(a.view(pts))}`);
+  const fb = a.alloc<f32>(3, 3);
+  if (fb === null) {
+    return;
+  }
+  const bufs = Vec.create<ArenaBuf<f32>>(sys.alloc, 1);
+  bufs.push(fb);
+  const h: Holder = { b: fb, tag: 7 };
+  sys.log.info(`via-vec=${sumF(a.view(bufs[0]))} holder=${sumF(a.view(h.b))}`);
+}

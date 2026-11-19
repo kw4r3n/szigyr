@@ -1,6 +1,7 @@
 import { dirname, relative, resolve } from "node:path";
 import type { Diagnostic, RunResult } from "./diagnostics.ts";
-import { createParser, SyntaxKind, type ParsedFile, type ts } from "./parse.ts";
+import { createParser, SyntaxKind, type Node, type ParsedFile, type ts } from "./parse.ts";
+import { DETMATH_PATH } from "./detmath.ts";
 import { checkSyntax } from "./syntax.ts";
 import { Program as Decls, Reporter, checkImportNames } from "./modules.ts";
 import { Checker } from "./checker.ts";
@@ -66,6 +67,22 @@ function loadProgram(entryFile: string): Program {
         });
       }
     }
+    // §12 (Q191): a program that uses `DetMath.<name>` gets the bundled module added to it;
+    // the emitter imports it under a name users cannot write.
+    let usesDetMath = false;
+    const scan = (n: Node): void => {
+      if (usesDetMath) return;
+      if (n.kind === SyntaxKind.PropertyAccessExpression) {
+        const pa = n as ts.PropertyAccessExpression;
+        if (pa.expression.kind === SyntaxKind.Identifier && (pa.expression as ts.Identifier).text === "DetMath") { usesDetMath = true; return; }
+      }
+      n.forEachChild(scan);
+    };
+    for (const pf of files.values()) scan(pf.sourceFile);
+    if (usesDetMath && !files.has(DETMATH_PATH)) {
+      const dm = parser.parse([DETMATH_PATH]).get(DETMATH_PATH);
+      if (dm) files.set(dm.path, dm);
+    }
   } finally {
     parser.close();
   }
@@ -119,6 +136,9 @@ export interface RunOptions { backend?: Backend }
 const HOST = {
   trap: (code: number, file: string, line: number, col: number): never => rt.trap(`T${String(code).padStart(3, "0")}` as rt.TrapCode, "trap in C", file ? { file, line, col } : undefined),
   create: (alloc: unknown, cap: number, elem: rt.ElemKind): unknown => rt.Vec.create(alloc, cap, elem),
+  createPool: (alloc: unknown, cap: number, elem: rt.ElemKind): unknown => rt.Pool.create(alloc, cap, elem),
+  createArena: (alloc: unknown, bytes: number): unknown => rt.Arena.create(alloc, bytes),
+  adoptPool: (v: rt.Pool, elem: rt.ElemKind): void => v.adopt(elem),
   adopt: (v: rt.Vec | rt.Slice, elem: rt.ElemKind): void => v.adopt(elem),
   reserve: (v: rt.Vec, cap: number, len: number): void => v.reserve(cap, len),
 };

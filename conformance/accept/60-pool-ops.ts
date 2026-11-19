@@ -1,0 +1,55 @@
+// expect: ok
+// stage: 2
+// open-question: Q188
+// open-question: Q213
+type Slot = Struct<{ readonly h: Handle<f32>; readonly tag: u32 }>;
+type Bag = Struct<{ pool: Pool<f32>; n: u32 }>;
+
+export function make(alloc: Alloc, cap: usize): Pool<f32> {
+  "use owned";
+  return Pool.create<f32>(alloc, cap);
+}
+
+export function addOne(p: Mut<Pool<f32>>, x: f32): Handle<f32> | null {
+  "use rt";
+  return p.insert(x);
+}
+
+export function readOne(p: Ref<Pool<f32>>, h: Handle<f32>): f32 {
+  "use rt";
+  return p.get(h);
+}
+
+export function writeOne(p: Mut<Pool<f32>>, h: Handle<f32>, x: f32): void {
+  "use rt";
+  p.set(h, x);
+}
+
+export function dropOne(p: Mut<Pool<f32>>, h: Handle<f32>): f32 {
+  "use rt";
+  return p.remove(h);
+}
+
+export function alive(p: Ref<Pool<f32>>, h: Handle<f32>): boolean {
+  "use rt";
+  return p.has(h);
+}
+
+export function sizes(p: Ref<Pool<f32>>): usize {
+  "use rt";
+  return p.length + p.capacity;
+}
+
+export function roundTrip(alloc: Alloc): f32 {
+  "use owned";
+  const p = Pool.create<f32>(alloc, 2);
+  const h = p.insert(1.5);
+  if (h === null) {
+    return 0;
+  }
+  const s: Slot = { h, tag: 3 };
+  const hs = Vec.create<Handle<f32>>(alloc, 1);
+  hs.push(s.h);
+  const bag: Bag = { pool: p, n: 1 };
+  return bag.pool.get(hs[0]);
+}
