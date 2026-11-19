@@ -2,7 +2,7 @@
 // (numeric literals Q014, string literals Q016, object / array literals Q021, ok / err Q037, generic calls Q030).
 import { NodeFlags, SyntaxKind as K, type Node, type ts } from "./parse.ts";
 import type { Checker } from "./checker.ts";
-import { tparamShells, type Layer, type LocalSym } from "./modules.ts";
+import { tparamShells, type FnSym, type Layer, type LocalSym } from "./modules.ts";
 import { BUILTIN_FUNCTIONS, GLOBAL_AUTHORITIES, NAMESPACES, RESERVED, genMember, nsMember, opaqueMember, stringMember, type Member } from "./builtins.ts";
 import { isDeterministic } from "./determinism.ts";
 import {
@@ -63,6 +63,13 @@ export function cond(c: Checker, e: ts.Expression): void {
 export const exprTypes = new WeakMap<Node, Type>();
 /** Type arguments of each call of a generic function, for the C backend's instantiation (D104). */
 export const callTArgs = new WeakMap<Node, Type[]>();
+/** Q189 (b): what an argument for a function-typed parameter of a strict / rt callee resolved to: a module
+ * function, or the caller's own function-typed parameter (by parameter index in the caller's signature).
+ * Read by the checker (E4005 per instantiation) and the C backend (the D104 key). */
+export type FnArgRef = { fn: FnSym } | { param: number };
+export const callFnArgs = new WeakMap<Node, Map<number, FnArgRef>>();
+/** Q189 (b): identifiers used as the callee of a call: the one place besides a function-typed argument where a function-typed parameter may appear. */
+const fnCalleeIds = new WeakSet<Node>();
 /** Q130: the only expressions that may have a Promise type: `await` operands, `Promise.all` arguments, returns of Promise functions. */
 export const promiseOk = new WeakSet<Node>();
 const optCall = new WeakSet<Node>();
@@ -155,7 +162,14 @@ function strLit(value: string, want: Type | undefined): Type {
 function ident(c: Checker, id: ts.Identifier): Type {
   const name = id.text;
   const local = c.scope.lookup(name);
-  if (local) { localOf.set(id, local); contractLocal(c, id, local); return c.narrow.get(`${local.id}`) ?? local.type; }
+  if (local) {
+    localOf.set(id, local); contractLocal(c, id, local);
+    // Q189 (b): a function-typed parameter of strict / rt code may only be called or passed on as a
+    // function-typed argument (callSig intercepts the latter, so it never reaches here)
+    if (c.fx.layer !== "managed" && local.param && local.declared.k === "fn" && !fnCalleeIds.has(id))
+      c.at("E4003", id, `the function parameter '${name}' can only be called or passed to a function parameter`);
+    return c.narrow.get(`${local.id}`) ?? local.type;
+  }
   const sym = c.prog.lookupValue(c.mod, name);
   if (sym) {
     switch (sym.k) {
@@ -632,8 +646,9 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
     if (sym?.k === "fn") {
       if (!c.callAllowed(sym.layer)) c.at("E4001", callee, `a ${c.fx.layer} function cannot call the ${sym.layer} function '${sym.name}'`);
       if (c.fx.contract && !isDeterministic(sym.sig)) c.at("E6002", callee, `a contract can only call deterministic functions ('${sym.name}' is not)`);
-      if (c.fx.layer === "rt" && sym.layer === "rt" && c.fn) c.rtCalls.push({ from: c.fn, to: sym, node: callee, mod: c.mod }); // E4005 (Q046)
-      return callSig(c, sym.sig, e, callee, want);
+      const got = callSig(c, sym.sig, e, callee, want, sym.layer === "managed" ? undefined : sym.layer);
+      if (sym.layer !== "managed") c.fnSites.push({ from: c.fn, callee: sym, refs: callFnArgs.get(e) ?? new Map(), node: callee, mod: c.mod }); // Q189 (b): E4005 per instantiation
+      return got;
     }
     if (sym?.k === "class") { c.at("E2002", callee, `use 'new ${callee.text}(...)'`); return ERROR; }
     if (!sym) { unresolved(c, callee); return ERROR; }
@@ -666,14 +681,23 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
     if (!isErr(m.type)) c.at("E2002", p.name, `'${show(m.type)}' is not callable`);
     return ERROR;
   }
+  if (isId(callee)) fnCalleeIds.add(callee);
   const t = unref(expr(c, callee));
-  if (t.k === "fn") return callSig(c, t, e, callee, want);
+  if (t.k === "fn") {
+    const got = callSig(c, t, e, callee, want, c.fx.layer === "managed" ? undefined : c.fx.layer);
+    // Q189 (b): a call through a function-typed parameter of the enclosing strict / rt function
+    if (c.fx.layer !== "managed" && isId(callee) && c.fn) {
+      const idx = c.fn.sig.params.findIndex((p, i) => unref(p).k === "fn" && c.fn!.decl.parameters[i]?.name.kind === K.Identifier && (c.fn!.decl.parameters[i]!.name as ts.Identifier).text === (callee as ts.Identifier).text);
+      if (idx >= 0) c.fnSites.push({ from: c.fn, callee: idx, refs: callFnArgs.get(e) ?? new Map(), node: callee, mod: c.mod });
+    }
+    return got;
+  }
   if (!isErr(t)) c.at("E2002", callee, `'${show(t)}' is not callable`);
   return ERROR;
 }
 
 /** A call against a signature, inferring type arguments (Q014, Q030): plain arguments, then arrows, then the context, then literals. */
-function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpression, anchor: Node, want: Type | undefined): Type {
+function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpression, anchor: Node, want: Type | undefined, q189?: Layer): Type {
   const args = e.arguments ?? ([] as unknown as ts.NodeArray<ts.Expression>);
   callSigs.set(e, sig);
   const min = sig.min ?? sig.params.length;
@@ -690,7 +714,25 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
   const open = (t: Type): boolean => hasTParam(subst(t, m), ids);
   const later: (Type | undefined)[] = [];
   const done: boolean[] = [];
+  // Q189 (b): arguments for function-typed parameters are not values. They are resolved here, before the
+  // generic passes, and checked for an exact type match once type arguments are known.
+  const fnChecks: { a: ts.Expression; t: Type; i: number }[] = [];
+  if (q189) {
+    const refs = new Map<number, FnArgRef>();
+    args.forEach((a, i) => {
+      const p = sig.params[i]!;
+      if (unref(p).k !== "fn") return;
+      done[i] = true;
+      const r = fnArgRef(c, a, q189);
+      if (!r) return;
+      refs.set(i, r.ref);
+      fnChecks.push({ a, t: r.t, i });
+      unify(unref(p), r.t, m, ids);
+    });
+    if (refs.size) callFnArgs.set(e, refs);
+  }
   args.forEach((a, i) => { // 1: arguments that do not need context
+    if (done[i]) return; // Q189 (b): function-typed arguments were resolved by the pre-pass
     const p = sig.params[i]!;
     if (!open(p)) { checkTo(c, a, unref(subst(p, m)), true); done[i] = true; }
     else if (!isFnExpr(a) && !ctxSensitive(a)) { const t = expr(c, a); unify(unref(p), t, m, ids); later[i] = t; }
@@ -735,9 +777,39 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
     const p = unref(subst(sig.params[i]!, m));
     if (!assignable(t, p, true)) c.at("E2002", a, `expected '${show(p)}', got '${show(t)}'`);
   });
+  for (const { a, t, i } of fnChecks) { // Q189 (b): parameter and return types must match exactly
+    const p = unref(subst(sig.params[i]!, m));
+    if (p.k === "fn" && t.k === "fn" && !same(p, t)) c.at("E2002", a, `expected '${show(p)}', got '${show(t)}'`);
+  }
   sig.tparams.forEach((p, i) => c.prog.insts.push({ mod: c.mod, node: e.typeArguments?.[i] ?? anchor, p, arg: m.get(p.id)! })); // Q127
   callTArgs.set(e, sig.tparams.map((p) => m.get(p.id)!));
   return subst(sig.ret, m);
+}
+
+/** Q189 (b): resolves one argument of a function-typed parameter. `target` is the layer of the function
+ * whose parameter it is: an rt parameter takes rt functions only, a strict one strict or rt (E4001).
+ * A forwarded parameter of the caller may hold what the caller's own layer allows, so forwarding a
+ * strict parameter into an rt parameter is E4001 too (Q212). Anything else is E4003. */
+function fnArgRef(c: Checker, a: ts.Expression, target: Layer): { ref: FnArgRef; t: Type } | undefined {
+  if (isId(a)) {
+    const local = c.scope.lookup(a.text);
+    if (local?.param && local.declared.k === "fn" && c.fx.layer !== "managed" && c.fn) {
+      if (target === "rt" && c.fx.layer !== "rt")
+        c.at("E4001", a, `a ${c.fx.layer} function parameter cannot be passed to an rt function parameter`);
+      const idx = c.fn.sig.params.findIndex((p, i) => unref(p).k === "fn" && c.fn!.decl.parameters[i]?.name.kind === K.Identifier && (c.fn!.decl.parameters[i]!.name as ts.Identifier).text === a.text);
+      if (idx >= 0) return { ref: { param: idx }, t: local.declared };
+    } else if (!local) {
+      const sym = c.prog.lookupValue(c.mod, a.text);
+      if (sym?.k === "fn") {
+        if (sym.sig.tparams.length) { c.at("E4003", a, `the generic function '${sym.name}' cannot be used as a function argument`); return undefined; }
+        if (sym.layer === "managed" || (target === "rt" && sym.layer !== "rt"))
+          c.at("E4001", a, `a ${target} function parameter cannot take the ${sym.layer} function '${sym.name}'`);
+        return { ref: { fn: sym }, t: sym.sig };
+      }
+    }
+  }
+  c.at("E4003", a, "a function argument must be the name of a module-level strict / rt function or a function parameter of the caller");
+  return undefined;
 }
 
 function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, want: Type | undefined): Type {

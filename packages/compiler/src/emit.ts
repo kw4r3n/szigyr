@@ -3,7 +3,7 @@
 // type syntax deleted, and the §10 rewrites applied to the nodes that need them. Types come from P2 (exprTypes).
 import { resolve, dirname } from "node:path";
 import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
-import { exprTypes } from "./expr.ts";
+import { callSigs, exprTypes } from "./expr.ts";
 import { sliceGroups, type SliceGroupEntry } from "./ownership.ts";
 import { elemDesc } from "./layout.ts";
 import { NUM_NAMES, isInt, isStr, nonNull, resultParts, unref, type FnType, type Type } from "./types.ts";
@@ -228,7 +228,12 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
     const args = e.arguments.map(gen);
     const groups = sliceGroups.get(e); // Q190 (b)
     const inst = native?.get(e); // D104: a managed call of a generic strict / rt function goes to its C instance
-    if (inst) return groups ? grouped(e, groups, args, (refs) => `${mark(callee)}${RT}.native.${inst}(${refs.join(", ")})`) : `${mark(callee)}${RT}.native.${inst}(${args.join(", ")})`;
+    if (inst) {
+      // Q189 (b): function-typed arguments exist only at compile time; the C instance does not take them
+      const sig = callSigs.get(e);
+      const keep = sig ? sig.params.flatMap((pt, i) => (unref(pt).k === "fn" ? [] : [i])) : args.map((_, i) => i);
+      return groups ? grouped(e, groups, args, (refs) => `${mark(callee)}${RT}.native.${inst}(${keep.map((i) => refs[i]).join(", ")})`) : `${mark(callee)}${RT}.native.${inst}(${keep.map((i) => args[i]).join(", ")})`;
+    }
     const self = typeOf(e);
     const q = (s: string): string => JSON.stringify(s);
     if (callee.kind === K.Identifier) {

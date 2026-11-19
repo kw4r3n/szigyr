@@ -55,6 +55,9 @@ accept/54-alias-copy-instantiation.ts
 accept/54-loop-boundary-warning.ts
 accept/55-disjoint-field-borrows.ts
 accept/56-slice-overlap-trap.ts
+accept/57-fn-param-strict.ts
+accept/58-fn-param-forward.ts
+accept/59-fn-param-rt-slice.ts
 reject/E1000-array-suffix-type.ts
 reject/E1000-await-in-non-async-arrow.ts
 reject/E1000-await-outside-async.ts
@@ -144,6 +147,7 @@ reject/E2002-ctor-this-escapes-before-init.ts
 reject/E2002-decode-map-target.ts
 reject/E2002-ensures-void-with-parameter.ts
 reject/E2002-eq-owned-vec.ts
+reject/E2002-fn-arg-type-mismatch.ts
 reject/E2002-generic-class-key-instantiation.ts
 reject/E2002-generic-map-key-through-type-parameter.ts
 reject/E2002-generic-set-element-record.ts
@@ -383,12 +387,15 @@ reject/E3008-slice-of-call-result.ts
 reject/E3008-struct-literal-as-ref-arg.ts
 reject/E3008-vec-create-as-ref-arg.ts
 reject/E4001-file-rt-function-override-strict.ts
+reject/E4001-managed-function-as-fn-arg.ts
 reject/E4001-pow-assign-in-strict.ts
 reject/E4001-pow-operator-in-rt.ts
 reject/E4001-rt-calls-managed.ts
 reject/E4001-rt-calls-strict.ts
 reject/E4001-strict-calls-managed-only-builtin.ts
 reject/E4001-strict-calls-managed.ts
+reject/E4001-strict-function-to-rt-param.ts
+reject/E4001-strict-param-forwarded-to-rt.ts
 reject/E4002-array-param-in-strict.ts
 reject/E4002-async-in-strict.ts
 reject/E4002-managed-type-parameter-into-strict-generic.ts
@@ -403,11 +410,15 @@ reject/E4002-unknown-param-in-strict.ts
 reject/E4002-vec-create-string.ts
 reject/E4002-vec-element-owned-struct.ts
 reject/E4002-vec-element-string.ts
+reject/E4003-arrow-as-fn-arg.ts
 reject/E4003-arrow-in-rt.ts
 reject/E4003-arrow-in-strict.ts
 reject/E4003-capturing-arrow-in-strict.ts
+reject/E4003-fn-param-as-value.ts
 reject/E4003-function-expression-in-strict.ts
-reject/E4003-function-type-param-in-strict.ts
+reject/E4003-function-type-local-in-strict.ts
+reject/E4003-function-type-return-in-strict.ts
+reject/E4003-generic-function-as-fn-arg.ts
 reject/E4003-managed-function-value-in-strict.ts
 reject/E4003-strict-function-as-value.ts
 reject/E4004-push-in-rt-loop.ts
@@ -417,6 +428,7 @@ reject/E4004-push-under-file-level-rt.ts
 reject/E4005-direct-recursion.ts
 reject/E4005-mutual-recursion.ts
 reject/E4005-recursion-over-mut-slice.ts
+reject/E4005-recursion-through-fn-param.ts
 reject/E4005-three-function-cycle.ts
 reject/E4006-alloc-param-in-rt.ts
 reject/E4006-clock-param-in-rt.ts
@@ -463,6 +475,9 @@ run/07-tagged-union-switch.ts
 run/08-map-insertion-order.ts
 run/09-null-normalization.ts
 run/10-result-ok-err.ts
+run/100-fn-param-trap.ts
+run/101-fn-param-generic.ts
+run/102-fn-param-borrow.ts
 run/11-contracts-pass.ts
 run/12-string-ops.ts
 run/13-async-await.ts
@@ -535,3 +550,5 @@ run/94-trap-slice-overlap-third-arg.ts
 run/95-trap-slice-range-before-overlap.ts
 run/96-trap-slice-range-first-arg.ts
 run/97-disjoint-fields.ts
+run/98-fn-param-strict.ts
+run/99-fn-param-rt.ts
