@@ -552,7 +552,7 @@ class Flow {
         if (!root) this.m.at("E3008", strip(p.expression), "'unbox' needs a variable or parameter, optionally through 'offset' / 'cast'");
         else if (this.active.some((x) => x.sym.id === root.sym.id) || this.pendingMut.some((s) => s.id === root.sym.id)) this.exclusive(e, root.sym);
         this.ex(p.expression, "read");
-      } else if ((g === "Vec" || g === "Slice" || g === "Pool" || g === "Arena") && e.kind === K.CallExpression) {
+      } else if ((g === "Vec" || g === "Slice" || g === "Pool" || g === "Arena" || g === "RingTx" || g === "RingRx") && e.kind === K.CallExpression) {
         if (p.name.text === "slice" || (g === "Arena" && p.name.text === "view")) this.m.at("E3004", p.name, `'${p.name.text}' can only be a borrowed argument or a receiver`); // Q013; view: Q188 (b)
         const u = this.borrow(p.expression, MUT_METHODS.has(p.name.text) ? "mut" : "ref", p.name as ts.Identifier);
         if (u) uses.push(u);

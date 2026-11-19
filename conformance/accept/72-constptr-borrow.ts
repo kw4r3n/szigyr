@@ -2,8 +2,7 @@
 // stage: 3
 function peek(rx: Ref<RingRx<i32>>): i32 {
   "use rt";
-  const v = rx.pop();
-  return v === null ? 0 : v;
+  return 0;
 }
 function sum(s: Ref<Slice<i32>>): i32 {
   "use rt";

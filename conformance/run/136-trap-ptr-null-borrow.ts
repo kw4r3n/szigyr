@@ -5,7 +5,7 @@ declare module "c:sqlite3:sqlite3.h" {
   function sqlite3_malloc(ffi: Ffi, n: i32): Ptr<void>;
 }
 import { sqlite3_malloc } from "c:sqlite3:sqlite3.h";
-function peek(rx: Ref<RingRx<i32>>): i32 {
+function peek(rx: Mut<RingRx<i32>>): i32 {
   "use rt";
   const v = rx.pop();
   return v === null ? 0 : v;

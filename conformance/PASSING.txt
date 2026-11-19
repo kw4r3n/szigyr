@@ -405,6 +405,7 @@ reject/E3005-pool-mut-and-ref.ts
 reject/E3005-reassign-while-borrowed.ts
 reject/E3005-ref-and-move-same-variable.ts
 reject/E3005-ref-then-mut-same-variable.ts
+reject/E3005-ringtx-push-consume-self.ts
 reject/E3005-root-and-field-same-root.ts
 reject/E3005-root-and-slice-same-root.ts
 reject/E3005-same-field-twice.ts
@@ -421,6 +422,8 @@ reject/E3006-push-through-ref-receiver.ts
 reject/E3006-push-through-ref-struct-field.ts
 reject/E3006-ref-passed-as-mut.ts
 reject/E3006-ref-slice-passed-as-mut-slice.ts
+reject/E3006-ringrx-pop-through-ref.ts
+reject/E3006-ringtx-push-through-ref.ts
 reject/E3006-write-field-through-ref.ts
 reject/E3006-write-index-through-ref.ts
 reject/E3007-alias-instantiation-inside-array.ts
