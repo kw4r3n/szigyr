@@ -587,9 +587,13 @@ reject/E6002-ensures-assigns.ts
 reject/E6002-ensures-consumes-result.ts
 reject/E6002-ensures-owned-arg.ts
 reject/E6002-invariant-mutating-method.ts
+reject/E6002-requires-arena-alloc.ts
+reject/E6002-requires-generic-class-authority-second-param.ts
 reject/E6002-requires-mut-borrow.ts
 reject/E6002-requires-new-mut-borrow.ts
 reject/E6002-requires-nondeterministic-call.ts
+reject/E6002-requires-pool-insert.ts
+reject/E6002-requires-ptr-box.ts
 reject/E6002-requires-ring-nondeterministic.ts
 reject/E6003-test-in-function.ts
 reject/E6003-test-in-test.ts

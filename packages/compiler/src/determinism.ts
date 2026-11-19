@@ -15,10 +15,13 @@ export function isDeterministic(sig: FnType, rtUnsafe = false): boolean {
       case "union": return t.members.some(bad);
       case "gen": return t.name === "Ptr" || t.name === "ConstPtr" || t.name === "CHandle" || t.name === "RingTx" || t.name === "RingRx" || t.name === "Port" || t.args.some(bad); // §7.3 (RingTx / RingRx: §15.1; Port: §15.2)
       case "class": {
+        if (t.args.some(bad)) return true;
         if (seen.has(t.cls)) return false;
         seen.add(t.cls);
         const m = bindTParams(t.cls.tparams, t.args);
-        return t.args.some(bad) || [...t.cls.fields.values()].some((f) => !f.static && bad(subst(f.type, m)));
+        const r = [...t.cls.fields.values()].some((f) => !f.static && bad(subst(f.type, m)));
+        seen.delete(t.cls); // guard only the current recursion path
+        return r;
       }
       case "tparam": return !!t.p.constraint; // constrained by an interface (§3.2)
       default: return false;

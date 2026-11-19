@@ -994,7 +994,7 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
 }
 
 /** Builtin methods that change their receiver or the outside world (§3.3, §7.1, §7.4, §12). */
-const MUTATORS = new Set(["push", "pop", "reverse", "sort", "fill", "set", "delete", "clear", "add", "take", "put", "info", "warn", "error", "writeText", "nextF64", "nextU32", "call", "await", "advance"]);
+const MUTATORS = new Set(["push", "pop", "reverse", "sort", "fill", "set", "delete", "clear", "add", "take", "put", "insert", "remove", "alloc", "reset", "write", "box", "unbox", "info", "warn", "error", "writeText", "nextF64", "nextU32", "call", "await", "advance"]);
 /** Q134: a contract only observes. Assignments and mutating builtin calls inside it are E6002; user calls are not analysed. */
 function observeOnly(c: Checker, root: Node): void {
   const walk = (n: Node): void => {

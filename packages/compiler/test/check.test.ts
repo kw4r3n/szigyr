@@ -117,3 +117,15 @@ it("lists the trap sites of rt functions (§6)", () => {
     k: [at("T004", 3, 3), at("T002", 4, 5), at("T001", 4, 10), at("T007", 4, 10), at("T001", 4, 25), at("T003", 4, 27), at("T001", 5, 5), at("T001", 6, 10), at("T009", 6, 13)],
   });
 });
+
+it("determinism checks generic class type arguments across parameters (§7.3)", () => {
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-det-`));
+  writeFileSync(join(dir, "main.ts"), [
+    "class Box<T> { readonly v: T; constructor(v: T) { this.v = v; } }",
+    "export function leak(a: Box<i32>, b: Box<Clock>): f64 { return b.v.nowMs(); }",
+    "export function leak2(b: Box<Clock>, a: Box<i32>): f64 { return b.v.nowMs(); }",
+    "export function pure(a: Box<i32>, b: Box<i32>): i32 { return a.v + b.v; }",
+    "",
+  ].join("\n"));
+  expect(deterministicFunctions(join(dir, "main.ts"))).toEqual({ leak: false, leak2: false, pure: true });
+});
