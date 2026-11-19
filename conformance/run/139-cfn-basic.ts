@@ -1,0 +1,30 @@
+// expect-output: 42 8
+// stage: 3
+// backend: c
+// open-question: Q217
+declare module "c:stscb:stscb.h" {
+  function stscb_call(ffi: Ffi, f: Ptr<(ud: Ptr<void>, x: i32) => i32>, ud: Ptr<void>, x: i32): i32;
+  function stscb_thread(ffi: Ffi, f: Ptr<(ud: Ptr<void>, x: i32) => i32>, ud: Ptr<void>, x: i32): i32;
+}
+import { stscb_call, stscb_thread } from "c:stscb:stscb.h";
+
+type R = Struct<{ a: i32; b: i32 }>;
+
+function twice(ud: Ptr<void>, x: i32): i32 {
+  "use rt";
+  "use unsafe";
+  return x * 2;
+}
+function go(ffi: Ffi, alloc: Alloc): R {
+  "use owned";
+  "use unsafe";
+  const ud = Ptr.box(alloc, 0);
+  const p: Ptr<(ud: Ptr<void>, x: i32) => i32> = cfn(twice);
+  const a = stscb_call(ffi, p, ud.cast<void>(), 21);
+  const b = stscb_thread(ffi, p, ud.cast<void>(), 4);
+  return { a, b };
+}
+export function main(sys: System): void {
+  const r = go(sys.ffi, sys.alloc);
+  sys.log.info(`${r.a} ${r.b}`);
+}

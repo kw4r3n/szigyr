@@ -1,0 +1,12 @@
+// expect: E4007 @ 11:17
+// stage: 3
+type S = Struct<{ readonly x: i32 }>;
+function cb(x: i32): S {
+  "use rt";
+  return { x };
+}
+export function reg(): void {
+  "use owned";
+  "use unsafe";
+  const p = cfn(cb);
+}
