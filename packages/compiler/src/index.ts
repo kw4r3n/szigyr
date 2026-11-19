@@ -12,7 +12,7 @@ import { isDeterministic } from "./determinism.ts";
 import { emitFile, EXPORTS, IMP, RT, SOURCE_URL } from "./emit.ts";
 import { loopBoundaryWarnings } from "./boundary.ts";
 import { emitC } from "./emit-c.ts";
-import { loadNative } from "./native.ts";
+import { loadNative, nativePathOf } from "./native.ts";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import * as rt from "../../runtime-js/src/index.ts";
@@ -186,12 +186,17 @@ async function load(files: ParsedFile[], entryFile: string, tests: boolean, decl
   const entry = resolve(entryFile);
   const c = backend === "c" && decls ? emitC(decls, displayPath) : undefined;
   const native = c ? loadNative(c.c, HOST, c.pkgs) : undefined;
-  // §15.4 (2): while a C program runs, a trap recorded on a C thread is polled at every task boundary (emit wraps each await in rt.task).
-  rt.setForeignTrapCheck(native ? () => {
-    const v = native.sts_poll!();
-    if (Array.isArray(v)) rt.trap(`T${String(v[0]).padStart(3, "0")}` as rt.TrapCode, "trap in C", v[1] ? { file: v[1] as string, line: v[2] as number, col: v[3] as number } : undefined);
-  } : undefined);
-  const emitted = new Map(files.map((f) => [f.path, emitFile(f, displayPath(f.path), tests && f.path === entry, c?.keys as Map<never, string> | undefined)]));
+  // §15.4 (2): a foreign trap (a C thread's, or an isolate's) is polled at every task boundary
+  // (emit wraps each await in rt.task; Port.recv checks too). The first one recorded wins.
+  rt.setForeignTrapCheck(() => {
+    if (native) {
+      const v = native.sts_poll!();
+      if (Array.isArray(v)) rt.trap(`T${String(v[0]).padStart(3, "0")}` as rt.TrapCode, "trap in C", v[1] ? { file: v[1] as string, line: v[2] as number, col: v[3] as number } : undefined);
+    }
+    const t = rt.takeIsolateTrap();
+    if (t) rt.trap(t.code as rt.TrapCode, "trap in an isolate", t.file ? { file: t.file, line: t.line!, col: t.col! } : undefined);
+  });
+  const emitted = new Map(files.map((f) => [f.path, emitFile(f, displayPath(f.path), tests && f.path === entry, c?.keys as Map<never, string> | undefined, decls?.isolateEntries.get(f.path))]));
   const npm = new Map<string, unknown>();
   for (const [path, e] of emitted) {
     for (const spec of e.imports) {
@@ -210,6 +215,16 @@ async function load(files: ParsedFile[], entryFile: string, tests: boolean, decl
       if (p) return p;
     }
     return undefined;
+  });
+  // §15.2: an isolate loads this same program in a Worker; the runtime keeps what it needs here.
+  rt.setIsolateProgram({
+    files: [...emitted].map(([path, e]) => [path, { js: e.js, imports: e.imports, calls: [...e.calls] }] as [string, { js: string; imports: string[]; calls: [string, rt.Pos][] }]),
+    entry,
+    runtimeUrl: new URL("../../runtime-js/src/index.ts", import.meta.url).href,
+    stdUrl: new URL("../../std/src/index.ts", import.meta.url).href,
+    nativePath: native ? (nativePathOf(native) ?? null) : null,
+    rtName: RT, impName: IMP, exportsName: EXPORTS,
+    framePattern: frame.source,
   });
   const done = new Map<string, Record<string, unknown>>();
   const instantiate = (path: string): Record<string, unknown> => {
@@ -255,8 +270,13 @@ async function runNow(entryFile: string, backend?: Backend): Promise<RunResult> 
   const main = ex.main;
   if (typeof main !== "function") throw new Error(`${entryFile}: no exported function 'main'`); // Q061: a CLI error, not a diagnostic
   const r = await runMain(main as Parameters<typeof runMain>[0]);
+  await rt.stopIsolates(); // Q207: main ending stops isolates still running; undelivered messages are discarded
   // Only stack exhaustion outside any source call (Q035) has no position.
   let trap = r.trap ? { code: r.trap.code, file: r.trap.pos?.file ?? "", line: r.trap.pos?.line ?? 0, col: r.trap.pos?.col ?? 0 } : null;
+  if (!trap) { // §15.4 (3): an isolate trap that never surfaced is reported when main ends
+    const t = rt.takeIsolateTrap();
+    if (t) trap = { code: t.code, file: t.file ?? "", line: t.line ?? 0, col: t.col ?? 0 };
+  }
   if (!trap && native) { // §15.4 (3): a foreign trap that never surfaced is reported when main ends (this also claims the end)
     const v = native.sts_finish!();
     if (Array.isArray(v)) trap = { code: `T${String(v[0]).padStart(3, "0")}`, file: v[1] as string, line: v[2] as number, col: v[3] as number };

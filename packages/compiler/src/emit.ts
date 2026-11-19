@@ -3,7 +3,7 @@
 // type syntax deleted, and the §10 rewrites applied to the nodes that need them. Types come from P2 (exprTypes).
 import { resolve, dirname } from "node:path";
 import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
-import { callSigs, exprTypes } from "./expr.ts";
+import { callSigs, exprTypes, isolateCalls } from "./expr.ts";
 import { sliceGroups, type SliceGroupEntry } from "./ownership.ts";
 import { elemDesc } from "./layout.ts";
 import { NUM_NAMES, isInt, isStr, nonNull, resultParts, unref, type FnType, type Type } from "./types.ts";
@@ -49,7 +49,7 @@ type AnyNode = Node & Record<string, unknown>;
 
 /** `tests`: keep the module's top-level `test(...)` calls (§9.2, §10.10). `file`: path reported in trap positions. */
 /** `native`: strict / rt function declarations compiled to C (D101), with their key in `rt.native`. */
-export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: Map<Node, string>): Emitted {
+export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: Map<Node, string>, extraExports?: Set<string>): Emitted {
   const sf = pf.sourceFile, text = sf.text;
   const poss: string[] = [];
   const marks: Pos[] = [];
@@ -229,6 +229,8 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
 
   function call(e: ts.CallExpression): string {
     const callee = e.expression;
+    const iso = isolateCalls.get(e); // §15.2: the receiver is evaluated, then the runtime starts the isolate
+    if (iso) return `(${gen((callee as ts.PropertyAccessExpression).expression)}, ${RT}.spawnIsolate(${JSON.stringify(iso.path)}, ${JSON.stringify(iso.name)}))`;
     const args = e.arguments.map(gen);
     const groups = sliceGroups.get(e); // Q190 (b)
     const inst = native?.get(e); // D104: a managed call of a generic strict / rt function goes to its C instance
@@ -368,6 +370,9 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
     const els = [...dmUsed].sort().map((n) => `${n}: ${dmBinding(n)}`);
     body.unshift(`const { ${els.join(", ")} } = ${IMP}(${JSON.stringify(DETMATH_PATH)});`);
   }
+  // §15.2: isolate entry functions are readable by the isolate loader whether or not they are
+  // declared `export` (who may *import* a name stays a static question for P1 / P2).
+  for (const n of extraExports ?? []) if (!exported.includes(n)) exported.push(n);
   const prelude = [
     `"use strict";`,
     `const { ${RT_NAMESPACES.join(", ")} } = ${RT};`,

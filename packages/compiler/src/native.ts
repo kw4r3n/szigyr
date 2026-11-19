@@ -15,6 +15,9 @@ export class CBuildError extends Error {
 }
 
 const loaded = new Map<string, Record<string, (...a: unknown[]) => unknown>>();
+const pathOf = new WeakMap<object, string>();
+/** The `.node` file a loaded native module came from; an isolate loads the same file (§15.2, D111). */
+export function nativePathOf(mod: object): string | undefined { return pathOf.get(mod); }
 
 /** Compiles (cached by source hash) and loads the addon; `host` is passed to its `init`. */
 export function loadNative(c: string, host: object, pkgs: string[] = []): Record<string, (...a: unknown[]) => unknown> {
@@ -52,6 +55,7 @@ export function loadNative(c: string, host: object, pkgs: string[] = []): Record
     const m = { exports: {} as Record<string, (...a: unknown[]) => unknown> };
     process.dlopen(m, out);
     mod = m.exports;
+    pathOf.set(mod, out);
     loaded.set(hash, mod);
   }
   mod.init!(host);
