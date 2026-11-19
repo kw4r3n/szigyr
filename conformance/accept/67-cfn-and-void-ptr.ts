@@ -1,18 +1,19 @@
 // expect: ok
 // stage: 3
-declare module "c:foo:foo.h" {
-  function onEvent(ffi: Ffi, cb: Ptr<(x: i32) => i32>): void;
+declare module "c:sdl3:SDL3/SDL.h" {
+  function SDL_AddTimer(ffi: Ffi, interval: u32, callback: Ptr<(userdata: Ptr<void>, timerID: u32, interval: u32) => u32>, param: Ptr<void>): u32;
 }
-import { onEvent } from "c:foo:foo.h";
+import { SDL_AddTimer } from "c:sdl3:SDL3/SDL.h";
 
-function cb(x: i32): i32 {
+function cb(userdata: Ptr<void>, timerID: u32, interval: u32): u32 {
   "use rt";
-  return x + 1;
+  "use unsafe";
+  return interval;
 }
-export function register(ffi: Ffi): void {
+export function register(ffi: Ffi, p: Ptr<void>): void {
   "use owned";
   "use unsafe";
-  onEvent(ffi, cfn(cb));
+  SDL_AddTimer(ffi, 100, cfn(cb), p);
 }
 export function anyPtr(p: Ptr<void>): boolean {
   "use owned";

@@ -1,10 +1,13 @@
 // expect: ok
 // stage: 3
-declare module "c:foo:foo.h" {
-  function make(ffi: Ffi, n: i32): Ptr<i32>;
-  function put(ffi: Ffi, p: ConstPtr<i32>): void;
+declare module "c:sdl3:SDL3/SDL.h" {
+  function SDL_malloc(ffi: Ffi, size: usize): Ptr<void>;
 }
-import { make, put } from "c:foo:foo.h";
+declare module "c:zlib:zlib.h" {
+  function crc32(ffi: Ffi, crc: usize, buf: ConstPtr<u8>, len: u32): usize;
+}
+import { SDL_malloc } from "c:sdl3:SDL3/SDL.h";
+import { crc32 } from "c:zlib:zlib.h";
 
 type State = Struct<{ readonly phase: f32 }>;
 
@@ -19,11 +22,12 @@ function writeFirst(s: Mut<Slice<i32>>): void {
 export function open(ffi: Ffi): CHandle<i32> {
   "use owned";
   "use unsafe";
-  const p = make(ffi, 4);
+  const raw = SDL_malloc(ffi, 16);
+  const p = raw.cast<i32>();
   if (!p.isNull()) {
     p.write(41);
     const q: ConstPtr<i32> = p;
-    put(ffi, q);
+    crc32(ffi, 0, q.cast<u8>(), 4);
     const r = readFirst(p.slice(2));
     const s2 = p.offset(1).read();
     writeFirst(p.slice(2));

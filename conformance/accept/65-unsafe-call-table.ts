@@ -1,9 +1,9 @@
 // expect: ok
 // stage: 3
-declare module "c:foo:foo.h" {
-  function cfun(ffi: Ffi, x: i32): i32;
+declare module "c:sdl3:SDL3/SDL.h" {
+  function SDL_toupper(ffi: Ffi, x: i32): i32;
 }
-import { cfun } from "c:foo:foo.h";
+import { SDL_toupper } from "c:sdl3:SDL3/SDL.h";
 
 function rtPlain(x: i32): i32 {
   "use rt";
@@ -12,7 +12,7 @@ function rtPlain(x: i32): i32 {
 function rtUnsafe(x: i32): i32 {
   "use rt";
   "use unsafe";
-  return cfun(x) + rtPlain(x);
+  return SDL_toupper(x) + rtPlain(x);
 }
 function rtUnsafe2(x: i32): i32 {
   "use unsafe";
@@ -22,7 +22,7 @@ function rtUnsafe2(x: i32): i32 {
 function strictUnsafe(ffi: Ffi, x: i32): i32 {
   "use owned";
   "use unsafe";
-  return cfun(ffi, x);
+  return SDL_toupper(ffi, x);
 }
 function strictPlain(ffi: Ffi, x: i32): i32 {
   "use owned";
