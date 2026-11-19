@@ -16,7 +16,7 @@ export const GLOBAL_AUTHORITIES = new Set([
 ]);
 
 /** Namespace objects (Q034). */
-export const NAMESPACES = new Set(["Math", "Number", "JSON", "String", "Promise", "Vec", "Pool", "Arena", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "TestAlloc", "DetMath", "Ptr", "CHandle"]);
+export const NAMESPACES = new Set(["Math", "Number", "JSON", "String", "Promise", "Vec", "Pool", "Arena", "Ring", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "TestAlloc", "DetMath", "Ptr", "CHandle"]);
 /** Builtin functions handled by the checker (§12). */
 export const BUILTIN_FUNCTIONS = new Set([...NUM_NAMES, "wrapAdd", "wrapSub", "wrapMul", "divTrunc", "rem", "ok", "err", "panic", "cast", "requires", "ensures", "invariant", "test", "cfn"]);
 
@@ -173,6 +173,8 @@ export function genMember(t: { name: GenName; args: Type[] }, name: string): Mem
       return Object.hasOwn(sigs, name) ? sigs[name] : undefined;
     }
     case "ArenaBuf": return name === "length" ? prop(USIZE) : undefined;
+    case "RingTx": return name === "push" ? m([a], BOOL) : undefined; // §15.1: Mut receiver (ownership.ts), no allocation
+    case "RingRx": return name === "pop" ? m([], nullable(a)) : undefined;
     case "OwnedCell": {
       const sigs: Record<string, Member> = { take: m([], a), put: m([a], VOID), isEmpty: m([], BOOL) };
       return Object.hasOwn(sigs, name) ? sigs[name] : undefined;
@@ -239,6 +241,7 @@ export function nsMember(ns: string, name: string): Member | "variadic" | undefi
     case "Vec": return name === "create" ? m([opaque("Alloc"), USIZE], gen("Vec", tT), { tparams: [T], tcheck: "copy" }) : undefined;
     case "Pool": return name === "create" ? m([opaque("Alloc"), USIZE], gen("Pool", tT), { tparams: [T], tcheck: "copy" }) : undefined;
     case "Arena": return name === "create" ? m([opaque("Alloc"), USIZE], gen("Arena")) : undefined;
+    case "Ring": return name === "create" ? m([opaque("Alloc"), USIZE], record([{ name: "tx", type: gen("RingTx", tT), readonly: false }, { name: "rx", type: gen("RingRx", tT), readonly: false }], true), { tparams: [T], tcheck: "ring" }) : undefined; // §15.1 (Q199)
     case "OwnedCell": return name === "create" ? m([tT], gen("OwnedCell", tT), { tparams: [T] }) : undefined;
     case "Ptr": return name === "box" ? m([opaque("Alloc"), tT], gen("Ptr", tT), { tparams: [T], tcheck: "box" }) : undefined; // §14.4
     case "CHandle": return name === "create" ? m([gen("Ptr", tT)], gen("CHandle", tT), { tparams: [T], tcheck: "chandle" }) : undefined; // §14.5

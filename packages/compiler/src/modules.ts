@@ -5,7 +5,7 @@ import type { Diagnostic } from "./diagnostics.ts";
 import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { RESERVED, builtinType, isGenName } from "./builtins.ts";
 import {
-  ERROR, GEN_ARITY, NULL, VOID, assignable, bindTParams, demand, fn, isTaggedUnion, hasAuthority, kindOf, layerOk, movesLike, needOk, ownedDeep, CONTAINERS, newTParam, nonNull, record, result, show, subst, union,
+  ERROR, GEN_ARITY, NULL, VOID, gen, assignable, bindTParams, demand, fn, isTaggedUnion, hasAuthority, kindOf, layerOk, movesLike, needOk, ownedDeep, CONTAINERS, newTParam, nonNull, record, result, show, subst, union,
   type ClassSym, type Field, type FnType, type IfaceSym, type TParam, type Type,
 } from "./types.ts";
 
@@ -468,6 +468,14 @@ export class Program {
       if (argNodes?.length !== 1 || a!.kind !== K.TypeLiteral) { this.rep.at(e.mod, "E2002", whole, "Struct takes one record type literal"); return ERROR; }
       return this.recordOf(a as ts.TypeLiteralNode, e, true);
     }
+    if (name === "RingPair") { // §15.1 (Q199): a builtin Struct, spelled out as the record it is defined to equal
+      if (!arity(1)) return ERROR;
+      const a = args[0]!;
+      if (a.k === "error") return ERROR;
+      if (!demand(a, "copy")) { this.rep.at(e.mod, "E4002", argNodes![0]!, `RingPair<T> needs a Copy element type, not '${show(a)}'`); return ERROR; }
+      if (!demand(a, "noabuf")) { this.rep.at(e.mod, "E2002", argNodes![0]!, `a ring element cannot be or contain an ArenaBuf, not '${show(a)}'`); return ERROR; }
+      return record([{ name: "tx", type: gen("RingTx", a), readonly: false }, { name: "rx", type: gen("RingRx", a), readonly: false }], true);
+    }
     if (name === "Result") return arity(2) ? result(args[0]!, args[1]!) : ERROR;
     if (isGenName(name)) {
       if (!arity(GEN_ARITY[name])) return ERROR;
@@ -478,12 +486,16 @@ export class Program {
           return ERROR;
         }
       }
+      if ((name === "RingTx" || name === "RingRx") && !demand(args[0]!, "noabuf")) { // §15.1 (Q210)
+        this.rep.at(e.mod, "E2002", argNodes![0]!, `a ring element cannot be or contain an ArenaBuf, not '${show(args[0]!)}'`);
+        return ERROR;
+      }
       if (args.some((a) => a.k === "error")) return ERROR;
       if ((name === "Map" || name === "Set") && !demand(args[0]!, "key")) { // §3.2, Q081, Q127
         this.rep.at(e.mod, "E2002", argNodes![0]!, `a ${name} ${name === "Map" ? "key" : "element"} is a string, number, boolean or string literal union, not '${show(args[0]!)}'`);
         return ERROR;
       }
-      if ((name === "Vec" || name === "Slice" || name === "Pool" || name === "Handle" || name === "ArenaBuf") && !demand(args[0]!, "copy")) { // §3.3, Q086, Q127 (Pool / Handle: Q188 (a), ArenaBuf: Q188 (b))
+      if ((name === "Vec" || name === "Slice" || name === "Pool" || name === "Handle" || name === "ArenaBuf" || name === "RingTx" || name === "RingRx") && !demand(args[0]!, "copy")) { // §3.3, Q086, Q127 (Pool / Handle: Q188 (a), ArenaBuf: Q188 (b))
         this.rep.at(e.mod, "E4002", argNodes![0]!, `${name}<T> needs a Copy element type, not '${show(args[0]!)}'`);
         return ERROR;
       }

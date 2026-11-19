@@ -5,9 +5,9 @@ export type NumName = "f64" | "f32" | "i8" | "i16" | "i32" | "u8" | "u16" | "u32
 export const NUM_NAMES: readonly NumName[] = ["f64", "f32", "i8", "i16", "i32", "u8", "u16", "u32", "usize"];
 export type PrimName = "boolean" | "string" | "null" | "void" | "unknown" | "never";
 /** Builtin generic types (§3.2, §3.3). */
-export type GenName = "Array" | "ReadonlyArray" | "Map" | "Set" | "Promise" | "Vec" | "Slice" | "Pool" | "Handle" | "Arena" | "ArenaBuf" | "Ref" | "Mut" | "OwnedCell" | "Ptr" | "ConstPtr" | "CType" | "CHandle";
+export type GenName = "Array" | "ReadonlyArray" | "Map" | "Set" | "Promise" | "Vec" | "Slice" | "Pool" | "Handle" | "Arena" | "ArenaBuf" | "RingTx" | "RingRx" | "Ref" | "Mut" | "OwnedCell" | "Ptr" | "ConstPtr" | "CType" | "CHandle";
 export const GEN_ARITY: Record<GenName, number> = {
-  Array: 1, ReadonlyArray: 1, Map: 2, Set: 1, Promise: 1, Vec: 1, Slice: 1, Pool: 1, Handle: 1, Arena: 0, ArenaBuf: 1, Ref: 1, Mut: 1, OwnedCell: 1, Ptr: 1, ConstPtr: 1, CType: 1, CHandle: 1,
+  Array: 1, ReadonlyArray: 1, Map: 2, Set: 1, Promise: 1, Vec: 1, Slice: 1, Pool: 1, Handle: 1, Arena: 0, ArenaBuf: 1, RingTx: 1, RingRx: 1, Ref: 1, Mut: 1, OwnedCell: 1, Ptr: 1, ConstPtr: 1, CType: 1, CHandle: 1,
 };
 /** Opaque builtin types: authorities (§7.1), Test, JsRef, the fakes (Q038). */
 export const AUTHORITIES = ["System", "Alloc", "Fs", "Clock", "Random", "Log", "Js", "Ffi"] as const; // Ffi: §14.2
@@ -16,7 +16,7 @@ export const OPAQUE_NAMES = new Set<string>([...AUTHORITIES, "JsRef", "Test", "F
 export interface Field { name: string; type: Type; readonly: boolean }
 /** Q127: conditions a type parameter takes on from the positions it is used in, checked on every instantiation. */
 /** `nopromise`: every user type parameter has it (Q130 addendum): a Promise cannot hide behind a type parameter. */
-export type Need = "key" | "copy" | "field" | "borrow" | "eq" | "nopromise";
+export type Need = "key" | "copy" | "field" | "borrow" | "eq" | "nopromise" | "noabuf";
 /** `owner`: the declaring layer for user type parameters (Q068 b): "managed" ones never take owned types, strict / rt ones may. */
 export interface TParam { name: string; id: number; constraint?: Type; need?: Set<Need>; owner?: "managed" | "strict" | "rt" }
 /** `min`: builtin optional trailing parameters (Q032). `prefix`: a builtin callback may take a prefix of the parameters. */
@@ -24,7 +24,7 @@ export interface FnType {
   k: "fn"; tparams: TParam[]; params: Type[]; ret: Type; min?: number; prefix?: boolean;
   /** Builtin call-site conditions: `cast` / `eq` / `copy` constrain the first type argument (Q084, Q086); `trap` checks the code literal (Q058). */
   /** `box` / `chandle` / `castptr`: the §14.4 / §14.5 conditions on the type argument. */
-  tcheck?: "cast" | "eq" | "copy" | "trap" | "box" | "chandle" | "castptr";
+  tcheck?: "cast" | "eq" | "copy" | "trap" | "box" | "chandle" | "castptr" | "ring";
 }
 
 export interface ClassSym {
@@ -240,7 +240,7 @@ export function isCopy(t: Type): boolean {
   }
 }
 /** Owned types (§5.1): non-Copy Structs and Vec. */
-export const isOwned = (t: Type): boolean => (t.k === "gen" && (t.name === "Vec" || t.name === "Pool" || t.name === "Arena" || t.name === "CHandle")) || (t.k === "record" && t.struct && !isCopy(t)); // CHandle: §14.5
+export const isOwned = (t: Type): boolean => (t.k === "gen" && (t.name === "Vec" || t.name === "Pool" || t.name === "Arena" || t.name === "CHandle" || t.name === "RingTx" || t.name === "RingRx")) || (t.k === "record" && t.struct && !isCopy(t)); // CHandle: §14.5
 /**
  * P3: values that move. Owned types, unions holding one, and strict / rt type parameters (Q049; managed ones never are, Q068 b)
  * unless their instantiations cannot be owned: an interface constraint (only classes implement one), or a `key` / `copy` / `eq` condition (Q153).
@@ -286,7 +286,7 @@ export function layerOk(t: Type): boolean {
     case "prim": return t.name === "boolean" || t.name === "null" || t.name === "void" || t.name === "never";
     case "record": return t.struct ? t.fields.every((f) => layerOk(f.type)) : isCopy(t); // Q043
     case "union": return t.members.every((m) => isCopy(m) && layerOk(m));
-    case "gen": return t.name === "Vec" || t.name === "Slice" || t.name === "Pool" || t.name === "Handle" || t.name === "Arena" || t.name === "ArenaBuf" || t.name === "Ptr" || t.name === "ConstPtr" || t.name === "CType" || t.name === "CHandle" || ((t.name === "Ref" || t.name === "Mut") && layerOk(t.args[0]!)); // §14: pointer types are layer-legal; their positions are E4007 / E4008
+    case "gen": return t.name === "Vec" || t.name === "Slice" || t.name === "Pool" || t.name === "Handle" || t.name === "Arena" || t.name === "ArenaBuf" || t.name === "RingTx" || t.name === "RingRx" || t.name === "Ptr" || t.name === "ConstPtr" || t.name === "CType" || t.name === "CHandle" || ((t.name === "Ref" || t.name === "Mut") && layerOk(t.args[0]!)); // §14: pointer types are layer-legal; their positions are E4007 / E4008
     case "opaque": return isAuthority(t);
     default: return false;
   }
@@ -331,13 +331,13 @@ export function comparable(t: Type): boolean {
     case "fn": case "opaque": case "ns": case "iter": return false;
     case "record": return !isOwned(t) && t.fields.every((f) => comparable(f.type));
     case "union": return t.members.every(comparable);
-    case "gen": return t.name !== "Vec" && t.name !== "Slice" && t.name !== "Pool" && t.name !== "Arena" && t.name !== "OwnedCell" && t.name !== "Promise" && t.args.every(comparable);
+    case "gen": return t.name !== "Vec" && t.name !== "Slice" && t.name !== "Pool" && t.name !== "Arena" && t.name !== "OwnedCell" && t.name !== "Promise" && t.name !== "RingTx" && t.name !== "RingRx" && t.args.every(comparable);
     default: return true;
   }
 }
 
 /** Struct field types (§3.3, Q086): numbers, boolean, Struct, Vec. */
-export const structField = (t: Type): boolean => t.k === "error" || t.k === "tparam" || t.k === "num" || isBool(t) || (t.k === "record" && t.struct) || (t.k === "gen" && (t.name === "Vec" || t.name === "Pool" || t.name === "Handle" || t.name === "Arena" || t.name === "ArenaBuf" || t.name === "CHandle" || t.name === "Ptr" || t.name === "ConstPtr" || t.name === "CType")); // Arena as a field: Q214; CHandle as a field: §14.5. Ptr / CType in a field are the checker's E4008 / E4007, not E4002
+export const structField = (t: Type): boolean => t.k === "error" || t.k === "tparam" || t.k === "num" || isBool(t) || (t.k === "record" && t.struct) || (t.k === "gen" && (t.name === "Vec" || t.name === "Pool" || t.name === "Handle" || t.name === "Arena" || t.name === "ArenaBuf" || t.name === "RingTx" || t.name === "RingRx" || t.name === "CHandle" || t.name === "Ptr" || t.name === "ConstPtr" || t.name === "CType")); // Arena as a field: Q214; CHandle as a field: §14.5. Ptr / CType in a field are the checker's E4008 / E4007, not E4002
 
 /** Integer ranges (§3.1). */
 export const INT_RANGE: Partial<Record<NumName, [number, number]>> = {
@@ -360,6 +360,7 @@ export function needOk(n: Need, t: Type): boolean {
     case "field": return structField(t);
     case "borrow": return t.k === "error" || isOwned(t) || (t.k === "gen" && t.name === "Slice");
     case "eq": return comparable(t);
+    case "noabuf": return t.k === "error" || !hasArenaBuf(t);
     case "nopromise": return !promiseIn(t);
   }
 }
@@ -391,6 +392,17 @@ export function hasPtr(t: Type): boolean {
     default: return false;
   }
 }
+/** §15.1 (Q210): `t` is or contains an `ArenaBuf`, which a ring element may not be (the endpoints are isolate-sendable). */
+export function hasArenaBuf(t: Type): boolean {
+  switch (t.k) {
+    case "gen": return t.name === "ArenaBuf" || t.args.some(hasArenaBuf);
+    case "record": return t.fields.some((f) => hasArenaBuf(f.type));
+    case "union": return t.members.some(hasArenaBuf);
+    case "fn": return t.params.some(hasArenaBuf) || hasArenaBuf(t.ret);
+    case "class": case "iface": return t.args.some(hasArenaBuf);
+    default: return false;
+  }
+}
 /** §14.4: types that may sit behind Ptr / ConstPtr. Function types are Ptr-only; the caller decides those. */
 export function ptrTargetOk(t: Type): boolean {
   switch (t.k) {
@@ -399,7 +411,7 @@ export function ptrTargetOk(t: Type): boolean {
     case "record": return true;
     case "union": return t.members.every(ptrTargetOk);
     case "gen":
-      return t.name === "CType" || t.name === "Vec" || t.name === "Pool" || t.name === "Handle" || t.name === "Arena" || t.name === "ArenaBuf" || t.name === "CHandle" ||
+      return t.name === "CType" || t.name === "Vec" || t.name === "Pool" || t.name === "Handle" || t.name === "Arena" || t.name === "ArenaBuf" || t.name === "RingTx" || t.name === "RingRx" || t.name === "CHandle" ||
         ((t.name === "Ptr" || t.name === "ConstPtr") && ptrTargetOk(t.args[0]!));
     default: return false;
   }
@@ -407,7 +419,7 @@ export function ptrTargetOk(t: Type): boolean {
 /** §14.4 (Q209, Q210): types `Ptr.box` accepts: Copy types, CHandle, and Structs whose fields are all boxable. */
 export function boxable(t: Type): boolean {
   if (isCopy(t)) return true;
-  if (t.k === "gen" && t.name === "CHandle") return true;
+  if (t.k === "gen" && (t.name === "CHandle" || t.name === "RingTx" || t.name === "RingRx")) return true; // ring endpoints: Q209
   if (t.k === "record" && t.struct) return t.fields.every((f) => boxable(f.type));
   return false;
 }

@@ -483,10 +483,10 @@ function eqable(t: Type): boolean {
   return isNum(a) || isBool(a) || isStr(a) || a.k === "class";
 }
 
-/** Q058: the first argument of `t.traps` is a string literal naming an implemented trap (T001 - T013). */
+/** Q058: the first argument of `t.traps` is a string literal naming an implemented trap (T001 - T014). */
 function trapCode(c: Checker, a: ts.Expression): void {
-  const ok = (a.kind === K.StringLiteral || a.kind === K.NoSubstitutionTemplateLiteral) && /^T(00[1-9]|01[0-3])$/.test((a as ts.StringLiteral).text);
-  if (!ok) c.at("E2002", a, "the first argument of 'traps' must be a trap code literal \"T001\" - \"T013\"");
+  const ok = (a.kind === K.StringLiteral || a.kind === K.NoSubstitutionTemplateLiteral) && /^T(00[1-9]|01[0-4])$/.test((a as ts.StringLiteral).text);
+  if (!ok) c.at("E2002", a, "the first argument of 'traps' must be a trap code literal \"T001\" - \"T014\"");
 }
 
 /** Q017: which types `===` / `!==` accept. */
@@ -678,7 +678,8 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
       const vec = isId(p.expression) && p.expression.text === "Vec" && isNamespace(c, p.expression);
       const pool = isId(p.expression) && p.expression.text === "Pool" && isNamespace(c, p.expression);
       const arena = isId(p.expression) && p.expression.text === "Arena" && isNamespace(c, p.expression);
-      if (((vec || pool || arena) && p.name.text === "create") || (rt && unref(rt).k === "gen" && (unref(rt) as { name: string }).name === "Vec" && p.name.text === "push")) c.at("E4004", p.name, `'${p.name.text}' allocates`);
+      const ring = isId(p.expression) && p.expression.text === "Ring" && isNamespace(c, p.expression);
+      if (((vec || pool || arena || ring) && p.name.text === "create") || (rt && unref(rt).k === "gen" && (unref(rt) as { name: string }).name === "Vec" && p.name.text === "push")) c.at("E4004", p.name, `'${p.name.text}' allocates`);
       if (isId(p.expression) && p.expression.text === "Ptr" && isNamespace(c, p.expression) && p.name.text === "box") c.at("E4004", p.name, "'Ptr.box' allocates"); // §14.4
       if (rt && unref(rt).k === "gen" && (unref(rt) as { name: string }).name === "Ptr" && p.name.text === "unbox") c.at("E4004", p.name, "'unbox' allocates"); // §14.4
     }
@@ -782,7 +783,7 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
     }
   }
   const tc = sig.tcheck;
-  if ((tc === "cast" || tc === "eq" || tc === "copy" || tc === "box" || tc === "chandle" || tc === "castptr") && sig.tparams[0]) { // Q084, Q086; §14.4 / §14.5
+  if ((tc === "cast" || tc === "eq" || tc === "copy" || tc === "box" || tc === "chandle" || tc === "castptr" || tc === "ring") && sig.tparams[0]) { // Q084, Q086; §14.4 / §14.5
     const b = m.get(sig.tparams[0].id)!;
     if (tc === "box") { // the anchor is the type argument, or the boxed value (DIAGNOSTICS E4007)
       if (!isErr(b) && !boxable(b)) { c.at("E4007", e.typeArguments?.[0] ?? args[1] ?? anchor, `'${show(b)}' cannot be boxed`); return ERROR; }
@@ -791,6 +792,9 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
       if (!isErr(b) && !ptrTargetOk(b)) { c.at("E4007", e.typeArguments?.[0] ?? anchor, `'${show(b)}' cannot sit inside CHandle`); return ERROR; }
     } else if (tc === "castptr") {
       if (!isErr(b) && (b.k === "fn" || !ptrTargetOk(b))) { c.at("E2001", e.typeArguments?.[0] ?? anchor, `cannot cast a pointer to '${show(b)}'`); return ERROR; }
+    } else if (tc === "ring") { // §15.1 (Q199, Q210): the element is Copy (E4002, as Vec<T>) and not an ArenaBuf or containing one (E2002)
+      if (!isErr(b) && !demand(b, "copy")) { c.at("E4002", e.typeArguments?.[0] ?? anchor, `'${show(b)}' is not allowed as the type argument here`); return ERROR; }
+      if (!isErr(b) && !demand(b, "noabuf")) { c.at("E2002", e.typeArguments?.[0] ?? anchor, `a ring element cannot be or contain an ArenaBuf, not '${show(b)}'`); return ERROR; }
     } else if (!isErr(b) && !(tc === "cast" ? castable(b) : demand(b, tc))) {
       c.at(tc === "copy" ? "E4002" : "E2002", e.typeArguments?.[0] ?? anchor, `'${show(b)}' is not allowed as the type argument here`); // Q086: `Vec.create` is §3.3
       return ERROR;
