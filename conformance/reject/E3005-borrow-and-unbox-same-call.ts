@@ -1,0 +1,13 @@
+// expect: E3005 @ 12:27
+// stage: 3
+type S = Struct<{ x: i32 }>;
+function both(s: Ref<S>, t: S): i32 {
+  "use owned";
+  return 0;
+}
+export function f(alloc: Alloc, s: S): i32 {
+  "use owned";
+  "use unsafe";
+  const p = Ptr.box(alloc, s);
+  return both(p.borrow(), p.unbox());
+}
