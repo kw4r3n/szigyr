@@ -12,7 +12,22 @@ const copy = (s: State): State => s && new Map(s);
 /** read: used only. move: §5.2 (initializers, right sides, by-value arguments, return, Struct fields, spread / destructuring sources). store: a managed container (E3007). */
 type Ctx = "read" | "move" | "store";
 type Mode = "ref" | "mut" | "move";
-interface Use { sym: LocalSym; mode: Mode; node: Node }
+interface Use { sym: LocalSym; mode: Mode; node: Node; path: string[]; slice: boolean; arg: number; sliceName?: Node }
+/** A place (§5.5): its root local, the field path from the root, and whether it is a `v.slice(a, b)` of that path (Q190). */
+interface Place { sym: LocalSym; id: ts.Identifier; path: string[]; slice: boolean; sliceName?: ts.Identifier }
+/** Two field paths denote overlapping places when one is a prefix of the other (Q190 (a)). */
+const pathsOverlap = (a: string[], b: string[]): boolean => { const n = Math.min(a.length, b.length); for (let i = 0; i < n; i++) if (a[i] !== b[i]) return false; return true; };
+/** A pair of uses of one root in one call conflicts (E3005) when their places overlap (Q190 (a)) and they are not both `slice` arguments — that pair is decided by the runtime overlap check instead (Q190 (b), T013). */
+const placesConflict = (a: Use, b: Use): boolean => !(a.slice && b.slice) && pathsOverlap(a.path, b.path);
+
+/** One slice argument of a runtime-checked group (Q190 (b)): its index, its mode, and its `slice` member name (the T013 anchor). */
+export interface SliceGroupEntry { arg: number; mut: boolean; name: Node }
+/**
+ * Calls whose same-root `slice` arguments are checked for overlap at runtime instead of E3005 (Q190 (b)):
+ * per call, the groups (one per root) with at least two slice arguments and at least one `Mut` pair.
+ * Read by the JS and C emitters and by the rt trap-site listing (traps.ts).
+ */
+export const sliceGroups = new WeakMap<Node, SliceGroupEntry[][]>();
 interface Frame { loop: boolean; depth: number; breaks: State[]; continues: State[]; moves: { sym: LocalSym; node: Node }[] }
 
 const isId = (n: Node | undefined): n is ts.Identifier => n?.kind === K.Identifier;
@@ -92,7 +107,7 @@ class Flow {
    * root of an element access (`ref`) or of an assignment target (`mut`, a `base`). A move of the variable meanwhile is
    * E3005 (E3001 for a base); an inner `Mut` borrow of it is E3005. Reads and inner `Ref` borrows stay allowed (Q065, Q067).
    */
-  readonly active: { sym: LocalSym; mode: "ref" | "mut"; node: Node; base: boolean }[] = [];
+  readonly active: { sym: LocalSym; mode: "ref" | "mut"; node: Node; base: boolean; path: string[]; slice: boolean }[] = [];
   readonly e3005 = new Set<Node>();
   /** Where the current call's own entries start in `active`. */
   callMark = 0;
@@ -264,8 +279,8 @@ class Flow {
         const x = e as ts.ElementAccessExpression;
         this.ex(x.expression, "read");
         const mark = this.active.length;
-        const r = this.rootOf(x.expression);
-        if (r) this.active.push({ sym: r.sym, mode: "ref", node: r.id, base: true });
+        const r = this.placeOf(x.expression);
+        if (r) this.active.push({ sym: r.sym, mode: "ref", node: r.id, base: true, path: r.path, slice: false });
         this.ex(x.argumentExpression, "read");
         this.active.length = mark;
         return;
@@ -399,22 +414,33 @@ class Flow {
   private lhs(l: ts.Expression): ts.Expression | undefined {
     if (isId(l)) { const sym = localOf.get(l); if (sym) this.useCheck(l, sym); return undefined; }
     const obj = l.kind === K.PropertyAccessExpression ? (l as ts.PropertyAccessExpression).expression : (l as ts.ElementAccessExpression).expression;
-    const root = this.rootOf(obj);
+    const root = this.placeOf(obj);
     this.place(obj);
-    if (root && this.active.some((x) => x.sym.id === root.sym.id)) this.exclusive(l, root.sym); // Q170: a write under a borrow of the same root
-    if (root) this.active.push({ sym: root.sym, mode: "mut", node: root.id, base: true }); // popped by the caller
+    const target = l.kind === K.PropertyAccessExpression ? this.placeOf(l) : this.placeOf(obj);
+    if (root && this.active.some((x) => x.sym.id === root.sym.id && (!target || pathsOverlap(x.path, target.path)))) this.exclusive(l, root.sym); // Q170: a write under a borrow of the same place (Q190: a disjoint field is another place)
+    if (root) this.active.push({ sym: root.sym, mode: "mut", node: root.id, base: true, path: root.path, slice: false }); // popped by the caller
     if (l.kind === K.ElementAccessExpression) this.ex((l as ts.ElementAccessExpression).argumentExpression, "read");
     if (root && borrowMode(root.sym.declared) === "ref") this.m.at("E3006", l, `cannot write through the Ref '${root.sym.name}'`);
     return obj;
   }
 
   // ---- places (§5.5): a local, a borrowed parameter, a field path of one, or `v.slice(a, b)` of one
-  private rootOf(e0: ts.Expression): { sym: LocalSym; id: ts.Identifier } | undefined {
+  /** The place `e0` denotes (Q190): field paths are compared segment by segment; a `slice` keeps the outermost member name as its trap anchor. */
+  private placeOf(e0: ts.Expression, sliceName?: ts.Identifier): Place | undefined {
     const e = strip(e0);
-    if (isId(e)) { const sym = localOf.get(e); return sym && { sym, id: e }; }
-    if (e.kind === K.PropertyAccessExpression && !(e as ts.PropertyAccessExpression).questionDotToken) return this.rootOf((e as ts.PropertyAccessExpression).expression);
+    if (isId(e)) { const sym = localOf.get(e); return sym && { sym, id: e, path: [], slice: false }; }
+    if (e.kind === K.PropertyAccessExpression && !(e as ts.PropertyAccessExpression).questionDotToken) {
+      const p = e as ts.PropertyAccessExpression;
+      const inner = this.placeOf(p.expression, sliceName);
+      return inner && { ...inner, path: [...inner.path, p.name.text] };
+    }
     const slice = this.sliceCall(e);
-    return slice && this.rootOf(slice.expression);
+    if (slice) {
+      const name = sliceName ?? (slice.name as ts.Identifier);
+      const inner = this.placeOf(slice.expression, name);
+      return inner && { ...inner, slice: true, sliceName: name };
+    }
+    return undefined;
   }
   /** `X.slice(a, b)` on a Vec / Slice: its callee. */
   private sliceCall(e: ts.Expression): ts.PropertyAccessExpression | undefined {
@@ -437,20 +463,23 @@ class Flow {
    * A borrow of `e` with `mode`. Not a place: E3008, unless it is a receiver (a temporary receiver is fine).
    * `Mut` of something reached through a `Ref`: E3006 at the argument, or at the member name for a receiver (Q050).
    */
-  private borrow(e: ts.Expression, mode: "ref" | "mut", member?: ts.Identifier): Use | undefined {
-    const r = this.rootOf(e);
+  private borrow(e: ts.Expression, mode: "ref" | "mut", member?: ts.Identifier, arg = -1): Use | undefined {
+    const r = this.placeOf(e);
     if (!r) {
       if (!member) this.m.at("E3008", strip(e), "a borrowed argument must be a variable, a field path or 'v.slice(a, b)'");
       this.place(e); // a `slice` here is still in a borrowing position (Q013)
       return undefined;
     }
     const node = strip(e);
-    // Q170: within one call either side `Mut` conflicts; an outer borrow conflicts only with an inner `Mut` (Q065, Q067)
-    if (this.active.some((x, i) => x.sym.id === r.sym.id && (mode === "mut" || (i >= this.callMark && x.mode === "mut")))) this.exclusive(node, r.sym);
-    this.active.push({ sym: r.sym, mode, node, base: false }); // popped by `call`; active while `slice` bounds are evaluated
+    // Q170: within one call either side `Mut` conflicts; an outer borrow conflicts only with an inner `Mut` (Q065, Q067).
+    // Q190: disjoint field paths are different places (a); a sibling pair of `slice` arguments is left to the runtime check (b).
+    if (this.active.some((x, i) => x.sym.id === r.sym.id && pathsOverlap(x.path, r.path)
+      && (mode === "mut" || (i >= this.callMark && x.mode === "mut"))
+      && !(i >= this.callMark && x.slice && r.slice))) this.exclusive(node, r.sym);
+    this.active.push({ sym: r.sym, mode, node, base: false, path: r.path, slice: r.slice }); // popped by `call`; active while `slice` bounds are evaluated
     this.place(e);
     if (mode === "mut" && borrowMode(r.sym.declared) === "ref") this.m.at("E3006", member ?? strip(e), `'${r.sym.name}' is borrowed as Ref and cannot be passed as Mut`);
-    return { sym: r.sym, mode, node };
+    return { sym: r.sym, mode, node, path: r.path, slice: r.slice, arg, sliceName: r.sliceName };
   }
 
   // ---- calls
@@ -480,22 +509,34 @@ class Flow {
     args.forEach((a, i) => {
       const p = sig?.params[i];
       const mode = borrowMode(p);
-      if (mode) { const u = this.borrow(a, mode); if (u) uses.push(u); return; }
+      if (mode) { const u = this.borrow(a, mode, undefined, i); if (u) uses.push(u); return; }
       const x = strip(a);
       if (isId(x) && !store) {
         const sym = localOf.get(x);
         const before = sym && this.state?.get(sym.id);
         this.ex(a, "move");
-        if (sym && !before && this.state?.get(sym.id) === x) uses.push({ sym, mode: "move", node: x });
+        if (sym && !before && this.state?.get(sym.id) === x) uses.push({ sym, mode: "move", node: x, path: [], slice: false, arg: i });
         return;
       }
       this.ex(a, store ? "store" : "move");
     });
-    // E3005 (§5.5): a variable passed as Mut takes part in no other argument; moving it while borrowed is rejected too (Q152)
+    // E3005 (§5.5): a variable passed as Mut takes part in no other argument; moving it while borrowed is rejected too (Q152).
+    // Q190 (a): places are field paths, not just roots.
     uses.forEach((u, j) => {
-      const v = uses.slice(0, j).find((w) => w.sym.id === u.sym.id && (w.mode !== "ref" || u.mode !== "ref"));
+      const v = uses.slice(0, j).find((w) => w.sym.id === u.sym.id && (w.mode !== "ref" || u.mode !== "ref") && placesConflict(w, u));
       if (v) this.exclusive(u.node, u.sym);
     });
+    // Q190 (b): record the slice groups the emitters must check at runtime (T013).
+    const byRoot = new Map<number, Use[]>();
+    for (const u of uses) if (u.slice && u.arg >= 0) { const l = byRoot.get(u.sym.id) ?? []; l.push(u); byRoot.set(u.sym.id, l); }
+    const groups: SliceGroupEntry[][] = [];
+    for (const l of byRoot.values()) {
+      if (l.length < 2) continue;
+      const sorted = [...l].sort((a, b) => a.arg - b.arg);
+      if (sorted.some((u, j) => sorted.slice(0, j).some((w) => w.mode === "mut" || u.mode === "mut")))
+        groups.push(sorted.map((u) => ({ arg: u.arg, mut: u.mode === "mut", name: u.sliceName! })));
+    }
+    if (groups.length) sliceGroups.set(e, groups);
     this.active.length = mark;
     this.callMark = outerMark;
     const recv = callee.kind === K.PropertyAccessExpression ? exprTypes.get((callee as ts.PropertyAccessExpression).expression) : undefined;

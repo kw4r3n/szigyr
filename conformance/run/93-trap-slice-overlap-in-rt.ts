@@ -1,0 +1,21 @@
+// expect-trap: T013 @ 13:29
+// stage: 2
+// open-question: Q190
+function copyFrom(src: Ref<Slice<f32>>, dst: Mut<Slice<f32>>): void {
+  "use rt";
+  for (let i: usize = 0; i < dst.length; i += 1) {
+    dst[i] = src[i];
+  }
+}
+
+function g(s: Mut<Slice<f32>>): void {
+  "use rt";
+  copyFrom(s.slice(1, 3), s.slice(2, 4));
+}
+
+export function main(sys: System): void {
+  const v = Vec.create<f32>(sys.alloc, 4);
+  v.push(0); v.push(1); v.push(2); v.push(3);
+  g(v);
+  sys.log.info("unreached");
+}

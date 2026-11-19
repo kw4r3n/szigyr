@@ -88,6 +88,27 @@ export class Slice<T = unknown> {
       trap("T002", `slice ${start}..${end} out of range (length ${this.length})`, pos);
     return new Slice(this.buf, this.off + start, end - start, this.cod, this.owner);
   }
+  /** Q190 (b): same underlying Vec (or, failing that, same buffer) and overlapping element ranges; a zero-length range overlaps nothing. Element ranges stand in for byte ranges: one root has one element size. */
+  overlaps(o: Slice<T>): boolean {
+    const a: object = this.owner ?? this.buf;
+    const b: object = o.owner ?? o.buf;
+    return a === b && Math.max(this.off, o.off) < Math.min(this.off + this.length, o.off + o.length);
+  }
+}
+
+/**
+ * Q190 (b): after every argument of a call has been evaluated, the same-root `slice` arguments of one call
+ * must not overlap when at least one of a pair is `Mut` (T013). Entries are in evaluation order; the trap
+ * position is the first entry that overlaps an earlier one.
+ */
+export function checkSlices(entries: readonly (readonly [Slice, boolean, Pos?])[]): void {
+  for (let j = 1; j < entries.length; j++) {
+    const [b, bm, bp] = entries[j]!;
+    for (let i = 0; i < j; i++) {
+      const [a, am] = entries[i]!;
+      if ((am || bm) && a.overlaps(b)) trap("T013", "overlapping slices passed to one call", bp);
+    }
+  }
 }
 
 export class Vec<T = unknown> {

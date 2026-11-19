@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 import { SyntaxKind as K, type Node, type ts } from "./parse.ts";
 import { callTArgs, exprTypes } from "./expr.ts";
+import { sliceGroups } from "./ownership.ts";
 import type { FnSym, Module, Program } from "./modules.ts";
 import { layout, elemDesc, type Lay } from "./layout.ts";
 import { AUTHORITIES, isCopy, isInt, isTaggedUnion, kindOf, nonNull, isNull, isBool, unref, show, subst, type Field, type NumName, type Type } from "./types.ts";
@@ -20,7 +21,7 @@ const RANGE: Record<string, [string, string]> = {
   u8: ["0LL", "255LL"], u16: ["0LL", "65535LL"], u32: ["0LL", "4294967295LL"], usize: ["0LL", "4294967295LL"],
 };
 const CNUM: Record<NumName, string> = { f64: "double", f32: "float", i8: "int8_t", i16: "int16_t", i32: "int32_t", u8: "uint8_t", u16: "uint16_t", u32: "uint32_t", usize: "uint32_t" };
-const TRAP: Record<string, number> = { T001: 1, T002: 2, T003: 3, T004: 4, T005: 5, T006: 6, T007: 7, T008: 8, T009: 9, T010: 10 };
+const TRAP: Record<string, number> = { T001: 1, T002: 2, T003: 3, T004: 4, T005: 5, T006: 6, T007: 7, T008: 8, T009: 9, T010: 10, T013: 13 };
 const numText = (n: ts.NumericLiteral): number => Number(n.text.replace(/_/g, ""));
 const isGen = (t: Type, n: string): boolean => t.k === "gen" && t.name === n;
 /** Structs, and the all-readonly Copy records strict / rt accepts as Copy Structs (Q043). */
@@ -867,6 +868,14 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         }
         return this.conv(this.ex(a), this.typeOf(a), pt);
       });
+      // Q190 (b): after every argument is evaluated, same-root slice arguments must not overlap when one is Mut (T013, sts_ovl).
+      for (const g of sliceGroups.get(e) ?? []) {
+        for (let j = 1; j < g.length; j++) for (let i = 0; i < j; i++) {
+          if (!g[i]!.mut && !g[j]!.mut) continue;
+          const z = layout(elemOf(unref(callee.params[g[j]!.arg]!)))!.z;
+          this.emit(`if (sts_ovl(${args[g[i]!.arg]}, ${args[g[j]!.arg]}, ${z})) sts_trap(13, ${this.pos(g[j]!.name)});`);
+        }
+      }
       this.emit(`if (++sts_depth > 10000 || STS_STACK_LOW()) sts_trap(6, ${this.pos(e.expression)});`);
       const ret = callee.ret;
       if (ret.k === "prim" && (ret.name === "void" || ret.name === "never")) { this.emit(`${callee.name}(${args.join(", ")}); sts_depth--;`); return stmt ? undefined : "0"; }

@@ -1,0 +1,26 @@
+// expect-output: 3 4
+// stage: 2
+// open-question: Q190
+type Pair = Struct<{ a: Vec<f32>; b: Vec<f32> }>;
+
+function copyV(dst: Mut<Vec<f32>>, src: Ref<Vec<f32>>): void {
+  "use owned";
+  for (let i: usize = 0; i < dst.length; i += 1) {
+    dst[i] = src[i];
+  }
+}
+
+function g(p: Mut<Pair>): void {
+  "use owned";
+  copyV(p.a, p.b);
+}
+
+export function main(sys: System): void {
+  const a = Vec.create<f32>(sys.alloc, 2);
+  a.push(1); a.push(2);
+  const b = Vec.create<f32>(sys.alloc, 2);
+  b.push(3); b.push(4);
+  const p: Pair = { a, b };
+  g(p);
+  sys.log.info(`${p.a[0]} ${p.a[1]}`);
+}

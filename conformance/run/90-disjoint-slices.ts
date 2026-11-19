@@ -1,0 +1,32 @@
+// expect-output: 2 3 2 3
+// expect-output: sum=10
+// stage: 2
+// open-question: Q190
+function copyInto(dst: Mut<Slice<f32>>, src: Ref<Slice<f32>>): void {
+  "use rt";
+  for (let i: usize = 0; i < dst.length; i += 1) {
+    dst[i] = src[i];
+  }
+}
+
+function sum(s: Ref<Slice<f32>>): f32 {
+  "use rt";
+  let acc: f32 = 0;
+  for (let i: usize = 0; i < s.length; i += 1) {
+    acc += s[i];
+  }
+  return acc;
+}
+
+function halves(v: Mut<Vec<f32>>): void {
+  "use rt";
+  copyInto(v.slice(0, 2), v.slice(2, 4));
+}
+
+export function main(sys: System): void {
+  const v = Vec.create<f32>(sys.alloc, 4);
+  v.push(0); v.push(1); v.push(2); v.push(3);
+  halves(v);
+  sys.log.info(`${v[0]} ${v[1]} ${v[2]} ${v[3]}`);
+  sys.log.info(`sum=${sum(v.slice(0, 4))}`);
+}
