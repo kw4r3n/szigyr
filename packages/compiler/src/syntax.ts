@@ -11,6 +11,7 @@ const BUILTIN_NAMES = new Set([
   "boolean", "string", "number", "f64", "f32", "i8", "i16", "i32", "u8", "u16", "u32", "usize", "null", "void", "unknown", "never",
   "Array", "ReadonlyArray", "Map", "Set", "Promise", "Result", "Struct", "Vec", "Slice", "Pool", "Handle", "Arena", "ArenaBuf", "Ref", "Mut", "OwnedCell",
   "System", "Alloc", "Fs", "Net", "Clock", "Random", "Log", "Js", "Ffi", "Spawn", "JsRef", "JsError", "CastError", "IoError", "Test",
+  "Ptr", "ConstPtr", "CType", "CHandle", "cfn",
   "wrapAdd", "wrapSub", "wrapMul", "divTrunc", "rem", "ok", "err", "panic", "cast", "requires", "ensures", "invariant", "test",
   "Math", "Number", "JSON", "String", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "TestAlloc", "DetMath",
 ]);
@@ -25,6 +26,8 @@ const RESERVED_WORDS = new Set(["implements", "interface", "let", "package", "pr
 /** Q123: member names with a special meaning on JS objects and classes. */
 const SPECIAL_MEMBERS = new Set(["__proto__", "constructor", "prototype", "then"]);
 const DIRECTIVES = new Set(["use owned", "use rt"]);
+/** §14.4: a modifier on strict / rt functions, never a layer of its own (E1009 when misplaced). */
+const UNSAFE_DIRECTIVE = "use unsafe";
 const CONTRACTS = new Set(["requires", "ensures", "invariant"]);
 /** Q054: annotation heads that make a module-level const mutable. */
 const MUTABLE_TYPES = new Set(["Array", "Map", "Set", "Vec", "Pool", "Arena"]);
@@ -39,7 +42,7 @@ const BINARY_OPS = new Set<K>([
 const PREFIX_OPS = new Set<K>([K.MinusToken, K.ExclamationToken, K.TildeToken]);
 
 /** Codes owned by phase P1 (Q003). */
-export const P1_CODE = /^(E1\d{3}|E5002|E6001|E6003|E7001)$/;
+export const P1_CODE = /^(E1\d{3}|E5002|E6001|E6003|E7001|E7002)$/;
 
 type FnKind = "function" | "method" | "other";
 
@@ -106,8 +109,13 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     if (topNames.has(id.text)) at("E1000", id, `declaration merging ('${id.text}' declared twice)`);
     topNames.add(id.text);
   };
+  /** The file-level layer directive, for functions that only add "use unsafe" (§14.4). */
+  let fileLayer: string | undefined;
+  /** `declare module "c:..."` blocks of this file, specifier -> declared C function names (§14.1). */
+  const cDeclares = new Map<string, Set<string>>();
   const stmts = sf.statements;
-  for (let i = prologue(stmts, true); i < stmts.length; i++) {
+  for (const s0 of stmts) if (s0.kind === K.ModuleDeclaration) moduleDecl(s0 as ts.ModuleDeclaration); // §14.1: before imports resolve against it
+  for (let i = prologue(stmts, true, true); i < stmts.length; i++) {
     const s = stmts[i]!;
     switch (s.kind) {
       case K.ImportDeclaration: importDecl(s as ts.ImportDeclaration); break;
@@ -129,7 +137,10 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         for (const d of (s as ts.VariableStatement).declarationList.declarations) if (isId(d.name)) topName(d.name);
         varList((s as ts.VariableStatement).declarationList, "module");
         break;
+      case K.ModuleDeclaration: break; // handled above
       case K.ExpressionStatement: {
+        const x0 = (s as ts.ExpressionStatement).expression;
+        if (x0.kind === K.StringLiteral && (x0 as ts.StringLiteral).text === UNSAFE_DIRECTIVE) { at("E1009", x0, `'${UNSAFE_DIRECTIVE}' at module level`); break; }
         const c = calleeName(s);
         if (c?.name === "test") allowedCalls.add(c.call);
         else { e1000(s, "this statement at module level"); break; }
@@ -141,16 +152,63 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
   }
   return out;
 
-  /** Leading string-literal statements (directives, Q039). Returns the index of the first other statement. */
-  function prologue(list: ts.NodeArray<ts.Statement>, allowDirective: boolean): number {
+  /** Leading string-literal statements (directives, Q039). Returns the index of the first other statement.
+   * §14.4: "use unsafe" may accompany the layer directive in either order; anywhere else it is E1009. */
+  function prologue(list: ts.NodeArray<ts.Statement>, allowDirective: boolean, isModule = false): number {
+    const lits: ts.StringLiteral[] = [];
     let i = 0;
     for (; i < list.length; i++) {
       const s = list[i]!;
       if (s.kind !== K.ExpressionStatement || (s as ts.ExpressionStatement).expression.kind !== K.StringLiteral) break;
-      const lit = (s as ts.ExpressionStatement).expression as ts.StringLiteral;
-      if (!(i === 0 && allowDirective && DIRECTIVES.has(lit.text))) e1000(lit, `directive '${lit.text}' here`);
+      lits.push((s as ts.ExpressionStatement).expression as ts.StringLiteral);
     }
+    let layerAt = -1;
+    if (allowDirective && lits[0] && DIRECTIVES.has(lits[0].text)) layerAt = 0;
+    else if (allowDirective && lits[0]?.text === UNSAFE_DIRECTIVE && lits[1] && DIRECTIVES.has(lits[1].text)) layerAt = 1;
+    const layer = layerAt >= 0 ? lits[layerAt]!.text : undefined;
+    if (isModule) fileLayer = layer;
+    let unsafeSeen = false;
+    lits.forEach((lit, j) => {
+      if (DIRECTIVES.has(lit.text)) {
+        if (j !== layerAt) e1000(lit, `directive '${lit.text}' here`);
+      } else if (lit.text === UNSAFE_DIRECTIVE) {
+        if (isModule || !allowDirective || unsafeSeen || (layer ?? fileLayer) === undefined) {
+          at("E1009", lit, `'${UNSAFE_DIRECTIVE}' is only allowed once, in a strict or rt function`);
+        }
+        unsafeSeen = true;
+      } else e1000(lit, `directive '${lit.text}' here`);
+    });
     return i;
+  }
+
+  /** §14.1: a `c:` specifier is `c:` + two non-empty parts without space, `:`, `<`, `>`, `"` or `\\`. */
+  function cSpecifierOk(text: string): boolean {
+    if (!text.startsWith("c:")) return false;
+    const parts = text.slice(2).split(":");
+    return parts.length === 2 && parts.every((q) => q.length > 0 && !/[ :<>"\\]/.test(q));
+  }
+  function moduleDecl(d: ts.ModuleDeclaration): void {
+    mods(d, [K.DeclareKeyword]);
+    if (d.name.kind !== K.StringLiteral) { e1000(d.name, "this module name"); return; }
+    const spec = (d.name as ts.StringLiteral).text;
+    if (!spec.startsWith("c:")) { e1000(d, "this module declaration"); return; }
+    if (!cSpecifierOk(spec)) at("E7002", d.name, "a 'c:' specifier is 'c:<package>:<header>'");
+    else if (cDeclares.has(spec)) at("E7002", d.name, `duplicate 'declare module' for '${spec}'`);
+    if (!d.body || d.body.kind !== K.ModuleBlock) { at("E7002", d.name, "'declare module' needs a body of function declarations"); return; }
+    const names = cDeclares.get(spec) ?? new Set<string>();
+    if (!cDeclares.has(spec)) cDeclares.set(spec, names);
+    for (const st of (d.body as ts.ModuleBlock).statements) {
+      if (st.kind !== K.FunctionDeclaration) { e1000(st, "only function declarations in a 'c:' module"); continue; }
+      const f = st as ts.FunctionDeclaration;
+      mods(f, []);
+      if (!f.name) { e1000(f, "a C function without a name"); continue; }
+      if (names.has(f.name.text)) at("E1000", f.name, `declaration merging ('${f.name.text}' declared twice)`);
+      names.add(f.name.text);
+      if (f.typeParameters?.length) at("E1000", f.typeParameters[0]!, "type parameters on a C function");
+      if (f.body) e1000(f, "a C function declaration has no body");
+      params(f.parameters);
+      if (f.type) type(f.type);
+    }
   }
 
   function specifierOk(text: string): boolean {
@@ -164,6 +222,18 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     if (!ic || ic.phaseModifier || ic.name || nb?.kind !== K.NamedImports || d.attributes ||
         (nb as ts.NamedImports).elements.some((e) => e.isTypeOnly || (e.propertyName && !(isId(e.propertyName) && e.propertyName.text !== "default")))) {
       at("E7001", d, "only 'import { a, b as c } from \"...\"' is allowed");
+      return;
+    }
+    if (d.moduleSpecifier.kind === K.StringLiteral && (d.moduleSpecifier as ts.StringLiteral).text.startsWith("c:")) {
+      const spec = (d.moduleSpecifier as ts.StringLiteral).text;
+      if (!cSpecifierOk(spec)) { at("E7002", d.moduleSpecifier, "a 'c:' specifier is 'c:<package>:<header>'"); return; }
+      const declared = cDeclares.get(spec);
+      if (!declared) { at("E7002", d.moduleSpecifier, `no 'declare module "${spec}"' in this file`); return; }
+      for (const e of (nb as ts.NamedImports).elements) {
+        const orig = e.propertyName?.text ?? e.name.text;
+        if (!declared.has(orig)) at("E7002", e.propertyName ?? e.name, `'${orig}' is not declared in '${spec}'`);
+        declName(e.name); topName(e.name);
+      }
       return;
     }
     if (d.moduleSpecifier.kind !== K.StringLiteral || !specifierOk((d.moduleSpecifier as ts.StringLiteral).text)) {
@@ -419,7 +489,11 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       case K.VariableStatement: mods(s, []); varList((s as ts.VariableStatement).declarationList, "local"); return;
       case K.ExpressionStatement: {
         const x = (s as ts.ExpressionStatement).expression;
-        if (x.kind === K.StringLiteral) { e1000(x, "a string statement after the directive prologue"); return; } // Q176: a misplaced directive is not silently ignored
+        if (x.kind === K.StringLiteral) {
+          if ((x as ts.StringLiteral).text === UNSAFE_DIRECTIVE) at("E1009", x, `'${UNSAFE_DIRECTIVE}' is only allowed as a directive of a strict or rt function`);
+          else e1000(x, "a string statement after the directive prologue"); // Q176: a misplaced directive is not silently ignored
+          return;
+        }
         unusedIncs.add(x); expr(x); return;
       }
       case K.IfStatement: {
