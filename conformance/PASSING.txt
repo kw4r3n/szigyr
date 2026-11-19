@@ -223,6 +223,7 @@ reject/E2002-narrow-readonly-field-in-constructor.ts
 reject/E2002-narrow-switch-fallthrough.ts
 reject/E2002-narrow-tag-written-through-union.ts
 reject/E2002-narrow-while-break.ts
+reject/E2002-narrowing-captured-assigned-shadowed.ts
 reject/E2002-new-map-key-record.ts
 reject/E2002-nullable-return-without-narrowing.ts
 reject/E2002-promise-all-not-awaited.ts

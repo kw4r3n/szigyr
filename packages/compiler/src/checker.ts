@@ -50,8 +50,8 @@ export class Checker {
   narrow = new Map<string, Type>();
   /** Q122: every local id whose narrowings were dropped, in order. A mark is an index into it. */
   kills: string[] = [];
-  /** Q122: per function node, the names of its locals that are captured by a nested function and assigned. */
-  unstable = new Map<Node, Set<string>>();
+  /** Q122: declaring identifier nodes of locals / parameters that a nested function refers to and that some code assigns. */
+  unstable = new Set<Node>();
   fx!: FnCtx;
   /** The module-level function being checked. */
   fn: FnSym | undefined;
@@ -89,7 +89,7 @@ export class Checker {
   // ---- symbols
   declare(name: ts.Identifier, type: Type, opts: { mutable?: boolean; param?: boolean; declared?: Type } = {}): LocalSym {
     const sym: LocalSym = { k: "local", id: ++localId, name: name.text, type, declared: opts.declared ?? type, mutable: !!opts.mutable, param: !!opts.param, fnDepth: this.fx.depth };
-    if (this.fx.node && this.unstable.get(this.fx.node)?.has(name.text)) sym.unstable = true;
+    if (this.unstable.has(name)) sym.unstable = true;
     this.scope.vars.set(name.text, sym);
     localOf.set(name, sym);
     return sym;
@@ -1006,44 +1006,73 @@ export function mutable(t: Type): boolean {
 }
 
 const FN_KINDS = new Set<K>([K.FunctionDeclaration, K.MethodDeclaration, K.Constructor, K.ArrowFunction, K.FunctionExpression]);
+interface LexScope { parent?: LexScope; fn?: Node; vars: Map<string, { id: ts.Identifier; fn: Node }> }
 /**
- * Q122: per function-like node, the names of its own locals (parameters included) that a nested function refers to
- * and that some code assigns after the declaration. Name-based within a function (shadowing in inner blocks only adds names).
+ * Q122: declaring identifier nodes of locals (parameters included) that a nested function refers to
+ * and that some code assigns. Lexical-scope-aware across blocks, loops, and functions.
  */
-export function capturedAssigned(root: Node): Map<Node, Set<string>> {
-  const decls = new Map<Node, Set<string>>();
-  const collect = (n: Node, f: Node | undefined): void => {
+export function capturedAssigned(root: Node): Set<Node> {
+  const captured = new Set<Node>(), assigned = new Set<Node>();
+  const bind = (n: ts.BindingName | undefined, sc: LexScope): void => {
+    if (!n || !sc.fn) return;
+    if (isId(n)) { sc.vars.set(n.text, { id: n, fn: sc.fn }); return; }
+    if (n.kind === K.ObjectBindingPattern) for (const el of (n as ts.ObjectBindingPattern).elements) bind(el.name, sc);
+  };
+  const lookup = (name: string, sc: LexScope | undefined): { id: ts.Identifier; fn: Node } | undefined => {
+    for (let s = sc; s; s = s.parent) { const v = s.vars.get(name); if (v) return v; }
+    return undefined;
+  };
+  const child = (sc: LexScope | undefined): LexScope => ({ parent: sc, fn: sc?.fn, vars: new Map() });
+  const walk = (n: Node | undefined, sc: LexScope | undefined): void => {
+    if (!n) return;
     if (FN_KINDS.has(n.kind)) {
-      f = n;
-      decls.set(n, new Set((n as ts.FunctionLikeDeclaration).parameters.flatMap((p) => (isId(p.name) ? [p.name.text] : []))));
-    } else if (f && (n.kind === K.VariableDeclaration || n.kind === K.BindingElement) && isId((n as ts.VariableDeclaration).name)) {
-      decls.get(f)!.add(((n as ts.VariableDeclaration).name as ts.Identifier).text);
+      const f = n as ts.FunctionLikeDeclaration, next: LexScope = { parent: sc, fn: n, vars: new Map() };
+      for (const p of f.parameters) bind(p.name, next);
+      walk(f.body, next);
+      return;
     }
-    n.forEachChild((ch) => collect(ch, f));
-  };
-  collect(root, undefined);
-  const captured = new Map<Node, Set<string>>(), assigned = new Map<Node, Set<string>>();
-  const note = (m: Map<Node, Set<string>>, f: Node, name: string): void => { let s = m.get(f); if (!s) m.set(f, s = new Set()); s.add(name); };
-  const owner = (name: string, stack: Node[]): number => { let i = stack.length - 1; while (i >= 0 && !decls.get(stack[i]!)!.has(name)) i--; return i; };
-  const walk = (n: Node, stack: Node[]): void => {
-    if (FN_KINDS.has(n.kind)) stack = [...stack, n];
-    else if (n.kind === K.Identifier) {
-      const i = owner((n as ts.Identifier).text, stack);
-      if (i >= 0 && i < stack.length - 1) note(captured, stack[i]!, (n as ts.Identifier).text);
-    } else if (n.kind === K.PropertyAccessExpression) { walk((n as ts.PropertyAccessExpression).expression, stack); return; }
-    else if (n.kind === K.BinaryExpression && isAssignOp((n as ts.BinaryExpression).operatorToken.kind)) {
-      const l = assignTarget((n as ts.BinaryExpression).left);
-      const i = isId(l) ? owner(l.text, stack) : -1;
-      if (i >= 0) note(assigned, stack[i]!, (l as ts.Identifier).text);
+    switch (n.kind) {
+      case K.Block: { const next = child(sc); n.forEachChild((ch) => walk(ch, next)); return; }
+      case K.ForStatement: {
+        const x = n as ts.ForStatement, next = child(sc);
+        walk(x.initializer, next); walk(x.condition, next); walk(x.incrementor, next); walk(x.statement, next);
+        return;
+      }
+      case K.ForOfStatement: {
+        const x = n as ts.ForOfStatement, next = child(sc);
+        walk(x.expression, sc); walk(x.initializer, next); walk(x.statement, next);
+        return;
+      }
+      case K.SwitchStatement: {
+        const x = n as ts.SwitchStatement;
+        walk(x.expression, sc); walk(x.caseBlock, child(sc));
+        return;
+      }
+      case K.VariableDeclaration: {
+        const d = n as ts.VariableDeclaration;
+        walk(d.initializer, sc);
+        if (sc) bind(d.name, sc);
+        return;
+      }
+      case K.PropertyAccessExpression: walk((n as ts.PropertyAccessExpression).expression, sc); return;
+      case K.PropertyAssignment: walk((n as ts.PropertyAssignment).initializer, sc); return;
+      case K.TypeReference: return;
+      case K.BinaryExpression: {
+        const b = n as ts.BinaryExpression;
+        if (isAssignOp(b.operatorToken.kind)) {
+          const l = assignTarget(b.left);
+          if (isId(l)) { const bnd = lookup(l.text, sc); if (bnd) assigned.add(bnd.id); }
+        }
+        break;
+      }
+      case K.Identifier: {
+        const bnd = lookup((n as ts.Identifier).text, sc);
+        if (bnd && bnd.fn !== sc?.fn) captured.add(bnd.id);
+        return;
+      }
     }
-    n.forEachChild((ch) => walk(ch, stack));
+    n.forEachChild((ch) => walk(ch, sc));
   };
-  walk(root, []);
-  const out = new Map<Node, Set<string>>();
-  for (const [f, names] of captured) {
-    const a = assigned.get(f);
-    const both = [...names].filter((x) => a?.has(x));
-    if (both.length) out.set(f, new Set(both));
-  }
-  return out;
+  walk(root, undefined);
+  return new Set([...captured].filter((id) => assigned.has(id)));
 }
