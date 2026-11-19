@@ -104,7 +104,7 @@ STS は仮称。この文書が言語の唯一の規範である。
 
 - 数値型、`boolean`。
 - **`Struct<{ ... }>`**: 値型。`type V3 = Struct<{ readonly x: f32; readonly y: f32; readonly z: f32 }>`。
-  - フィールドの型は、数値型、`boolean`、他の `Struct`、`Vec<T>`、`RingTx<T>`、`RingRx<T>`（§15.1）、`CHandle<T>`（§14.5）。
+  - フィールドの型は、数値型、`boolean`、他の `Struct`、`Vec<T>`、`Pool<T>`、`Handle<T>`、`RingTx<T>`、`RingRx<T>`（§15.1）、`CHandle<T>`（§14.5）。
   - 値はオブジェクトリテラルで作る（型注釈のある文脈で）。
   - **Copy の判定**: 全フィールドが `readonly` で、かつ全フィールドの型が Copy なら、その Struct は Copy。それ以外は移動のみ（所有型）。数値型と `boolean` は Copy。
 - **`Vec<T>`**: 所有される可変長配列。`T` は Copy 型のみ（v0）。所有型。
@@ -124,6 +124,22 @@ STS は仮称。この文書が言語の唯一の規範である。
 - **`Slice<T>`**: `Vec<T>` の連続部分への借用ビュー。型としては `Ref<Slice<T>>` / `Mut<Slice<T>>` の形で、パラメータにだけ現れる。`s.length`、`s[i]`、`s.fill(x)`、`s.slice(a, b)` を使える。
   - `Vec<T>` の変数（または `Ref<Vec<T>>` / `Mut<Vec<T>>` のパラメータ）は、`Ref<Slice<T>>` / `Mut<Slice<T>>` のパラメータにそのまま渡せる。全体へのビューになる。
   - `v.slice(start, end)` は `start <= end <= v.length` でなければトラップ（T002）。
+- **`Pool<T>`**: 固定容量のプール（Q188 (a)）。所有型。`T` は Copy 型のみ（条件と違反のコードは `Vec<T>` と同じ）。
+  - **`Handle<T>`**: プールの要素を指す Copy 型のハンドル。値は不透明で、メンバはない。ハンドルどうしの比較（`===` など）はできない。`Vec` の要素、Struct のフィールド、`T | null` に置ける。配置は §10.2。
+
+  | 操作 | 受け手の借用 | 確保 | 備考 |
+  | --- | --- | --- | --- |
+  | `Pool.create<T>(alloc: Alloc, capacity: usize): Pool<T>` | — | あり | 伸びない。容量は `capacity` で固定 |
+  | `p.insert(x: T): Handle<T> | null` | Mut | なし | 満杯なら `null` |
+  | `p.get(h: Handle<T>): T` | Ref | なし | 無効なハンドルは T011 |
+  | `p.set(h: Handle<T>, x: T): void` | Mut | なし | 無効なハンドルは T011 |
+  | `p.remove(h: Handle<T>): T` | Mut | なし | 取り除いた値を返す。無効なハンドルは T011 |
+  | `p.has(h: Handle<T>): boolean` | Ref | なし | トラップしない |
+  | `p.length` | Ref | なし | `usize` |
+  | `p.capacity` | Ref | なし | `usize` |
+
+  - 無効なハンドルとは、取り除いた後のもの、別のプールのもの、範囲外のものをいう。`get` / `set` / `remove` が T011 でトラップし、位置はメンバ名である。
+  - 空きの枠は最初は添字の小さい順に使い、取り除いた枠は後入れ先出しで再利用する。プールとアリーナの番号は、ホスト（JS）の 1 つのカウンタで 1 から振る。世代は `u32` で、枠を再利用するたびに 1 増やし、桁あふれしたら 0 に戻る（Q188 の「決めた詳細」）。
 - **関数型パラメータ**: strict / rt の関数のパラメータの型にだけ、関数型 `(x: A) => R` を書ける（その関数型のパラメータの型としても書ける。戻り値の型には書けない）。それ以外の位置（戻り値、ローカル変数、フィールド、型引数）は E4003。
   - 実引数に書けるのは、モジュール直下（import を含む）のジェネリックでない strict / rt の関数の名前か、呼び出し元自身の同じ型の関数型パラメータだけ。ほかの式は E4003。型はパラメータと戻り値の型が完全に一致すること（不一致は E2002）。
   - 層: rt の関数の関数型パラメータには rt の関数だけ、strict の関数のパラメータには strict か rt の関数を渡せる。managed の関数は渡せない（違反は E4001）。managed から関数型パラメータを持つ strict / rt の関数を呼ぶときも、実引数は strict / rt の関数の名前に限る。
@@ -150,8 +166,8 @@ STS は仮称。この文書が言語の唯一の規範である。
 
 ### 5.1 用語
 
-- **Copy 型**: 数値型、`boolean`、Copy の Struct、Copy 型だけからなる union、`Ptr<T>`、`ConstPtr<T>`（§14.4）。代入や引数渡しで複製される（どちらも不変なので、複製か共有かは観測できない）。
-- **所有型**: 非 Copy の Struct、`Vec<T>`、`RingTx<T>`、`RingRx<T>`、`CHandle<T>`。ちょうど1つの束縛に所有される。
+- **Copy 型**: 数値型、`boolean`、Copy の Struct、Copy 型だけからなる union、`Handle<T>`、`Ptr<T>`、`ConstPtr<T>`（§14.4）。代入や引数渡しで複製される（どちらも不変なので、複製か共有かは観測できない）。
+- **所有型**: 非 Copy の Struct、`Vec<T>`、`Pool<T>`、`RingTx<T>`、`RingRx<T>`、`CHandle<T>`。ちょうど1つの束縛に所有される。
 
 ### 5.2 移動
 
@@ -219,7 +235,7 @@ strict の規則に加えて、次を禁止する。
 - rt 関数の間の再帰（直接・相互とも。E4005）。関数型パラメータを通る再帰も、実引数を解決した具体化ごとの呼び出しグラフで判定する（§3.3）。
 - `OwnedCell`。
 
-使えるのは、数値演算、Struct、借用した `Vec` / `Slice` の読み書き、他の rt 関数の呼び出し、リングの `push` / `pop`（§15.1）。
+使えるのは、数値演算、Struct、借用した `Vec` / `Slice` の読み書き、借用した `Pool` の `insert` / `get` / `set` / `remove` / `has` / `length` / `capacity`（確保なし。`Pool.create` は確保ありなので使えない）、他の rt 関数の呼び出し、リングの `push` / `pop`（§15.1）。
 
 rt かつ unsafe の関数は、権限なしで C の関数を呼べる（§14.3）。unsafe の操作（§14.4）のうち、`Ptr` と `ConstPtr` のメンバ、`cfn`、`CHandle.create` と `get` も使える。`Ptr.box` と `unbox` は確保ありとして扱う（E4004）。
 
@@ -302,6 +318,7 @@ rt かつ unsafe の関数は、権限なしで C の関数を呼べる（§14.3
   | T008 | `OwnedCell` の誤用 |
   | T009 | シフト量が範囲外 |
   | T010 | `invariant` の違反 |
+| T011 | `Pool` のハンドルが無効（取り除いた後、別のプールのもの、範囲外） |
 | T013 | 1 つの呼び出しで、同じ根の `slice` の範囲が重なった（§5.5） |
 
 - 段階 3 で予約したトラップ（未実装）: T014（`Ring.create` の容量が不正。§15.1）、T015（null の `Ptr` の読み書き。§14.4）。外部のスレッドのトラップは §15.4。
@@ -349,6 +366,7 @@ rt かつ unsafe の関数は、権限なしで C の関数を呼べる（§14.3
    - Struct: プレーンなオブジェクト。
    - `Vec<数値型>`: 対応する TypedArray を包んだもの。それ以外の `Vec`（要素は Copy 型）: §10.2 の固定のバイト配置で要素を並べた `Uint8Array` を包んだもの。C 側とはコピーせずにメモリを共有する。
    - `Slice`: 同じバッファへのビュー。
+   - `Pool<T>`: 要素の型つき配列（または §10.2 の配置のバイト列）と世代の `Uint32Array` を包んだもの。容量は固定で伸びない。`Handle<T>`: プールの番号、世代、添字の 3 つの `u32` を持つプレーンなオブジェクト。
    - 移動、借用、破棄: 何も生成しない（検査はコンパイル時に済んでいる）。
 10. `test(...)` はテスト実行時だけ残す。
 11. ソースマップを出す。トラップの位置はソース上の位置で報告する。
@@ -374,6 +392,7 @@ rt かつ unsafe の関数は、権限なしで C の関数を呼べる（§14.3
 - Struct とレコード（タグつき union のメンバ）: フィールドを `kind` を先頭に、残りを名前の UTF-16 の符号単位の順に並べる。各フィールドは自分の整列の倍数の位置に置き、間を詰め物で埋める。全体の整列はフィールドの整列の最大（フィールドがなければ 1）、大きさはそれの倍数に切り上げる。Struct のフィールドの Struct はその場に埋め込む。
 - タグつき union: 各メンバをレコードとして配置する。ただし `kind` は union の全メンバの `kind` の値を並べたときの添字にする（先頭の 4 バイトがタグになる）。大きさは最大のメンバの大きさを、整列はメンバの整列の最大をとる。
 - `T | null`: 1 バイトの有無（なしは 0、ありは 1）の後に、`T` の整列の位置に `T` を置く。なしのときの `T` の部分の中身は規定しない（観測できない）。
+- `Handle<T>`: `u32` の 3 つ（プールの番号、世代、添字）をこの順に並べた 12 バイト。整列は 4。
 - 詰め物と、使っていない部分のバイトは観測できない。
 - 要素の読み出しはそのバイト列から新しい値（Struct とレコードは新しいプレーンなオブジェクト）を作る。Copy 型の値は不変なので、同一性は観測できない。書き込みは `Vec` のバイト列に直接書く。
 
@@ -438,7 +457,7 @@ rt かつ unsafe の関数は、権限なしで C の関数を呼べる（§14.3
 
 ここにない大域名は E2000、ここにないメンバは E2001。追加が必要なら `docs/OPEN_QUESTIONS.md` に書く。
 
-- **型**: `boolean`、`string`、`number`、`f64`、`f32`、`i8`、`i16`、`i32`、`u8`、`u16`、`u32`、`usize`、`null`、`void`、`unknown`、`never`、`Array`、`ReadonlyArray`、`Map`、`Set`、`Promise`、`Result`、`Struct`、`Vec`、`Slice`、`Ref`、`Mut`、`OwnedCell`、§7.1 の権限型、`JsRef`、`JsError`、`CastError`、`IoError`、`Test`、`Ptr`、`ConstPtr`、`CType`、`CHandle`、`RingTx`、`RingRx`、`RingPair`、`Port`。
+- **型**: `boolean`、`string`、`number`、`f64`、`f32`、`i8`、`i16`、`i32`、`u8`、`u16`、`u32`、`usize`、`null`、`void`、`unknown`、`never`、`Array`、`ReadonlyArray`、`Map`、`Set`、`Promise`、`Result`、`Struct`、`Vec`、`Slice`、`Pool`、`Handle`、`Ref`、`Mut`、`OwnedCell`、§7.1 の権限型、`JsRef`、`JsError`、`CastError`、`IoError`、`Test`、`Ptr`、`ConstPtr`、`CType`、`CHandle`、`RingTx`、`RingRx`、`RingPair`、`Port`。
 - **関数**: 数値型と同名の変換関数、`wrapAdd`、`wrapSub`、`wrapMul`、`divTrunc`、`rem`、`ok`、`err`、`panic`、`cast`、`requires`、`ensures`、`invariant`、`test`、`cfn`（§14.6）。
 - **名前空間の関数**: `Ring.create`（§15.1）、`Ptr.box`（§14.4）、`CHandle.create`（§14.5）。
 - **`Math`**:
@@ -460,7 +479,7 @@ rt かつ unsafe の関数は、権限なしで C の関数を呼べる（§14.3
 
 - `i64`、`u64`、64 ビットの `usize`（未定）
 - `Vec` の非 Copy 要素、`FixedArray<T, N>`
-- アリーナ、プール、ハンドル、領域ブランドつきポインタ、`Rc` / `Weak`、`using` と破棄可能な資源（段階 2 の後半で提案）
+- アリーナ、領域ブランドつきポインタ、`Rc` / `Weak`、`using` と破棄可能な資源（段階 2 の後半で提案。プールとハンドルは §3.3 で導入済み）
 - strict / rt での実行時の関数値とコールバック（関数型パラメータによるコンパイル時の特殊化は §3.3 で導入済み）
 - strict / rt 用の数学関数ライブラリ（`sin`、`exp` など。段階 2）
 - STS からスレッドを起こす機能（作らない。Q201）
