@@ -393,11 +393,13 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     declName(d.name);
     typeParams(d.typeParameters);
     for (const h of d.heritageClauses ?? []) e1000(h, "'extends' on an interface");
+    const names = new Set<string>(); // Q223 (a): a method name once per interface
     for (const m of d.members) {
       if (m.kind !== K.MethodSignature) { e1000(m, "interface member other than a method signature"); continue; }
       const s = m as ts.MethodSignatureDeclaration;
       mods(s, []);
       memberName(s);
+      if (isId(s.name)) claim(names, s.name);
       typeParams(s.typeParameters);
       params(s.parameters);
       if (s.type) type(s.type);
@@ -634,21 +636,25 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         expr(x.expression); expr(x.argumentExpression);
         return;
       }
-      case K.ObjectLiteralExpression:
+      case K.ObjectLiteralExpression: {
+        const keys = new Set<string>(); // Q223 (a): a key once per literal (a spread may still be overridden)
         for (const p of (e as ts.ObjectLiteralExpression).properties) {
           if (p.kind === K.PropertyAssignment) {
             const pa = p as ts.PropertyAssignment;
             if (!isId(pa.name)) e1000(pa.name, "this property name");
             else if (pa.name.text === "__proto__") e1000(pa.name, "property name '__proto__'"); // Q123
+            else claim(keys, pa.name as ts.Identifier);
             expr(pa.initializer);
           } else if (p.kind === K.ShorthandPropertyAssignment) {
             const sp = p as ts.ShorthandPropertyAssignment;
+            claim(keys, sp.name as ts.Identifier);
             if (sp.objectAssignmentInitializer) e1000(sp, "shorthand initializer");
             expr(sp.name as ts.Identifier);
           } else if (p.kind === K.SpreadAssignment) expr((p as ts.SpreadAssignment).expression);
           else e1000(p, "this object literal member");
         }
         return;
+      }
       case K.ArrayLiteralExpression:
         for (const x of (e as ts.ArrayLiteralExpression).elements) {
           if (x.kind === K.SpreadElement) expr((x as ts.SpreadElement).expression);

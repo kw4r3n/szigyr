@@ -93,7 +93,7 @@ STS は仮称。この文書が言語の唯一の規範である。
 - **関数型**: `(a: A) => B`。managed のみ。引数は反変、戻り値は共変。
 - **戻り値と末尾**: 戻り値の型が `void` でない関数が末尾に到達しうるなら E2002（Q023）。戻り値の注釈のないアロー関数と関数式は、`return` の型から戻り値の型を推論する（Q126）。推論した型が `void` でなければ、同じく末尾に到達しうると E2002（Q221）。アンカーは関数名、アロー関数なら `=>`。
 - **class**: 継承なし（`extends` 禁止）。フィールドは型つきで宣言する。`private`、`readonly`、`static`、`implements` は可。getter / setter、省略可能メンバ、index signature、`abstract`、`#private` は禁止。メソッドは呼び出し位置でしか参照できない（`const f = obj.m` は禁止）。
-- **interface**: メソッドのシグネチャだけを持つ。class が `implements` で明示的に実装する。構造的な適合は認めない。`extends` は禁止。
+- **interface**: メソッドのシグネチャだけを持つ。class が `implements` で明示的に実装する。構造的な適合は認めない。`extends` は禁止。1 つの interface に同じ名前のメソッドを 2 つ書けない（E1000、Q223）。
 - **ジェネリクス**: 関数、`type`、`class`、`interface` に型引数を書ける。制約は `T extends I`（`I` は interface）だけ。既定の型引数は禁止。
 - **`unknown`**: 使うには `cast<T>(x): Result<T, CastError>` で実行時に検証する。`T` はプリミティブ、レコード、タグつき union、`Array`、`T | null` の組み合わせに限る。
 - **文字列**: JS の文字列そのまま（`length` は UTF-16 の符号単位数）。strict / rt 層に文字列型はない。
@@ -175,6 +175,7 @@ STS は仮称。この文書が言語の唯一の規範である。
 - `async` / `await` は managed のみ。
 - 分割代入は、レコードの `const { x, y } = p` だけ。
 - オブジェクトのスプレッド `{ ...a, x: 1 }` は、結果が注釈の型と正確に一致するとき可。配列のスプレッドは managed で可。
+- 1 つのオブジェクトリテラルに同じキーを 2 回書けない（短縮形 `{ a }` を含む。E1000、Q223）。スプレッドの元にあるキーを後のキーで上書きするのは可。
 - テンプレートリテラルは managed で可（タグつきは禁止）。
 - 禁止: `with`、`eval`、`delete`、`in`、`instanceof`、値の `typeof`、`void` 演算子、カンマ演算子、`arguments`、ジェネレータ、`new Function`、`Proxy`、`Reflect`、`Symbol`、`for...in`、`this` のクラス外での使用。
 
