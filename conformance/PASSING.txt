@@ -411,6 +411,9 @@ reject/E3005-same-field-twice.ts
 reject/E3005-slice-and-root-same-root.ts
 reject/E3005-slices-and-root-same-root.ts
 reject/E3006-arena-alloc-through-ref.ts
+reject/E3006-conditional-ref-index-write.ts
+reject/E3006-conditional-ref-push.ts
+reject/E3006-conditional-ref-slice-fill.ts
 reject/E3006-constptr-borrow-into-mut.ts
 reject/E3006-fill-through-ref-slice.ts
 reject/E3006-pool-insert-through-ref.ts

@@ -430,8 +430,19 @@ class Flow {
     if (root && this.active.some((x) => x.sym.id === root.sym.id && (!target || pathsOverlap(x.path, target.path)))) this.exclusive(l, root.sym); // Q170: a write under a borrow of the same place (Q190: a disjoint field is another place)
     if (root) this.active.push({ sym: root.sym, mode: "mut", node: root.id, base: true, path: root.path, slice: false }); // popped by the caller
     if (l.kind === K.ElementAccessExpression) this.ex((l as ts.ElementAccessExpression).argumentExpression, "read");
-    if (root && borrowMode(root.sym.declared) === "ref") this.m.at("E3006", l, `cannot write through the Ref '${root.sym.name}'`);
+    if (this.hasRef(obj)) this.m.at("E3006", l, root ? `cannot write through the Ref '${root.sym.name}'` : "cannot write through a Ref");
     return obj;
+  }
+
+  /** Whether `e0` may refer to a `Ref` parameter (through field paths, `slice`/`view`, or `?:`). */
+  private hasRef(e0: ts.Expression): boolean {
+    const e = strip(e0);
+    if (isId(e)) { const sym = localOf.get(e); return !!sym && borrowMode(sym.declared) === "ref"; }
+    if (e.kind === K.PropertyAccessExpression && !(e as ts.PropertyAccessExpression).questionDotToken) return this.hasRef((e as ts.PropertyAccessExpression).expression);
+    if (e.kind === K.ConditionalExpression) { const c = e as ts.ConditionalExpression; return this.hasRef(c.whenTrue) || this.hasRef(c.whenFalse); }
+    const sc = this.sliceCall(e);
+    if (sc) return this.hasRef(sc.expression);
+    return false;
   }
 
   // ---- places (§5.5): a local, a borrowed parameter, a field path of one, or `v.slice(a, b)` of one
@@ -498,6 +509,7 @@ class Flow {
     const r = this.placeOf(e);
     if (!r) {
       if (!member) this.m.at("E3008", strip(e), "a borrowed argument must be a variable, a field path or 'v.slice(a, b)'");
+      else if (mode === "mut" && this.hasRef(e)) this.m.at("E3006", member, "cannot mutate through a Ref");
       this.place(e); // a `slice` here is still in a borrowing position (Q013)
       return undefined;
     }
