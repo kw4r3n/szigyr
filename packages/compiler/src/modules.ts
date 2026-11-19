@@ -5,7 +5,7 @@ import type { Diagnostic } from "./diagnostics.ts";
 import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { RESERVED, builtinType, isGenName } from "./builtins.ts";
 import {
-  ERROR, GEN_ARITY, NULL, VOID, gen, assignable, bindTParams, demand, fn, isTaggedUnion, sendable, hasAuthority, kindOf, layerOk, movesLike, needOk, ownedDeep, CONTAINERS, newTParam, nonNull, record, result, show, subst, union,
+  ERROR, GEN_ARITY, NULL, VOID, gen, assignable, bindTParams, demand, fn, isTaggedUnion, sendable, hasAuthority, kindOf, layerOk, movesLike, needOk, holdsOwned, ownedDeep, CONTAINERS, newTParam, nonNull, record, result, show, subst, union,
   type ClassSym, type Field, type FnType, type IfaceSym, type TParam, type Type,
 } from "./types.ts";
 
@@ -504,7 +504,7 @@ export class Program {
         this.rep.at(e.mod, "E4002", argNodes![0]!, `${name}<T> needs a Copy element type, not '${show(args[0]!)}'`);
         return ERROR;
       }
-      const i = CONTAINERS.has(name) ? args.findIndex(movesLike) : -1;
+      const i = CONTAINERS.has(name) ? args.findIndex((a) => holdsOwned(a) && !ownedDeep(a)) : -1;
       if (i >= 0) this.rep.at(e.mod, "E3007", argNodes![i]!, `'${name}' cannot hold the owned type '${show(args[i]!)}' (Q174)`);
       return { k: "gen", name, args };
     }

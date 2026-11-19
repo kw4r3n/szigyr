@@ -7,7 +7,7 @@ import { BUILTIN_FUNCTIONS, GLOBAL_AUTHORITIES, NAMESPACES, RESERVED, genMember,
 import { isDeterministic } from "./determinism.ts";
 import {
   BOOL, ERROR, ERROR_RECORD, F64, NEVER, NULL, NUM_NAMES, STR, UNKNOWN, USIZE, VOID, assignable, bindTParams, boxable, field, fn, gen, hasPtr, hasRawPtr, hasTParam,
-  isBool, isCopy, isInt, isNull, isNum, isOwned, isStr, movesLike, ownedDeep, ptrTargetOk, isTaggedUnion, kindOf, literalFits, nonNull, nullable, num, opaque, result, resultParts,
+  isBool, isCopy, isInt, isNull, isNum, isOwned, isStr, movesLike, holdsOwned, ownedDeep, ptrTargetOk, isTaggedUnion, kindOf, literalFits, nonNull, nullable, num, opaque, result, resultParts,
   same, sendable, show, subst, unify, union, unref, castable, demand, layerOk, type FnType, type NumName, type Type,
 } from "./types.ts";
 
@@ -733,7 +733,7 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
       if (p.name.text === "recv" && recvGen === "Port") {
         const R = (unref(rt0!) as { args: Type[] }).args[1]!;
         // §15.2 / §5.6: with an owned R, whether the Promise may sit here is P3's E3007 to judge, not Q130's E2002
-        if (isOwned(R) || ownedDeep(R)) promiseOk.add(e);
+        if (holdsOwned(R) || ownedDeep(R)) promiseOk.add(e);
       }
       if ((m.managedOnly || m.layer === "managed") && !c.callAllowed("managed")) c.at("E4001", p.name, `'${p.name.text}' is managed-only`); // Q044
       if (m.sig.tcheck === "trap" && e.arguments[0]) trapCode(c, e.arguments[0]);

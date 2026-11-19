@@ -348,6 +348,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       }
     }
     const members = new Set<string>();
+    let hasCtor = false;
     for (const m of c.members) {
       if ((m.kind === K.PropertyDeclaration || m.kind === K.MethodDeclaration) && isId((m as ts.PropertyDeclaration).name)) claim(members, (m as ts.PropertyDeclaration).name as ts.Identifier);
       switch (m.kind) {
@@ -370,7 +371,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
           fn(md, "method");
           break;
         }
-        case K.Constructor: fn(m as ts.ConstructorDeclaration, "other"); break;
+        case K.Constructor: if (hasCtor) e1000(m, "duplicate constructor"); else { hasCtor = true; fn(m as ts.ConstructorDeclaration, "other"); } break;
         default: e1000(m, "this class member");
       }
     }

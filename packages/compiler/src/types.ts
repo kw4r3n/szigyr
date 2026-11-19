@@ -245,10 +245,13 @@ export const isOwned = (t: Type): boolean => (t.k === "gen" && (t.name === "Vec"
  * P3: values that move. Owned types, unions holding one, and strict / rt type parameters (Q049; managed ones never are, Q068 b)
  * unless their instantiations cannot be owned: an interface constraint (only classes implement one), or a `key` / `copy` / `eq` condition (Q153).
  */
+/** Q174: an owned value (directly, in a union, or in a record / Struct field). */
+export const holdsOwned = (t: Type): boolean =>
+  movesLike(t) || (t.k === "record" && t.fields.some((f) => holdsOwned(f.type))) || (t.k === "union" && t.members.some(holdsOwned));
 /** Q174 (案2): an Array / ReadonlyArray / Map / Set / Promise whose type arguments are, or hold, owned types (E3007). */
 export const CONTAINERS = new Set(["Array", "ReadonlyArray", "Map", "Set", "Promise"]);
 export const ownedInside = (t: Type | undefined): boolean =>
-  !!t && (t.k === "union" ? t.members.some(ownedInside) : t.k === "gen" && CONTAINERS.has(t.name) && t.args.some((a) => movesLike(a) || ownedInside(a)));
+  !!t && (t.k === "union" ? t.members.some(ownedInside) : t.k === "gen" && CONTAINERS.has(t.name) && t.args.some((a) => holdsOwned(a) || ownedInside(a)));
 
 /** Q174: a container holding owned values anywhere inside `t`, through record / union / generic / function types and class / interface members. */
 export function ownedDeep(t: Type, seen = new Set<object>()): boolean {
