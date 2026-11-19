@@ -1,0 +1,11 @@
+// expect: E3006 @ 10:8
+// stage: 3
+function fill(s: Mut<Slice<i32>>): void {
+  "use rt";
+  s.fill(9);
+}
+export function f(cp: ConstPtr<i32>): void {
+  "use owned";
+  "use unsafe";
+  fill(cp.slice(4).slice(0, 2));
+}

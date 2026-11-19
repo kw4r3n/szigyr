@@ -387,6 +387,7 @@ reject/E3004-borrow-type-as-record-field.ts
 reject/E3004-borrow-type-as-return-type.ts
 reject/E3004-borrow-type-as-type-argument.ts
 reject/E3004-mut-borrow-saved-in-local.ts
+reject/E3004-ptr-borrow-field-write.ts
 reject/E3004-ptr-slice-stored.ts
 reject/E3004-slice-bound-to-local.ts
 reject/E3004-slice-by-value-parameter.ts
@@ -418,6 +419,8 @@ reject/E3006-conditional-ref-index-write.ts
 reject/E3006-conditional-ref-push.ts
 reject/E3006-conditional-ref-slice-fill.ts
 reject/E3006-constptr-borrow-into-mut.ts
+reject/E3006-constptr-chained-slice-to-mut.ts
+reject/E3006-constptr-slice-index-write.ts
 reject/E3006-fill-through-ref-slice.ts
 reject/E3006-pool-insert-through-ref.ts
 reject/E3006-push-through-ref-receiver.ts

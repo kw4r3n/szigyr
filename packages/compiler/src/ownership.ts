@@ -432,24 +432,28 @@ class Flow {
     if (root && this.active.some((x) => x.sym.id === root.sym.id && (!target || pathsOverlap(x.path, target.path)))) this.exclusive(l, root.sym); // Q170: a write under a borrow of the same place (Q190: a disjoint field is another place)
     if (root) this.active.push({ sym: root.sym, mode: "mut", node: root.id, base: true, path: root.path, slice: false }); // popped by the caller
     if (l.kind === K.ElementAccessExpression) this.ex((l as ts.ElementAccessExpression).argumentExpression, "read");
-    if (this.hasRef(obj)) this.m.at("E3006", l, root ? `cannot write through the Ref '${root.sym.name}'` : "cannot write through a Ref");
+    if (this.isReadOnly(obj)) this.m.at("E3006", l, root ? `cannot write through the Ref '${root.sym.name}'` : "cannot write through a Ref or ConstPtr");
     return obj;
   }
 
-  /** Whether `e0` may refer to a `Ref` parameter (through field paths, `slice`/`view`, or `?:`). */
-  private hasRef(e0: ts.Expression): boolean {
+  /** Whether `e0` may refer to a `Ref` parameter or `ConstPtr` slice/borrow (through field paths, `slice`/`view`, or `?:`). */
+  private isReadOnly(e0: ts.Expression, allowBorrow = false): boolean {
     const e = strip(e0);
     if (isId(e)) { const sym = localOf.get(e); return !!sym && borrowMode(sym.declared) === "ref"; }
-    if (e.kind === K.PropertyAccessExpression && !(e as ts.PropertyAccessExpression).questionDotToken) return this.hasRef((e as ts.PropertyAccessExpression).expression);
-    if (e.kind === K.ConditionalExpression) { const c = e as ts.ConditionalExpression; return this.hasRef(c.whenTrue) || this.hasRef(c.whenFalse); }
+    if (e.kind === K.PropertyAccessExpression && !(e as ts.PropertyAccessExpression).questionDotToken) return this.isReadOnly((e as ts.PropertyAccessExpression).expression);
+    if (e.kind === K.ConditionalExpression) { const c = e as ts.ConditionalExpression; return this.isReadOnly(c.whenTrue, allowBorrow) || this.isReadOnly(c.whenFalse, allowBorrow); }
     const sc = this.sliceCall(e);
-    if (sc) return this.hasRef(sc.expression);
+    if (sc) return genName(exprTypes.get(sc.expression)) === "ConstPtr" || this.isReadOnly(sc.expression);
+    if (allowBorrow) {
+      const bc = this.borrowCall(e);
+      if (bc) return genName(exprTypes.get(bc.expression)) === "ConstPtr";
+    }
     return false;
   }
 
   // ---- places (§5.5): a local, a borrowed parameter, a field path of one, or `v.slice(a, b)` of one
   /** The place `e0` denotes (Q190): field paths are compared segment by segment; a `slice` keeps the outermost member name as its trap anchor. */
-  private placeOf(e0: ts.Expression, sliceName?: ts.Identifier): Place | undefined {
+  private placeOf(e0: ts.Expression, sliceName?: ts.Identifier, allowBorrow = false): Place | undefined {
     const e = strip(e0);
     if (isId(e)) { const sym = localOf.get(e); return sym && { sym, id: e, path: [], slice: false }; }
     if (e.kind === K.PropertyAccessExpression && !(e as ts.PropertyAccessExpression).questionDotToken) {
@@ -468,6 +472,13 @@ class Flow {
       const inner = this.placeOf(slice.expression, name);
       return inner && { ...inner, slice: true, sliceName: name };
     }
+    if (allowBorrow) {
+      const bc = this.borrowCall(e);
+      if (bc) { // §14.4: `p.borrow()` is a place only in a borrowed argument position
+        const root = this.ptrRoot(bc.expression);
+        return root && { ...root, slice: true, ptrSlice: true, sliceName: bc.name as ts.Identifier };
+      }
+    }
     return undefined;
   }
   /** The root of a Ptr place (§14.4): a local or parameter, or that under `.offset(...)` / `.cast()` calls. */
@@ -483,24 +494,35 @@ class Flow {
     }
     return undefined;
   }
-  /** A range-producing call's callee: `X.slice(a, b)` on a Vec / Slice (Q013), `a.view(b)` on an Arena (Q188 (b)). */
+  /** A range-producing call's callee: `X.slice(a, b)` on a Vec / Slice / Ptr / ConstPtr (Q013, §14.4), `a.view(b)` on an Arena (Q188 (b)). */
   private sliceCall(e: ts.Expression): ts.PropertyAccessExpression | undefined {
     if (e.kind !== K.CallExpression) return undefined;
     const p = (e as ts.CallExpression).expression;
     if (p.kind !== K.PropertyAccessExpression) return undefined;
     const g = genName(exprTypes.get((p as ts.PropertyAccessExpression).expression));
     if ((p as ts.PropertyAccessExpression).name.text === "slice") return g === "Vec" || g === "Slice" || g === "Ptr" || g === "ConstPtr" ? p as ts.PropertyAccessExpression : undefined;
-    if ((p as ts.PropertyAccessExpression).name.text === "borrow") return g === "Ptr" || g === "ConstPtr" ? p as ts.PropertyAccessExpression : undefined; // §14.4
     if ((p as ts.PropertyAccessExpression).name.text === "view") return g === "Arena" ? p as ts.PropertyAccessExpression : undefined;
     return undefined;
   }
+  /** `p.borrow()` on a `Ptr` / `ConstPtr` (§14.4). */
+  private borrowCall(e: ts.Expression): ts.PropertyAccessExpression | undefined {
+    if (e.kind !== K.CallExpression) return undefined;
+    const p = (e as ts.CallExpression).expression;
+    if (p.kind !== K.PropertyAccessExpression || (p as ts.PropertyAccessExpression).name.text !== "borrow") return undefined;
+    const g = genName(exprTypes.get((p as ts.PropertyAccessExpression).expression));
+    return g === "Ptr" || g === "ConstPtr" ? p as ts.PropertyAccessExpression : undefined;
+  }
   /** Walks a place in evaluation order: the root is used, `slice` bounds are read. */
-  private place(e0: ts.Expression): void {
+  private place(e0: ts.Expression, allowBorrow = false): void {
     const e = strip(e0);
     if (isId(e)) { this.ident(e, "read"); return; }
     if (e.kind === K.PropertyAccessExpression) { this.place((e as ts.PropertyAccessExpression).expression); return; }
     const s = this.sliceCall(e);
     if (s) { this.place(s.expression); for (const a of (e as ts.CallExpression).arguments) this.ex(a, "read"); return; }
+    if (allowBorrow) {
+      const bc = this.borrowCall(e);
+      if (bc) { this.place(bc.expression); return; }
+    }
     this.ex(e, "read");
   }
   /**
@@ -508,11 +530,11 @@ class Flow {
    * `Mut` of something reached through a `Ref`: E3006 at the argument, or at the member name for a receiver (Q050).
    */
   private borrow(e: ts.Expression, mode: "ref" | "mut", member?: ts.Identifier, arg = -1): Use | undefined {
-    const r = this.placeOf(e);
+    const r = this.placeOf(e, undefined, !member);
     if (!r) {
       if (!member) this.m.at("E3008", strip(e), "a borrowed argument must be a variable, a field path or 'v.slice(a, b)'");
-      else if (mode === "mut" && this.hasRef(e)) this.m.at("E3006", member, "cannot mutate through a Ref");
-      this.place(e); // a `slice` here is still in a borrowing position (Q013)
+      else if (mode === "mut" && this.isReadOnly(e)) this.m.at("E3006", member, "cannot mutate through a Ref");
+      this.place(e, !member); // a `slice` here is still in a borrowing position (Q013)
       return undefined;
     }
     const node = strip(e);
@@ -523,11 +545,10 @@ class Flow {
       && !(i >= this.callMark && x.slice && r.slice && !x.ptrSlice && !r.ptrSlice))) this.exclusive(node, r.sym);
     if (this.pendingMut.some((s) => s.id === r.sym.id)) this.exclusive(node, r.sym); // §14.4: an earlier `unbox` of this call
     this.active.push({ sym: r.sym, mode, node, base: false, path: r.path, slice: r.slice, ptrSlice: r.ptrSlice }); // popped by `call`; active while `slice` bounds are evaluated
-    this.place(e);
-    if (mode === "mut" && borrowMode(r.sym.declared) === "ref") this.m.at("E3006", member ?? strip(e), `'${r.sym.name}' is borrowed as Ref and cannot be passed as Mut`);
-    if (mode === "mut" && r.ptrSlice) { // §14.4: a ConstPtr slice stays a Ref borrow
-      const sc = this.sliceCall(strip(e));
-      if (sc && genName(exprTypes.get(sc.expression)) === "ConstPtr") this.m.at("E3006", member ?? strip(e), `a 'ConstPtr' ${sc.name.text} cannot be passed as Mut`);
+    this.place(e, !member);
+    if (mode === "mut") {
+      if (borrowMode(r.sym.declared) === "ref") this.m.at("E3006", member ?? strip(e), `'${r.sym.name}' is borrowed as Ref and cannot be passed as Mut`);
+      else if (this.isReadOnly(e, !member)) this.m.at("E3006", member ?? strip(e), "a 'ConstPtr' slice or borrow cannot be passed as Mut");
     }
     return { sym: r.sym, mode, node, path: r.path, slice: r.slice, arg, sliceName: r.sliceName, ptrSlice: r.ptrSlice };
   }
