@@ -770,7 +770,7 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
   }
   const ids = new Set(sig.tparams.map((p) => p.id));
   const m = new Map<number, Type>();
-  if (e.typeArguments) for (const t of e.typeArguments) c.walkTypePos(t, "typearg", { unsafe: c.fx.unsafe, cdecl: false }); // §14.4
+  if (e.typeArguments) for (const t of e.typeArguments) c.walkTypePos(t, sig.tcheck === "castptr" ? "ptrarg" : "typearg", { unsafe: c.fx.unsafe, cdecl: false }); // §14.4; Q219: a cast target is a pointee, so CType and Ptr may sit there as they may behind Ptr
   if (e.typeArguments) {
     if (e.typeArguments.length !== sig.tparams.length) { c.at("E2002", anchor, `expects ${sig.tparams.length} type argument(s)`); return ERROR; }
     sig.tparams.forEach((p, i) => m.set(p.id, c.typeOf(e.typeArguments![i]!, sig.tcheck === "castptr"))); // Q217: a cast target is a pointee, and a pointee may be void (§14.4)

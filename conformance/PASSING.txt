@@ -74,6 +74,7 @@ accept/72-constptr-borrow.ts
 accept/73-cfn-fn-ptr-local.ts
 accept/74-isolate-sendable-types.ts
 accept/75-isolate-spawn.ts
+accept/76-cast-to-ctype.ts
 reject/E1000-array-suffix-type.ts
 reject/E1000-await-in-non-async-arrow.ts
 reject/E1000-await-outside-async.ts
