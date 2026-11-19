@@ -405,3 +405,14 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - C: `sts_arena` は JS オブジェクトの `buf`（バイト列）を共有し、C 側で変わる `used` / `gen` だけを境界の出口で書き戻す（`sts_arena_sync`、`Pool` と同じ流儀）。ハンドルは `sts_abuf`（`u32` を4つ）。境界変換は `sts_arena_in` / `sts_abuf_in` / `sts_abuf_out`、生成はホストの `createArena` 経由。`view` の検査は `sts_arena_view` で、T012 の位置はメンバ名。T013 は既存の `sts_ovl` がバイト範囲で比べるため、ビューでもそのまま効く。
 - 仕様の小さな穴は Q214 と Q215 に記録し、既定案で実装した: Struct のフィールドに `Arena` を置ける（Q213 の `Pool` と同じ）、`bytes` 0 と `n` 0 は退化形として認める、`ArenaBuf` の比較は入れない（E2002）。型パラメータ要素のバイト計算は JS では公称 8 バイトで、C と食い違いうるため conformance では依存しない（Q215）。
 - ついでに直したもの: DIAGNOSTICS の実装済みトラップ表に T011 の行が無かった（Q188 (a) の移し漏れ）ので足した。
+
+## D117: DetMath の実装（Q191 (a)）
+
+- 検査器: `DetMath` を §12 の名前空間表に足した（10 関数、f64 のみ、全層から呼べる通常のメソッド。managedOnly ではない）。未知のメンバは E2001（メンバ名）、引数の型違いは E2002、名前 `DetMath` の再宣言は BUILTIN_NAMES に足して E1000。同梱モジュールの import は P1（checkSyntax）で E7001 にした: 指定子を解決したパスが同梱モジュールのパスと一致したら、モジュール指定子の位置に報告する。単一ファイルで判定できる形にしたのは、syntax.test.ts の「P1 の reject は checkSyntax だけでその診断を再現できる」という不変条件に合わせるため。
+- 読み込み: `loadProgram` が、プログラム中のどれかのファイルに `DetMath.<名前>` のプロパティアクセスがあれば、同梱モジュール（`packages/std/detmath.ts`）をプログラムに足す。利用者の import とは別経路で、§1 の import の形は変えていない。
+- 変換: JS では DetMath の呼び出しを `__sts_dm_<名前>` への呼び出しに書き換え、使う名前だけをモジュールの冒頭で同梱モジュールから隠れた名前で IMP する。C バックエンドでは DetMath の呼び出しを同梱モジュールの rt 関数への直接呼び出しにし、モジュール自体も通常どおり C にコンパイルされる。managed からの呼び出しは JS に変換した版を直接呼ぶので層の境界をまたがず、W8001 の対象にしない（名前空間の呼び出しは FnSym ではないため、境界警告とトラップ一覧の走査にも現れない）。
+- std モジュール: 全部で 53 関数、すべて `"use rt"`。トラップの一覧が空になるのは構成による（f64 の算術・比較・§10.1 の `Math`・モジュール内の呼び出しだけ。整数算術・数値変換・添字・再帰は無い）。`rtTrapSites` で全関数の空を単体テストに固定した。
+- 算法: fdlibm（FreeBSD msun）の移植で、著作権表示を std のソースに残した。sin / cos / tan の引数縮約は e_rem_pio2 の中規模（Cody–Waite 3段。npio2_hw の素早い検査は省き、常に y0 を計算して指数差で段を進める形にした。結果は等しい）と Payne–Hanek（prec 2）の切替で、境目は 1647101。Payne–Hanek の 2/π のビット列と作業配列は、strict に定数表が無いため、f64 定数の列（if の連鎖で引く）と、readonly フィールドだけの Struct（Copy になる）で置いた。指数の取り出しは比較と 2 の冪の正確な乗算で、2^k のスケーリングは 2 段階に分ける。log10、tanh の小さい側、pow は double-double（two-sum / two-product）で組み、pow は log2 を atanh 級数、exp2 を exp カーネルの dd 版で計算する。
+- 特別な値は ECMAScript の `Math.*` に従う。MPFR（IEEE 754 の pow）と食い違うのは pow(1, NaN) と pow(±1, ±∞) の 2 件だけで、どちらも ECMAScript 側（NaN）を正とした。神託スクリプト側でこの 2 件を期待値から外してある。
+- 精度の検証: 神託テストは通常の `pnpm test` に入れず、`scripts/detmath-oracle.ts` に分けた（関数ごとに乱択 10 万点と難しい値。神託は MPFR の 53 ビット最近接丸めで、`scripts/detmath-oracle.c` が引く）。libmpfr と libgmp はテスト専用の依存で、実行時の依存は足していない。結果は ROADMAP の証拠行に記録する（全関数で最大 1 ulp、1 ulp 超は 0 件、不一致 0 件、JS と C はビット一致）。V8 の `Math.*` との距離は参考として同じ表に出す（log10 で最大 2 ulp、tanh で最大 2 ulp が観測された）。
+- 仕様の小さな穴: 見つからなかった（新規の open-question は無い）。
