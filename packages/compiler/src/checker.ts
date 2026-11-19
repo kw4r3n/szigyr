@@ -1,9 +1,9 @@
 // P2 checker (D012): declarations, statements, control flow, narrowing. Expressions live in expr.ts.
 import { NodeFlags, SyntaxKind as K, type Node, type ts } from "./parse.ts";
 import { Program, legalUnion, type ClassValueSym, type FnSym, type Layer, type LocalSym, type Module, type ValueSym } from "./modules.ts";
-import { PROMISE_CONTAINERS, assignTarget, checkTo, exprTypes, hasPromise, cond, expr, isLitOnly, localOf, promiseOk } from "./expr.ts";
+import { PROMISE_CONTAINERS, assignTarget, checkTo, exprTypes, hasPromise, cond, expr, isLitOnly, localOf, promiseOk, type FnArgRef } from "./expr.ts";
 import {
-  ERROR, NEVER, NULL, STR, VOID, assignable, hasAuthority, layerOk, field, isErr, isNull, isTaggedUnion, kindOf, nonNull, same, show, subst, bindTParams, unref, union,
+  AUTHORITIES, ERROR, NEVER, NULL, STR, VOID, assignable, hasAuthority, layerOk, field, isErr, isNull, isTaggedUnion, kindOf, nonNull, same, show, subst, bindTParams, unref, union,
   type ClassSym, type FnType, type TParam, type Type,
 } from "./types.ts";
 
@@ -38,6 +38,9 @@ let localId = 0;
 const isId = (n: Node | undefined): n is ts.Identifier => n?.kind === K.Identifier;
 const hasMod = (n: Node, k: K): boolean => !!(n as Node & { modifiers?: ts.NodeArray<ts.ModifierLike> }).modifiers?.some((m) => m.kind === k);
 
+/** A call to a strict / rt function, or through a function-typed parameter (Q189 (b); see Checker.fnSites). */
+export interface FnSite { from: FnSym | undefined; callee: FnSym | number; refs: Map<number, FnArgRef>; node: Node; mod: Module }
+
 export class Checker {
   scope = new Scope();
   /** Untyped `let x = <numeric literal>` locals by id, for the E2003 fix (SPEC §11). */
@@ -48,9 +51,12 @@ export class Checker {
   /** Q122: per function node, the names of its locals that are captured by a nested function and assigned. */
   unstable = new Map<Node, Set<string>>();
   fx!: FnCtx;
-  /** The module-level function being checked, and the rt -> rt calls seen (E4005, Q046). */
+  /** The module-level function being checked. */
   fn: FnSym | undefined;
-  readonly rtCalls: { from: FnSym; to: FnSym; node: Node; mod: Module }[] = [];
+  /** Calls to strict / rt functions and through function-typed parameters, for E4005 per instantiation (Q046, Q189 (b)).
+   * `callee` is a module function, or the index of a function-typed parameter of `from`; `refs` resolves the
+   * callee's function-typed parameters (by their index) to module functions or parameters of `from`. */
+  readonly fnSites: FnSite[] = [];
 
   readonly prog: Program;
   constructor(prog: Program) { this.prog = prog; }
@@ -65,7 +71,7 @@ export class Checker {
   firstError: { node: Node; mod: Module } | undefined;
   run(): void {
     for (const mod of this.prog.mods) this.module(mod);
-    this.rtRecursion();
+    this.fnGraph();
     this.prog.checkInsts();
     // Fail closed: an error type without any diagnostic would accept anything (D050).
     if (this.firstError && this.prog.rep.out.length === 0) { // any diagnostic, signatures included
@@ -220,8 +226,17 @@ export class Checker {
     const d = f.decl;
     const kw = (d.modifiers ?? []).find((m) => m.kind === K.AsyncKeyword);
     if (kw) this.at("E4002", kw, `${f.layer} functions cannot be async`);
-    d.parameters.forEach((p, i) => { if (p.type) this.layerType(f.sig.params[i] ?? ERROR, p.type, f.layer); });
+    d.parameters.forEach((p, i) => { if (p.type) this.layerParamType(f.sig.params[i] ?? ERROR, p.type, f.layer); });
     if (d.type) this.layerType(f.sig.ret, d.type, f.layer);
+  }
+  /** Q189 (b): a function type may be written as the parameter type of a strict / rt function (and, recursively,
+   * as a parameter type inside one). Its return type is not a parameter position, so it goes through layerType. */
+  layerParamType(t: Type, node: Node, layer: Layer): void {
+    if (t.k !== "fn") { this.layerType(t, node, layer); return; }
+    if (layer === "rt" && hasAuthDeep(t)) this.at("E4006", node, "rt functions cannot take authorities");
+    const f = node.kind === K.FunctionType ? (node as ts.FunctionTypeNode) : undefined;
+    t.params.forEach((pt, i) => this.layerParamType(pt, f?.parameters[i]?.type ?? node, layer));
+    this.layerType(t.ret, f?.type ?? node, layer);
   }
   layerType(t: Type, node: Node, layer: Layer): void {
     if (layer === "rt" && hasAuthority(t)) this.at("E4006", node, "rt functions cannot take authorities");
@@ -229,16 +244,71 @@ export class Checker {
     else if (!layerOk(t)) this.at("E4002", node, `'${show(t)}' cannot be used in ${layer} code`);
   }
 
-  /** E4005 (Q046): an rt -> rt call whose callee can reach the caller again. */
-  private rtRecursion(): void {
-    const next = new Map<FnSym, FnSym[]>();
-    for (const e of this.rtCalls) next.set(e.from, [...next.get(e.from) ?? [], e.to]);
-    const reaches = (from: FnSym, to: FnSym): boolean => {
-      const seen = new Set<FnSym>(), todo = [from];
-      while (todo.length) { const f = todo.pop()!; if (f === to) return true; if (seen.has(f)) continue; seen.add(f); todo.push(...next.get(f) ?? []); }
+  /** E4005 (Q046, Q189 (b)): recursion among rt instantiations. An instantiation is a strict / rt function
+   * plus the concrete functions bound to its function-typed parameters; edges resolve function names and
+   * forwarded parameters through the caller's instantiation, so a cycle is judged on the calls that can
+   * actually happen. Functions without function-typed parameters are their own single instantiation. */
+  private fnGraph(): void {
+    interface Inst { f: FnSym; m: Map<number, FnSym> }
+    const fid = new Map<FnSym, number>(this.prog.fns.map((f, i) => [f, i]));
+    const fnParams = (f: FnSym): number[] => f.sig.params.flatMap((pt, i) => (unref(pt).k === "fn" ? [i] : []));
+    const key = (x: Inst): string => `${fid.get(x.f)}|${[...x.m].map(([i, g]) => `${i}:${fid.get(g)}`).join(",")}`;
+    const insts = new Map<string, Inst>();
+    const edges = new Map<string, { to: Inst; site: FnSite }[]>();
+    const queue: Inst[] = [];
+    const add = (f: FnSym, m: Map<number, FnSym>): Inst => {
+      const x: Inst = { f, m };
+      const k = key(x);
+      const got = insts.get(k);
+      if (got) return got;
+      insts.set(k, x); queue.push(x);
+      return x;
+    };
+    const resolve = (site: FnSite, cur: Inst | undefined): Inst | undefined => {
+      const callee = typeof site.callee === "number" ? cur?.m.get(site.callee) : site.callee;
+      if (!callee) return undefined;
+      const m = new Map<number, FnSym>();
+      for (const j of fnParams(callee)) {
+        const r = site.refs.get(j);
+        const g = r ? ("fn" in r ? r.fn : cur?.m.get(r.param)) : undefined;
+        if (!g) return undefined;
+        m.set(j, g);
+      }
+      return add(callee, m);
+    };
+    for (const f of this.prog.fns) if (f.layer !== "managed" && !fnParams(f).length) add(f, new Map());
+    for (const site of this.fnSites) if (!site.from || site.from.layer === "managed") resolve(site, undefined);
+    for (let q = queue.shift(); q; q = queue.shift()) {
+      const fromKey = key(q);
+      for (const site of this.fnSites) {
+        if (site.from !== q.f) continue;
+        const to = resolve(site, q);
+        if (!to) continue;
+        let list = edges.get(fromKey);
+        if (!list) edges.set(fromKey, list = []);
+        list.push({ to, site });
+      }
+    }
+    const reaches = (from: Inst, to: Inst): boolean => {
+      const target = key(to), seen = new Set<string>(), todo = [from];
+      while (todo.length) {
+        const x = todo.pop()!;
+        if (key(x) === target) return true;
+        if (seen.has(key(x))) continue;
+        seen.add(key(x));
+        for (const e of edges.get(key(x)) ?? []) todo.push(e.to);
+      }
       return false;
     };
-    for (const e of this.rtCalls) if (reaches(e.to, e.from)) this.prog.rep.at(e.mod, "E4005", e.node, `recursive call to '${e.to.name}' in rt code`);
+    const reported = new Set<Node>();
+    for (const [fromKey, es] of edges) {
+      const from = insts.get(fromKey)!;
+      if (from.f.layer !== "rt") continue;
+      for (const e of es) if (!reported.has(e.site.node) && reaches(e.to, from)) {
+        reported.add(e.site.node);
+        this.prog.rep.at(e.site.mod, "E4005", e.site.node, `recursive call to '${e.to.f.name}' in rt code`);
+      }
+    }
   }
 
   private ifaceMethods(_d: ts.InterfaceDeclaration): void { /* signatures were resolved in Program */ }
@@ -662,6 +732,17 @@ export class Checker {
 
 function isAssignOp(k: K): boolean {
   return k === K.EqualsToken || k === K.PlusEqualsToken || k === K.MinusEqualsToken || k === K.AsteriskEqualsToken || k === K.SlashEqualsToken || k === K.PercentEqualsToken || k === K.AsteriskAsteriskEqualsToken;
+}
+/** An authority anywhere in `t`, looking through function types too (E4006 for Q189 (b) parameter types). */
+function hasAuthDeep(t: Type): boolean {
+  switch (t.k) {
+    case "opaque": return (AUTHORITIES as readonly string[]).includes(t.name);
+    case "fn": return t.params.some(hasAuthDeep) || hasAuthDeep(t.ret);
+    case "record": return t.fields.some((f) => hasAuthDeep(f.type));
+    case "union": return t.members.some(hasAuthDeep);
+    case "gen": case "class": case "iface": return t.args.some(hasAuthDeep);
+    default: return false;
+  }
 }
 const isStringStmt = (s: ts.Statement): boolean => s.kind === K.ExpressionStatement && (s as ts.ExpressionStatement).expression.kind === K.StringLiteral;
 const isTrue = (e: ts.Expression): boolean => e.kind === K.TrueKeyword;
