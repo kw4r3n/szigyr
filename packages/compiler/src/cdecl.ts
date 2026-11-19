@@ -9,6 +9,29 @@ export function parseCSpec(spec: string): { pkg: string; header: string } | unde
   return m ? { pkg: m[1]!, header: m[2]! } : undefined;
 }
 
+/** Splits `pkg-config --cflags` / `--libs` output respecting shell quotes and backslash escapes. */
+export function splitFlags(s: string): string[] {
+  const out: string[] = [];
+  let cur = "", inArg = false, q: "'" | '"' | "" = "";
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]!;
+    if (q === "'") { if (ch === "'") q = ""; else cur += ch; continue; }
+    if (q === '"') {
+      if (ch === '"') q = "";
+      else if (ch === "\\" && i + 1 < s.length && /["\\$`\n]/.test(s[i + 1]!)) cur += s[++i]!;
+      else cur += ch;
+      continue;
+    }
+    if (/\s/.test(ch)) { if (inArg) { out.push(cur); cur = ""; inArg = false; } continue; }
+    inArg = true;
+    if (ch === "'" || ch === '"') q = ch;
+    else if (ch === "\\" && i + 1 < s.length) cur += s[++i]!;
+    else cur += ch;
+  }
+  if (inArg) out.push(cur);
+  return out;
+}
+
 const CINT: Record<NumName, string> = {
   i8: "int8_t", i16: "int16_t", i32: "int32_t", u8: "uint8_t", u16: "uint16_t", u32: "uint32_t",
   usize: "size_t", f32: "float", f64: "double",

@@ -8,7 +8,7 @@
 import { execFileSync } from "node:child_process";
 import { SyntaxKind as K, type ts } from "./parse.ts";
 import type { Module, Program, Reporter } from "./modules.ts";
-import { cTypeOf, parseCSpec } from "./cdecl.ts";
+import { cTypeOf, parseCSpec, splitFlags } from "./cdecl.ts";
 
 const pkgKnown = new Map<string, boolean>();
 const pkgFlags = new Map<string, string[]>();
@@ -17,7 +17,7 @@ const probeCache = new Map<string, boolean>();
 function pkgExists(pkg: string): boolean {
   let ok = pkgKnown.get(pkg);
   if (ok === undefined) {
-    try { execFileSync("pkg-config", ["--exists", pkg], { stdio: "ignore" }); ok = true; } catch { ok = false; }
+    try { execFileSync("pkg-config", ["--exists", "--", pkg], { stdio: "ignore" }); ok = true; } catch { ok = false; }
     pkgKnown.set(pkg, ok);
   }
   return ok;
@@ -26,7 +26,7 @@ function pkgExists(pkg: string): boolean {
 function cflagsOf(pkg: string): string[] {
   let flags = pkgFlags.get(pkg);
   if (flags === undefined) {
-    try { flags = execFileSync("pkg-config", ["--cflags", pkg], { encoding: "utf8" }).trim().split(/\s+/).filter(Boolean); }
+    try { flags = splitFlags(execFileSync("pkg-config", ["--cflags", "--", pkg], { encoding: "utf8" })); }
     catch { flags = []; }
     pkgFlags.set(pkg, flags);
   }
@@ -34,11 +34,12 @@ function cflagsOf(pkg: string): string[] {
 }
 
 function probe(source: string, cflags: string[]): boolean {
-  const key = `${cflags.join(" ")}\n${source}`;
+  const cc = process.env.CC || "cc";
+  const key = `${cc}\0${cflags.join("\0")}\0${source}`;
   let ok = probeCache.get(key);
   if (ok === undefined) {
     try {
-      execFileSync("cc", ["-std=gnu11", ...cflags, "-fsyntax-only", "-x", "c", "-"], { input: source, stdio: ["pipe", "ignore", "ignore"], timeout: 60_000 });
+      execFileSync(cc, ["-std=gnu11", ...cflags, "-fsyntax-only", "-x", "c", "-"], { input: source, stdio: ["pipe", "ignore", "ignore"], timeout: 60_000 });
       ok = true;
     } catch { ok = false; }
     probeCache.set(key, ok);
@@ -60,8 +61,11 @@ export function checkHeaders(prog: Program, rep: Reporter): void {
   for (const mod of prog.mods) {
     for (const [spec, fns] of mod.cdecls) {
       const cs = parseCSpec(spec);
-      if (!cs) continue;
       const at = specifierOf(mod, spec);
+      if (!cs) {
+        if (at) rep.at(mod, "E2009", at, `invalid 'c:' specifier '${spec}'`);
+        continue;
+      }
       if (!pkgExists(cs.pkg)) {
         if (at) rep.at(mod, "E2009", at, `pkg-config does not know the package '${cs.pkg}'`);
         continue;

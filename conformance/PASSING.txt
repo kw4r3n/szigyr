@@ -337,6 +337,7 @@ reject/E2008-u8-literal-256.ts
 reject/E2009-arg-count.ts
 reject/E2009-arg-type.ts
 reject/E2009-missing-header.ts
+reject/E2009-pkg-option-flag.ts
 reject/E2009-return-type.ts
 reject/E2009-unknown-c-type.ts
 reject/E2009-unknown-function.ts
@@ -608,6 +609,7 @@ reject/E7001-require.ts
 reject/E7002-duplicate-declare.ts
 reject/E7002-import-undeclared-name.ts
 reject/E7002-import-without-declare.ts
+reject/E7002-specifier-newline.ts
 reject/E7002-specifier-one-part.ts
 reject/E7002-specifier-three-parts.ts
 run/01-arith-basic.ts

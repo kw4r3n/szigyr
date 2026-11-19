@@ -190,11 +190,11 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     return i;
   }
 
-  /** §14.1: a `c:` specifier is `c:` + two non-empty parts without space, `:`, `<`, `>`, `"` or `\\`. */
+  /** §14.1 (Q224): a `c:` specifier is `c:` + two non-empty parts without whitespace, control chars, `:`, `<`, `>`, `"` or `\\`. */
   function cSpecifierOk(text: string): boolean {
     if (!text.startsWith("c:")) return false;
     const parts = text.slice(2).split(":");
-    return parts.length === 2 && parts.every((q) => q.length > 0 && !/[ :<>"\\]/.test(q));
+    return parts.length === 2 && parts.every((q) => q.length > 0 && !/[\s\x00-\x1f\x7f:<>"\\]/.test(q));
   }
   function moduleDecl(d: ts.ModuleDeclaration): void {
     mods(d, [K.DeclareKeyword]);

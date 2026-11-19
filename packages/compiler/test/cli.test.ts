@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
@@ -307,4 +307,64 @@ test("runs", (t: Test) => {
   expect(t.status).toBe(1);
   expect(jsonLines(t.stdout)[0]).toMatchObject({ code: "E4009" });
   expect(existsSync(join(cacheDir, `${CLI_NAME}-native`))).toBe(false);
+});
+
+it("C FFI honors quoted pkg-config flags with spaces, CC consistency/hash, empty XDG_CACHE_HOME, and tmp cleanup (#16)", () => {
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-cffi16-`));
+  const incDir = join(dir, "inc dir");
+  const pcDir = join(dir, "pc");
+  const cacheDir = join(dir, "cache");
+  const workDir = join(dir, "cwd");
+  mkdirSync(incDir, { recursive: true });
+  mkdirSync(pcDir, { recursive: true });
+  mkdirSync(workDir, { recursive: true });
+  writeFileSync(join(incDir, "sp.h"), "#include <stddef.h>\nstatic inline size_t sp_fn(size_t a) { return a + 41; }\n");
+  writeFileSync(join(pcDir, "sp.pc"), `Name: sp\nDescription: space path test\nVersion: 1.0\nCflags: -I"${incDir}"\nLibs:\n`);
+  const spTs = join(dir, "sp.ts");
+  writeFileSync(spTs, `declare module "c:sp:sp.h" {
+  function sp_fn(ffi: Ffi, a: usize): usize;
+}
+import { sp_fn } from "c:sp:sp.h";
+function go(ffi: Ffi): usize {
+  "use owned";
+  "use unsafe";
+  return sp_fn(ffi, 1);
+}
+export function main(sys: System): void {
+  sys.log.info(\`\${go(sys.ffi)}\`);
+}
+`);
+  // #16b: package name starting with '-' is not parsed as a pkg-config option
+  const optChk = sts("check", `${CONF}reject/E2009-pkg-option-flag.ts`);
+  expect(optChk.code).toBe(1);
+  expect(optChk.out).toContain("pkg-config does not know the package '--version'");
+
+  // #16c: quoted Cflags path with space succeeds in both check and C run
+  const spEnv = { ...process.env, PKG_CONFIG_PATH: pcDir, XDG_CACHE_HOME: cacheDir };
+  const chk = spawnSync("node", [CLI, "check", spTs], { encoding: "utf8", env: spEnv });
+  expect(chk.status, chk.stdout + chk.stderr).toBe(0);
+  const runSp = spawnSync("node", [CLI, "run", "--backend=c", spTs], { encoding: "utf8", env: spEnv });
+  expect(runSp.status, runSp.stderr).toBe(0);
+  expect(runSp.stdout.trim()).toBe("42");
+
+  // #16d: headercheck honors CC
+  const chkFalse = spawnSync("node", [CLI, "check", "--json", spTs], { encoding: "utf8", env: { ...spEnv, CC: "/bin/false" } });
+  expect(chkFalse.status).toBe(1);
+  expect(jsonLines(chkFalse.stdout)[0]).toMatchObject({ code: "E2009" });
+
+  // #16e & #16g: native cache hash includes CC, and failed build removes *.tmp* files
+  const simpleTs = join(dir, "simple.ts");
+  writeFileSync(simpleTs, `function inc(x: i32): i32 { "use owned"; return x + 1; }\nexport function main(sys: System): void { sys.log.info(\`\${inc(1)}\`); }\n`);
+  const okRun = spawnSync("node", [CLI, "run", "--backend=c", simpleTs], { encoding: "utf8", env: { ...process.env, XDG_CACHE_HOME: cacheDir } });
+  expect(okRun.status).toBe(0);
+  expect(okRun.stdout.trim()).toBe("2");
+  const badCcRun = spawnSync("node", [CLI, "run", "--backend=c", simpleTs], { encoding: "utf8", env: { ...process.env, XDG_CACHE_HOME: cacheDir, CC: "/bin/false" } });
+  expect(badCcRun.status).toBe(2);
+  const nativeDir = join(cacheDir, `${CLI_NAME}-native`);
+  expect(readdirSync(nativeDir).filter((n) => n.includes(".tmp"))).toEqual([]);
+
+  // #16f: empty XDG_CACHE_HOME does not create sts-native in CWD
+  const emptyXdg = spawnSync("node", [CLI, "run", "--backend=c", simpleTs], { encoding: "utf8", cwd: workDir, env: { ...process.env, XDG_CACHE_HOME: "" } });
+  expect(emptyXdg.status).toBe(0);
+  expect(existsSync(join(workDir, `${CLI_NAME}-native`))).toBe(false);
 });
