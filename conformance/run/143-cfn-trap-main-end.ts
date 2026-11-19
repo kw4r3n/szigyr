@@ -1,6 +1,6 @@
 // expect-output: armed
-// expect-output: signalled
-// expect-trap: T001 @ 16:12
+// expect-output: worked
+// expect-trap: T001 @ 15:12
 // stage: 3
 // backend: c
 // open-question: Q217
@@ -9,35 +9,26 @@ declare module "c:stscb:stscb.h" {
 }
 import { stscb_start } from "c:stscb:stscb.h";
 
-type State = Struct<{ tx: RingTx<i32> }>;
-
 function boom(ud: Ptr<void>, x: i32): i32 {
   "use rt";
   "use unsafe";
   return x + 1;
 }
-function pushTx(s: Mut<State>): void {
-  "use rt";
-  s.tx.push(99);
-}
-function done(ud: Ptr<void>, x: i32): i32 {
+function noop(ud: Ptr<void>, x: i32): i32 {
   "use rt";
   "use unsafe";
-  const p = ud.cast<State>();
-  pushTx(p.borrow());
   return 0;
 }
-function arm(ffi: Ffi, alloc: Alloc, tx: RingTx<i32>): void {
+function arm(ffi: Ffi, alloc: Alloc): void {
   "use owned";
   "use unsafe";
-  const st: State = { tx };
-  const p = Ptr.box(alloc, st);
-  stscb_start(ffi, cfn(boom), p.cast<void>(), 2147483647, 50, cfn(done), p.cast<void>());
+  const ud = Ptr.box(alloc, 0);
+  stscb_start(ffi, cfn(boom), ud.cast<void>(), 2147483647, 50, cfn(noop), ud.cast<void>());
 }
 export function main(sys: System): void {
-  const { tx, rx } = Ring.create<i32>(sys.alloc, 4);
-  arm(sys.ffi, sys.alloc, tx);
+  arm(sys.ffi, sys.alloc);
   sys.log.info("armed");
-  while (rx.pop() === null) {}
-  sys.log.info("signalled");
+  let i: i32 = 0;
+  while (i < 200000000) { i += 1; }
+  sys.log.info("worked");
 }

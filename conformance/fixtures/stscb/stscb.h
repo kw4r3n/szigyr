@@ -18,8 +18,8 @@ int32_t stscb_call(stscb_fn f, void *ud, int32_t x);
 int32_t stscb_thread(stscb_fn f, void *ud, int32_t x);
 /* Start one thread: after `delay_ms` milliseconds it calls `f(ud, x)`, then calls
  * `after(aud, 0)` on the same thread. `stscb_join` waits for the thread. Only one
- * started thread may be outstanding; starting again before joining is a contract
- * violation of this fixture (the second start is ignored). */
+ * started thread may be outstanding; starting again first waits for the previous
+ * thread to end (a program that ended on a trap never joins). */
 void stscb_start(stscb_fn f, void *ud, int32_t x, int32_t delay_ms, stscb_fn after, void *aud);
 void stscb_join(void);
 /* Call `f(ud, x)` and `g(gud, x)` on two new threads at the same time and wait for both. */

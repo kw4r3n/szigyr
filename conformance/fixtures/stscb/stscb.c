@@ -55,7 +55,7 @@ static void *start_main(void *p) {
   return NULL;
 }
 void stscb_start(stscb_fn f, void *ud, int32_t x, int32_t delay_ms, stscb_fn after, void *aud) {
-  if (started_live) return;
+  if (started_live) { pthread_join(started, NULL); started_live = 0; } // a caller that never joined (its program ended on the trap) must not wedge the fixture
   struct start_args *a = malloc(sizeof *a);
   if (!a) return;
   *a = (struct start_args){ f, ud, x, delay_ms, after, aud };

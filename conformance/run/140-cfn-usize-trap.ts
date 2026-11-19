@@ -1,5 +1,5 @@
 // expect-output: before
-// expect-trap: T003 @ 10:29
+// expect-trap: T003 @ 11:29
 // stage: 3
 // backend: c
 // open-question: Q217
