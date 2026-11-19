@@ -434,3 +434,11 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - P3（ownership.ts）: `p.slice(...)` と `p.borrow()` を借用の場所として扱い、根はローカル変数かパラメータに `.offset(...)` / `.cast()` を重ねたものだけに限った（それ以外は E3008）。`Ptr` の slice の組には T013 の実行時検査を当てず E3005 のまま（§14.4）。`p.unbox()` は根への Mut の使用として数え、同じ呼び出しの借用と衝突させる。`ConstPtr` の slice を `Mut` に渡すのは E3006。typePositions の `Slice` の免除（Q173）に `Ptr` / `ConstPtr` の指す先を加えた（指す先の `Slice` は独立した Slice 型ではない）。
 - 決定性（§7.3）: パラメータに `Ptr` / `ConstPtr` / `CHandle` を含む関数と、rt かつ unsafe の関数を非決定的にした（isDeterministic）。
 - 仕様の小さな穴は Q216 に記録し、既定案で実装した: unsafe の関数に書かれた不正な指す先の型（例 `Ptr<Array<f32>>`）は E4007（型引数の先頭）。ほかに穴は見つからなかった。
+
+## D120: 段階 3-2 の C 専用プログラムの検出（E4009）と適合ハーネス（2026-11-19）
+
+- 範囲: `run` / `test` の実行の前における E4009 の検出と、適合ハーネスの `// backend: c` ヘッダ、C ライブラリが無い環境でのスキップ。C の関数の変換とヘッダ照合（P4、E2009）は後続の依頼。
+- 検出（checker.ts / expr.ts / index.ts）: 検査器が E4008 の判定で認識した unsafe の操作（§14.4 の 1〜4）のアンカーをすべて記録する（`Checker.unsafeOps`。型の位置は `walkTypePos`、呼び出しとメンバは expr.ts の E4008 の箇所と同じ場所）。`run` / `test` は、プログラムのファイルをパスの順に見て、最初の `c:` の指定子（`declare module` と import の両方）か unsafe の操作を E4009 のアンカーにし、JS バックエンド（既定と `--backend=both`）では何も実行せずに止まる。`check` は E4009 を出さない。`"use unsafe"` の関数だけでは C 専用にならない（操作が記録されないため）。C の宣言の中の型は指定子の側に属するので、操作としては記録しない。
+- 変換（emit.ts）: `declare module "c:..."` は実行時の形を持たないので、JS への変換では型エイリアスや interface と同じく空にした。これまではモジュール文がそのまま JS に写り、C バックエンドでも読み込み時に構文エラーになっていた。`c:` import の変換（C の関数呼び出しの受け渡し）は extern の変換を行う後続の依頼で扱う。
+- ハーネス（harness.ts / conformance.conf.ts）: `// backend: c` は `// stage: N` の次の行にだけ書ける。run ケースは、JS バックエンドでは「何も実行せず E4009 で止まる」こと、C バックエンドでは通常の出力比較を検査する（`runCase` がコンパイラの `backend` を見て切り替える）。E4009 の reject ケースは、`check` が E4009 を出さないため、`run` の診断で確かめる。`// backend: c` のケースが `c:` 指定子で名指しする pkg-config パッケージが環境に無ければ、そのケースは失敗にせずスキップし、スキップした件数とケース名を出力に出す（`pkg-config` が失敗する shim で両ケースがスキップされることを確認済み）。
+- ケースの C ライブラリは実在する sqlite3 にした（`c:sqlite3:sqlite3.h`。`sqlite3_libversion_number` は `Ffi` のほかに引数がなく `i32` を返すので §14.2 の型で正確に書ける）。run ケースは宣言だけで C の関数を呼ばないため、extern の変換なしに C バックエンドで実行できる。SDL3 はこの依頼では使わない。

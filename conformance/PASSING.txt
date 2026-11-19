@@ -66,6 +66,7 @@ accept/64-unsafe-ptr.ts
 accept/65-unsafe-call-table.ts
 accept/66-chandle-and-box.ts
 accept/67-cfn-and-void-ptr.ts
+accept/68-c-backend.ts
 reject/E1000-array-suffix-type.ts
 reject/E1000-await-in-non-async-arrow.ts
 reject/E1000-await-outside-async.ts
@@ -497,6 +498,8 @@ reject/E4008-cfn-in-safe-function.ts
 reject/E4008-chandle-get-in-safe-function.ts
 reject/E4008-ptr-in-struct-field.ts
 reject/E4008-ptr-param-in-safe-function.ts
+reject/E4009-c-module.ts
+reject/E4009-unsafe-op.ts
 reject/E5001-console.ts
 reject/E5001-math-random.ts
 reject/E5001-new-date.ts
@@ -570,6 +573,7 @@ run/121-detmath-rt.ts
 run/122-arena-view-bool-offset.ts
 run/123-arena-view-packed-read.ts
 run/124-arena-view-packed-write.ts
+run/125-c-only-declare.ts
 run/13-async-await.ts
 run/14-vec-slice.ts
 run/15-owned-cell.ts
