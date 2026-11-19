@@ -1,0 +1,10 @@
+// expect: E3005 @ 9:8
+// stage: 2
+// open-question: Q190
+function f(src: Ref<Vec<f32>>, dst: Mut<Slice<f32>>): void {
+  "use rt";
+}
+function g(v: Mut<Vec<f32>>): void {
+  "use rt";
+  f(v, v.slice(0, 2));
+}

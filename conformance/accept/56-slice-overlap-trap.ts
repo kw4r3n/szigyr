@@ -1,0 +1,24 @@
+// expect: ok
+// stage: 2
+// open-question: Q190
+function copyInto(dst: Mut<Slice<f32>>, src: Ref<Slice<f32>>): void {
+  "use rt";
+  for (let i: usize = 0; i < dst.length; i += 1) {
+    dst[i] = src[i];
+  }
+}
+
+test("slice overlap traps T013, disjoint slices copy", (t: Test) => {
+  t.traps("T013", () => {
+    const alloc = TestAlloc.create();
+    const v = Vec.create<f32>(alloc, 4);
+    v.push(0); v.push(1); v.push(2); v.push(3);
+    copyInto(v.slice(0, 3), v.slice(2, 4));
+  });
+  const alloc = TestAlloc.create();
+  const v = Vec.create<f32>(alloc, 4);
+  v.push(0); v.push(1); v.push(2); v.push(3);
+  copyInto(v.slice(0, 2), v.slice(2, 4));
+  t.eq(v[0], 2);
+  t.eq(v[1], 3);
+});

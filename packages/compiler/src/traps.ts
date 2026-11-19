@@ -2,6 +2,7 @@
 import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { directiveOf } from "./modules.ts";
 import { exprTypes } from "./expr.ts";
+import { sliceGroups } from "./ownership.ts";
 import { isInt, unref, type Type } from "./types.ts";
 
 export interface TrapSite { code: string; line: number; col: number }
@@ -43,6 +44,8 @@ export function trapSites(pf: ParsedFile): Record<string, TrapSite[]> {
           const u = r && unref(r);
           if (u?.k === "gen" && (u.name === "Vec" || u.name === "Slice")) add("T002", (c as ts.PropertyAccessExpression).name);
         }
+        // Q190 (b): a runtime-checked slice group can trap T013 at each later entry that may overlap an earlier Mut pair.
+        for (const g of sliceGroups.get(n) ?? []) for (let j = 1; j < g.length; j++) if (g.slice(0, j).some((w) => w.mut || g[j]!.mut)) add("T013", g[j]!.name);
       }
       n.forEachChild(walk);
     };

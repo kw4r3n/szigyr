@@ -468,10 +468,10 @@ function eqable(t: Type): boolean {
   return isNum(a) || isBool(a) || isStr(a) || a.k === "class";
 }
 
-/** Q058: the first argument of `t.traps` is a string literal naming a trap (T001 - T010). */
+/** Q058: the first argument of `t.traps` is a string literal naming an implemented trap (T001 - T010, T013 since Q190). */
 function trapCode(c: Checker, a: ts.Expression): void {
-  const ok = (a.kind === K.StringLiteral || a.kind === K.NoSubstitutionTemplateLiteral) && /^T(00[1-9]|010)$/.test((a as ts.StringLiteral).text);
-  if (!ok) c.at("E2002", a, "the first argument of 'traps' must be a trap code literal \"T001\" - \"T010\"");
+  const ok = (a.kind === K.StringLiteral || a.kind === K.NoSubstitutionTemplateLiteral) && /^T(00[1-9]|010|013)$/.test((a as ts.StringLiteral).text);
+  if (!ok) c.at("E2002", a, "the first argument of 'traps' must be a trap code literal \"T001\" - \"T010\" or \"T013\"");
 }
 
 /** Q017: which types `===` / `!==` accept. */

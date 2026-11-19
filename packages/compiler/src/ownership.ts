@@ -17,8 +17,17 @@ interface Use { sym: LocalSym; mode: Mode; node: Node; path: string[]; slice: bo
 interface Place { sym: LocalSym; id: ts.Identifier; path: string[]; slice: boolean; sliceName?: ts.Identifier }
 /** Two field paths denote overlapping places when one is a prefix of the other (Q190 (a)). */
 const pathsOverlap = (a: string[], b: string[]): boolean => { const n = Math.min(a.length, b.length); for (let i = 0; i < n; i++) if (a[i] !== b[i]) return false; return true; };
-/** A pair of uses of one root in one call conflicts (E3005) when their places overlap (Q190 (a)). */
-const placesConflict = (a: Use, b: Use): boolean => pathsOverlap(a.path, b.path);
+/** A pair of uses of one root in one call conflicts (E3005) when their places overlap (Q190 (a)) and they are not both `slice` arguments — that pair is decided by the runtime overlap check instead (Q190 (b), T013). */
+const placesConflict = (a: Use, b: Use): boolean => !(a.slice && b.slice) && pathsOverlap(a.path, b.path);
+
+/** One slice argument of a runtime-checked group (Q190 (b)): its index, its mode, and its `slice` member name (the T013 anchor). */
+export interface SliceGroupEntry { arg: number; mut: boolean; name: Node }
+/**
+ * Calls whose same-root `slice` arguments are checked for overlap at runtime instead of E3005 (Q190 (b)):
+ * per call, the groups (one per root) with at least two slice arguments and at least one `Mut` pair.
+ * Read by the JS and C emitters and by the rt trap-site listing (traps.ts).
+ */
+export const sliceGroups = new WeakMap<Node, SliceGroupEntry[][]>();
 interface Frame { loop: boolean; depth: number; breaks: State[]; continues: State[]; moves: { sym: LocalSym; node: Node }[] }
 
 const isId = (n: Node | undefined): n is ts.Identifier => n?.kind === K.Identifier;
@@ -463,9 +472,10 @@ class Flow {
     }
     const node = strip(e);
     // Q170: within one call either side `Mut` conflicts; an outer borrow conflicts only with an inner `Mut` (Q065, Q067).
-    // Q190 (a): disjoint field paths are different places.
+    // Q190: disjoint field paths are different places (a); a sibling pair of `slice` arguments is left to the runtime check (b).
     if (this.active.some((x, i) => x.sym.id === r.sym.id && pathsOverlap(x.path, r.path)
-      && (mode === "mut" || (i >= this.callMark && x.mode === "mut")))) this.exclusive(node, r.sym);
+      && (mode === "mut" || (i >= this.callMark && x.mode === "mut"))
+      && !(i >= this.callMark && x.slice && r.slice))) this.exclusive(node, r.sym);
     this.active.push({ sym: r.sym, mode, node, base: false, path: r.path, slice: r.slice }); // popped by `call`; active while `slice` bounds are evaluated
     this.place(e);
     if (mode === "mut" && borrowMode(r.sym.declared) === "ref") this.m.at("E3006", member ?? strip(e), `'${r.sym.name}' is borrowed as Ref and cannot be passed as Mut`);
@@ -516,6 +526,17 @@ class Flow {
       const v = uses.slice(0, j).find((w) => w.sym.id === u.sym.id && (w.mode !== "ref" || u.mode !== "ref") && placesConflict(w, u));
       if (v) this.exclusive(u.node, u.sym);
     });
+    // Q190 (b): record the slice groups the emitters must check at runtime (T013).
+    const byRoot = new Map<number, Use[]>();
+    for (const u of uses) if (u.slice && u.arg >= 0) { const l = byRoot.get(u.sym.id) ?? []; l.push(u); byRoot.set(u.sym.id, l); }
+    const groups: SliceGroupEntry[][] = [];
+    for (const l of byRoot.values()) {
+      if (l.length < 2) continue;
+      const sorted = [...l].sort((a, b) => a.arg - b.arg);
+      if (sorted.some((u, j) => sorted.slice(0, j).some((w) => w.mode === "mut" || u.mode === "mut")))
+        groups.push(sorted.map((u) => ({ arg: u.arg, mut: u.mode === "mut", name: u.sliceName! })));
+    }
+    if (groups.length) sliceGroups.set(e, groups);
     this.active.length = mark;
     this.callMark = outerMark;
     const recv = callee.kind === K.PropertyAccessExpression ? exprTypes.get((callee as ts.PropertyAccessExpression).expression) : undefined;

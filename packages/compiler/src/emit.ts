@@ -4,6 +4,7 @@
 import { resolve, dirname } from "node:path";
 import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { exprTypes } from "./expr.ts";
+import { sliceGroups, type SliceGroupEntry } from "./ownership.ts";
 import { elemDesc } from "./layout.ts";
 import { NUM_NAMES, isInt, isStr, nonNull, resultParts, unref, type FnType, type Type } from "./types.ts";
 import { CLI_NAME, RUNTIME_GLOBAL } from "./names.ts";
@@ -107,7 +108,15 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
         return p.questionDotToken && !callee ? `${RT}.nn(${splice(n)})` : splice(n); // §10.7
       }
       case K.CallExpression: return call(n as ts.CallExpression);
-      case K.NewExpression: return mark(n) + splice(n);
+      case K.NewExpression: {
+        const ne = n as ts.NewExpression, groups = sliceGroups.get(n);
+        if (!groups || !ne.arguments) return mark(n) + splice(n);
+        // Q190 (b): as in `call`, the arguments are evaluated first, then the overlap check (T013), then the construction.
+        const refs = ne.arguments.map((_, i) => `${V}[${i}]`);
+        const body = `(...${V}) => { ${checkStmts(groups, refs)} return new ${gen(ne.expression)}(${refs.join(", ")}); }`;
+        needAp = true;
+        return ne.arguments.some(hasAwait) ? `${mark(n)}(await ${AP}(async ${body}, ${ne.arguments.map(gen).join(", ")}))` : `${mark(n)}${AP}(${body}, ${ne.arguments.map(gen).join(", ")})`;
+      }
       case K.Identifier: { // the name of a called function or method: where stack exhaustion is reported (Q035)
         const pa = n.parent, called = (c: Node | undefined, x: Node): boolean => c?.kind === K.CallExpression && (c as ts.CallExpression).expression === x;
         return called(pa, n) || (pa?.kind === K.PropertyAccessExpression && (pa as ts.PropertyAccessExpression).name === n && called(pa.parent, pa)) ? mark(n) + splice(n) : splice(n);
@@ -188,11 +197,38 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
     return splice(b);
   }
 
+  /** Q190 (b): one `checkSlices` statement per runtime-checked group; `refs` are the evaluated argument values, in order. */
+  function checkStmts(groups: SliceGroupEntry[][], refs: string[]): string {
+    return groups.map((g) => `${RT}.checkSlices([${g.map((x) => `[${refs[x.arg]}, ${x.mut}, ${at(x.name)}]`).join(", ")}]);`).join(" ");
+  }
+
+  /** Q190 (b): evaluate the arguments left to right, run the overlap checks (T013), then call with the evaluated values. */
+  function grouped(e: ts.CallExpression, groups: SliceGroupEntry[][], args: string[], bound: (refs: string[]) => string): string {
+    needAp = true;
+    const refs = e.arguments.map((_, i) => `${V}[${i}]`);
+    const body = `(...${V}) => { ${checkStmts(groups, refs)} return ${bound(refs)}; }`;
+    return e.arguments.some(hasAwait) ? `(await ${AP}(async ${body}, ${args.join(", ")}))` : `${AP}(${body}, ${args.join(", ")})`;
+  }
+
+  /** Q190 (b) for a method call: the receiver is evaluated before the arguments, as usual. */
+  function groupedProp(e: ts.CallExpression, groups: SliceGroupEntry[][], args: string[], awaited: boolean): string {
+    const p = e.expression as ts.PropertyAccessExpression;
+    if (p.questionDotToken) { // a null receiver short-circuits before the arguments are evaluated (§10.7)
+      const parts = [...groups.map((g) => `${RT}.checkSlices([${g.map((x) => `[${args[x.arg]}, ${x.mut}, ${at(x.name)}]`).join(", ")}])`), `${RT}.nn(${O}.${p.name.text}(${args.join(", ")}))`];
+      return optional(gen(p.expression), awaited, () => `(${parts.join(", ")})`);
+    }
+    needAp = true;
+    const refs = e.arguments.map((_, i) => `${V}[${i}]`);
+    const body = `(${O}, ...${V}) => { ${checkStmts(groups, refs)} return ${O}.${p.name.text}(${refs.join(", ")}); }`;
+    return awaited ? `(await ${AP}(async ${body}, ${gen(p.expression)}, ${args.join(", ")}))` : `${AP}(${body}, ${gen(p.expression)}, ${args.join(", ")})`;
+  }
+
   function call(e: ts.CallExpression): string {
     const callee = e.expression;
     const args = e.arguments.map(gen);
+    const groups = sliceGroups.get(e); // Q190 (b)
     const inst = native?.get(e); // D104: a managed call of a generic strict / rt function goes to its C instance
-    if (inst) return `${mark(callee)}${RT}.native.${inst}(${args.join(", ")})`;
+    if (inst) return groups ? grouped(e, groups, args, (refs) => `${mark(callee)}${RT}.native.${inst}(${refs.join(", ")})`) : `${mark(callee)}${RT}.native.${inst}(${args.join(", ")})`;
     const self = typeOf(e);
     const q = (s: string): string => JSON.stringify(s);
     if (callee.kind === K.Identifier) {
@@ -208,7 +244,7 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
         case "test": return `${RT}.test(${args.join(", ")})`;
         case "ensures": throw new Error("emit: ensures outside a function body prologue");
       }
-      return splice(e);
+      return groups ? grouped(e, groups, args, (refs) => `${gen(callee)}(${refs.join(", ")})`) : splice(e);
     }
     if (callee.kind !== K.PropertyAccessExpression) return splice(e);
     const p = callee as ts.PropertyAccessExpression, m = p.name.text;
@@ -245,6 +281,7 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
       if (r.name === "Js" && m === "callback") return nn(withArgs([desc(resultParts((typeOf(e.arguments[0]!) as FnType).params[0]!)!.ok)]));
       if (r.name === "Test") return nn(withArgs([at(p.name)]));
     }
+    if (groups) return groupedProp(e, groups, args, awaited);
     return nn(withArgs([]));
   }
 
