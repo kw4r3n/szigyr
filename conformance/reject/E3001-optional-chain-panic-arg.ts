@@ -1,0 +1,13 @@
+// expect: E3001 @ 12:14
+// stage: 2
+// open-question: Q220
+type S = Struct<{ n: i32 }>;
+interface I { m(x: i32): void }
+function mk(): S { return { n: 1 }; }
+function eat(s: S): i32 { return s.n; }
+export function f(o: I | null): i32 {
+  const v: S = mk();
+  o?.m(panic("x"));
+  eat(v);
+  return eat(v);
+}

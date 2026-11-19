@@ -349,6 +349,8 @@ reject/E3001-chained-assignment.ts
 reject/E3001-method-call-after-move.ts
 reject/E3001-move-inside-index-of-assignment.ts
 reject/E3001-move-inside-index.ts
+reject/E3001-optional-chain-panic-arg.ts
+reject/E3001-optional-chain-reassign-after-move.ts
 reject/E3001-reassigned-on-one-branch-only.ts
 reject/E3001-use-after-branch-move.ts
 reject/E3001-use-after-destructure.ts

@@ -1,5 +1,5 @@
 // P3 (D070): ownership and borrowing (§5), run only when P1 and P2 report nothing (Q003). Reads P2's types and symbols.
-import { SyntaxKind as K, type Node, type ts } from "./parse.ts";
+import { NodeFlags, SyntaxKind as K, type Node, type ts } from "./parse.ts";
 import type { LocalSym, Module, Program } from "./modules.ts";
 import { assignTarget, callSigs, exprTypes, localOf } from "./expr.ts";
 import { movesLike, ownedDeep, show, unref, type Type } from "./types.ts";
@@ -288,11 +288,13 @@ class Flow {
       case K.ElementAccessExpression: {
         const x = e as ts.ElementAccessExpression;
         this.ex(x.expression, "read");
+        const opt = !!(x.flags & NodeFlags.OptionalChain), optState = opt ? copy(this.state) : undefined;
         const mark = this.active.length;
         const r = this.placeOf(x.expression);
         if (r) this.active.push({ sym: r.sym, mode: "ref", node: r.id, base: true, path: r.path, slice: false });
         this.ex(x.argumentExpression, "read");
         this.active.length = mark;
+        if (opt) this.state = join(optState!, this.state);
         return;
       }
       case K.CallExpression: case K.NewExpression: this.call(e as ts.CallExpression); return;
@@ -563,6 +565,7 @@ class Flow {
     } else if (isId(callee) && !localOf.has(callee) && !sig) {
       store = callee.text === "ok" || callee.text === "err"; // a Result is a managed record (§5.6)
     } else this.ex(callee, "read");
+    const opt = !!(e.flags & NodeFlags.OptionalChain), optState = opt ? copy(this.state) : undefined; // Q220: ?. short-circuits before args
     args.forEach((a, i) => {
       const p = sig?.params[i];
       const mode = borrowMode(p);
@@ -615,6 +618,7 @@ class Flow {
       this.m.at("E3007", targ ?? (e.kind === K.NewExpression && e.typeArguments ? e.typeArguments[e.typeArguments.length - 1]! : isId(callee) ? callee : callee.kind === K.PropertyAccessExpression ? (callee as ts.PropertyAccessExpression).name : callee), "this expression has a managed container type that holds an owned value (Q174)");
     }
     if (isNever(exprTypes.get(e))) this.state = null;
+    if (opt) this.state = join(optState!, this.state);
   }
 }
 
