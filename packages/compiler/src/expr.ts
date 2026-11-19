@@ -581,6 +581,7 @@ function objLit(c: Checker, e: ts.ObjectLiteralExpression, want: Type | undefine
     if (p.kind === K.PropertyAssignment) { if (isErr(checkTo(c, (p as ts.PropertyAssignment).initializer, f.type))) bad = true; }
     else {
       const vt = ident(c, name);
+      exprTypes.set(name, vt); // the narrowed type, for the C backend (a shorthand name is not typed through expr)
       if (!assignable(vt, f.type)) { c.at("E2002", name, `expected '${show(f.type)}', got '${show(vt)}'`); bad = true; }
     }
   }

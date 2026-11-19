@@ -683,8 +683,18 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     }
 
     exVoid(e: ts.Expression): void {
+      if (e.kind === K.ParenthesizedExpression) { this.exVoid((e as ts.ParenthesizedExpression).expression); return; }
       const t = exprTypes.get(e);
-      if (t && t.k === "prim" && (t.name === "void" || t.name === "never")) { this.call(e as ts.CallExpression, true); return; }
+      if (t && t.k === "prim" && (t.name === "void" || t.name === "never")) {
+        if (e.kind === K.ConditionalExpression) { // `c ? f() : g()` of void calls: the chosen branch as a statement
+          const c = e as ts.ConditionalExpression, k = this.ex(c.condition);
+          this.emit(`if (${k})`); this.block(() => this.exVoid(c.whenTrue));
+          this.emit("else"); this.block(() => this.exVoid(c.whenFalse));
+          return;
+        }
+        this.call(e as ts.CallExpression, true);
+        return;
+      }
       this.ex(e);
     }
 
@@ -925,7 +935,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       this.emit(`${name} ${r};`);
       for (const pr of o.properties) {
         if (pr.kind === K.SpreadAssignment) { this.emit(`${r} = ${this.ex((pr as ts.SpreadAssignment).expression)};`); continue; }
-        if (pr.kind === K.ShorthandPropertyAssignment) { const n = (pr as ts.ShorthandPropertyAssignment).name as ts.Identifier; this.emit(`${r}.f_${n.text} = ${this.ident(n)};`); continue; }
+        if (pr.kind === K.ShorthandPropertyAssignment) { const n = (pr as ts.ShorthandPropertyAssignment).name as ts.Identifier; const f = t.fields.find((x) => x.name === n.text)!; this.emit(`${r}.f_${n.text} = ${this.conv(this.ident(n), this.typeOf(n), f.type)};`); continue; }
         if (pr.kind !== K.PropertyAssignment) throw this.no(pr, "this object literal member");
         const pa = pr as ts.PropertyAssignment, f = t.fields.find((x) => x.name === (pa.name as ts.Identifier).text)!;
         this.emit(`${r}.f_${f.name} = ${this.conv(this.ex(pa.initializer), this.typeOf(pa.initializer), f.type)};`);

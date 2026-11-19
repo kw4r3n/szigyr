@@ -699,6 +699,8 @@ run/163-union-switch-subunion.ts
 run/164-null-local.ts
 run/165-record-field-order.ts
 run/166-ptr-nested-declarators.ts
+run/167-void-call-statement-forms.ts
+run/168-shorthand-narrowed-field.ts
 run/17-trap-i32-add-overflow.ts
 run/18-trap-i32-unary-minus.ts
 run/19-trap-divtrunc-overflow.ts
