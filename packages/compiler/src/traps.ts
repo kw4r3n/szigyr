@@ -1,14 +1,14 @@
 // §6 (stage 2): the places an rt function can trap, by trap code and source position (anchors: docs/DIAGNOSTICS.md).
 import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { directiveOf } from "./modules.ts";
-import { exprTypes } from "./expr.ts";
+import { exprTypes, localOf } from "./expr.ts";
 import { sliceGroups } from "./ownership.ts";
 import { isInt, unref, type Type } from "./types.ts";
 
 export interface TrapSite { code: string; line: number; col: number }
 
 const INT_CONV = new Set(["i8", "i16", "i32", "u8", "u16", "u32", "usize"]);
-const CALL_TRAPS: Record<string, string[]> = { divTrunc: ["T001", "T007"], rem: ["T001", "T007"], panic: ["T006"], requires: ["T004"], ensures: ["T005"], invariant: ["T010"] };
+const CALL_TRAPS: Record<string, string[]> = { divTrunc: ["T001", "T007"], rem: ["T007"], panic: ["T006"], requires: ["T004"], ensures: ["T005"], invariant: ["T010"] };
 const INT_OPS = new Set<K>([K.PlusToken, K.MinusToken, K.AsteriskToken, K.PlusEqualsToken, K.MinusEqualsToken, K.AsteriskEqualsToken]);
 const SHIFTS = new Set<K>([K.LessThanLessThanToken, K.GreaterThanGreaterThanToken, K.GreaterThanGreaterThanGreaterThanToken]);
 const int = (n: Node): boolean => { const t: Type | undefined = exprTypes.get(n); return !!t && isInt(t); };
@@ -17,6 +17,14 @@ const int = (n: Node): boolean => { const t: Type | undefined = exprTypes.get(n)
 export function trapSites(pf: ParsedFile): Record<string, TrapSite[]> {
   const sf = pf.sourceFile;
   const fileLayer = directiveOf(sf.statements);
+  const cImports = new Set<string>();
+  for (const s of sf.statements) {
+    if (s.kind !== K.ImportDeclaration) continue;
+    const d = s as ts.ImportDeclaration, nb = d.importClause?.namedBindings;
+    if (d.moduleSpecifier.kind === K.StringLiteral && (d.moduleSpecifier as ts.StringLiteral).text.startsWith("c:") && nb?.kind === K.NamedImports) {
+      for (const e of (nb as ts.NamedImports).elements) cImports.add(e.name.text);
+    }
+  }
   const out: Record<string, TrapSite[]> = {};
   for (const s of sf.statements) {
     if (s.kind !== K.FunctionDeclaration) continue;
@@ -38,6 +46,10 @@ export function trapSites(pf: ParsedFile): Record<string, TrapSite[]> {
         if (c.kind === K.Identifier) {
           const name = (c as ts.Identifier).text;
           if (INT_CONV.has(name)) add("T003", c);
+          if (cImports.has(name) && !localOf.has(c)) {
+            const ret = exprTypes.get(n);
+            if (ret?.k === "num" && ret.name === "usize") add("T003", c); // §14.2 (D121)
+          }
           for (const code of CALL_TRAPS[name] ?? []) add(code, c);
         } else if (c.kind === K.PropertyAccessExpression && (c as ts.PropertyAccessExpression).name.text === "slice") {
           const r = exprTypes.get((c as ts.PropertyAccessExpression).expression);

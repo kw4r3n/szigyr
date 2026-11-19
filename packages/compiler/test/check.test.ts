@@ -129,3 +129,28 @@ it("determinism checks generic class type arguments across parameters (§7.3)", 
   ].join("\n"));
   expect(deterministicFunctions(join(dir, "main.ts"))).toEqual({ leak: false, leak2: false, pure: true });
 });
+
+it("lists only T007 for rem and T003 for usize-returning C calls (§3, §14.2)", () => {
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-traps-`));
+  writeFileSync(join(dir, "main.ts"), [
+    'declare module "c:zlib:zlib.h" {',
+    "  function compressBound(ffi: Ffi, sourceLen: usize): usize;",
+    "}",
+    'import { compressBound } from "c:zlib:zlib.h";',
+    "function r(a: i32, b: i32): i32 {",
+    '  "use rt";',
+    "  return rem(a, b);",
+    "}",
+    "function cb(n: usize): usize {",
+    '  "use rt";',
+    '  "use unsafe";',
+    "  return compressBound(n);",
+    "}",
+    "",
+  ].join("\n"));
+  const at = (code: string, line: number, col: number): { code: string; line: number; col: number } => ({ code, line, col });
+  expect(rtTrapSites(join(dir, "main.ts"))).toEqual({
+    r: [at("T007", 7, 10)],
+    cb: [at("T003", 12, 10)],
+  });
+});
