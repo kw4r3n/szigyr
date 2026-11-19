@@ -29,7 +29,7 @@ const entry = join(import.meta.dirname, "../../../examples/audio/main.ts");
 function estimateFreq(left: Float32Array, from: number, to: number): number {
   let crossings = 0;
   for (let i = from + 1; i < to; i += 1) {
-    if ((left[i - 1] < 0) !== (left[i] < 0)) crossings += 1;
+    if ((left[i - 1]! < 0) !== (left[i]! < 0)) crossings += 1;
   }
   return (crossings * RATE) / (2 * (to - from));
 }
@@ -61,12 +61,14 @@ describe.skipIf(!hasSdl3())("audio demo (examples/audio)", () => {
     const right = new Float32Array(frames);
     let peak = 0;
     for (let i = 0; i < frames; i += 1) {
-      left[i] = data.readFloatLE(i * 8);
-      right[i] = data.readFloatLE(i * 8 + 4);
-      const a = Math.abs(left[i]);
+      const l = data.readFloatLE(i * 8);
+      const r = data.readFloatLE(i * 8 + 4);
+      left[i] = l;
+      right[i] = r;
+      const a = Math.abs(l);
       if (a > peak) peak = a;
       expect(a).toBeLessThanOrEqual(0.5 + 1e-6); // the gain, never above
-      expect(Math.abs(right[i] - left[i])).toBeLessThanOrEqual(1e-6);
+      expect(Math.abs(r - l)).toBeLessThanOrEqual(1e-6);
     }
     expect(peak).toBeGreaterThan(0.45); // the sine reaches (near) its gain
 
@@ -74,7 +76,9 @@ describe.skipIf(!hasSdl3())("audio demo (examples/audio)", () => {
     const freqs = [0, 1, 2].map((k) => estimateFreq(left, k * third, (k + 1) * third));
     const want = [440, 660, 880];
     for (let k = 0; k < 3; k += 1) {
-      expect(Math.abs(freqs[k] - want[k])).toBeLessThan(want[k] * 0.12);
+      const f = freqs[k]!;
+      const w = want[k]!;
+      expect(Math.abs(f - w)).toBeLessThan(w * 0.12);
     }
   }, 120000);
 });
