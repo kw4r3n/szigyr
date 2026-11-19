@@ -394,7 +394,7 @@ rt かつ unsafe の関数は、権限なしで C の関数を呼べる（§14.3
 
 - 評価順は左から右（オペランド、実引数とも）。
 - 浮動小数点は IEEE 754 の binary32 / binary64。積和の融合と fast-math は禁止。
-- strict / rt で使える `Math` の関数は、両方で結果が正確に一致するものに限る: `abs`、`sqrt`、`floor`、`ceil`、`trunc`、`round`、`min`、`max`、`sign`、`fround`。`round` などは JS の定義に合わせること。`sin` や `exp` などは strict / rt では使えない（標準ライブラリの数学関数は §13）。
+- strict / rt で使える `Math` の関数は、両方で結果が正確に一致するものに限る: `abs`、`sqrt`、`floor`、`ceil`、`trunc`、`round`、`min`、`max`、`sign`、`fround`。`round` などは JS の定義に合わせること。`sin` や `exp` などの `Math` の関数は strict / rt では使えない。数学関数は §12 の `DetMath` を使う。
 - トラップは、種類とソース上の位置が JS 側と一致すること。
 - C 専用のプログラム（§14.7）には、この節の一致の要求を適用しない。
 
@@ -482,6 +482,11 @@ rt かつ unsafe の関数は、権限なしで C の関数を呼べる（§14.3
   - 全層: `abs`、`sqrt`、`floor`、`ceil`、`trunc`、`round`、`min`、`max`、`sign`、`fround`、定数 `PI`、`E`。
   - managed のみ: `sin`、`cos`、`tan`、`asin`、`acos`、`atan`、`atan2`、`exp`、`log`、`log2`、`log10`、`pow`、`hypot`、`cbrt`。
   - `random` は使えない。
+- **`DetMath`**:
+  - 全層: `sin`、`cos`、`tan`、`atan`、`exp`、`log`、`log10`、`tanh`（どれも `(x: f64) => f64`）と、`atan2(y, x)`、`pow(x, y)`（どちらも `(f64, f64) => f64`）。`f64` 版だけを用意する。
+  - 実装は標準ライブラリの strict のソース（コンパイラに同梱した 1 モジュール。関数はすべて `"use rt"`）で、プログラムが `DetMath.<名前>` を使うと、コンパイラはそのモジュールを、利用者から見えない名前で import したものとしてプログラムに加える。利用者はこのモジュールを import できず、上の 10 個以外の名前は見えない。
+  - 特別な値（NaN、±0、±Infinity の場合の結果）は、同じ名前の ECMAScript の `Math.*` に従う。NaN のビットの中身は決めない。
+  - rt の関数なので、呼び出しはトラップの一覧に何も足さない。managed からの呼び出しは JS に変換した版を直接呼ぶ（結果は C 版と同じ）ので、層の境界をまたがず、W8001 の対象にしない。JS と C でビット単位に一致する。
 - **`Number`**: `isFinite`、`isNaN`、`isInteger`、`parseFloat`、`MAX_SAFE_INTEGER`、`EPSILON`。
 - **`JSON`**: `parse`（戻り値は `Result<unknown, JsError>`。構文エラーは `err` で、`error.code` は `"SyntaxError"`）、`stringify`。JS の例外を投げるほかの組み込みとスタックの枯渇は T006（Q035）。
 - **`string` のメンバ**: `length`、`slice`、`indexOf`、`includes`、`startsWith`、`endsWith`、`split`、`trim`、`toUpperCase`、`toLowerCase`、`padStart`、`padEnd`、`replaceAll`（文字列の引数のみ）、`charCodeAt`、`codePointAt`。`String.fromCodePoint`。
@@ -499,7 +504,6 @@ rt かつ unsafe の関数は、権限なしで C の関数を呼べる（§14.3
 - `Vec` の非 Copy 要素、`FixedArray<T, N>`
 - 領域ブランドつきポインタ、`Rc` / `Weak`、`using` と破棄可能な資源（段階 2 の後半で提案。プールとハンドルとアリーナは §3.3 で導入済み）
 - strict / rt での実行時の関数値とコールバック（関数型パラメータによるコンパイル時の特殊化は §3.3 で導入済み）
-- strict / rt 用の数学関数ライブラリ（`sin`、`exp` など。段階 2）
 - STS からスレッドを起こす機能（作らない。Q201）
 - JS バックエンドでの C の関数、`Ptr`、コールバック（作らない。Q196）
 - C の構造体の値渡し、可変長引数の C 関数、C の 64 ビット整数型と `char`、C のマクロと定数の取り込み（未定。Q193、Q211）

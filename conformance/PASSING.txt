@@ -484,6 +484,7 @@ reject/E6002-requires-nondeterministic-call.ts
 reject/E6003-test-in-function.ts
 reject/E6003-test-in-test.ts
 reject/E7001-default-import.ts
+reject/E7001-detmath-import.ts
 reject/E7001-dynamic-import.ts
 reject/E7001-namespace-import.ts
 reject/E7001-reexport.ts

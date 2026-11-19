@@ -1,0 +1,11 @@
+// expect-output: 0.8582727931702359 -0.5131937377869702 1.672414782127583 0.9998509309072103 0.7833030468809974
+// expect-output: -0.65571431556347 0.7913716818569299 16331239353195370 0.8178819121159085 1 5e-324
+// expect-output: 1.7976931348622732e+308 5e-324 -744.4400719213812 308.25471555991675 8.98846567431158e+307 5e-324
+// expect-output: -2.231912181360871e-10 1.5707963267948966 1.5707963267948966 -1.672414782127583 -0.3010299956639812
+// stage: 2
+export function main(sys: System): void {
+  sys.log.info(`${DetMath.sin(1000000000000000)} ${DetMath.cos(1000000000000000)} ${DetMath.tan(-1000000000000000)} ${DetMath.sin(123456789.12345679)} ${DetMath.cos(1647100)}`);
+  sys.log.info(`${DetMath.sin(2000000)} ${DetMath.cos(-999999999999.9999)} ${DetMath.tan(1.5707963267948966)} ${DetMath.sin(-1e300)} ${DetMath.cos(5e-324)} ${DetMath.sin(5e-324)}`);
+  sys.log.info(`${DetMath.exp(709.782712893384)} ${DetMath.exp(-745.1332191019411)} ${DetMath.log(5e-324)} ${DetMath.log10(1.7976931348623157e308)} ${DetMath.pow(2, 1023)} ${DetMath.pow(2, -1074)}`);
+  sys.log.info(`${DetMath.sin(3141592.653589793)} ${DetMath.atan(1e300)} ${DetMath.atan2(1e300, 1e-300)} ${DetMath.tan(1000000000000000)} ${DetMath.log10(0.5)}`);
+}
