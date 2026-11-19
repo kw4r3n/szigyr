@@ -36,13 +36,22 @@ const borrowMode = (t: Type): "Ref" | "Mut" | undefined => (t.k === "gen" && (t.
 
 interface Local { c: string; t: Type; ptr: boolean }
 
-/** The function a name refers to in `mod` (local or imported). */
-export function resolveFn(mod: Module, name: string): FnSym | undefined {
-  const v = mod.values.get(name);
-  if (v?.k === "fn") return v;
+/** Follows import / export chains (including re-exports) to the declaring module's value symbol. */
+function resolveValue(mod: Module, name: string, seen = new Set<string>()): Module["values"] extends Map<string, infer V> ? V | undefined : never {
+  const own = mod.values.get(name);
+  if (own) return own;
+  const key = `${mod.pf.path}:${name}`;
+  if (seen.has(key)) return undefined;
+  seen.add(key);
   const imp = mod.imports.get(name);
-  if (imp) { const local = imp.mod.exports.get(imp.name); const w = local ? imp.mod.values.get(local) : undefined; if (w?.k === "fn") return w; }
-  return undefined;
+  if (!imp) return undefined;
+  const local = imp.mod.exports.get(imp.name);
+  return local === undefined ? undefined : resolveValue(imp.mod, local, seen);
+}
+/** The function a name refers to in `mod` (local or imported, across re-exports). */
+export function resolveFn(mod: Module, name: string): FnSym | undefined {
+  const v = resolveValue(mod, name);
+  return v?.k === "fn" ? v : undefined;
 }
 /** The C function a name refers to in `mod`: a `c:` declaration binds in its own file only (§14.1). */
 function resolveCFn(mod: Module, name: string): CFnSym | undefined {
@@ -50,11 +59,8 @@ function resolveCFn(mod: Module, name: string): CFnSym | undefined {
   return v?.k === "cfn" ? v : undefined;
 }
 function resolveConst(mod: Module, name: string): Extract<Module["values"] extends Map<string, infer V> ? V : never, { k: "const" }> | undefined {
-  const v = mod.values.get(name);
-  if (v?.k === "const") return v;
-  const imp = mod.imports.get(name);
-  if (imp) { const local = imp.mod.exports.get(imp.name); const w = local ? imp.mod.values.get(local) : undefined; if (w?.k === "const") return w; }
-  return undefined;
+  const v = resolveValue(mod, name);
+  return v?.k === "const" ? v : undefined;
 }
 
 /** One C function: a strict / rt function, or one instantiation of a generic one (D104). `fns` is the

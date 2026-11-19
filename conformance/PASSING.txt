@@ -76,6 +76,7 @@ accept/74-isolate-sendable-types.ts
 accept/75-isolate-spawn.ts
 accept/76-cast-to-ctype.ts
 accept/77-chandle-create-void.ts
+accept/78-reexport-loop-warning
 reject/E1000-array-suffix-type.ts
 reject/E1000-await-in-non-async-arrow.ts
 reject/E1000-await-outside-async.ts
@@ -688,6 +689,7 @@ run/154-optional-chain-slice-args-once.ts
 run/155-ptr-unbox-as-arg.ts
 run/156-generic-nullable-null-arg.ts
 run/157-detmath-user-dm-name.ts
+run/158-reexport-strict-const
 run/16-struct-f32.ts
 run/17-trap-i32-add-overflow.ts
 run/18-trap-i32-unary-minus.ts
