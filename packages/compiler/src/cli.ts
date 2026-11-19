@@ -34,9 +34,12 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
     }
     if (cmd === "run") {
       const rs: RunResult[] = [];
-      for (const b of backends) rs.push(await run(files[0]!, { backend: b })); // diagnostics go to stderr: stdout is the program's (Q060)
+      for (const b of backends) {
+        const cur = await run(files[0]!, { backend: b }); // diagnostics go to stderr: stdout is the program's (Q060)
+        if (cur.diagnostics.length) { err(diags(cur.diagnostics)); return 1; }
+        rs.push(cur);
+      }
       const r = rs[0]!;
-      if (r.diagnostics.length) { err(diags(r.diagnostics)); return 1; }
       if (rs.length === 2 && JSON.stringify([rs[0]!.stdout, rs[0]!.trap]) !== JSON.stringify([rs[1]!.stdout, rs[1]!.trap])) { // D101: --backend=both
         err(line({ kind: "mismatch", js: { stdout: rs[0]!.stdout, trap: rs[0]!.trap }, c: { stdout: rs[1]!.stdout, trap: rs[1]!.trap } }));
         return 1;
@@ -50,9 +53,14 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
     let failed = 0, passed = 0, bad = false;
     for (const f of files) {
       const rs = [];
-      for (const b of backends) rs.push(await runTestFile(f, { backend: b }));
+      let diag = false;
+      for (const b of backends) {
+        const cur = await runTestFile(f, { backend: b });
+        if (cur.diagnostics.length) { out(diags(cur.diagnostics)); bad = true; diag = true; break; }
+        rs.push(cur);
+      }
+      if (diag) continue;
       const r = rs[0]!;
-      if (r.diagnostics.length) { out(diags(r.diagnostics)); bad = true; continue; }
       // D101: --backend=both compares each test's outcome, trap code and position; a trap's message is not compared.
       const key = (t: (typeof r.results)[number] | undefined): string => JSON.stringify(t && [t.name, t.ok, t.trap ? null : t.failure, t.trap?.code, t.pos?.file, t.pos?.line, t.pos?.col]);
       for (const [i, t] of r.results.entries()) {

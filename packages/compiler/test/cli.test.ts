@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
@@ -253,4 +253,37 @@ export function main(sys: System): void {
   expect(r.code).toBe(1);
   expect(jsonLines(r.err)[0]).toMatchObject({ code: "E4009", range: { start: { line: 1, col: 18 } } });
   expect(sts("check", f).code).toBe(0);
+});
+
+it("--backend=both stops on first backend diagnostics (E4009) without running C", () => {
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-e4009-both-`));
+  const cacheDir = join(dir, "cache");
+  const f = join(dir, "conly.ts");
+  const marker = join(dir, "marker.txt");
+  writeFileSync(f, `function add(a: i32, b: i32): i32 {
+  "use owned";
+  return a + b;
+}
+function take(p: Ptr<i32>): i32 {
+  "use owned";
+  "use unsafe";
+  return p.read();
+}
+export function main(sys: System): void {
+  sys.fs.writeText(${JSON.stringify(marker)}, "ran");
+}
+test("runs", (t: Test) => {
+  t.eq(add(1, 2), 3);
+});
+`);
+  const env = { ...process.env, XDG_CACHE_HOME: cacheDir };
+  const r = spawnSync("node", [CLI, "run", "--json", "--backend=both", f], { encoding: "utf8", env });
+  expect(r.status).toBe(1);
+  expect(r.stdout).toBe("");
+  expect(jsonLines(r.stderr)[0]).toMatchObject({ code: "E4009" });
+  expect(existsSync(marker)).toBe(false);
+  const t = spawnSync("node", [CLI, "test", "--json", "--backend=both", f], { encoding: "utf8", env });
+  expect(t.status).toBe(1);
+  expect(jsonLines(t.stdout)[0]).toMatchObject({ code: "E4009" });
+  expect(existsSync(join(cacheDir, `${CLI_NAME}-native`))).toBe(false);
 });
