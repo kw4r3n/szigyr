@@ -693,6 +693,11 @@ run/158-reexport-strict-const
 run/159-arena-views-mixed-size.ts
 run/16-struct-f32.ts
 run/160-arena-c-alloc-generic-view.ts
+run/161-union-member-order.ts
+run/162-union-widen.ts
+run/163-union-switch-subunion.ts
+run/164-null-local.ts
+run/165-record-field-order.ts
 run/17-trap-i32-add-overflow.ts
 run/18-trap-i32-unary-minus.ts
 run/19-trap-divtrunc-overflow.ts

@@ -13,6 +13,7 @@
 typedef struct { napi_value obj; void *data; uint32_t len, cap, esize; napi_typedarray_type tt; } sts_vec;
 typedef struct { void *data; uint32_t len; } sts_slice;
 typedef struct { uint32_t pool, gen, idx; } sts_handle; // a Pool handle: three u32s, 12 bytes (Q188 (a))
+typedef struct { bool some; } sts_null; // a value of type `null`: never present, so `x === null` reads `!x.some` as for `T | null`
 
 static _Thread_local napi_env sts_env;
 static _Thread_local napi_ref sts_host; // { trap(code, file, line, col), create(alloc, cap, elem) }

@@ -32,6 +32,19 @@ const isStruct = (t: Type): t is Extract<Type, { k: "record" }> => t.k === "reco
 const AUTH = new Set<string>(AUTHORITIES);
 const hasTParam = (t: Type): boolean => t.k === "tparam" || (t.k === "gen" && t.args.some(hasTParam)) || (t.k === "record" && t.fields.some((f) => hasTParam(f.type))) || (t.k === "union" && t.members.some(hasTParam)) || (t.k === "fn" && (t.params.some(hasTParam) || hasTParam(t.ret)));
 const elemOf = (t: Type): Type => (t as { args: Type[] }).args[0]!;
+/** The order C uses for record fields (`kind` first, then by name) and tagged union members (by `kind`), so types
+ * that differ only in that order share one C type (#19). */
+const byName = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+const cfields = (t: Extract<Type, { k: "record" }>): Field[] => [...t.fields].sort((a, b) => (a.name === "kind" ? -1 : b.name === "kind" ? 1 : byName(a.name, b.name)));
+const umembers = (u: Extract<Type, { k: "union" }>): Type[] => [...u.members].sort((a, b) => byName(kindOf(a)!, kindOf(b)!));
+/** The key of a C type: `show` of the type in C order. */
+function canon(t: Type): Type {
+  if (t.k === "record") return { ...t, fields: cfields(t).map((f) => ({ ...f, type: canon(f.type) })) };
+  if (t.k === "union") { const ms = [...t.members]; return { ...t, members: (isTaggedUnion(t) ? umembers(t) : ms.sort((a, b) => byName(show(a), show(b)))).map(canon) }; }
+  if (t.k === "gen") return { ...t, args: t.args.map(canon) };
+  return t;
+}
+const ckey = (t: Type): string => show(canon(t));
 const borrowMode = (t: Type): "Ref" | "Mut" | undefined => (t.k === "gen" && (t.name === "Ref" || t.name === "Mut") ? t.name : undefined);
 
 interface Local { c: string; t: Type; ptr: boolean }
@@ -139,7 +152,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
   function ctype(t: Type, where: string): string {
     switch (t.k) {
       case "num": return CNUM[t.name];
-      case "prim": if (t.name === "boolean") return "bool"; if (t.name === "void" || t.name === "never") return "void"; break;
+      case "prim": if (t.name === "boolean") return "bool"; if (t.name === "void" || t.name === "never") return "void"; if (t.name === "null") return "sts_null"; break;
       case "lit": litId(t.value); return "int32_t"; // Q043: only `kind` fields and their comparisons
       case "record": return struct(t, where);
       case "gen":
@@ -168,7 +181,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         if (lu.members.every((m) => m.k === "lit")) { for (const m of lu.members) litId((m as { value: string }).value); return "int32_t"; }
         const n = nonNull(t);
         if (n && (n.k === "num" || isBool(n) || n.k === "lit" || (n.k === "union" && n.members.every((m) => m.k === "lit")) || (isStruct(n) && isCopy(n)) || isTaggedUnion(n) || (n.k === "gen" && (n.name === "Handle" || n.name === "ArenaBuf")))) {
-          const key = show(t);
+          const key = ckey(t);
           let name = nullables.get(key);
           if (!name) { const inner = ctype(n, where); name = `N${nullables.size}`; nullables.set(key, name); typedefs.push(`typedef struct { bool some; ${inner} v; } ${name};`); }
           return name;
@@ -217,11 +230,8 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     return tr.name;
   }
 
-  /** Fields in C order: `kind` first (the common initial sequence of a union's members, D104), then by name. */
-  const cfields = (t: Extract<Type, { k: "record" }>): Field[] => [...t.fields.filter((f) => f.name === "kind"), ...t.fields.filter((f) => f.name !== "kind")];
-
   function struct(t: Extract<Type, { k: "record" }>, where: string): string {
-    const key = show(t);
+    const key = ckey(t);
     const have = structs.get(key);
     if (have) return have;
     const fs = cfields(t).map((f) => `${ctype(f.type, where)} f_${f.name};`); // nested types are defined first
@@ -237,17 +247,36 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
 
   /** Tagged union (and Result, Q043): a C union of its member structs, which all start with `kind` (D104). */
   function union(t: Extract<Type, { k: "union" }>, where: string): string {
-    const key = show(t);
+    const key = ckey(t);
     const have = unions.get(key);
     if (have) return have;
-    const ms = t.members.map((m) => ctype(m, where));
+    const ms = umembers(t).map((m) => ctype(m, where));
     const name = `U${unions.size}`;
     unions.set(key, name);
     typedefs.push(`typedef union { int32_t kind; ${ms.map((m, i) => `${m} m${i};`).join(" ")} } ${name};`);
-    const ks = t.members.map((m) => litId(kindOf(m)!));
+    const ks = umembers(t).map((m) => litId(kindOf(m)!));
     helpers.push(`static ${name} in_${name}(napi_value o) { ${name} r; int32_t k = sts_lit_in(sts_get(o, "kind")); ${ks.map((k, i) => `if (k == ${k}) { r.m${i} = in_${ms[i]}(o); return r; }`).join(" ")} sts_fail("bad union tag"); }`);
     helpers.push(`static napi_value out_${name}(${name} v) { ${ks.map((k, i) => `if (v.kind == ${k}) return out_${ms[i]}(v.m${i});`).join(" ")} sts_fail("bad union tag"); }`);
     return name;
+  }
+  /** `v` of union `from` as union `to` where their C types differ (#19): a wider union, a sub-union the checker
+   * narrowed to, and `T | null` of those. Members move by `kind`; a kind `to` lacks cannot occur (the checker). */
+  const cvts = new Set<string>();
+  function cvt(v: string, from: Type, to: Type, where: string): string {
+    const cf = ctype(from, where), ct = ctype(to, where);
+    if (cf === ct) return v;
+    const name = `cv_${cf}_${ct}`;
+    if (!cvts.has(name)) {
+      let body: string;
+      if (nonNull(from) && nonNull(to)) body = `${ct} r = {0}; r.some = x.some; if (x.some) r.v = ${cvt("x.v", nonNull(from)!, nonNull(to)!, where)}; return r;`;
+      else if (isTaggedUnion(from) && isTaggedUnion(to)) {
+        const fm = umembers(from);
+        body = `${ct} r; switch (x.kind) { ${fm.flatMap((m, i) => { const j = memberOf(to, kindOf(m)!); return j < 0 ? [] : [`case ${litId(kindOf(m)!)}: r.m${j} = x.m${i}; return r;`]; }).join(" ")} } sts_fail("bad union tag");`;
+      } else throw new CUnsupported(where, `converting '${show(from)}' to '${show(to)}'`);
+      cvts.add(name);
+      helpers.push(`static ${ct} ${name}(${cf} x) { ${body} }`);
+    }
+    return `${name}(${v})`;
   }
   /** C string literal (octal escapes keep any byte valid). */
   const cstr = (x: string): string => `"${[...Buffer.from(x)].map((b) => (/[A-Za-z0-9_ :,.{}\[\]-]/.test(String.fromCharCode(b)) ? String.fromCharCode(b) : `\\${b.toString(8).padStart(3, "0")}`)).join("")}"`;
@@ -280,7 +309,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       }
       case "uni": {
         const u = t as Extract<Type, { k: "union" }>;
-        const ms = l.m.map((m, i) => { const k = ((m as Extract<Lay, { t: "rec" }>).f[0]!.l as Extract<Lay, { t: "lit" }>).v[i]!; const j = memberOf(u, k); return { i, j, k, p: packed(m, u.members[j]!, where) }; });
+        const ms = l.m.map((m, i) => { const k = ((m as Extract<Lay, { t: "rec" }>).f[0]!.l as Extract<Lay, { t: "lit" }>).v[i]!; const j = memberOf(u, k); return { i, j, k, p: packed(m, umembers(u)[j]!, where) }; });
         ld = `${ct} r; switch (STS_LD(uint32_t, p)) { ${ms.map((m) => `case ${m.i}: r.m${m.j} = ld_${m.p}(p); return r;`).join(" ")} } sts_fail("bad union tag");`;
         st = `switch (v.kind) { ${ms.map((m) => `case ${litId(m.k)}: st_${m.p}(p, v.m${m.j}); return;`).join(" ")} } sts_fail("bad union tag");`;
         break;
@@ -330,7 +359,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     if (isGen(t, "RingTx") || isGen(t, "RingRx")) return [`${place}.obj = ${keep ? "sts_box_ref" : "sts_box_unref"}(${place}.obj);`];
     if (t.k === "record") return t.fields.flatMap((f) => boxFix(f.type, `${place}.f_${f.name}`, keep, where));
     if (t.k === "union" && isTaggedUnion(t)) {
-      return t.members.flatMap((m, j) => {
+      return umembers(t).flatMap((m, j) => {
         const inner = boxFix(m, `${place}.m${j}`, keep, where);
         return inner.length ? [`if (${place}.kind == ${litId(kindOf(m)!)}) { ${inner.join(" ")} }`] : [];
       });
@@ -346,7 +375,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     return { z: `${l.z}`, ld: (d, i) => `ld_${p}(${at(d, i)})`, st: (d, i, v) => `st_${p}(${at(d, i)}, ${v});` };
   }
   /** Index of the member of tagged union `u` whose kind is `k`. */
-  const memberOf = (u: Extract<Type, { k: "union" }>, k: string): number => u.members.findIndex((m) => kindOf(m) === k);
+  const memberOf = (u: Extract<Type, { k: "union" }>, k: string): number => umembers(u).findIndex((m) => kindOf(m) === k);
 
   function inConv(t: Type, v: string, where: string): string {
     if (t.k === "num") return `(${CNUM[t.name]})sts_num(${v})`;
@@ -648,6 +677,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         const n = ctype(to, this.where);
         return isNull(from) ? `((${n}){ .some = false })` : `((${n}){ .some = true, .v = ${this.conv(v, from, nonNull(to)!)} })`; // a member goes into its union first
       }
+      if (to.k === "union" && from.k === "union" && (isTaggedUnion(to) || nonNull(to))) return cvt(v, from, to, this.where);
       return v;
     }
 
@@ -665,7 +695,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         case K.TrueKeyword: return "true";
         case K.StringLiteral: return `((int32_t)${litId((e as ts.StringLiteral).text)})`; // Q043: a `kind` value
         case K.FalseKeyword: return "false";
-        case K.NullKeyword: return "0";
+        case K.NullKeyword: return "((sts_null){ false })";
         case K.Identifier: return this.ident(e as ts.Identifier);
         case K.PrefixUnaryExpression: return this.prefix(e as ts.PrefixUnaryExpression);
         case K.BinaryExpression: return this.binary(e as ts.BinaryExpression);
@@ -840,10 +870,11 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       if (decl.k !== "union") return c;
       const inner = nonNull(decl);
       if (inner) {
-        if (now.k === "union" && now.members.some(isNull)) return c; // still `T | null`
-        return inner.k === "union" && isTaggedUnion(inner) && now.k === "record" ? `${c}.v.m${memberOf(inner, kindOf(now)!)}` : `${c}.v`;
+        if (now.k === "union" && now.members.some(isNull)) return cvt(c, decl, now, this.where); // still `T | null`
+        return this.narrow(`${c}.v`, inner, now);
       }
-      if (now.k === "union" || !isTaggedUnion(decl)) return c; // a literal union narrowed to one literal keeps its id
+      if (!isTaggedUnion(decl)) return c; // a literal union narrowed to one literal keeps its id
+      if (now.k === "union") return cvt(c, decl, now, this.where); // a sub-union (a `switch` with several labels)
       return `${c}.m${memberOf(decl, kindOf(now)!)}`;
     }
 
@@ -936,7 +967,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
             case "panic": this.emit(`sts_trap(6, ${this.pos(callee)});`); return stmt ? undefined : "0";
             case "ok": case "err": { // Result (Q043): a member of the union
               if (t.k !== "union" || !isTaggedUnion(t)) throw this.no(e, `'${name}' of type ${show(t)}`);
-              const v = this.ex(e.arguments[0]!), i = memberOf(t, name), mt = t.members[i] as Extract<Type, { k: "record" }>;
+              const v = this.ex(e.arguments[0]!), i = memberOf(t, name), mt = umembers(t)[i] as Extract<Type, { k: "record" }>;
               const f = mt.fields.find((x) => x.name !== "kind")!;
               return this.t(t, `((${ctype(t, this.where)}){ .m${i} = { .f_kind = ${litId(name)}, .f_${f.name} = ${this.conv(v, this.typeOf(e.arguments[0]!), f.type)} } })`, e);
             }
