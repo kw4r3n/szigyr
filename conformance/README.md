@@ -13,6 +13,12 @@ Put it in `accept/`, `reject/` or `run/`. The header lives in the entry file, fr
      No trap line means no trap is allowed. A case with only `expect-trap` (no output lines) does not compare stdout.
 2. `// stage: N` directly after: the ROADMAP stage that must pass this case (required).
    `STS_STAGE=N` runs only cases with stage <= N.
-3. Optional `// open-question: Q012` lines (ignored by the harness).
+3. Optional `// backend: c` directly after the `// stage: N` line (SPEC §14.7): the case is
+   C-only. A run case then runs on the C backend alone; on the JS backend it must execute
+   nothing and stop with E4009. If a pkg-config package named by the case's `c:` specifiers
+   is unavailable in this environment, the case is skipped (and counted in the output),
+   never failed. A reject case for E4009 is verified through `run` (which reports it before
+   executing), since `check` never reports E4009.
+4. Optional `// open-question: Q012` lines (ignored by the harness).
 
 Messages are never compared. Commands: `pnpm conformance` (run), `pnpm verify:conformance` (static checks).
