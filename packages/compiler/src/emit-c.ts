@@ -446,10 +446,12 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     const isVoid = ret.k === "prim" && (ret.name === "void" || ret.name === "never");
     return [
       `static napi_value w_${i.name}(napi_env env, napi_callback_info info) {`,
-      `  sts_env = env; sts_depth = 0; sts_err = 0; sts_nvecs = 0; if (!sts_stack_lim) sts_stack_init();`,
+      `  sts_env = env; sts_depth = 0; sts_err = 0; sts_nvecs = 0;`,
       `  size_t argc = ${n}; napi_value argv[${Math.max(n, 1)}]; napi_get_cb_info(env, info, &argc, argv, 0, 0);`,
       `  struct { int ok; ${frame.join(" ")} } *volatile fr = calloc(1, sizeof *fr);`,
+      `  if (!fr) { sts_err = "out of memory"; return sts_throw(); }`, // no jump target yet, so not sts_fail
       `  if (setjmp(sts_jb)) { if (fr->ok) { fr->ok = 0; ${wb.join(" ")} } sts_vec_sync(); sts_pool_sync(); sts_arena_sync(); free(fr); return sts_throw(); }`,
+      `  if (!sts_stack_lim) sts_stack_init();`, // after setjmp: its sts_fail jumps to sts_jb
       ...lines,
       `  fr->ok = 1;`,
       isVoid ? `  ${i.name}(${args.join(", ")});` : `  ${ctype(ret, where)} r = ${i.name}(${args.join(", ")});`,

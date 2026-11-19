@@ -82,7 +82,7 @@ static void sts_tramp_stack_init(void) {
 // Vec handles live until the boundary call returns; the list is reset per entry.
 static _Thread_local sts_vec **sts_vecs; static _Thread_local size_t sts_nvecs, sts_capvecs;
 static sts_vec *sts_vec_new(void) {
-  if (sts_nvecs == sts_capvecs) { sts_capvecs = sts_capvecs ? sts_capvecs * 2 : 16; sts_vecs = realloc(sts_vecs, sts_capvecs * sizeof *sts_vecs); if (!sts_vecs) sts_fail("out of memory"); }
+  if (sts_nvecs == sts_capvecs) { size_t c_ = sts_capvecs ? sts_capvecs * 2 : 16; void *p_ = realloc(sts_vecs, c_ * sizeof *sts_vecs); if (!p_) sts_fail("out of memory"); sts_vecs = p_; sts_capvecs = c_; }
   sts_vec *v = calloc(1, sizeof *v); if (!v) sts_fail("out of memory");
   return sts_vecs[sts_nvecs++] = v;
 }
@@ -141,7 +141,7 @@ static void sts_vec_sync(void) {
 typedef struct { napi_value obj; void *data; uint32_t len, cap, esize; uint32_t *gens; uint8_t *occ; int32_t *nextFree; int64_t freeHead, nextFresh; uint32_t id; } sts_pool;
 static _Thread_local sts_pool **sts_pools; static _Thread_local size_t sts_npools, sts_cappools;
 static sts_pool *sts_pool_new(void) {
-  if (sts_npools == sts_cappools) { sts_cappools = sts_cappools ? sts_cappools * 2 : 16; sts_pools = realloc(sts_pools, sts_cappools * sizeof *sts_pools); if (!sts_pools) sts_fail("out of memory"); }
+  if (sts_npools == sts_cappools) { size_t c_ = sts_cappools ? sts_cappools * 2 : 16; void *p_ = realloc(sts_pools, c_ * sizeof *sts_pools); if (!p_) sts_fail("out of memory"); sts_pools = p_; sts_cappools = c_; }
   sts_pool *p = calloc(1, sizeof *p); if (!p) sts_fail("out of memory");
   return sts_pools[sts_npools++] = p;
 }
@@ -204,7 +204,7 @@ static napi_value sts_abuf_out(sts_abuf b) {
 typedef struct { napi_value obj; void *data; uint32_t cap, used, gen, id; uint32_t *roff; const char **rdesc; size_t nrec, caprec; } sts_arena;
 static _Thread_local sts_arena **sts_arenas; static _Thread_local size_t sts_narenas, sts_caparenas;
 static sts_arena *sts_arena_new(void) {
-  if (sts_narenas == sts_caparenas) { sts_caparenas = sts_caparenas ? sts_caparenas * 2 : 16; sts_arenas = realloc(sts_arenas, sts_caparenas * sizeof *sts_arenas); if (!sts_arenas) sts_fail("out of memory"); }
+  if (sts_narenas == sts_caparenas) { size_t c_ = sts_caparenas ? sts_caparenas * 2 : 16; void *p_ = realloc(sts_arenas, c_ * sizeof *sts_arenas); if (!p_) sts_fail("out of memory"); sts_arenas = p_; sts_caparenas = c_; }
   sts_arena *a = calloc(1, sizeof *a); if (!a) sts_fail("out of memory");
   return sts_arenas[sts_narenas++] = a;
 }
