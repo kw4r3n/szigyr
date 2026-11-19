@@ -538,7 +538,11 @@ function conditional(c: Checker, e: ts.ConditionalExpression, want: Type | undef
   if (isErr(a) || isErr(b)) return ERROR;
   if (assignable(a, b)) return b;
   if (assignable(b, a)) return a;
-  if (isNull(a) || isNull(b) || (isStr(a) && isStr(b))) return union([a, b]);
+  if (isNull(a) || isNull(b) || (isStr(a) && isStr(b))) {
+    const u = union([a, b]);
+    if (u.k === "union" && hasRawPtr(u)) { c.at("E4008", e, "'Ptr' / 'ConstPtr' cannot be a member of a union or 'T | null'"); return ERROR; }
+    return u;
+  }
   c.at("E2002", e.whenFalse, `branches have different types '${show(a)}' and '${show(b)}'`);
   return ERROR;
 }
@@ -770,10 +774,10 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
   }
   const ids = new Set(sig.tparams.map((p) => p.id));
   const m = new Map<number, Type>();
-  if (e.typeArguments) for (const t of e.typeArguments) c.walkTypePos(t, sig.tcheck === "castptr" ? "ptrarg" : "typearg", { unsafe: c.fx.unsafe, cdecl: false }); // §14.4; Q219: a cast target is a pointee, so CType and Ptr may sit there as they may behind Ptr
+  if (e.typeArguments) for (const t of e.typeArguments) c.walkTypePos(t, sig.tcheck === "castptr" ? "ptrarg" : sig.tcheck === "chandle" ? "chandlearg" : "typearg", { unsafe: c.fx.unsafe, cdecl: false }); // §14.4, §14.5; Q219: cast / CHandle targets are pointees
   if (e.typeArguments) {
     if (e.typeArguments.length !== sig.tparams.length) { c.at("E2002", anchor, `expects ${sig.tparams.length} type argument(s)`); return ERROR; }
-    sig.tparams.forEach((p, i) => m.set(p.id, c.typeOf(e.typeArguments![i]!, sig.tcheck === "castptr"))); // Q217: a cast target is a pointee, and a pointee may be void (§14.4)
+    sig.tparams.forEach((p, i) => m.set(p.id, c.typeOf(e.typeArguments![i]!, sig.tcheck === "castptr" || sig.tcheck === "chandle"))); // Q217, §14.5: pointees may be void
   }
   const open = (t: Type): boolean => hasTParam(subst(t, m), ids);
   const later: (Type | undefined)[] = [];

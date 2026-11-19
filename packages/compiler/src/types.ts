@@ -281,7 +281,8 @@ export function movesLike(t: Type): boolean {
 
 const isAuthority = (t: Type): boolean => t.k === "opaque" && (AUTHORITIES as readonly string[]).includes(t.name);
 /** An authority anywhere in `t` (E4006 in rt, §6). */
-export const hasAuthority = (t: Type): boolean => isAuthority(t) || (t.k === "union" && t.members.some(hasAuthority)) || (t.k === "gen" && t.args.some(hasAuthority));
+export const hasAuthority = (t: Type): boolean =>
+  isAuthority(t) || (t.k === "record" && t.fields.some((f) => hasAuthority(f.type))) || (t.k === "union" && t.members.some(hasAuthority)) || (t.k === "gen" && t.args.some(hasAuthority));
 /** §3.3 (Q040 - Q043): the types strict / rt code may use. Authorities are strict-only (rt: E4006). */
 export function layerOk(t: Type): boolean {
   switch (t.k) {
@@ -472,7 +473,7 @@ export function ptrTargetOk(t: Type): boolean {
   switch (t.k) {
     case "error": case "num": case "tparam": return true;
     case "prim": return t.name === "boolean" || t.name === "void" || t.name === "null";
-    case "record": return true;
+    case "record": return t.struct ? t.fields.every((f) => ptrTargetOk(f.type)) : isCopy(t);
     case "union": return t.members.every(ptrTargetOk);
     case "gen":
       return t.name === "CType" || t.name === "Vec" || t.name === "Pool" || t.name === "Handle" || t.name === "Arena" || t.name === "ArenaBuf" || t.name === "RingTx" || t.name === "RingRx" || t.name === "CHandle" ||

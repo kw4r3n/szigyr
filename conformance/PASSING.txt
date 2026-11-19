@@ -75,6 +75,7 @@ accept/73-cfn-fn-ptr-local.ts
 accept/74-isolate-sendable-types.ts
 accept/75-isolate-spawn.ts
 accept/76-cast-to-ctype.ts
+accept/77-chandle-create-void.ts
 reject/E1000-array-suffix-type.ts
 reject/E1000-await-in-non-async-arrow.ts
 reject/E1000-await-outside-async.ts
@@ -551,13 +552,16 @@ reject/E4007-c-decl-struct-param.ts
 reject/E4007-cfn-of-fn-returning-struct.ts
 reject/E4007-cfn-of-fn-with-fn-type-param.ts
 reject/E4007-cfn-of-fn-with-struct-param.ts
+reject/E4007-chandle-target-non-copy-record.ts
 reject/E4007-ctype-as-param-type.ts
 reject/E4007-ctype-bad-name.ts
 reject/E4007-ptr-target-array.ts
+reject/E4007-ptr-target-non-copy-record.ts
 reject/E4008-c-call-in-safe-function.ts
 reject/E4008-call-ptr-signature-function.ts
 reject/E4008-cfn-in-safe-function.ts
 reject/E4008-chandle-get-in-safe-function.ts
+reject/E4008-inferred-ptr-null.ts
 reject/E4008-ptr-in-struct-field.ts
 reject/E4008-ptr-param-in-safe-function.ts
 reject/E4009-c-module.ts
