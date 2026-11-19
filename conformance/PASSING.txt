@@ -71,6 +71,7 @@ accept/69-extern-header-check.ts
 accept/70-ring.ts
 accept/71-ptr-box-state.ts
 accept/72-constptr-borrow.ts
+accept/73-cfn-fn-ptr-local.ts
 reject/E1000-array-suffix-type.ts
 reject/E1000-await-in-non-async-arrow.ts
 reject/E1000-await-outside-async.ts
@@ -440,6 +441,7 @@ reject/E3008-slice-of-call-result.ts
 reject/E3008-slice-of-chandle-get.ts
 reject/E3008-struct-literal-as-ref-arg.ts
 reject/E3008-vec-create-as-ref-arg.ts
+reject/E4001-cfn-of-strict-function.ts
 reject/E4001-file-rt-function-override-strict.ts
 reject/E4001-managed-calls-rt-unsafe.ts
 reject/E4001-managed-function-as-fn-arg.ts
@@ -510,6 +512,8 @@ reject/E4007-box-of-vec.ts
 reject/E4007-c-decl-first-param-not-ffi.ts
 reject/E4007-c-decl-pointee-usize.ts
 reject/E4007-c-decl-struct-param.ts
+reject/E4007-cfn-of-fn-returning-struct.ts
+reject/E4007-cfn-of-fn-with-fn-type-param.ts
 reject/E4007-cfn-of-fn-with-struct-param.ts
 reject/E4007-ctype-as-param-type.ts
 reject/E4007-ctype-bad-name.ts
@@ -614,7 +618,14 @@ run/135-trap-ptr-null-write.ts
 run/136-trap-ptr-null-borrow.ts
 run/137-trap-ptr-null-unbox.ts
 run/138-trap-ptr-null-slice.ts
+run/139-cfn-basic.ts
 run/14-vec-slice.ts
+run/140-cfn-usize-trap.ts
+run/141-cfn-trap-boundary-return.ts
+run/142-cfn-trap-next-task.ts
+run/143-cfn-trap-main-end.ts
+run/144-cfn-trap-race.ts
+run/145-cfn-ring-thread-pop.ts
 run/15-owned-cell.ts
 run/16-struct-f32.ts
 run/17-trap-i32-add-overflow.ts
