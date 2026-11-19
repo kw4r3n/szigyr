@@ -862,7 +862,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       const rt = this.typeOf(p.expression);
       if ((isGen(rt, "Vec") || isGen(rt, "Slice")) && name === "length") { const s = this.seq(p.expression); return this.t({ k: "num", name: "usize" }, s.len, p); }
       if (isGen(rt, "Pool") && (name === "length" || name === "capacity")) return this.t({ k: "num", name: "usize" }, `${this.ex(p.expression)}->${name === "length" ? "len" : "cap"}`, p);
-      if (isGen(rt, "Arena") && name === "remaining") return this.t({ k: "num", name: "usize" }, `${this.ex(p.expression)}->cap - ${this.ex(p.expression)}->used`, p);
+      if (isGen(rt, "Arena") && name === "remaining") { const a = this.ex(p.expression); return this.t({ k: "num", name: "usize" }, `${a}->cap - ${a}->used`, p); }
       if (isGen(rt, "ArenaBuf") && name === "length") return this.t({ k: "num", name: "usize" }, `${this.ex(p.expression)}.len`, p);
       if (isStruct(rt)) {
         const t = this.typeOf(p);
@@ -1022,8 +1022,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         const et = elemOf(rt), el = elem(et, this.where);
         const pv = `t${this.tmp++}`;
         this.emit(`sts_pool *${pv} = ${this.ex(p.expression)};`);
-        const hv = () => this.ex(e.arguments[0]!);
-        const chk = () => this.emit(`if (!sts_pool_valid(${pv}, ${hv()})) sts_trap(11, ${this.pos(p.name)});`); // T011 at the member name (Q188 (a))
+        const chk = (h: string): void => this.emit(`if (!sts_pool_valid(${pv}, ${h})) sts_trap(11, ${this.pos(p.name)});`); // T011 at the member name (Q188 (a))
         switch (m) {
           case "insert": {
             const x = this.t(et, this.conv(this.ex(e.arguments[0]!), this.typeOf(e.arguments[0]!), et), e);
@@ -1032,21 +1031,23 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
             this.emit(`if (${pv}->len >= ${pv}->cap) { ${r}.some = false; } else { uint32_t pi; if (${pv}->freeHead >= 0) { pi = (uint32_t)${pv}->freeHead; ${pv}->freeHead = ${pv}->nextFree[pi]; ${pv}->gens[pi] += 1; } else pi = (uint32_t)${pv}->nextFresh++; ${pv}->occ[pi] = 1; ${el.st(`${pv}->data`, "pi", x)} ${pv}->len++; ${r}.some = true; ${r}.v.pool = ${pv}->id; ${r}.v.gen = ${pv}->gens[pi]; ${r}.v.idx = pi; }`);
             return this.t(t, r, e);
           }
-          case "get": chk(); return this.t(t, el.ld(`${pv}->data`, `${hv()}.idx`), e);
+          case "get": { const h = this.ex(e.arguments[0]!); chk(h); return this.t(t, el.ld(`${pv}->data`, `${h}.idx`), e); }
           case "set": {
-            chk();
+            const h = this.ex(e.arguments[0]!);
             const x = this.t(et, this.conv(this.ex(e.arguments[1]!), this.typeOf(e.arguments[1]!), et), e);
-            this.emit(el.st(`${pv}->data`, `${hv()}.idx`, x));
+            chk(h);
+            this.emit(el.st(`${pv}->data`, `${h}.idx`, x));
             return stmt ? undefined : "0";
           }
           case "remove": {
-            chk();
+            const h = this.ex(e.arguments[0]!);
+            chk(h);
             const ct = ctype(et, this.where), r = `t${this.tmp++}`;
-            this.emit(`${ct} ${r} = ${el.ld(`${pv}->data`, `${hv()}.idx`)};`);
-            this.emit(`${pv}->occ[${hv()}.idx] = 0; ${pv}->nextFree[${hv()}.idx] = (int32_t)${pv}->freeHead; ${pv}->freeHead = ${hv()}.idx; ${pv}->len--;`);
+            this.emit(`${ct} ${r} = ${el.ld(`${pv}->data`, `${h}.idx`)};`);
+            this.emit(`${pv}->occ[${h}.idx] = 0; ${pv}->nextFree[${h}.idx] = (int32_t)${pv}->freeHead; ${pv}->freeHead = ${h}.idx; ${pv}->len--;`);
             return this.t(t, r, e);
           }
-          case "has": return this.t(t, `sts_pool_valid(${pv}, ${hv()})`, e);
+          case "has": { const h = this.ex(e.arguments[0]!); return this.t(t, `sts_pool_valid(${pv}, ${h})`, e); }
         }
         throw this.no(p.name, `the method '${m}' on ${show(rt)}`);
       }

@@ -647,6 +647,8 @@ run/148-isolate-ring.ts
 run/149-isolate-trap.ts
 run/15-owned-cell.ts
 run/150-isolate-close.ts
+run/151-pool-handle-side-effect.ts
+run/152-arena-remaining-side-effect.ts
 run/16-struct-f32.ts
 run/17-trap-i32-add-overflow.ts
 run/18-trap-i32-unary-minus.ts
