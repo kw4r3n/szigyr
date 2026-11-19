@@ -6,7 +6,7 @@ import { tparamShells, type FnSym, type Layer, type LocalSym } from "./modules.t
 import { BUILTIN_FUNCTIONS, GLOBAL_AUTHORITIES, NAMESPACES, RESERVED, genMember, nsMember, opaqueMember, stringMember, type Member } from "./builtins.ts";
 import { isDeterministic } from "./determinism.ts";
 import {
-  BOOL, ERROR, ERROR_RECORD, F64, NEVER, NULL, NUM_NAMES, STR, UNKNOWN, USIZE, VOID, assignable, bindTParams, boxable, field, fn, gen, hasPtr, hasTParam,
+  BOOL, ERROR, ERROR_RECORD, F64, NEVER, NULL, NUM_NAMES, STR, UNKNOWN, USIZE, VOID, assignable, bindTParams, boxable, field, fn, gen, hasPtr, hasRawPtr, hasTParam,
   isBool, isCopy, isInt, isNull, isNum, isOwned, isStr, movesLike, ownedDeep, ptrTargetOk, isTaggedUnion, kindOf, literalFits, nonNull, nullable, num, opaque, result, resultParts,
   same, show, subst, unify, union, unref, castable, demand, layerOk, type FnType, type NumName, type Type,
 } from "./types.ts";
@@ -647,7 +647,7 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
     if (!sym && BUILTIN_FUNCTIONS.has(callee.text)) return builtinCall(c, e, callee, want);
     if (sym?.k === "fn") {
       if (!c.callCheck(sym)) c.at("E4001", callee, `a ${c.fx.layer} function cannot call the ${sym.layer} function '${sym.name}'`);
-      if (sym.sig.params.some(hasPtr) || hasPtr(sym.sig.ret)) { // §14.4.3: an unsafe operation
+      if (sym.sig.params.some(hasRawPtr) || hasRawPtr(sym.sig.ret)) { // §14.4.3: an unsafe operation (Q218: a CHandle in the signature does not count)
         c.noteUnsafeOp(callee);
         if (!c.fx.unsafe) c.at("E4008", callee, `'${sym.name}' has Ptr in its signature; calling it is an unsafe operation`);
       }
@@ -728,7 +728,7 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
   if (e.typeArguments) for (const t of e.typeArguments) c.walkTypePos(t, "typearg", { unsafe: c.fx.unsafe, cdecl: false }); // §14.4
   if (e.typeArguments) {
     if (e.typeArguments.length !== sig.tparams.length) { c.at("E2002", anchor, `expects ${sig.tparams.length} type argument(s)`); return ERROR; }
-    sig.tparams.forEach((p, i) => m.set(p.id, c.typeOf(e.typeArguments![i]!)));
+    sig.tparams.forEach((p, i) => m.set(p.id, c.typeOf(e.typeArguments![i]!, sig.tcheck === "castptr"))); // Q217: a cast target is a pointee, and a pointee may be void (§14.4)
   }
   const open = (t: Type): boolean => hasTParam(subst(t, m), ids);
   const later: (Type | undefined)[] = [];

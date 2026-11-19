@@ -382,6 +382,19 @@ export function demand(t: Type, n: Need): boolean {
 }
 
 /** §14.4 / §7.3: `t` mentions Ptr, ConstPtr or CHandle anywhere (function types included). */
+/** §14.4.3's call rule counts a bare Ptr / ConstPtr in a signature, not one wrapped in a
+ * CHandle: a CHandle's type argument cannot itself hold a Ptr (E4008 where it is written),
+ * so the safe side can hold and pass the handle without ever reading the pointer (Q218). */
+export function hasRawPtr(t: Type): boolean {
+  switch (t.k) {
+    case "gen": return t.name === "Ptr" || t.name === "ConstPtr" || (t.name !== "CHandle" && t.args.some(hasRawPtr));
+    case "record": return t.fields.some((f) => hasRawPtr(f.type));
+    case "union": return t.members.some(hasRawPtr);
+    case "fn": return t.params.some(hasRawPtr) || hasRawPtr(t.ret);
+    case "class": case "iface": return t.args.some(hasRawPtr);
+    default: return false;
+  }
+}
 export function hasPtr(t: Type): boolean {
   switch (t.k) {
     case "gen": return t.name === "Ptr" || t.name === "ConstPtr" || t.name === "CHandle" || t.args.some(hasPtr);
