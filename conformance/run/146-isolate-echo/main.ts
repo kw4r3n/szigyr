@@ -1,0 +1,26 @@
+// expect-output: 2
+// expect-output: 4
+// expect-output: 6
+// expect-output: done
+// stage: 3
+import { worker } from "./worker.ts";
+function orNeg(v: i32 | null): i32 {
+  if (v === null) {
+    return -1;
+  }
+  return v;
+}
+export async function main(sys: System): Promise<void> {
+  const p = sys.spawn.isolate(worker);
+  p.send(1);
+  const a = await p.recv();
+  sys.log.info(`${orNeg(a)}`);
+  p.send(2);
+  const b = await p.recv();
+  sys.log.info(`${orNeg(b)}`);
+  p.send(3);
+  const c = await p.recv();
+  sys.log.info(`${orNeg(c)}`);
+  p.close();
+  sys.log.info("done");
+}
