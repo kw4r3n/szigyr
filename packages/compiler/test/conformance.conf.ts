@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import * as compiler from "../src/index.ts";
-import { filterByStage, loadCases, missingCPackages, runCase } from "./harness.ts";
+import { atCSpecifier, filterByStage, loadCases, missingCPackages, runCase } from "./harness.ts";
 
 const root = fileURLToPath(new URL("../../../conformance", import.meta.url));
 const stage = process.env.STS_STAGE === undefined ? undefined : Number(process.env.STS_STAGE);
@@ -24,7 +24,9 @@ const C_PENDING = new Set<string>([]); // stage-2 run cases the C backend does n
 describe("conformance", () => {
   it(`${cases.length} cases${stage === undefined ? "" : ` (stage <= ${stage})`}`, () => {});
   for (const c of cases) {
-    const missing = c.backend === "c" ? missingCPackages(c, pkgExists) : [];
+    // §14.2: the header check also makes accept cases depend on their libraries, and an E2009
+    // case anchored at a function name; a specifier-anchored E2009 fires in any environment.
+    const missing = c.backend === "c" || c.kind === "accept" || (c.at?.code === "E2009" && !atCSpecifier(c)) ? missingCPackages(c, pkgExists) : [];
     if (missing.length) {
       skipped.push(`${c.name} (pkg-config: ${missing.join(", ")})`);
       it.skip(c.name, () => {});

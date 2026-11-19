@@ -201,3 +201,12 @@ export function cPackages(spec: CaseSpec): string[] {
 export function missingCPackages(spec: CaseSpec, exists: (pkg: string) => boolean): string[] {
   return cPackages(spec).filter((p) => !exists(p));
 }
+
+/** Whether a reject case's expected position is the `c:` specifier literal itself. A package or
+ * header failure anchors there in every environment (§14.2), so such a case runs even where the
+ * package is unavailable; a function-name failure only exists where the library does. */
+export function atCSpecifier(spec: CaseSpec): boolean {
+  if (!spec.at) return false;
+  const line = readFileSync(spec.entry, "utf8").split("\n")[spec.at.line - 1] ?? "";
+  return line.startsWith('"c:', spec.at.col - 1);
+}

@@ -6,6 +6,7 @@ import { checkSyntax } from "./syntax.ts";
 import { Program as Decls, Reporter, checkImportNames, type Module } from "./modules.ts";
 import { Checker } from "./checker.ts";
 import { checkOwnership } from "./ownership.ts";
+import { checkHeaders } from "./headercheck.ts";
 import { trapSites, type TrapSite } from "./traps.ts";
 import { isDeterministic } from "./determinism.ts";
 import { emitFile, EXPORTS, IMP, RT, SOURCE_URL } from "./emit.ts";
@@ -109,6 +110,9 @@ function analyze(entryFile: string): { files: ParsedFile[]; diagnostics: Diagnos
   chk.run();
   if (!rep.out.length) checkOwnership(decls);
   if (rep.out.length) return { files: prog.files, diagnostics: rep.out, decls, unsafeOps: chk.unsafeOps };
+  const hdrs = new Reporter();
+  checkHeaders(decls, hdrs); // P4 (§14.2): the header check runs only on a program clean through P3
+  if (hdrs.out.length) return { files: prog.files, diagnostics: hdrs.out, decls, unsafeOps: chk.unsafeOps };
   const warns = new Reporter();
   loopBoundaryWarnings(decls, warns);
   return { files: prog.files, diagnostics: [], warnings: warns.out, decls, unsafeOps: chk.unsafeOps };
