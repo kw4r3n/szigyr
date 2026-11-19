@@ -1,0 +1,23 @@
+// expect-output: 5 1
+// expect-output: 0 1
+// expect-output: 5 1
+// stage: 2
+class H {
+  n: usize = 0;
+  m(a: Mut<Slice<u32>>, b: Ref<Slice<u32>>): u32 { return u32(a.length + b.length); }
+  bump(): usize { this.n += 1; return this.n; }
+}
+export function main(sys: System): void {
+  const v = Vec.create<u32>(sys.alloc, 8);
+  for (let i: u32 = 0; i < 8; i += 1) { v.push(i); }
+  const h0 = new H();
+  const h: H | null = h0;
+  const r = h?.m(v.slice(0, h0.bump() + 1), v.slice(5, 8));
+  sys.log.info(`${r ?? 0} ${h0.n}`);
+  const hn: H | null = null;
+  const rn = hn?.m(v.slice(0, h0.bump() + 1), v.slice(5, 8));
+  sys.log.info(`${rn ?? 0} ${h0.n}`);
+  const h2 = new H();
+  const r2 = h2.m(v.slice(0, h2.bump() + 1), v.slice(5, 8));
+  sys.log.info(`${r2} ${h2.n}`);
+}

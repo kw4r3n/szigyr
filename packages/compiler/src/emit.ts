@@ -217,10 +217,7 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
   /** Q190 (b) for a method call: the receiver is evaluated before the arguments, as usual. */
   function groupedProp(e: ts.CallExpression, groups: SliceGroupEntry[][], args: string[], awaited: boolean): string {
     const p = e.expression as ts.PropertyAccessExpression;
-    if (p.questionDotToken) { // a null receiver short-circuits before the arguments are evaluated (§10.7)
-      const parts = [...groups.map((g) => `${RT}.checkSlices([${g.map((x) => `[${args[x.arg]}, ${x.mut}, ${at(x.name)}]`).join(", ")}])`), `${RT}.nn(${O}.${p.name.text}(${args.join(", ")}))`];
-      return optional(gen(p.expression), awaited, () => `(${parts.join(", ")})`);
-    }
+    if (p.questionDotToken) return optional(gen(p.expression), awaited, (o) => grouped(e, groups, args, (refs) => `${RT}.nn(${o}.${p.name.text}(${refs.join(", ")}))`)); // §10.7: short-circuit before evaluating args once
     needAp = true;
     const refs = e.arguments.map((_, i) => `${V}[${i}]`);
     const body = `(${O}, ...${V}) => { ${checkStmts(groups, refs)} return ${O}.${p.name.text}(${refs.join(", ")}); }`;
