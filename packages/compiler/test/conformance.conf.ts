@@ -1,21 +1,36 @@
 // Runs conformance/ against the real compiler. Run with `pnpm conformance` (STS_STAGE=N to limit).
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import * as compiler from "../src/index.ts";
-import { filterByStage, loadCases, runCase } from "./harness.ts";
+import { filterByStage, loadCases, missingCPackages, runCase } from "./harness.ts";
 
 const root = fileURLToPath(new URL("../../../conformance", import.meta.url));
 const stage = process.env.STS_STAGE === undefined ? undefined : Number(process.env.STS_STAGE);
 const cases = filterByStage(loadCases(root), stage);
 
 /** D101: stage 2+ run cases also run with strict / rt compiled to C. A missing C toolchain fails these cases (no skip). */
-const cBackend = { ...compiler, run: (f: string) => compiler.run(f, { backend: "c" }) };
+const cBackend = { ...compiler, backend: "c" as const, run: (f: string) => compiler.run(f, { backend: "c" }) };
+
+/** §14.7: a `// backend: c` case needs the pkg-config packages its `c:` specifiers name.
+ * Where one is unavailable the case is skipped (and counted below), never failed. */
+const pkgExists = (pkg: string): boolean => {
+  try { execFileSync("pkg-config", ["--exists", pkg], { stdio: "ignore" }); return true; } catch { return false; }
+};
+const skipped: string[] = [];
 /** Cases whose strict / rt code uses what the C backend does not translate yet (D102). They must fail with that error, so the list stays exact. */
 const C_PENDING = new Set<string>([]); // stage-2 run cases the C backend does not translate yet (none since D105)
 
 describe("conformance", () => {
   it(`${cases.length} cases${stage === undefined ? "" : ` (stage <= ${stage})`}`, () => {});
   for (const c of cases) {
+    const missing = c.backend === "c" ? missingCPackages(c, pkgExists) : [];
+    if (missing.length) {
+      skipped.push(`${c.name} (pkg-config: ${missing.join(", ")})`);
+      it.skip(c.name, () => {});
+      if (c.kind === "run" && c.stage >= 2) it.skip(`${c.name} [c]`, () => {});
+      continue;
+    }
     it(c.name, async () => {
       expect(await runCase(c, compiler)).toEqual([]);
     });
@@ -26,4 +41,5 @@ describe("conformance", () => {
       });
     }
   }
+  if (skipped.length) console.log(`conformance: skipped ${skipped.length} case(s) needing an unavailable C library: ${skipped.join("; ")}`);
 });

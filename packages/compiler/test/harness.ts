@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { Diagnostic, RunResult } from "../src/diagnostics.ts";
 
 export type Kind = "accept" | "reject" | "run";
@@ -8,6 +8,9 @@ export const KINDS: Kind[] = ["accept", "reject", "run"];
 export interface Compiler {
   check(entryFile: string): Diagnostic[];
   run(entryFile: string): Promise<RunResult>;
+  /** Which backend `run` uses; undefined is the JS backend. A `// backend: c` case means
+   * different things to the two backends (§14.7), so runCase has to know. */
+  backend?: "js" | "c";
 }
 
 export interface CaseSpec {
@@ -15,6 +18,8 @@ export interface CaseSpec {
   kind: Kind;
   entry: string; // path of the .ts file carrying the header
   stage: number;
+  /** §14.7: the case is C-only; it runs on the C backend alone and needs its C libraries. */
+  backend?: "c";
   openQuestion?: string;
   at?: { code: string; line: number; col: number }; // reject: expected code/position; run: unused
   output?: string[]; // run: expected stdout lines (undefined when no run expectation on output)
@@ -79,6 +84,8 @@ export function parseCase(entry: string, name = entry): CaseSpec {
   if (!st) return bad(i, "missing '// stage: N' directly after the expectation header");
   spec.stage = +st[1]!;
   i++;
+  if ((lines[i] ?? "") === "// backend: c") { spec.backend = "c"; i++; }
+  else if ((lines[i] ?? "").startsWith("// backend:")) return bad(i, "bad '// backend:' line (want '// backend: c')");
   while ((lines[i] ?? "").startsWith("// open-question:")) {
     const q = /^\/\/ open-question: (Q\d+)$/.exec(lines[i] as string);
     if (!q) return bad(i, "bad '// open-question:' line (want 'Q012')");
@@ -126,7 +133,10 @@ export async function runCase(spec: CaseSpec, compiler: Compiler): Promise<strin
       return fails;
     }
     if (spec.kind === "reject") {
-      const d = [...compiler.check(spec.entry)].sort(
+      // §14.7: E4009 is reported by `run` / `test` before executing, never by `check`,
+      // so an E4009 case is verified through run's diagnostics.
+      const all = spec.at!.code === "E4009" ? (await compiler.run(spec.entry)).diagnostics : compiler.check(spec.entry);
+      const d = [...all].sort(
         (a, b) => a.range.start.line - b.range.start.line || a.range.start.col - b.range.start.col || (a.code < b.code ? -1 : a.code > b.code ? 1 : 0),
       )[0];
       const want = spec.at!;
@@ -134,6 +144,17 @@ export async function runCase(spec: CaseSpec, compiler: Compiler): Promise<strin
       const s = d.range.start;
       if (d.code === want.code && s.line === want.line && s.col === want.col) return [];
       return [`expected ${want.code} @ ${want.line}:${want.col}, got ${d.code} @ ${s.line}:${s.col}`];
+    }
+    if (spec.backend === "c" && (compiler.backend ?? "js") === "js") {
+      // §14.7: on the JS backend a C-only case executes nothing and stops with E4009.
+      const r = await compiler.run(spec.entry);
+      const fails: string[] = [];
+      if (r.diagnostics.length !== 1 || r.diagnostics[0]!.code !== "E4009") {
+        fails.push(`expected the JS backend to stop with E4009, got ${r.diagnostics.length ? r.diagnostics.map((d) => d.code).join(", ") : "no diagnostics"}`);
+      }
+      if (r.stdout !== "") fails.push(`expected no stdout, got ${JSON.stringify(r.stdout)}`);
+      if (r.trap) fails.push(`unexpected trap ${r.trap.code} @ ${r.trap.line}:${r.trap.col}`);
+      return fails;
     }
     const r = await compiler.run(spec.entry);
     const fails: string[] = r.diagnostics.map((d) => `unexpected diagnostic ${d.code}`);
@@ -154,4 +175,29 @@ export async function runCase(spec: CaseSpec, compiler: Compiler): Promise<strin
   } catch (e) {
     return [`threw ${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`];
   }
+}
+
+/** The files that make up a case: its entry file, plus the other sources of a directory case. */
+export function caseFiles(spec: CaseSpec): string[] {
+  if (basename(spec.entry) !== "main.ts") return [spec.entry];
+  const dir = dirname(spec.entry);
+  return readdirSync(dir).filter((n) => n.endsWith(".ts")).sort().map((n) => join(dir, n));
+}
+
+/** The pkg-config packages named by the `c:` specifiers (§14.1) a case's sources declare or
+ * import, in first-use order. */
+export function cPackages(spec: CaseSpec): string[] {
+  const out: string[] = [];
+  for (const f of caseFiles(spec)) {
+    for (const m of readFileSync(f, "utf8").matchAll(/"c:([^":<>\s\\]+):/g)) {
+      if (!out.includes(m[1]!)) out.push(m[1]!);
+    }
+  }
+  return out;
+}
+
+/** The case's C packages that `exists` (a pkg-config lookup) does not know. A `// backend: c`
+ * case with any of these is skipped in this environment, never failed (§14.7). */
+export function missingCPackages(spec: CaseSpec, exists: (pkg: string) => boolean): string[] {
+  return cPackages(spec).filter((p) => !exists(p));
 }

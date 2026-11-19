@@ -1,8 +1,10 @@
 import { fileURLToPath } from "node:url";
-import { readdirSync } from "node:fs";
+import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Diagnostic, RunResult } from "../src/diagnostics.ts";
-import { filterByStage, loadCases, parseCase, runCase, type Compiler } from "./harness.ts";
+import { cPackages, filterByStage, loadCases, missingCPackages, parseCase, runCase, type CaseSpec, type Compiler } from "./harness.ts";
 
 const fx = (p: string) => fileURLToPath(new URL(`./fixtures/${p}`, import.meta.url));
 const diag = (code: string, line: number, col: number): Diagnostic => ({
@@ -18,7 +20,7 @@ const byName = (n: string) => loadCases(fx("good")).find((c) => c.name === n)!;
 describe("header parsing", () => {
   it("loads all good cases incl. directory form", () => {
     expect(loadCases(fx("good")).map((c) => c.name)).toEqual([
-      "accept/ok.ts", "reject/rej.ts", "run/dir", "run/noout.ts", "run/out.ts", "run/trap.ts", "run/traponly.ts",
+      "accept/ok.ts", "reject/e4009.ts", "reject/rej.ts", "run/conly.ts", "run/dir", "run/noout.ts", "run/out.ts", "run/trap.ts", "run/traponly.ts",
     ]);
   });
   it("parses fields", () => {
@@ -27,6 +29,8 @@ describe("header parsing", () => {
     expect(byName("run/trap.ts").trap).toEqual({ code: "T001", line: 5, col: 3 });
     expect(byName("run/noout.ts").output).toEqual([]);
     expect(byName("run/dir").entry).toMatch(/dir\/main\.ts$/);
+    expect(byName("run/conly.ts")).toMatchObject({ kind: "run", stage: 3, backend: "c" });
+    expect(byName("run/out.ts").backend).toBeUndefined();
   });
   it("rejects malformed headers with file:line", () => {
     for (const f of readdirSync(fx("bad"))) {
@@ -84,8 +88,40 @@ describe("runCase", () => {
     expect(await runCase(byName("run/traponly.ts"), fake([], { stdout: "anything\n", trap }))).toEqual([]);
     expect(await runCase(byName("run/traponly.ts"), fake([], { stdout: "x\n" }))).toHaveLength(1);
   });
+  it("reject E4009 is read from run's diagnostics, not from check (§14.7)", async () => {
+    const c = byName("reject/e4009.ts");
+    expect(await runCase(c, fake([], { diagnostics: [diag("E4009", 2, 16)] }))).toEqual([]);
+    expect(await runCase(c, fake([], { diagnostics: [diag("E4009", 2, 17)] }))).toHaveLength(1);
+    expect(await runCase(c, fake([diag("E4009", 2, 16)], { diagnostics: [] }))).toHaveLength(1);
+  });
+  it("a '// backend: c' run case stops with E4009 on the JS backend and runs on the C backend", async () => {
+    const c = byName("run/conly.ts");
+    expect(await runCase(c, fake([], { diagnostics: [diag("E4009", 1, 1)] }))).toEqual([]);
+    expect(await runCase(c, fake([], { stdout: "7\n" }))).toHaveLength(2); // no E4009 stop, and stdout appeared
+    expect(await runCase(c, fake([], { diagnostics: [diag("E4009", 1, 1)], stdout: "x\n" }))).toHaveLength(1);
+    const cfake: Compiler = { ...fake([], { stdout: "7\n" }), backend: "c" };
+    expect(await runCase(c, cfake)).toEqual([]);
+    expect(await runCase(c, { ...fake([], { diagnostics: [diag("E4009", 1, 1)] }), backend: "c" })).toHaveLength(2); // the diagnostic, and no output
+  });
   it("reports a throwing compiler as a failure", async () => {
     const boom: Compiler = { check: () => { throw new Error("x"); }, run: async () => { throw new Error("y"); } };
     expect(await runCase(byName("accept/ok.ts"), boom)).toEqual(["threw Error: x"]);
+  });
+});
+
+describe("C library skip (§14.7)", () => {
+  it("collects the pkg-config packages of a case's c: specifiers", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sts-harness-"));
+    const f = join(dir, "x.ts");
+    writeFileSync(f, 'declare module "c:foo:foo.h" {\n}\nimport { g } from "c:bar:bar.h";\nimport { g as g2 } from "c:foo:foo.h";\n');
+    const spec: CaseSpec = { name: "run/x.ts", kind: "run", entry: f, stage: 3, backend: "c" };
+    expect(cPackages(spec)).toEqual(["foo", "bar"]);
+    expect(missingCPackages(spec, (p) => p === "foo")).toEqual(["bar"]);
+    expect(missingCPackages(spec, () => true)).toEqual([]);
+    expect(missingCPackages(spec, () => false)).toEqual(["foo", "bar"]);
+  });
+  it("a case without c: specifiers needs no library", () => {
+    expect(cPackages(byName("run/conly.ts"))).toEqual([]);
+    expect(missingCPackages(byName("run/conly.ts"), () => false)).toEqual([]);
   });
 });
