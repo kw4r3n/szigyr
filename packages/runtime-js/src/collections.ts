@@ -373,6 +373,8 @@ export class Arena {
     else { this.recs.set(off, { elem, arr: null }); for (let i = 0; i < n; i++) this.writeAt(b, i, init, elem); }
     return b;
   }
+  /** C boundary: a buf the C side allocated at `off`; its values live in the bytes as `elem` (read back by a type-parameter view). */
+  noteC(off: number, elem: ElemKind): void { this.recs.set(off, { elem, arr: null }); }
   view<T>(b: ArenaBuf, elem: ElemKind = "other", pos?: Pos): Slice<T> {
     if (!b || b.arena !== this.id || b.gen !== this.gen) trap("T012", "invalid ArenaBuf", pos);
     const rec = this.recs.get(b.off);

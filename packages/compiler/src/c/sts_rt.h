@@ -200,7 +200,7 @@ static napi_value sts_abuf_out(sts_abuf b) {
   return o;
 }
 // Arena handles live until the boundary call returns, like Pool handles; the list is reset per entry.
-typedef struct { napi_value obj; void *data; uint32_t cap, used, gen, id; } sts_arena;
+typedef struct { napi_value obj; void *data; uint32_t cap, used, gen, id; uint32_t *roff; const char **rdesc; size_t nrec, caprec; } sts_arena;
 static _Thread_local sts_arena **sts_arenas; static _Thread_local size_t sts_narenas, sts_caparenas;
 static sts_arena *sts_arena_new(void) {
   if (sts_narenas == sts_caparenas) { sts_caparenas = sts_caparenas ? sts_caparenas * 2 : 16; sts_arenas = realloc(sts_arenas, sts_caparenas * sizeof *sts_arenas); if (!sts_arenas) sts_fail("out of memory"); }
@@ -221,13 +221,28 @@ static sts_arena *sts_arena_create(napi_value alloc, uint32_t bytes, int pos) {
   sts_alloc_ok(napi_call_function(sts_env, host, f, 2, args, &r), pos);
   return sts_arena_in(r);
 }
-/** Boundary exit: `used` and `gen` changed in C go back to the JS object. The bytes are shared. */
+/** A buf allocated in C: its offset and element kind go to the JS object at the boundary exit,
+ * so a type-parameter `view` in managed code can read its bytes (D116). */
+static void sts_arena_note(sts_arena *a, uint32_t off, const char *desc) {
+  if (a->nrec == a->caprec) {
+    size_t c = a->caprec ? a->caprec * 2 : 8;
+    uint32_t *o = realloc(a->roff, c * sizeof *o); if (!o) sts_fail("out of memory"); a->roff = o;
+    const char **d = realloc(a->rdesc, c * sizeof *d); if (!d) sts_fail("out of memory"); a->rdesc = d;
+    a->caprec = c;
+  }
+  a->roff[a->nrec] = off; a->rdesc[a->nrec++] = desc;
+}
+/** Boundary exit: `used` and `gen` changed in C go back to the JS object, with the notes above. The bytes are shared. */
 static void sts_arena_sync(void) {
   for (size_t i = 0; i < sts_narenas; i++) {
     sts_arena *a = sts_arenas[i]; napi_value n;
     if (napi_create_double(sts_env, (double)a->used, &n) == napi_ok) napi_set_named_property(sts_env, a->obj, "used", n);
     if (napi_create_double(sts_env, (double)a->gen, &n) == napi_ok) napi_set_named_property(sts_env, a->obj, "gen", n);
-    free(a);
+    napi_value f, args[2], r;
+    for (size_t k = 0; k < a->nrec; k++)
+      if (napi_get_named_property(sts_env, a->obj, "noteC", &f) == napi_ok && napi_create_uint32(sts_env, a->roff[k], &args[0]) == napi_ok
+          && napi_create_string_utf8(sts_env, a->rdesc[k], NAPI_AUTO_LENGTH, &args[1]) == napi_ok) napi_call_function(sts_env, a->obj, f, 2, args, &r);
+    free(a->roff); free(a->rdesc); free(a);
   }
   sts_narenas = 0;
 }

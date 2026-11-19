@@ -692,6 +692,7 @@ run/157-detmath-user-dm-name.ts
 run/158-reexport-strict-const
 run/159-arena-views-mixed-size.ts
 run/16-struct-f32.ts
+run/160-arena-c-alloc-generic-view.ts
 run/17-trap-i32-add-overflow.ts
 run/18-trap-i32-unary-minus.ts
 run/19-trap-divtrunc-overflow.ts

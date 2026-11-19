@@ -1069,7 +1069,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
             const x = this.t(et, this.conv(this.ex(e.arguments[1]!), this.typeOf(e.arguments[1]!), et), e);
             const nct = ctype(t, this.where), r = `t${this.tmp++}`;
             this.emit(`${nct} ${r};`);
-            this.emit(`{ uint32_t ao = (${pv}->used + ${lay.a - 1}) & ~${lay.a - 1}u; if ((size_t)ao + (size_t)(${n}) * ${lay.z} > ${pv}->cap) { ${r}.some = false; } else { for (uint32_t k = 0; k < ${n}; k++) ${el.st(`((uint8_t *)${pv}->data + ao)`, "k", x)} ${pv}->used = ao + (${n}) * ${lay.z}; ${r}.some = true; ${r}.v.arena = ${pv}->id; ${r}.v.gen = ${pv}->gen; ${r}.v.off = ao; ${r}.v.len = ${n}; } }`);
+            this.emit(`{ uint32_t ao = (${pv}->used + ${lay.a - 1}) & ~${lay.a - 1}u; if ((size_t)ao + (size_t)(${n}) * ${lay.z} > ${pv}->cap) { ${r}.some = false; } else { for (uint32_t k = 0; k < ${n}; k++) ${el.st(`((uint8_t *)${pv}->data + ao)`, "k", x)} ${pv}->used = ao + (${n}) * ${lay.z}; sts_arena_note(${pv}, ao, ${cstr(elemDesc(et))}); ${r}.some = true; ${r}.v.arena = ${pv}->id; ${r}.v.gen = ${pv}->gen; ${r}.v.off = ao; ${r}.v.len = ${n}; } }`);
             return this.t(t, r, e);
           }
           case "view": {
