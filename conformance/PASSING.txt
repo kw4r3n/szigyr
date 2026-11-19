@@ -182,6 +182,8 @@ reject/E2002-decode-map-target.ts
 reject/E2002-detmath-arg-type.ts
 reject/E2002-detmath-not-called.ts
 reject/E2002-ensures-void-with-parameter.ts
+reject/E2002-eq-need-through-record-authority.ts
+reject/E2002-eq-need-through-record-fn.ts
 reject/E2002-eq-owned-vec.ts
 reject/E2002-fn-arg-type-mismatch.ts
 reject/E2002-generic-class-key-instantiation.ts
@@ -539,6 +541,7 @@ reject/E4006-fs-param-in-rt.ts
 reject/E4006-log-param-in-rt.ts
 reject/E4006-random-param-after-borrow-in-rt.ts
 reject/E4006-rt-generic-authority-type-argument.ts
+reject/E4006-strict-generic-authority-to-rt.ts
 reject/E4007-box-of-arena.ts
 reject/E4007-box-of-struct-with-vec.ts
 reject/E4007-box-of-vec.ts

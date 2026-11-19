@@ -16,7 +16,7 @@ export const OPAQUE_NAMES = new Set<string>([...AUTHORITIES, "JsRef", "Test", "F
 export interface Field { name: string; type: Type; readonly: boolean }
 /** Q127: conditions a type parameter takes on from the positions it is used in, checked on every instantiation. */
 /** `nopromise`: every user type parameter has it (Q130 addendum): a Promise cannot hide behind a type parameter. */
-export type Need = "key" | "copy" | "field" | "borrow" | "eq" | "nopromise" | "noabuf" | "send";
+export type Need = "key" | "copy" | "field" | "borrow" | "eq" | "nopromise" | "noabuf" | "send" | "noauth";
 /** `owner`: the declaring layer for user type parameters (Q068 b): "managed" ones never take owned types, strict / rt ones may. */
 export interface TParam { name: string; id: number; constraint?: Type; need?: Set<Need>; owner?: "managed" | "strict" | "rt" }
 /** `min`: builtin optional trailing parameters (Q032). `prefix`: a builtin callback may take a prefix of the parameters. */
@@ -366,7 +366,21 @@ export function needOk(n: Need, t: Type): boolean {
     case "noabuf": return t.k === "error" || !hasArenaBuf(t);
     case "send": return sendable(t);
     case "nopromise": return !promiseIn(t);
+    case "noauth": return !hasAuthority(t);
   }
+}
+/** Needs that propagate structurally into type parameters nested inside composite types (records, unions, generics). */
+export const DEEP_NEEDS = new Set<Need>(["eq", "noabuf", "send", "nopromise", "noauth"]);
+/** All type parameters occurring anywhere inside `t`. */
+export function collectTParams(t: Type, out: TParam[] = []): TParam[] {
+  switch (t.k) {
+    case "tparam": out.push(t.p); break;
+    case "record": for (const f of t.fields) collectTParams(f.type, out); break;
+    case "union": for (const m of t.members) collectTParams(m, out); break;
+    case "fn": for (const p of t.params) collectTParams(p, out); collectTParams(t.ret, out); break;
+    case "gen": case "class": case "iface": for (const a of t.args) collectTParams(a, out); break;
+  }
+  return out;
 }
 /** A Promise anywhere in `t` except behind a function type (calling the function is checked where it happens). */
 function promiseIn(t: Type): boolean {
@@ -380,8 +394,9 @@ function promiseIn(t: Type): boolean {
 }
 /** `t` meets `n`, or is a type parameter, which then requires `n` of whatever instantiates it (Q127). */
 export function demand(t: Type, n: Need): boolean {
-  if (t.k !== "tparam") return needOk(n, t);
-  (t.p.need ??= new Set()).add(n);
+  if (t.k === "tparam") { (t.p.need ??= new Set()).add(n); return true; }
+  if (!needOk(n, t)) return false;
+  if (DEEP_NEEDS.has(n)) for (const p of collectTParams(t)) (p.need ??= new Set()).add(n);
   return true;
 }
 

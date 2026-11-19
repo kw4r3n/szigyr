@@ -5,7 +5,7 @@ import type { Diagnostic } from "./diagnostics.ts";
 import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { RESERVED, builtinType, isGenName } from "./builtins.ts";
 import {
-  ERROR, GEN_ARITY, NULL, VOID, gen, assignable, bindTParams, demand, fn, isTaggedUnion, sendable, hasAuthority, kindOf, layerOk, movesLike, needOk, holdsOwned, ownedDeep, CONTAINERS, newTParam, nonNull, record, result, show, subst, union,
+  ERROR, GEN_ARITY, NULL, VOID, gen, assignable, bindTParams, collectTParams, DEEP_NEEDS, demand, fn, isTaggedUnion, sendable, hasAuthority, kindOf, layerOk, movesLike, needOk, holdsOwned, ownedDeep, CONTAINERS, newTParam, nonNull, record, result, show, subst, union,
   type ClassSym, type Field, type FnType, type IfaceSym, type TParam, type Type,
 } from "./types.ts";
 
@@ -345,8 +345,16 @@ export class Program {
     for (let changed = true; changed;) {
       changed = false;
       for (const { p, arg } of this.insts) {
-        if (arg.k !== "tparam" || !p.need) continue;
-        for (const n of p.need) if (!arg.p.need?.has(n)) { (arg.p.need ??= new Set()).add(n); changed = true; }
+        const tps = collectTParams(arg);
+        if (!tps.length) continue;
+        if (p.owner === "rt") {
+          for (const tp of tps) if (!tp.need?.has("noauth")) { (tp.need ??= new Set()).add("noauth"); changed = true; }
+        }
+        if (!p.need) continue;
+        for (const n of p.need) {
+          if (arg.k !== "tparam" && !DEEP_NEEDS.has(n)) continue;
+          for (const tp of tps) if (!tp.need?.has(n)) { (tp.need ??= new Set()).add(n); changed = true; }
+        }
       }
     }
     const seen = new Set<string>();
@@ -354,7 +362,7 @@ export class Program {
       const bad = arg.k === "tparam" ? undefined : [...p.need ?? []].find((n) => !needOk(n, arg));
       const key = `${mod.file}:${node.pos}:${p.id}`;
       if (seen.has(key)) continue;
-      if (bad) { seen.add(key); this.rep.at(mod, bad === "copy" || bad === "field" ? "E4002" : bad === "send" ? "E2010" : "E2002", node, `'${show(arg)}' cannot instantiate '${p.name}' (${bad} condition)`); } // Q086: copy / field are §3.3 codes; send is §15.2's
+      if (bad) { seen.add(key); this.rep.at(mod, bad === "copy" || bad === "field" ? "E4002" : bad === "send" ? "E2010" : bad === "noauth" ? "E4006" : "E2002", node, `'${show(arg)}' cannot instantiate '${p.name}' (${bad} condition)`); } // Q086: copy / field are §3.3 codes; send is §15.2's; noauth is §6's
       else if (p.owner && p.owner !== "managed" && arg.k === "tparam" && arg.p.owner === "managed") { seen.add(key); this.rep.at(mod, "E4002", node, `the managed type parameter '${arg.p.name}' cannot instantiate '${p.name}' of a strict / rt function (§3.3 is not checked through it)`); }
       else if (p.owner === "rt" && hasAuthority(arg)) { seen.add(key); this.rep.at(mod, "E4006", node, `'${show(arg)}' cannot instantiate '${p.name}' of an rt function (§6)`); }
       else if (p.owner && p.owner !== "managed" && !layerOk(arg)) { seen.add(key); this.rep.at(mod, "E4002", node, `'${show(arg)}' cannot instantiate '${p.name}' of a strict / rt function (§3.3)`); }
