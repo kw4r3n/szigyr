@@ -785,3 +785,19 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
   - `f` 自身の先頭 `requires` だけを事前条件のスキップ対象とし、再帰呼び出しや呼び出し先の `requires`（T004）を反例として確実に検出するため、トップレベル非ジェネリック `FunctionDeclaration` の先頭 `requires` をモジュール初期化時に `__sts_rt.setPre(fn, pre)` で登録し、`forAll` 呼び出し（インライン式では `pre` を直接渡す）では本体実行前に `pre` を評価する。`pre` の中の別関数呼び出しが起こしたトラップは捕捉せず反例にする。これにより `--backend=js` と `--backend=c`（`native` ラッパー経由）の両方で再帰・呼び出し先の T004 が一致する。
   - 名前付き関数の `boolean` 戻り値 `false` は失敗にせず（`checkBool: false`）、インライン式の `boolean` 戻り値 `false` は失敗にする（`checkBool: true`）。トラップによる反例の失敗メッセージには `trap.message` ではなく `trap.code` のみを使い、`--backend=both` で JS と C の出力が一致するようにした。
 - **確かめ方**: `arbitrary.test.ts`、`forall.test.ts`、`builtins.test.ts`、conformance の `stage: 4` ケース（`accept/` 2 件、`run/` 1 件、`reject/` 35 件）、`pnpm typecheck`、`pnpm verify:conformance`、`pnpm test`、`pnpm conformance`、`sts test --backend=both` がすべて通過。
+
+## D169: ミューテーションテスト `sts mutate`（段階 4-2〜4、Q275〜Q277、2026-11-20）
+
+- **JS 専用実行と対象の自動選別（`packages/compiler/src/mutate.ts`）**:
+  - `analyze(file, parser)`（P1〜P4）で検査し、診断エラーがあれば実行せず終了コード `1` で止める。`c:` 宣言や unsafe 操作が混在していても E4009 で止めず、`c:` の import と `"use unsafe"` 関数を `COnlyReached` を投げるスタブに替えて JS 上で実行する。`m = 0` のベースライン実行で `COnlyReached` に到達した `test(...)` はスキップし、それ以外のテスト失敗・トラップは終了コード `1` で止める。
+  - 指定した各ファイルのモジュール直下 `function` 宣言のうち、`!f.unsafe && isDeterministic(f.sig, false)` を満たす関数だけを自動で変異対象にする。
+- **1 ビルド埋め込み・型/所有権保存・到達記録・ステップ燃料（Q276）**:
+  - `mutate.ts` 専用の計装 JS 変換で、対象関数の本体に 6 種の変異演算子（数値 `+`/`-`/`*`、比較 `<`/`<=`/`>`/`>=`/`===`/`!==`、論理 `&&`/`||`、`if` 条件の `true`/`false` 置換、`boolean`/数値リテラルの `0`/`1` 置換、代入・複合代入・呼び出しの式文削除）を実行時スイッチ（`rt.m === id`）で 1 ビルドに埋め込む。`requires` / `ensures` / `invariant` 内と `switch` の `case` ラベルは変異させない。
+  - `exprTypes` と `localOf` から関数内で絞り込まれた変数・プロパティを収集し、型絞り込みを壊す比較・論理・`if` 置換・非 null 代入の削除、および所有型変数の再代入や `never` 呼び出しの削除を生成しない。二項算術・比較・論理はランタイム補助（`mArith` / `mCmp` / `mLogic`）でオペランドを 1 回ずつ評価し、入れ子式でのコード膨張を防ぐ。
+  - 対象関数の入口に `rt.hit(fnId)`、全関数入口と全ループ（`while` / `do` / `for` / `for..of`）本体の先頭に `rt.step()` を挿す。`m = 0` でテストごとの到達関数集合とステップ数 `S` を記録し、変異実行では到達したテストだけを上限 `max(S * 8 + 1000, 10_000)` で走らせ、超過は `status: "timeout"`（殺傷扱い、生存に数えない）とする。テスト内の `forAll(...)` も `emitPreFn` / `setPre` とともにそのまま動作する。
+- **差分キャッシュと witness 探索（Q277）**:
+  - 既定で `.sts-cache/mutate.json`（`.gitignore` に追加）を読み書きし、`--no-cache` で読み書きとも無効化する。関数ごとの鍵は「対象関数と推移的な呼び出し先（関数・モジュール直下 `const`・`class`）のソーステキスト＋到達したテストのソート済み `[name, source]`＋変換器の版数」の SHA-256 とし、キャッシュ一致時は現在の AST の `id` / `range` に前回結果を当てて `cached: true` で返す。
+  - 生存ミュータントのうち非ジェネリック・1 引数以上・全引数が `gendesc.ts` の `isGeneratable` を満たす関数について、`runtime-js/src/arbitrary.ts`（`createRng` / `generateRaw` / `materializeArgs` / `shrinkRaw` / `formatArgs`）を共有して最大 200 試行・棄却上限 1,000 で `m = 0` と `m = M` を直接呼び比べる。対象関数自身の先頭 `requires`（呼び出し深さ 1 の `ownReq`）による T004 だけを棄却し、再帰や呼び出し先の T004 は観測可能なトラップ差として検出する。戻り値、`Mut` パラメータ・可変コンテナの最終状態、トラップコード、ステップ上限超過の差を検出し、縮小した `witness: { args, base, mutant }`（なければ `null`）と、式文削除の生存には `deadCode: true` を付与する。
+- **CLI と終了コード（`cli.ts`、`index.ts`）**:
+  - `sts mutate [--json] [--no-cache] <file...>` を追加し、`index.ts` から `mutate` API を公開した。終了コードは完了 `0`（生存ありでも `0`）、診断エラー・`m = 0` テスト失敗 `1`、CLI の誤り（`--backend` の非 `js` 指定や他コマンドでの `--no-cache` を含む）`2`、内部エラー `70`。`--json` はミュータントごとに `{"kind":"mutant",...}` を 1 行ずつ出し、末尾に `{"kind":"summary","killed",...,"survived",...,"timeout",...,"cached",...}` を出す。
+- **確かめ方**: `packages/compiler/test/mutate.test.ts`（17 件: 6 演算子、契約除外、型絞り込み・所有権保存、対象自動選別、C 専用混在、無限ループ打ち切り、各種 witness と縮小、`forAll` 連携、差分キャッシュ無効化、CLI JSON/テキスト/終了コード）および全テスト・適合テスト・ベンチを実行して確認。

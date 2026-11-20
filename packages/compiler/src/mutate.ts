@@ -9,13 +9,14 @@ import { pathToFileURL } from "node:url";
 import { analyze, CliError, type Analysis } from "./index.ts";
 import type { Diagnostic, Range } from "./diagnostics.ts";
 import { SyntaxKind as K, isId, type Node, type ParsedFile, type Parser, type ts } from "./parse.ts";
-import { assignTarget, callFns, exprTypes, isolateCalls, localOf } from "./expr.ts";
+import { assignTarget, callFns, exprTypes, forAllMeta, isolateCalls, localOf } from "./expr.ts";
 import { sliceGroups, type SliceGroupEntry } from "./ownership.ts";
-import { elemDesc, layout } from "./layout.ts";
+import { elemDesc } from "./layout.ts";
+import { emitGenDesc, genDescOf, isGeneratable } from "./gendesc.ts";
 import { canonPath, declBindings, type FnSym, type Module, type Program as Decls } from "./modules.ts";
 import { isDeterministic } from "./determinism.ts";
 import {
-  NUM_NAMES, field, isCopy, isInt, isStr, literalFits, movesLike, nonNull, resultParts, same, unref,
+  NUM_NAMES, field, isInt, isStr, literalFits, movesLike, nonNull, resultParts, same, unref,
   type FnType, type NumName, type Type,
 } from "./types.ts";
 import { CLI_NAME, RUNTIME_GLOBAL } from "./names.ts";
@@ -544,6 +545,28 @@ function emitForMutate(
     return id;
   };
 
+  /** Leading `requires(...)` precondition predicate for `forAll` (emitted with `inContract > 0` so never mutated). */
+  const emitPreFn = (fn: ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression): string | undefined => {
+    if (!fn.body || fn.body.kind !== K.Block) return undefined;
+    const ss = (fn.body as ts.Block).statements;
+    let i = 0;
+    while (i < ss.length && ss[i]!.kind === K.ExpressionStatement && (ss[i] as ts.ExpressionStatement).expression.kind === K.StringLiteral) i++;
+    const checks: string[] = [];
+    inContract++;
+    try {
+      for (; i < ss.length; i++) {
+        const s = ss[i]!;
+        if (s.kind !== K.ExpressionStatement) break;
+        const ex = (s as ts.ExpressionStatement).expression;
+        if (ex.kind !== K.CallExpression || (ex as ts.CallExpression).expression.kind !== K.Identifier || ((ex as ts.CallExpression).expression as ts.Identifier).text !== "requires") break;
+        checks.push(`if (!(${gen((ex as ts.CallExpression).arguments[0]!)})) return false;`);
+      }
+    } finally { inContract--; }
+    if (!checks.length) return undefined;
+    const ps = fn.parameters.map((p) => (p.name as ts.Identifier).text).join(", ");
+    return `(${ps}) => { ${checks.join(" ")} return true; }`;
+  };
+
   /** Collect symbols / readonly properties narrowed anywhere in `root`, so narrowing guards are never broken. */
   function scanNarrowing(root: Node): { syms: Set<number>; props: Set<string> } {
     const syms = new Set<number>(), props = new Set<string>();
@@ -738,15 +761,18 @@ function emitForMutate(
       case K.FunctionDeclaration: {
         const f = n as ts.FunctionDeclaration;
         if (unsafeDecls.has(n)) return `function ${f.name!.text}() { ${RT}.cOnly(); }`; // Q275: C-only stub
+        const isTop = n.parent?.kind === K.SourceFile && !f.typeParameters?.length && !f.modifiers?.some((m) => m.kind === K.AsyncKeyword) && !!f.name && !!f.body;
+        const pre = isTop ? emitPreFn(f) : undefined;
+        const tail = pre ? `\n${RT}.setPre(${f.name!.text}, ${pre});` : "";
         const tid = targetByDecl.get(n);
-        if (tid === undefined) return splice(n);
+        if (tid === undefined) return splice(n) + tail;
         const prevFnId = curFnId, prevFnName = curFnName, prevSyms = narrowedSyms, prevProps = narrowedProps;
         curFnId = tid;
         curFnName = f.name!.text;
         const nw = f.body ? scanNarrowing(f.body) : { syms: new Set<number>(), props: new Set<string>() };
         narrowedSyms = nw.syms;
         narrowedProps = nw.props;
-        try { return splice(n); } finally {
+        try { return splice(n) + tail; } finally {
           curFnId = prevFnId; curFnName = prevFnName; narrowedSyms = prevSyms; narrowedProps = prevProps;
         }
       }
@@ -940,6 +966,12 @@ function emitForMutate(
         case "panic": return `${RT}.panic(${args[0]}, ${at(callee)})`;
         case "cast": return `${RT}.cast(${args[0]}, ${desc(resultParts(self!)!.ok)})`;
         case "test": return `${RT}.test(${args.join(", ")})`;
+        case "forAll": {
+          const meta = forAllMeta.get(e)!;
+          const descs = `[${meta.params.map((p) => emitGenDesc(genDescOf(p))).join(", ")}]`;
+          const pre = meta.checkBool ? emitPreFn(unwrapParens(e.arguments[0]!) as ts.ArrowFunction | ts.FunctionExpression) : undefined;
+          return `${RT}.forAll(${args[0]}, ${descs}, ${meta.checkBool}, ${at(callee)}${pre ? `, ${pre}` : ""})`;
+        }
       }
       return groups ? grouped(e, groups, args, (refs) => `${gen(callee)}(${refs.join(", ")})`) : splice(e);
     }
@@ -1147,286 +1179,7 @@ function desc(t: Type): string {
   throw new Error(`mutate: no cast descriptor for type kind ${t.k}`);
 }
 
-// ---- Witness search & shrinking (Q274, Q277)
-// Structured with the exact `GenDesc` / `createRng` / `generateRaw` / `materializeArgs` / `shrinkRaw` / `formatArgs`
-// contract shared with `@forall` (`arbitrary.ts` / `gendesc.ts`) so integration can drop-in replace these helpers.
-
-type GenDesc =
-  | { k: "num"; name: NumName }
-  | { k: "bool" }
-  | { k: "str" }
-  | { k: "null" }
-  | { k: "lit"; value: string }
-  | { k: "rec"; fields: { name: string; desc: GenDesc }[] }
-  | { k: "union"; members: GenDesc[] }
-  | { k: "arr"; elem: GenDesc }
-  | { k: "set"; elem: GenDesc }
-  | { k: "map"; key: GenDesc; val: GenDesc }
-  | { k: "vec"; elem: GenDesc; elemKind: string }
-  | { k: "slice"; elem: GenDesc; elemKind: string };
-
-/** §16.1 (Q274): whether a parameter type is generatable. */
-function isGeneratable(t: Type): boolean {
-  if (t.k === "gen" && (t.name === "Ref" || t.name === "Mut")) {
-    const inner = t.args[0]!;
-    if (inner.k === "gen" && inner.name === "Slice") {
-      const el = inner.args[0]!;
-      return isCopy(el) && layout(el) !== undefined && isGeneratable(el);
-    }
-    if (inner.k === "gen" && inner.name === "Vec") return isGeneratable(inner);
-    if (inner.k === "record" && inner.struct) return isGeneratable(inner);
-    return false;
-  }
-  switch (t.k) {
-    case "num": case "lit": return true;
-    case "prim": return t.name === "boolean" || t.name === "string" || t.name === "null";
-    case "record": return t.fields.every((f) => isGeneratable(f.type));
-    case "union": return t.members.length > 0 && t.members.every(isGeneratable);
-    case "gen":
-      if (t.name === "Array" || t.name === "ReadonlyArray" || t.name === "Set") return isGeneratable(t.args[0]!);
-      if (t.name === "Map") return isGeneratable(t.args[0]!) && isGeneratable(t.args[1]!);
-      if (t.name === "Vec") { const el = t.args[0]!; return isCopy(el) && layout(el) !== undefined && isGeneratable(el); }
-      return false;
-    default: return false;
-  }
-}
-
-function genDescOf(t: Type): GenDesc {
-  if (t.k === "gen" && (t.name === "Ref" || t.name === "Mut")) {
-    const inner = t.args[0]!;
-    if (inner.k === "gen" && inner.name === "Slice") return { k: "slice", elem: genDescOf(inner.args[0]!), elemKind: elemDesc(inner.args[0]!) };
-    return genDescOf(inner);
-  }
-  switch (t.k) {
-    case "num": return { k: "num", name: t.name };
-    case "prim": return t.name === "boolean" ? { k: "bool" } : t.name === "string" ? { k: "str" } : { k: "null" };
-    case "lit": return { k: "lit", value: t.value };
-    case "record": return { k: "rec", fields: t.fields.map((f) => ({ name: f.name, desc: genDescOf(f.type) })) };
-    case "union": return { k: "union", members: t.members.map(genDescOf) };
-    case "gen":
-      if (t.name === "Array" || t.name === "ReadonlyArray") return { k: "arr", elem: genDescOf(t.args[0]!) };
-      if (t.name === "Set") return { k: "set", elem: genDescOf(t.args[0]!) };
-      if (t.name === "Map") return { k: "map", key: genDescOf(t.args[0]!), val: genDescOf(t.args[1]!) };
-      if (t.name === "Vec") return { k: "vec", elem: genDescOf(t.args[0]!), elemKind: elemDesc(t.args[0]!) };
-  }
-  throw new Error(`mutate: non-generatable type ${t.k}`);
-}
-
-function createRng(seed = 0x575_0001): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-const FLOAT_BOUNDS = [0, 1, -1, 0.5, -0.5, 2, -2, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY];
-const STR_BOUNDS = ["", "a", "0", " ", "ab"];
-
-function genOne(d: GenDesc, rng: () => number, size: number): unknown {
-  const randInt = (lo: number, hi: number): number => lo + Math.floor(rng() * (hi - lo + 1));
-  switch (d.k) {
-    case "num": {
-      if (d.name === "f32" || d.name === "f64") {
-        let v: number;
-        if (rng() < 0.35) v = FLOAT_BOUNDS[Math.floor(rng() * FLOAT_BOUNDS.length)]!;
-        else v = (rng() * 2 - 1) * Math.max(1, size);
-        return d.name === "f32" ? Math.fround(v) : v;
-      }
-      const [lo, hi] = rt.RANGE[d.name];
-      if (rng() < 0.35) {
-        const bounds = [0, 1, -1, 2, -2, lo, hi, lo + 1, hi - 1].filter((x) => x >= lo && x <= hi);
-        return bounds[Math.floor(rng() * bounds.length)]!;
-      }
-      const span = Math.max(1, size);
-      const a = Math.max(lo, -span), b = Math.min(hi, span);
-      return randInt(a, b);
-    }
-    case "bool": return rng() < 0.5;
-    case "null": return null;
-    case "lit": return d.value;
-    case "str": {
-      if (rng() < 0.35) return STR_BOUNDS[Math.floor(rng() * STR_BOUNDS.length)]!;
-      const len = randInt(0, Math.min(size, 8));
-      let s = "";
-      for (let i = 0; i < len; i++) s += String.fromCharCode(97 + Math.floor(rng() * 26));
-      return s;
-    }
-    case "rec": {
-      const o: Record<string, unknown> = {};
-      for (const f of d.fields) o[f.name] = genOne(f.desc, rng, size);
-      return o;
-    }
-    case "union": {
-      const idx = Math.floor(rng() * d.members.length);
-      return { __u: idx, v: genOne(d.members[idx]!, rng, size) };
-    }
-    case "arr": case "vec": case "slice": case "set": {
-      const len = randInt(0, Math.min(size, 6));
-      return Array.from({ length: len }, () => genOne(d.elem, rng, Math.max(1, Math.floor(size / 2))));
-    }
-    case "map": {
-      const len = randInt(0, Math.min(size, 5));
-      return Array.from({ length: len }, () => [genOne(d.key, rng, Math.max(1, Math.floor(size / 2))), genOne(d.val, rng, Math.max(1, Math.floor(size / 2)))]);
-    }
-  }
-}
-
-function generateRaw(descs: readonly GenDesc[], rng: () => number, size: number): unknown[] {
-  return descs.map((d) => genOne(d, rng, size));
-}
-
-function materializeOne(d: GenDesc, raw: unknown): unknown {
-  switch (d.k) {
-    case "num": case "bool": case "str": case "null": case "lit": return raw;
-    case "rec": {
-      const src = raw as Record<string, unknown>, out: Record<string, unknown> = {};
-      for (const f of d.fields) out[f.name] = materializeOne(f.desc, src[f.name]);
-      return out;
-    }
-    case "union": {
-      const u = raw as { __u: number; v: unknown };
-      return materializeOne(d.members[u.__u]!, u.v);
-    }
-    case "arr": return (raw as unknown[]).map((x) => materializeOne(d.elem, x));
-    case "set": return new Set((raw as unknown[]).map((x) => materializeOne(d.elem, x)));
-    case "map": return new Map((raw as [unknown, unknown][]).map(([k, v]) => [materializeOne(d.key, k), materializeOne(d.val, v)]));
-    case "vec": {
-      const xs = raw as unknown[];
-      const v = rt.Vec.create(TestAlloc.create(), xs.length, d.elemKind as rt.ElemKind);
-      for (const x of xs) v.push(materializeOne(d.elem, x));
-      return v;
-    }
-    case "slice": {
-      const xs = raw as unknown[];
-      const v = rt.Vec.create(TestAlloc.create(), xs.length, d.elemKind as rt.ElemKind);
-      for (const x of xs) v.push(materializeOne(d.elem, x));
-      return v.view();
-    }
-  }
-}
-
-function materializeArgs(descs: readonly GenDesc[], raw: readonly unknown[]): unknown[] {
-  return descs.map((d, i) => materializeOne(d, raw[i]));
-}
-
-function shrinkOne(d: GenDesc, raw: unknown): unknown[] {
-  const out: unknown[] = [];
-  switch (d.k) {
-    case "num": {
-      const n = raw as number;
-      const round = (x: number): number => (d.name === "f32" ? Math.fround(x) : x);
-      if (!Number.isFinite(n)) return [0, 1, -1].filter((x) => d.name === "f32" || d.name === "f64" || (x >= rt.RANGE[d.name][0] && x <= rt.RANGE[d.name][1]));
-      if (n === 0) return [];
-      const seen = new Set<number>([n]);
-      const push = (x: number): void => {
-        const y = round(x);
-        if (d.name !== "f32" && d.name !== "f64") { const [lo, hi] = rt.RANGE[d.name]; if (!Number.isInteger(y) || y < lo || y > hi) return; }
-        if (!seen.has(y)) { seen.add(y); out.push(y); }
-      };
-      push(0);
-      if (!Number.isInteger(n)) push(Math.trunc(n));
-      if (n < 0) push(-n);
-      push(Math.trunc(n / 2));
-      push(n > 0 ? n - 1 : n + 1);
-      return out;
-    }
-    case "bool": return raw === true ? [false] : [];
-    case "str": {
-      const s = raw as string;
-      if (!s.length) return [];
-      out.push("");
-      if (s.length > 1) {
-        out.push(s.slice(0, Math.floor(s.length / 2)), s.slice(Math.floor(s.length / 2)));
-        for (let i = 0; i < s.length; i++) out.push(s.slice(0, i) + s.slice(i + 1));
-      }
-      return out;
-    }
-    case "null": case "lit": return [];
-    case "rec": {
-      const src = raw as Record<string, unknown>;
-      for (const f of d.fields) {
-        for (const c of shrinkOne(f.desc, src[f.name])) out.push({ ...src, [f.name]: c });
-      }
-      return out;
-    }
-    case "union": {
-      const u = raw as { __u: number; v: unknown };
-      const nullIdx = d.members.findIndex((m) => m.k === "null");
-      if (nullIdx >= 0 && u.__u !== nullIdx) out.push({ __u: nullIdx, v: null });
-      for (const c of shrinkOne(d.members[u.__u]!, u.v)) out.push({ __u: u.__u, v: c });
-      return out;
-    }
-    case "arr": case "vec": case "slice": case "set": {
-      const xs = raw as unknown[];
-      if (!xs.length) return [];
-      out.push([]);
-      if (xs.length > 1) {
-        const mid = Math.floor(xs.length / 2);
-        out.push(xs.slice(0, mid), xs.slice(mid));
-        for (let i = 0; i < xs.length; i++) out.push([...xs.slice(0, i), ...xs.slice(i + 1)]);
-      }
-      for (let i = 0; i < xs.length; i++) {
-        for (const c of shrinkOne(d.elem, xs[i])) {
-          const copy = xs.slice();
-          copy[i] = c;
-          out.push(copy);
-        }
-      }
-      return out;
-    }
-    case "map": {
-      const ps = raw as [unknown, unknown][];
-      if (!ps.length) return [];
-      out.push([]);
-      for (let i = 0; i < ps.length; i++) out.push([...ps.slice(0, i), ...ps.slice(i + 1)]);
-      for (let i = 0; i < ps.length; i++) {
-        for (const c of shrinkOne(d.val, ps[i]![1])) {
-          const copy = ps.slice();
-          copy[i] = [ps[i]![0], c];
-          out.push(copy);
-        }
-      }
-      return out;
-    }
-  }
-}
-
-async function shrinkRawAsync(
-  descs: readonly GenDesc[],
-  raw: readonly unknown[],
-  fails: (cand: readonly unknown[]) => Promise<boolean>,
-  maxSteps = 200,
-): Promise<unknown[]> {
-  let best = [...raw];
-  let steps = 0;
-  let improved = true;
-  while (improved && steps < maxSteps) {
-    improved = false;
-    for (let i = 0; i < descs.length && steps < maxSteps; i++) {
-      for (const c of shrinkOne(descs[i]!, best[i])) {
-        if (steps++ >= maxSteps) break;
-        const cand = best.slice();
-        cand[i] = c;
-        if (await fails(cand)) { best = cand; improved = true; break; }
-      }
-      if (improved) break;
-    }
-    // Coupled sequence length shrink (e.g., `requires(a.length === b.length)`).
-    if (!improved && steps < maxSteps) {
-      const seqIdxs = descs.flatMap((d, i) => ((d.k === "arr" || d.k === "vec" || d.k === "slice") && (best[i] as unknown[]).length > 1 ? [i] : []));
-      if (seqIdxs.length >= 2) {
-        const cand = best.slice();
-        for (const i of seqIdxs) cand[i] = (best[i] as unknown[]).slice(0, -1);
-        steps++;
-        if (await fails(cand)) { best = cand; improved = true; }
-      }
-    }
-  }
-  return best;
-}
+// ---- Witness search & shrinking (Q274, Q277) — wired directly to runtime-js `arbitrary.ts` & compiler `gendesc.ts`.
 
 function formatJsonVal(v: unknown): unknown {
   if (typeof v === "number") return Number.isFinite(v) ? (Object.is(v, -0) ? 0 : v) : String(v);
@@ -1439,24 +1192,6 @@ function formatJsonVal(v: unknown): unknown {
   const out: Record<string, unknown> = {};
   for (const [k, val] of Object.entries(v)) out[k] = formatJsonVal(val);
   return out;
-}
-
-function formatArgs(descs: readonly GenDesc[], raw: readonly unknown[]): unknown[] {
-  return descs.map((d, i) => formatOneRaw(d, raw[i]));
-}
-function formatOneRaw(d: GenDesc, raw: unknown): unknown {
-  switch (d.k) {
-    case "num": return formatJsonVal(raw);
-    case "bool": case "str": case "null": case "lit": return raw;
-    case "rec": {
-      const src = raw as Record<string, unknown>, out: Record<string, unknown> = {};
-      for (const f of d.fields) out[f.name] = formatOneRaw(f.desc, src[f.name]);
-      return out;
-    }
-    case "union": { const u = raw as { __u: number; v: unknown }; return formatOneRaw(d.members[u.__u]!, u.v); }
-    case "arr": case "vec": case "slice": case "set": return (raw as unknown[]).map((x) => formatOneRaw(d.elem, x));
-    case "map": return (raw as [unknown, unknown][]).map(([k, v]) => [formatOneRaw(d.key, k), formatOneRaw(d.val, v)]);
-  }
 }
 
 /** Snapshot any STS runtime value (including Vec, Slice, Struct, Map, Set, Array) for structural comparison. */
@@ -1522,100 +1257,81 @@ async function findWitness(
   const paramNames = fnSym.decl.parameters.map((p, i) => (isId(p.name) ? p.name.text : `p${i}`));
   const mutIdx = fnSym.sig.params.flatMap((pt, i) => (isMutableParam(pt) ? [i] : []));
   const isVoid = fnSym.sig.ret.k === "prim" && fnSym.sig.ret.name === "void";
+  const isAsync = fnSym.sig.ret.k === "gen" && fnSym.sig.ret.name === "Promise";
 
-  const invoke = async (mId: number, raw: readonly unknown[]): Promise<CallOutcome> => {
-    const args = materializeArgs(descs, raw);
-    mutState.m = mId;
-    mutState.steps = 0;
-    mutState.stepLimit = 10_000;
-    mutState.recording = false;
-    mutState.watchFn = fnId;
-    mutState.watchDepth = 0;
+  const classifyErr = (x: unknown): CallOutcome => {
+    if (x instanceof OwnRequiresTrap) return { kind: "ownReq", trap: "T004" };
+    if (x instanceof StepLimitReached) return { kind: "timeout" };
+    if (x instanceof COnlyReached) return { kind: "conly" };
+    const e = rt.asTrap(x);
+    if (e) return { kind: "trap", trap: e.code };
+    throw x;
+  };
+  const arm = (mId: number): void => {
+    mutState.m = mId; mutState.steps = 0; mutState.stepLimit = 10_000;
+    mutState.recording = false; mutState.watchFn = fnId; mutState.watchDepth = 0;
+  };
+  const disarm = (): void => { mutState.watchFn = -1; mutState.watchDepth = 0; };
+
+  const invokeSync = (mId: number, raw: readonly unknown[], fmt = false): CallOutcome => {
+    const args = rt.materializeArgs(descs, raw);
+    arm(mId);
     try {
-      let ret = fnImpl(...args);
-      if (ret instanceof Promise) {
-        let awaited: unknown;
-        const rejected = await rt.capturing(async () => { awaited = await ret; });
-        if (rejected.length) throw rejected[0];
-        ret = awaited;
-      }
+      const ret = fnImpl(...args);
       const muts: Record<string, unknown> = {};
-      for (const i of mutIdx) muts[paramNames[i]!] = snapshot(args[i]);
-      return { kind: "ok", ret: snapshot(ret), muts };
-    } catch (x) {
-      if (x instanceof OwnRequiresTrap) return { kind: "ownReq", trap: "T004" };
-      if (x instanceof StepLimitReached) return { kind: "timeout" };
-      if (x instanceof COnlyReached) return { kind: "conly" };
-      const e = rt.asTrap(x);
-      if (e) return { kind: "trap", trap: e.code };
-      throw x;
-    } finally {
-      mutState.watchFn = -1;
-      mutState.watchDepth = 0;
-    }
+      for (const i of mutIdx) muts[paramNames[i]!] = fmt ? formatJsonVal(args[i]) : snapshot(args[i]);
+      return { kind: "ok", ret: fmt ? ret : snapshot(ret), muts };
+    } catch (x) { return classifyErr(x); } finally { disarm(); }
   };
 
-  const evaluatePair = async (raw: readonly unknown[]): Promise<{ skip: boolean; diff: boolean; base?: CallOutcome; mut?: CallOutcome }> => {
-    const base = await invoke(0, raw);
-    const mut = await invoke(mutantId, raw);
+  const invokeAsync = async (mId: number, raw: readonly unknown[], fmt = false): Promise<CallOutcome> => {
+    const args = rt.materializeArgs(descs, raw);
+    arm(mId);
+    try {
+      let ret: unknown;
+      const rejected = await rt.capturing(async () => { ret = await fnImpl(...args); });
+      if (rejected.length) throw rejected[0];
+      const muts: Record<string, unknown> = {};
+      for (const i of mutIdx) muts[paramNames[i]!] = fmt ? formatJsonVal(args[i]) : snapshot(args[i]);
+      return { kind: "ok", ret: fmt ? ret : snapshot(ret), muts };
+    } catch (x) { return classifyErr(x); } finally { disarm(); }
+  };
+
+  const evalSync = (raw: readonly unknown[]): { skip: boolean; diff: boolean } => {
+    const base = invokeSync(0, raw);
+    const mut = invokeSync(mutantId, raw);
     if (base.kind === "ownReq" && mut.kind === "ownReq") return { skip: true, diff: false };
-    return { skip: false, diff: !sameOutcome(base, mut), base, mut };
+    return { skip: false, diff: !sameOutcome(base, mut) };
   };
 
-  const rng = createRng();
+  const rng = rt.createRng();
   let valid = 0, skipped = 0;
   let foundRaw: unknown[] | undefined;
   while (valid < 200 && skipped < 1000) {
-    const size = Math.min(32, Math.floor(valid / 4) + 1);
-    const raw = generateRaw(descs, rng, size);
-    const r = await evaluatePair(raw);
+    const size = Math.min(30, 1 + Math.floor(valid / 3));
+    const raw = rt.generateRaw(descs, rng, size);
+    const r = isAsync
+      ? await (async () => {
+        const base = await invokeAsync(0, raw), mut = await invokeAsync(mutantId, raw);
+        return base.kind === "ownReq" && mut.kind === "ownReq" ? { skip: true, diff: false } : { skip: false, diff: !sameOutcome(base, mut) };
+      })()
+      : evalSync(raw);
     if (r.skip) { skipped++; continue; }
     valid++;
     if (r.diff) { foundRaw = raw; break; }
   }
   if (!foundRaw) return null;
 
-  const shrunk = await shrinkRawAsync(descs, foundRaw, async (cand) => {
-    const r = await evaluatePair(cand);
+  const shrunk = isAsync ? foundRaw : rt.shrinkRaw(descs, foundRaw, (cand) => {
+    const r = evalSync(cand);
     return !r.skip && r.diff;
   });
 
-  // Re-run shrunk witness to collect clean JSON-formatted `base` and `mutant` outputs.
-  const invokeFormatted = async (mId: number): Promise<unknown> => {
-    const args = materializeArgs(descs, shrunk);
-    mutState.m = mId;
-    mutState.steps = 0;
-    mutState.stepLimit = 10_000;
-    mutState.recording = false;
-    mutState.watchFn = fnId;
-    mutState.watchDepth = 0;
-    try {
-      let ret = fnImpl(...args);
-      if (ret instanceof Promise) {
-        let awaited: unknown;
-        const rejected = await rt.capturing(async () => { awaited = await ret; });
-        if (rejected.length) throw rejected[0];
-        ret = awaited;
-      }
-      const muts: Record<string, unknown> = {};
-      for (const i of mutIdx) muts[paramNames[i]!] = formatJsonVal(args[i]);
-      return formatOutcome({ kind: "ok", ret, muts }, mutIdx.length > 0, isVoid);
-    } catch (x) {
-      if (x instanceof OwnRequiresTrap) return { trap: "T004" };
-      if (x instanceof StepLimitReached) return { timeout: true };
-      if (x instanceof COnlyReached) return { cOnly: true };
-      const e = rt.asTrap(x);
-      if (e) return { trap: e.code };
-      throw x;
-    } finally {
-      mutState.watchFn = -1;
-      mutState.watchDepth = 0;
-    }
-  };
-
+  const baseOut = isAsync ? await invokeAsync(0, shrunk, true) : invokeSync(0, shrunk, true);
+  const mutOut = isAsync ? await invokeAsync(mutantId, shrunk, true) : invokeSync(mutantId, shrunk, true);
   return {
-    args: formatArgs(descs, shrunk),
-    base: await invokeFormatted(0),
-    mutant: await invokeFormatted(mutantId),
+    args: rt.formatArgs(descs, shrunk),
+    base: formatOutcome(baseOut, mutIdx.length > 0, isVoid),
+    mutant: formatOutcome(mutOut, mutIdx.length > 0, isVoid),
   };
 }

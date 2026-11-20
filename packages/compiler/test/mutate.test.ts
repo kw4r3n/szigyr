@@ -688,4 +688,39 @@ test("pos", (t: Test) => {
     expect(sts(dir, "mutate", "/no/such/file.ts").code).toBe(2);
     expect(sts(dir, "mutate", "--backend=c", badType).code).toBe(2);
   });
+
+  it("supports forAll(...) tests inside sts mutate and kills mutants with property tests", async () => {
+    const src = `function absSafe(x: i32): i32 {
+  requires(x > -2147483648);
+  ensures((r: i32) => r >= 0);
+  if (x < 0) {
+    return -x;
+  }
+  return x;
+}
+function addComm(a: i32, b: i32): i32 {
+  requires(a >= -1000 && a <= 1000 && b >= -1000 && b <= 1000);
+  return a + b;
+}
+test("forAll kills mutants in named and inline property tests", (t: Test) => {
+  forAll(absSafe);
+  forAll((a: i32, b: i32): boolean => {
+    requires(a >= -1000 && a <= 1000 && b >= -1000 && b <= 1000);
+    return addComm(a, b) === addComm(b, a);
+  });
+});
+`;
+    const { file, cacheFile } = tmpFile("forall-mut.ts", src);
+    const res = await mutate(file, { cache: false, cacheFile });
+    expect(res.diagnostics).toEqual([]);
+    expect(res.baselineFailure).toBeNull();
+    // absSafe's `if (x < 0) -> false` must be killed by `forAll(absSafe)` via `ensures((r) => r >= 0)`!
+    const absIfFalse = res.mutants.find((m) => m.fn === "absSafe" && m.op === "if -> false");
+    expect(absIfFalse).toBeDefined();
+    expect(absIfFalse!.status).toBe("killed");
+    // addComm's `+ -> -` breaks commutativity and must be killed by inline `forAll`!
+    const addSub = res.mutants.find((m) => m.fn === "addComm" && m.op === "+ -> -");
+    expect(addSub).toBeDefined();
+    expect(addSub!.status).toBe("killed");
+  });
 });
