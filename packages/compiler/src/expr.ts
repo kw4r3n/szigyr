@@ -8,7 +8,7 @@ import { isDeterministic } from "./determinism.ts";
 import {
   BOOL, ERROR, ERROR_RECORD, F64, NEVER, NULL, NUM_NAMES, STR, UNKNOWN, USIZE, VOID, assignable, bindTParams, boxable, field, fn, gen, hasPtr, hasRawPtr, hasTParam,
   isBool, isCopy, isInt, isNull, isNum, isOwned, isStr, movesLike, holdsOwned, ownedDeep, ptrTargetOk, isTaggedUnion, kindOf, literalFits, nonNull, nullable, num, opaque, result, resultParts,
-  same, sendable, show, subst, unify, union, unref, castable, collectTParams, demand, layerOk, type FnType, type NumName, type Type,
+  same, sendable, show, subst, unify, union, unref, castable, collectTParams, demand, demandLayout, layerOk, type FnType, type NumName, type Type,
 } from "./types.ts";
 
 const isId = (n: Node | undefined): n is ts.Identifier => n?.kind === K.Identifier;
@@ -855,6 +855,7 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
       c.at(tc === "copy" ? "E4002" : "E2002", e.typeArguments?.[0] ?? anchor, `'${show(b)}' is not allowed as the type argument here`); // Q086: `Vec.create` is §3.3
       return ERROR;
     }
+    if (tc === "copy" || tc === "ring") demandLayout(b); // Q229
   }
   args.forEach((a, i) => {
     const t = later[i];

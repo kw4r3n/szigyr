@@ -1462,6 +1462,7 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
   - (b) §10.2 に `null` の配置（大きさ 0 か 1 バイト）を足し、C でも動かす。
   - (c) strict / rt で、要素型に `null` だけの型を書くことを禁止する（新しい拒否が要る）。
 - 既定案: (a)。挙動は変えない。設計監査の修正 3 で `null` の値に C の型（`sts_null`）を与えたので、`Pool<null>` と `Arena.alloc<null>` が TypeError にならず、これまでどおり CUnsupported で止まるようにした（`packages/compiler/test/emit.test.ts`）。
+- 2026-11-20 オーナー決定: (c)。strict / rt で、バイト配置のない要素型のコンテナを書くと E4002（§3.3 の要素の型の条件と同じコード）。`Vec`、`Slice`、`Pool`、`Handle`、`ArenaBuf`、`RingTx`、`RingRx`、`Arena.alloc` が対象。strict / rt のジェネリックな関数の型引数も、要素に使われるなら呼び出しの位置で調べる。managed の `Vec<null>` は JS だけで動き C に渡らないので、そのまま許す。SPEC §3.3 と §10.2 に書いた（D133）。ケースは reject の `E4002-vec-element-null-in-strict`、`-vec-element-result-null-in-rt`、`-pool-element-null-in-rt`、`-arena-alloc-null-in-rt`、`-ring-element-null-in-strict`、`-vec-create-null-in-strict`、`-strict-generic-vec-instantiated-with-null`、run の `179-managed-container-null-element`。
 
 ### Q230 契約の中で、状態を変える `Port` と `Spawn` のメソッドを呼べるか（監査の修正 5、D132）
 - 関連: §9.1、§14.4、§15.2、Q134、D132

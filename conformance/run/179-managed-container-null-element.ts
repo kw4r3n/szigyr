@@ -1,0 +1,20 @@
+// expect-output: 3
+// expect-output: 2
+// stage: 3
+// open-question: Q229
+// A managed container may hold `null` (no byte layout needed: it never reaches C). Only strict / rt code rejects it.
+function make<T>(alloc: Alloc, x: T): Vec<T> {
+  const v = Vec.create<T>(alloc, 4);
+  v.push(x);
+  return v;
+}
+export function main(sys: System): void {
+  const v = Vec.create<null>(sys.alloc, 4);
+  v.push(null);
+  v.push(null);
+  v.push(null);
+  sys.log.info(`${v.length}`);
+  const w = make<null>(sys.alloc, null);
+  w.push(null);
+  sys.log.info(`${w.length}`);
+}

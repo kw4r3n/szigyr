@@ -375,12 +375,12 @@ test("floating", (t: Test) => {
   expect(check(main).map((d) => `${d.code} ${d.range.start.line}:${d.range.start.col}`)).toEqual(["E2002 5:13", "E2002 9:13"]);
 });
 
-// Q229: an element type without a byte layout stays a clean CUnsupported on the C backend (D105), not a crash.
-it("C backend: Pool<null> and Arena.alloc<null> are CUnsupported", async () => {
+// Q229 (c): an element type without a byte layout is rejected in strict / rt (E4002), so it never reaches the C backend.
+it("Pool<null> and Arena.alloc<null> are E4002 in rt code", () => {
   for (const body of ["const p = Pool.create<null>(sys.alloc, 4);\n  sys.log.info(`${go(p)}`);", "const a = Arena.create(sys.alloc, 64);\n  sys.log.info(`${go2(a)}`);"]) {
     const main = project({
       "main.ts": `function go(p: Mut<Pool<null>>): usize {\n  "use rt";\n  const h = p.insert(null);\n  return p.length;\n}\nfunction go2(a: Mut<Arena>): usize {\n  "use rt";\n  const b = a.alloc<null>(2, null);\n  return a.remaining;\n}\nexport function main(sys: System): void {\n  ${body}\n}\n`,
     });
-    await expect(run(main, { backend: "c" })).rejects.toThrow(/without a byte layout/);
+    expect(check(main).map((d) => `${d.code} ${d.range.start.line}:${d.range.start.col}`)).toEqual(expect.arrayContaining(["E4002 1:16", "E4002 8:13"]));
   }
 });

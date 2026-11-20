@@ -1,5 +1,6 @@
 // P2 type representation (D009). Plain objects compared structurally; class / interface by symbol identity.
 import type { ts } from "./parse.ts";
+import { layout } from "./layout.ts";
 
 export type NumName = "f64" | "f32" | "i8" | "i16" | "i32" | "u8" | "u16" | "u32" | "usize";
 export const NUM_NAMES: readonly NumName[] = ["f64", "f32", "i8", "i16", "i32", "u8", "u16", "u32", "usize"];
@@ -16,7 +17,7 @@ export const OPAQUE_NAMES = new Set<string>([...AUTHORITIES, "JsRef", "Test", "F
 export interface Field { name: string; type: Type; readonly: boolean }
 /** Q127: conditions a type parameter takes on from the positions it is used in, checked on every instantiation. */
 /** `nopromise`: every user type parameter has it (Q130 addendum): a Promise cannot hide behind a type parameter. */
-export type Need = "key" | "copy" | "field" | "borrow" | "eq" | "nopromise" | "noabuf" | "send" | "noauth";
+export type Need = "key" | "copy" | "layout" | "field" | "borrow" | "eq" | "nopromise" | "noabuf" | "send" | "noauth";
 /** `owner`: the declaring layer for user type parameters (Q068 b): "managed" ones never take owned types, strict / rt ones may. */
 export interface TParam { name: string; id: number; constraint?: Type; need?: Set<Need>; owner?: "managed" | "strict" | "rt" }
 /** `min`: builtin optional trailing parameters (Q032). `prefix`: a builtin callback may take a prefix of the parameters. */
@@ -290,7 +291,7 @@ export function layerOk(t: Type): boolean {
     case "prim": return t.name === "boolean" || t.name === "null" || t.name === "void" || t.name === "never";
     case "record": return t.struct ? t.fields.every((f) => layerOk(f.type)) : isCopy(t); // Q043
     case "union": return t.members.every((m) => isCopy(m) && layerOk(m));
-    case "gen": return t.name === "Vec" || t.name === "Slice" || t.name === "Pool" || t.name === "Handle" || t.name === "Arena" || t.name === "ArenaBuf" || t.name === "RingTx" || t.name === "RingRx" || t.name === "Ptr" || t.name === "ConstPtr" || t.name === "CType" || t.name === "CHandle" || ((t.name === "Ref" || t.name === "Mut") && layerOk(t.args[0]!)); // §14: pointer types are layer-legal; their positions are E4007 / E4008
+    case "gen": return (!ELEMENT_CONTAINERS.has(t.name) || hasLayout(t.args[0]!)) && (t.name === "Vec" || t.name === "Slice" || t.name === "Pool" || t.name === "Handle" || t.name === "Arena" || t.name === "ArenaBuf" || t.name === "RingTx" || t.name === "RingRx" || t.name === "Ptr" || t.name === "ConstPtr" || t.name === "CType" || t.name === "CHandle" || ((t.name === "Ref" || t.name === "Mut") && layerOk(t.args[0]!))); // Q229, §14: pointer types are layer-legal; their positions are E4007 / E4008
     case "opaque": return isAuthority(t);
     default: return false;
   }
@@ -356,11 +357,24 @@ export function literalFits(value: number, t: NumName): boolean {
   return true;
 }
 
+/** §10.2 (Q229): `t` has a byte layout, so it can be a container element in strict / rt. A type that mentions a type
+ * parameter is judged where the parameter is instantiated (the "layout" need). `null` alone and anything built on it have none. */
+export const hasLayout = (t: Type): boolean => t.k === "error" || collectTParams(t).length > 0 || layout(t) !== undefined;
+/** Q229: type parameters inside a container element need a layout where they are instantiated. `checkInsts` enforces
+ * it only for strict / rt generic functions (the owner is set after the signature is resolved); a managed generic may be
+ * instantiated with `null` because a managed container never reaches C. */
+export function demandLayout(t: Type): void {
+  for (const p of collectTParams(t)) (p.need ??= new Set()).add("layout");
+}
+/** The element-carrying containers of §3.3 / §15.1: strict / rt code lays their elements out per §10.2. */
+export const ELEMENT_CONTAINERS = new Set(["Vec", "Slice", "Pool", "Handle", "ArenaBuf", "RingTx", "RingRx"]);
+
 /** Q127: whether a type that is not a type parameter meets a condition. */
 export function needOk(n: Need, t: Type): boolean {
   switch (n) {
     case "key": return keyOk(t);
     case "copy": return t.k === "error" || isCopy(t);
+    case "layout": return hasLayout(t);
     case "field": return structField(t);
     case "borrow": return t.k === "error" || isOwned(t) || (t.k === "gen" && t.name === "Slice");
     case "eq": return comparable(t);
@@ -371,7 +385,7 @@ export function needOk(n: Need, t: Type): boolean {
   }
 }
 /** Needs that propagate structurally into type parameters nested inside composite types (records, unions, generics). */
-export const DEEP_NEEDS = new Set<Need>(["eq", "noabuf", "send", "nopromise", "noauth"]);
+export const DEEP_NEEDS = new Set<Need>(["layout", "eq", "noabuf", "send", "nopromise", "noauth"]);
 /** All type parameters occurring anywhere inside `t`. */
 export function collectTParams(t: Type, out: TParam[] = []): TParam[] {
   switch (t.k) {

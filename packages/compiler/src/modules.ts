@@ -5,7 +5,7 @@ import type { Diagnostic } from "./diagnostics.ts";
 import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { RESERVED, builtinType, isGenName } from "./builtins.ts";
 import {
-  ERROR, GEN_ARITY, NULL, VOID, gen, assignable, bindTParams, collectTParams, DEEP_NEEDS, demand, fn, isTaggedUnion, sendable, hasAuthority, kindOf, layerOk, movesLike, needOk, holdsOwned, ownedDeep, CONTAINERS, newTParam, nonNull, record, result, show, subst, union,
+  ERROR, GEN_ARITY, NULL, VOID, gen, assignable, bindTParams, collectTParams, DEEP_NEEDS, ELEMENT_CONTAINERS, demand, demandLayout, fn, isTaggedUnion, sendable, hasAuthority, kindOf, layerOk, movesLike, needOk, holdsOwned, ownedDeep, CONTAINERS, newTParam, nonNull, record, result, show, subst, union,
   type ClassSym, type Field, type FnType, type IfaceSym, type TParam, type Type,
 } from "./types.ts";
 
@@ -359,10 +359,10 @@ export class Program {
     }
     const seen: Set<string> = new Set();
     for (const { mod, node, p, arg } of this.insts) {
-      const bad = arg.k === "tparam" ? undefined : [...p.need ?? []].find((n) => !needOk(n, arg));
+      const bad = arg.k === "tparam" ? undefined : [...p.need ?? []].find((n) => !needOk(n, arg) && (n !== "layout" || (p.owner !== undefined && p.owner !== "managed"))); // Q229: layout only for strict / rt generics
       const key = `${mod.file}:${node.pos}:${p.id}`;
       if (seen.has(key)) continue;
-      if (bad) { seen.add(key); this.rep.at(mod, bad === "copy" || bad === "field" ? "E4002" : bad === "send" ? "E2010" : bad === "noauth" ? "E4006" : "E2002", node, `'${show(arg)}' cannot instantiate '${p.name}' (${bad} condition)`); } // Q086: copy / field are §3.3 codes; send is §15.2's; noauth is §6's
+      if (bad) { seen.add(key); this.rep.at(mod, bad === "copy" || bad === "field" || bad === "layout" ? "E4002" : bad === "send" ? "E2010" : bad === "noauth" ? "E4006" : "E2002", node, `'${show(arg)}' cannot instantiate '${p.name}' (${bad} condition)`); } // Q086: copy / field are §3.3 codes; send is §15.2's; noauth is §6's
       else if (p.owner && p.owner !== "managed" && arg.k === "tparam" && arg.p.owner === "managed") { seen.add(key); this.rep.at(mod, "E4002", node, `the managed type parameter '${arg.p.name}' cannot instantiate '${p.name}' of a strict / rt function (§3.3 is not checked through it)`); }
       else if (p.owner === "rt" && hasAuthority(arg)) { seen.add(key); this.rep.at(mod, "E4006", node, `'${show(arg)}' cannot instantiate '${p.name}' of an rt function (§6)`); }
       else if (p.owner && p.owner !== "managed" && !layerOk(arg)) { seen.add(key); this.rep.at(mod, "E4002", node, `'${show(arg)}' cannot instantiate '${p.name}' of a strict / rt function (§3.3)`); }
@@ -491,6 +491,7 @@ export class Program {
       const a = args[0]!;
       if (a.k === "error") return ERROR;
       if (!demand(a, "copy")) { this.rep.at(e.mod, "E4002", argNodes![0]!, `RingPair<T> needs a Copy element type, not '${show(a)}'`); return ERROR; }
+      demandLayout(a); // Q229
       if (!demand(a, "noabuf")) { this.rep.at(e.mod, "E2002", argNodes![0]!, `a ring element cannot be or contain an ArenaBuf, not '${show(a)}'`); return ERROR; }
       return record([{ name: "tx", type: gen("RingTx", a), readonly: false }, { name: "rx", type: gen("RingRx", a), readonly: false }], true);
     }
@@ -520,6 +521,7 @@ export class Program {
         this.rep.at(e.mod, "E4002", argNodes![0]!, `${name}<T> needs a Copy element type, not '${show(args[0]!)}'`);
         return ERROR;
       }
+      if (ELEMENT_CONTAINERS.has(name)) demandLayout(args[0]!); // Q229
       const i = CONTAINERS.has(name) ? args.findIndex((a) => holdsOwned(a) && !ownedDeep(a)) : -1;
       if (i >= 0) this.rep.at(e.mod, "E3007", argNodes![i]!, `'${name}' cannot hold the owned type '${show(args[i]!)}' (Q174)`);
       return { k: "gen", name, args };
