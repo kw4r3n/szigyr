@@ -539,6 +539,8 @@ reject/E4002-ring-element-owned.ts
 reject/E4002-rt-result-null-payload-param.ts
 reject/E4002-strict-generic-identity-instantiated-with-null.ts
 reject/E4002-strict-generic-instantiated-with-result-null.ts
+reject/E4002-strict-generic-never-reaches-parameter.ts
+reject/E4002-strict-generic-null-return-only.ts
 reject/E4002-strict-generic-type-argument-not-allowed.ts
 reject/E4002-strict-generic-vec-instantiated-with-null.ts
 reject/E4002-strict-param-never.ts
@@ -771,6 +773,7 @@ run/18-trap-i32-unary-minus.ts
 run/180-module-destructure-const
 run/181-contract-user-method-builtin-name.ts
 run/182-strict-boundary-types.ts
+run/183-strict-generic-never-return-only.ts
 run/19-trap-divtrunc-overflow.ts
 run/20-trap-array-index.ts
 run/21-trap-vec-index.ts

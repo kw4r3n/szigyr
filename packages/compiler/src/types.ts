@@ -17,7 +17,7 @@ export const OPAQUE_NAMES = new Set<string>([...AUTHORITIES, "JsRef", "Test", "F
 export interface Field { name: string; type: Type; readonly: boolean }
 /** Q127: conditions a type parameter takes on from the positions it is used in, checked on every instantiation. */
 /** `nopromise`: every user type parameter has it (Q130 addendum): a Promise cannot hide behind a type parameter. */
-export type Need = "key" | "copy" | "layout" | "cross" | "field" | "borrow" | "eq" | "nopromise" | "noabuf" | "send" | "noauth";
+export type Need = "key" | "copy" | "layout" | "cross" | "crossp" | "field" | "borrow" | "eq" | "nopromise" | "noabuf" | "send" | "noauth";
 /** `owner`: the declaring layer for user type parameters (Q068 b): "managed" ones never take owned types, strict / rt ones may. */
 export interface TParam { name: string; id: number; constraint?: Type; need?: Set<Need>; owner?: "managed" | "strict" | "rt" }
 /** `min`: builtin optional trailing parameters (Q032). `prefix`: a builtin callback may take a prefix of the parameters. */
@@ -396,7 +396,8 @@ export function needOk(n: Need, t: Type): boolean {
     case "key": return keyOk(t);
     case "copy": return t.k === "error" || isCopy(t);
     case "layout": return hasLayout(t);
-    case "cross": return crossOk(t);
+    case "cross": return crossOk(t, true);
+    case "crossp": return crossOk(t);
     case "field": return structField(t);
     case "borrow": return t.k === "error" || isOwned(t) || (t.k === "gen" && t.name === "Slice");
     case "eq": return comparable(t);
@@ -407,7 +408,7 @@ export function needOk(n: Need, t: Type): boolean {
   }
 }
 /** Needs that propagate structurally into type parameters nested inside composite types (records, unions, generics). */
-export const DEEP_NEEDS = new Set<Need>(["layout", "cross", "eq", "noabuf", "send", "nopromise", "noauth"]);
+export const DEEP_NEEDS = new Set<Need>(["layout", "cross", "crossp", "eq", "noabuf", "send", "nopromise", "noauth"]);
 /** All type parameters occurring anywhere inside `t`. */
 export function collectTParams(t: Type, out: TParam[] = []): TParam[] {
   switch (t.k) {
