@@ -2,6 +2,7 @@
 import { NodeFlags, SyntaxKind as K, type Node, type ts } from "./parse.ts";
 import type { LocalSym, Module, Program } from "./modules.ts";
 import { assignTarget, callSigs, exprTypes, localOf } from "./expr.ts";
+import { genFx } from "./builtins.ts";
 import { movesLike, ownedDeep, show, unref, type Type } from "./types.ts";
 
 /** Moved locals (by id) and the expression that moved each; null on a path that cannot be reached. */
@@ -37,8 +38,6 @@ const strip = (e: ts.Expression): ts.Expression => {
 };
 const genName = (t: Type | undefined): string | undefined => { const u = t && unref(t); return u?.k === "gen" ? u.name : undefined; };
 const borrowMode = (t: Type | undefined): "ref" | "mut" | undefined => (t?.k === "gen" && t.name === "Ref" ? "ref" : t?.k === "gen" && t.name === "Mut" ? "mut" : undefined);
-/** Vec / Slice methods that need `Mut` of the receiver (§3.3). */
-const MUT_METHODS = new Set(["push", "pop", "clear", "fill", "insert", "set", "remove", "alloc", "reset"]);
 const FN_EXPR = new Set<K>([K.ArrowFunction, K.FunctionExpression]);
 const isNever = (t: Type | undefined): boolean => t?.k === "prim" && t.name === "never";
 
@@ -496,24 +495,17 @@ class Flow {
     }
     return undefined;
   }
+  /** The callee of a call to a builtin method that only a borrowed argument can hold (D132 `param`), when `borrow` says whether it is `p.borrow()`. */
+  private paramCall(e: ts.Expression, borrow: boolean): ts.PropertyAccessExpression | undefined {
+    if (e.kind !== K.CallExpression) return undefined;
+    const p = (e as ts.CallExpression).expression;
+    if (p.kind !== K.PropertyAccessExpression || ((p as ts.PropertyAccessExpression).name.text === "borrow") !== borrow) return undefined;
+    return genFx(exprTypes.get((p as ts.PropertyAccessExpression).expression), (p as ts.PropertyAccessExpression).name.text)?.recv === "param" ? p as ts.PropertyAccessExpression : undefined;
+  }
   /** A range-producing call's callee: `X.slice(a, b)` on a Vec / Slice / Ptr / ConstPtr (Q013, §14.4), `a.view(b)` on an Arena (Q188 (b)). */
-  private sliceCall(e: ts.Expression): ts.PropertyAccessExpression | undefined {
-    if (e.kind !== K.CallExpression) return undefined;
-    const p = (e as ts.CallExpression).expression;
-    if (p.kind !== K.PropertyAccessExpression) return undefined;
-    const g = genName(exprTypes.get((p as ts.PropertyAccessExpression).expression));
-    if ((p as ts.PropertyAccessExpression).name.text === "slice") return g === "Vec" || g === "Slice" || g === "Ptr" || g === "ConstPtr" ? p as ts.PropertyAccessExpression : undefined;
-    if ((p as ts.PropertyAccessExpression).name.text === "view") return g === "Arena" ? p as ts.PropertyAccessExpression : undefined;
-    return undefined;
-  }
+  private sliceCall(e: ts.Expression): ts.PropertyAccessExpression | undefined { return this.paramCall(e, false); }
   /** `p.borrow()` on a `Ptr` / `ConstPtr` (§14.4). */
-  private borrowCall(e: ts.Expression): ts.PropertyAccessExpression | undefined {
-    if (e.kind !== K.CallExpression) return undefined;
-    const p = (e as ts.CallExpression).expression;
-    if (p.kind !== K.PropertyAccessExpression || (p as ts.PropertyAccessExpression).name.text !== "borrow") return undefined;
-    const g = genName(exprTypes.get((p as ts.PropertyAccessExpression).expression));
-    return g === "Ptr" || g === "ConstPtr" ? p as ts.PropertyAccessExpression : undefined;
-  }
+  private borrowCall(e: ts.Expression): ts.PropertyAccessExpression | undefined { return this.paramCall(e, true); }
   /** Walks a place in evaluation order: the root is used, `slice` bounds are read. */
   private place(e0: ts.Expression, allowBorrow = false): void {
     const e = strip(e0);
@@ -569,17 +561,17 @@ class Flow {
     if (callee.kind === K.PropertyAccessExpression) {
       const p = callee as ts.PropertyAccessExpression;
       const g = genName(exprTypes.get(p.expression));
-      if ((g === "Ptr" || g === "ConstPtr") && e.kind === K.CallExpression && (p.name.text === "slice" || p.name.text === "borrow")) {
-        this.m.at("E3004", p.name, `'${p.name.text}' can only be a borrowed argument or a receiver`); // §14.4
-        this.ex(p.expression, "read");
+      const fx = e.kind === K.CallExpression ? genFx(exprTypes.get(p.expression), p.name.text) : undefined; // D132
+      if (fx?.recv === "param") this.m.at("E3004", p.name, `'${p.name.text}' can only be a borrowed argument or a receiver`); // Q013, §14.4; view: Q188 (b)
+      if (fx?.recv === "param" && (g === "Ptr" || g === "ConstPtr")) {
+        this.ex(p.expression, "read"); // a pointer is Copy: the place is its pointee
       } else if (g === "Ptr" && e.kind === K.CallExpression && p.name.text === "unbox") {
         const root = this.ptrRoot(p.expression); // §14.4: the receiver form, and Mut use of the root
         if (!root) this.m.at("E3008", strip(p.expression), "'unbox' needs a variable or parameter, optionally through 'offset' / 'cast'");
         else if (this.active.some((x) => x.sym.id === root.sym.id) || this.pendingMut.some((s) => s.id === root.sym.id)) this.exclusive(e, root.sym);
         this.ex(p.expression, "read");
-      } else if ((g === "Vec" || g === "Slice" || g === "Pool" || g === "Arena" || g === "RingTx" || g === "RingRx") && e.kind === K.CallExpression) {
-        if (p.name.text === "slice" || (g === "Arena" && p.name.text === "view")) this.m.at("E3004", p.name, `'${p.name.text}' can only be a borrowed argument or a receiver`); // Q013; view: Q188 (b)
-        const u = this.borrow(p.expression, MUT_METHODS.has(p.name.text) ? "mut" : "ref", p.name as ts.Identifier);
+      } else if (fx && fx.recv !== "none") {
+        const u = this.borrow(p.expression, fx.recv === "mut" ? "mut" : "ref", p.name as ts.Identifier);
         if (u) uses.push(u);
       } else {
         this.ex(p.expression, "read");
