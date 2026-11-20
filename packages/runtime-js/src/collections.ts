@@ -336,7 +336,7 @@ const typedView = (elem: string, buf: Uint8Array, off: number, n: number): Typed
 /**
  * A bump arena over one host ArrayBuffer (Q188 (b), D102). Allocations are byte ranges handed out in
  * order; `reset` bumps the generation (a u32, wrapping) and rewinds. An allocation whose element type
- * has no byte layout ("other": `null`, Q229; a type parameter is rejected at compile time, Q215 (c)) keeps
+ * has no byte layout ("other": `null`, `Result<null, i32>`, Q229; a type parameter is rejected at compile time, Q215 (c)) keeps
  * its values in a side array until a concrete `view` packs them into the bytes. A type-parameter `view`
  * reads the bytes into a side array, and a later concrete `view` packs it back (D116, D130).
  * The fields `buf` / `used` / `gen` / `id` are read and written back by the C backend, like Pool's.
@@ -352,7 +352,7 @@ export class Arena {
   static create(_alloc: unknown, bytes: number): Arena { return new Arena(bytes); }
   get remaining(): number { return this.buf.length - this.used; }
   private sizeOf(elem: ElemKind): { z: number; a: number } {
-    if (elem === "other") return { z: 8, a: 8 }; // nominal: only an element without a byte layout gets here (Q229; Q215 (c))
+    if (elem === "other") return { z: 8, a: 8 }; // nominal: only an element type without a byte layout gets here (`null` etc., Q229; Q215 (c))
     if (elem.startsWith("{")) { const l = JSON.parse(elem) as { z: number; a: number }; return { z: l.z, a: l.a }; }
     const z = NUM_SIZE[elem]!; return { z, a: z };
   }
