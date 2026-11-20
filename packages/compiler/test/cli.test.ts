@@ -377,6 +377,17 @@ it("runs through a symlink to cli.ts and from a path containing % # ?", () => {
   expect(jsonLines(r.stdout)[0].code).toBe("E1001");
 });
 
+it("CC may carry arguments; an unwritable cache directory is a CBuildError, exit 2 (D150)", () => {
+  const f = tmpFile(`function inc(x: i32): i32 { "use owned"; return x + 1; }\nexport function main(sys: System): void { sys.log.info(\`\${inc(1)}\`); }\n`);
+  const cache = mkdtempSync(join(tmpdir(), "sts-d150-"));
+  const ok = spawnSync("node", [CLI, "run", "--backend=c", f], { encoding: "utf8", env: { ...process.env, XDG_CACHE_HOME: cache, CC: "cc -O1 -DSTS_D150" } });
+  expect(ok).toMatchObject({ status: 0, stdout: "2\n" });
+  const bad = spawnSync("node", [CLI, "run", "--backend=c", f], { encoding: "utf8", env: { ...process.env, XDG_CACHE_HOME: "/proc/nope" } });
+  expect(bad.status).toBe(2);
+  expect(bad.stderr).toContain("cache directory");
+  expect(bad.stderr).not.toContain("    at ");
+});
+
 // Q252: user input mistakes are CLI errors (exit 2) without a stack; internal errors exit 70.
 const tmpFile = (src: string): string => { const f = join(mkdtempSync(join(tmpdir(), "sts-q252-")), "a.ts"); writeFileSync(f, src); return f; };
 

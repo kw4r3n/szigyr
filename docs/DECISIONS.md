@@ -633,3 +633,9 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - `STS_STAGE` は正の整数だけを受け付ける。空文字や数字でない値は例外にする（`harness.ts` の `parseStage`）。以前は `NaN` や 0 になり、段階の絞り込みで 0 件が残って「0 cases」だけのテストが通った。
 - `pkg-config` の実行ファイルがないときは、`// backend: c` のケースを飛ばさずに失敗させる（`pkgExists`、`conformance.conf.ts` と `passing.test.ts` が共有）。D120 が飛ばしてよいと言うのは、パッケージがない場合であって、道具がない場合ではない。
 - `scripts/update-passing.mjs` は、古い `PASSING.txt` にあったケースが新しい一覧から消えるとき（失敗している、または指定の接頭辞に入らなくなった）、名前を出して何も書かず終了コード 1 にする。意図して消すときは `--allow-remove` を付ける。判定は `passingRemovals`（単体テストあり）。
+
+## D150: `CC` は空白で区切って、コマンドと先頭の引数にする。キャッシュの作れない場合は CBuildError（2026-11-20）
+
+- `cdecl.ts` の `ccCommand()` が `$CC`（既定 `cc`）を `splitFlags` で分ける。`native.ts` と `headercheck.ts` が使う。`CC="ccache cc"` や `CC="cc -m64"` が使える。キャッシュのキーは `$CC` の文字列そのまま。
+- ネイティブのキャッシュの作成と所有者の確認が失敗したら（`XDG_CACHE_HOME=/proc/nope` など）、生の ENOENT でなく `CBuildError`（終了コード 2）にする。
+- `splitFlags`（`pkg-config` の出力を C コンパイラの引数にする）の単体テストを `cdecl.test.ts` に足した。単引用符、二重引用符、バックスラッシュ、空白の連続、末尾の改行、空入力を調べて、欠陥は見つからなかった。
