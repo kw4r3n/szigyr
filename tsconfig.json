@@ -5,6 +5,6 @@
     "allowImportingTsExtensions": true, "verbatimModuleSyntax": true,
     "noUncheckedIndexedAccess": true, "types": ["node"]
   },
-  "include": ["packages/*/src", "packages/*/test", "*.ts", "bench/run.ts"],
+  "include": ["packages/*/src", "packages/*/test", "*.ts", "bench/run.ts", "scripts/*.ts"],
   "exclude": ["packages/*/test/fixtures"]
 }

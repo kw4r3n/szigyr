@@ -1,6 +1,7 @@
+import { readFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import type { Diagnostic, RunResult } from "./diagnostics.ts";
-import { createParser, SyntaxKind, type Node, type ParsedFile, type ts } from "./parse.ts";
+import { createParser, SyntaxKind, type Node, type ParsedFile, type Parser, type ts } from "./parse.ts";
 import { DETMATH_PATH } from "./detmath.ts";
 import { checkSyntax } from "./syntax.ts";
 import { Program as Decls, Reporter, canonPath, checkImportNames, type Module } from "./modules.ts";
@@ -19,6 +20,7 @@ import * as rt from "../../runtime-js/src/index.ts";
 import { FakeClock, FakeFs, MemoryLog, SeededRandom, TestAlloc, runMain } from "../../std/src/index.ts";
 export * from "./diagnostics.ts";
 export * from "./names.ts";
+export { createParser, type Parser } from "./parse.ts";
 
 /** A user input mistake the CLI reports without a stack, exit 2 (Q252). */
 export class CliError extends Error {}
@@ -30,8 +32,12 @@ interface Program {
   missing: Diagnostic[];
 }
 
-function loadProgram(entryFile: string): Program {
-  const parser = createParser();
+/** D161: the relative `.ts` specifiers a source text names, found without parsing (a candidate may sit in a comment or a string; the AST rounds below decide what is imported). */
+const SPEC = /\b(?:from|import)\s*["'](\.\.?\/[^"'\n]*\.ts)["']/g;
+
+/** One tsgo process (the caller's `shared` one, kept open for the next file, or its own). */
+function loadProgram(entryFile: string, shared?: Parser): Program {
+  const parser = shared ?? createParser();
   const files = new Map<string, ParsedFile>();
   const missing: Diagnostic[] = [];
   try {
@@ -39,6 +45,23 @@ function loadProgram(entryFile: string): Program {
     const entry = parser.parse([entryPath]).get(entryPath);
     if (!entry) throw new Error(`cannot read ${entryFile}`);
     files.set(entry.path, entry);
+    // D161: every file the import chain may reach is parsed in one call, not one call per depth (each call re-sends every open file to tsgo: O(depth^2)).
+    const pre = new Map<string, ParsedFile>([[entry.path, entry]]);
+    const todo = [entry.path], texts = new Set([entry.path]);
+    for (let p = todo.pop(); p !== undefined; p = todo.pop()) {
+      let text: string;
+      try { text = pre.get(p)?.sourceFile.text ?? readFileSync(p, "utf8"); } catch { continue; }
+      for (const m of text.matchAll(SPEC)) {
+        const q = canonPath(dirname(p), m[1]!);
+        if (!texts.has(q)) { texts.add(q); todo.push(q); }
+      }
+    }
+    for (const [p, pf] of parser.parse([...texts].filter((p) => p !== entry.path))) pre.set(p, pf);
+    const parse = (ps: string[]): Map<string, ParsedFile> => {
+      const rest = ps.filter((p) => !pre.has(p));
+      const got = rest.length ? parser.parse(rest) : new Map<string, ParsedFile>();
+      return new Map(ps.flatMap((p) => { const pf = pre.get(p) ?? got.get(p); return pf ? [[p, pf] as const] : []; }));
+    };
     let round = [entry];
     while (round.length) { // one parse round per import depth (~1ms each, D007)
       const wanted = new Map<string, { from: ParsedFile; spec: ts.StringLiteral }>();
@@ -53,7 +76,7 @@ function loadProgram(entryFile: string): Program {
           if (!files.has(p) && !wanted.has(p)) wanted.set(p, { from: pf, spec: spec as ts.StringLiteral });
         }
       }
-      const got = parser.parse([...wanted.keys()]);
+      const got = parse([...wanted.keys()]);
       round = [];
       for (const [p, w] of wanted) {
         const pf = got.get(p);
@@ -82,7 +105,7 @@ function loadProgram(entryFile: string): Program {
       if (dm) files.set(dm.path, dm);
     }
   } finally {
-    parser.close();
+    if (!shared) parser.close();
   }
   return { files: [...files.values()], missing };
 }
@@ -90,14 +113,16 @@ function loadProgram(entryFile: string): Program {
 const displayPath = (p: string): string => relative(process.cwd(), p) || p;
 
 /** Phases run in order P1 -> P2 -> P3 and stop at the first phase with an error (Q003). */
-export function check(entryFile: string): Diagnostic[] {
-  const a = analyze(entryFile);
+export function check(entryFile: string, parser?: Parser): Diagnostic[] {
+  const a = analyze(entryFile, parser);
   return [...a.diagnostics, ...(a.warnings ?? [])];
 }
 
+export interface Analysis { files: ParsedFile[]; diagnostics: Diagnostic[]; warnings?: Diagnostic[]; decls?: Decls; unsafeOps?: { mod: Module; node: Node }[] }
+
 /** P1 + P2 + P3 over the program; on success the expression types are in `exprTypes` for the emitter. */
-function analyze(entryFile: string): { files: ParsedFile[]; diagnostics: Diagnostic[]; warnings?: Diagnostic[]; decls?: Decls; unsafeOps?: { mod: Module; node: Node }[] } {
-  const prog = loadProgram(entryFile);
+export function analyze(entryFile: string, parser?: Parser): Analysis {
+  const prog = loadProgram(entryFile, parser);
   const p1 = [...prog.missing, ...prog.files.flatMap((f) => checkSyntax(f, displayPath(f.path)))];
   if (!p1.length) p1.push(...checkImportNames(prog.files, displayPath));
   if (p1.length) return { files: prog.files, diagnostics: p1 };
@@ -163,11 +188,16 @@ export function rtTrapSites(entryFile: string): Record<string, TrapSite[]> {
 
 /** Which backend runs strict / rt functions (D101). Managed code always runs on the JS engine. */
 export type Backend = "js" | "c";
-export interface RunOptions { backend?: Backend }
+/** `analysis`: the result of `analyze` for this entry file, reused instead of analysing again (D162: `--backend=both` runs both backends over one analysis). */
+export interface RunOptions { backend?: Backend; analysis?: Analysis }
+
+/** Q265: the cause an isolate's abnormal end recorded (no position, not a Trap); the foreign-trap check below rethrows it as main's own trap. */
+let isolateCause: string | undefined;
 
 /** Emits every file and evaluates them as module factories in memory (D031). Returns the entry's exports and, for a C backend program, its native module. */
 async function load(files: ParsedFile[], entryFile: string, tests: boolean, decls?: Decls, backend: Backend = "js"): Promise<{ ex: Record<string, unknown>; native: Record<string, (...a: unknown[]) => unknown> | undefined }> {
   const entry = canonPath(entryFile);
+  isolateCause = undefined;
   rt.takeIsolateTrap(); // D144: a record a previous program in this process left behind is not this program's
   const c = backend === "c" && decls ? emitC(decls) : undefined;
   const native = c ? loadNative(c.c, rt.NATIVE_HOST, c.pkgs) : undefined;
@@ -179,7 +209,7 @@ async function load(files: ParsedFile[], entryFile: string, tests: boolean, decl
       if (Array.isArray(v)) rt.trap(`T${String(v[0]).padStart(3, "0")}` as rt.TrapCode, "trap in C", v[1] ? { file: v[1] as string, line: v[2] as number, col: v[3] as number } : undefined);
     }
     const t = rt.takeIsolateTrap();
-    if (t) rt.trap(t.code as rt.TrapCode, t.message ?? "trap in an isolate", t.file ? { file: t.file, line: t.line!, col: t.col! } : undefined);
+    if (t) { isolateCause = t.message; rt.trap(t.code as rt.TrapCode, t.message ?? "trap in an isolate", t.file ? { file: t.file, line: t.line!, col: t.col! } : undefined); }
   });
   const emitted = new Map(files.map((f) => [f.path, emitFile(f, displayPath(f.path), tests && f.path === entry, c?.keys as Map<never, string> | undefined, decls?.isolateEntries.get(f.path))]));
   const npm = new Map<string, unknown>();
@@ -262,9 +292,9 @@ function checkMain(decls: Decls, entryFile: string): void {
 }
 
 /** Checks, emits and runs `main(sys)` of the entry file with a real System (Q059, Q061). */
-export const run = (entryFile: string, opts: RunOptions = {}): Promise<RunResult> => exclusive(() => runNow(entryFile, opts.backend));
-async function runNow(entryFile: string, backend?: Backend): Promise<RunResult> {
-  const a = analyze(entryFile);
+export const run = (entryFile: string, opts: RunOptions = {}): Promise<RunResult> => exclusive(() => runNow(entryFile, opts.backend, opts.analysis));
+async function runNow(entryFile: string, backend?: Backend, analysis?: Analysis): Promise<RunResult> {
+  const a = analysis ?? analyze(entryFile);
   if (a.diagnostics.length) return { diagnostics: a.diagnostics, stdout: "", trap: null };
   const e4009 = backend !== "c" ? cOnlyDiagnostic(a.files, a.unsafeOps ?? []) : undefined; // §14.7
   if (e4009) return { diagnostics: [e4009], stdout: "", trap: null };
@@ -289,17 +319,17 @@ async function runNow(entryFile: string, backend?: Backend): Promise<RunResult> 
   // §15.4 (3): an isolate record may have landed after main trapped (stopIsolates lets messages land), so it does not beat main's own.
   const t = rt.takeIsolateTrap();
   const c = Array.isArray(v) ? { code: `T${String(v[0]).padStart(3, "0")}`, file: v[1] as string, line: v[2] as number, col: v[3] as number } : null;
-  const iso = t ? { code: t.code, file: t.file ?? "", line: t.line ?? 0, col: t.col ?? 0 } : null;
+  const iso = t ? { code: t.code, file: t.file ?? "", line: t.line ?? 0, col: t.col ?? 0, ...(t.message ? { message: t.message } : {}) } : null; // Q265: only an isolate record carries a message
   // Only stack exhaustion outside any source call (Q035) has no position.
-  const own = r.trap ? { code: r.trap.code, file: r.trap.pos?.file ?? "", line: r.trap.pos?.line ?? 0, col: r.trap.pos?.col ?? 0 } : null;
+  const own = r.trap ? { code: r.trap.code, file: r.trap.pos?.file ?? "", line: r.trap.pos?.line ?? 0, col: r.trap.pos?.col ?? 0, ...(isolateCause && r.trap.message === `${r.trap.code}: ${isolateCause}` ? { message: isolateCause } : {}) } : null;
   const trap = own ? (c ?? own) : (iso ?? c);
   return { diagnostics: [], stdout: r.stdout, trap };
 }
 
 /** `sts test`: checks, emits the entry file's `test(...)` calls and runs them in order (§9.2, D022). */
-export const runTestFile = (entryFile: string, opts: RunOptions = {}): Promise<{ diagnostics: Diagnostic[]; results: rt.TestResult[] }> => exclusive(() => runTestFileNow(entryFile, opts.backend));
-async function runTestFileNow(entryFile: string, backend?: Backend): Promise<{ diagnostics: Diagnostic[]; results: rt.TestResult[] }> {
-  const a = analyze(entryFile);
+export const runTestFile = (entryFile: string, opts: RunOptions = {}): Promise<{ diagnostics: Diagnostic[]; results: rt.TestResult[] }> => exclusive(() => runTestFileNow(entryFile, opts.backend, opts.analysis));
+async function runTestFileNow(entryFile: string, backend?: Backend, analysis?: Analysis): Promise<{ diagnostics: Diagnostic[]; results: rt.TestResult[] }> {
+  const a = analysis ?? analyze(entryFile);
   if (a.diagnostics.length) return { diagnostics: a.diagnostics, results: [] };
   const e4009 = backend !== "c" ? cOnlyDiagnostic(a.files, a.unsafeOps ?? []) : undefined; // §14.7
   if (e4009) return { diagnostics: [e4009], results: [] };

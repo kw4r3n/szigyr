@@ -3,7 +3,7 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
-import { check, CLI_NAME, CliError, run, runTestFile, type Backend, type Diagnostic, type RunResult } from "./index.ts";
+import { analyze, check, CLI_NAME, CliError, createParser, run, runTestFile, type Backend, type Diagnostic, type RunResult } from "./index.ts";
 import { CUnsupported } from "./emit-c.ts";
 import { CBuildError } from "./native.ts";
 
@@ -20,6 +20,7 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
   const backends: Backend[] = backend === "both" ? ["js", "c"] : [backend as Backend];
   const line = (o: unknown): string => `${JSON.stringify(o)}\n`;
   const diags = (ds: Diagnostic[]): string => ds.map((d) => json ? line(d) : `${d.file}:${d.range.start.line}:${d.range.start.col}: ${d.severity} ${d.code}: ${d.message}\n`).join("");
+  const parser = createParser(); // D161: one tsgo process for every file of this command (spawned on first use)
   try {
     if (cmd !== "check" && cmd !== "run" && cmd !== "test") throw new CliError(cmd ? `unknown command '${cmd}'\n${USAGE}` : USAGE);
     if (!files.length || (cmd === "run" && files.length > 1)) throw new CliError(`${cmd}: ${cmd === "run" ? "exactly one" : "at least one"} file required\n${USAGE}`);
@@ -27,14 +28,15 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
     for (const f of files) { if (!existsSync(f)) throw new CliError(`no such file: ${f}`); if (!statSync(f).isFile()) throw new CliError(`not a file: ${f}`); }
 
     if (cmd === "check") {
-      const ds = files.flatMap((f) => check(f));
+      const ds = files.flatMap((f) => check(f, parser));
       out(diags(ds));
       return ds.some((d) => d.severity === "error") ? 1 : 0;
     }
     if (cmd === "run") {
       const rs: RunResult[] = [];
+      const analysis = analyze(files[0]!, parser); // D162: one analysis for both backends
       for (const b of backends) {
-        const cur = await run(files[0]!, { backend: b }); // diagnostics go to stderr: stdout is the program's (Q060)
+        const cur = await run(files[0]!, { backend: b, analysis }); // diagnostics go to stderr: stdout is the program's (Q060)
         if (cur.diagnostics.length) { err(diags(cur.diagnostics)); return 1; }
         rs.push(cur);
       }
@@ -45,16 +47,17 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
       }
       out(r.stdout);
       if (!r.trap) return 0;
-      const { code, file, line: l, col } = r.trap;
-      err(json ? line({ kind: "trap", code, file, range: { start: { line: l, col }, end: { line: l, col } } }) : `trap ${code} at ${file}:${l}:${col}\n`);
+      const { code, file, line: l, col, message } = r.trap;
+      err(json ? line({ kind: "trap", code, file, range: { start: { line: l, col }, end: { line: l, col } }, ...(message ? { message } : {}) }) : `trap ${code} at ${file}:${l}:${col}\n${message ? `${message}\n` : ""}`);
       return 3;
     }
     let failed = 0, passed = 0, bad = false;
     for (const f of files) {
       const rs = [];
       let diag = false;
+      const analysis = analyze(f, parser);
       for (const b of backends) {
-        const cur = await runTestFile(f, { backend: b });
+        const cur = await runTestFile(f, { backend: b, analysis });
         if (cur.diagnostics.length) { out(diags(cur.diagnostics)); bad = true; diag = true; break; }
         rs.push(cur);
       }
@@ -62,6 +65,10 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
       const r = rs[0]!;
       // D101: --backend=both compares each test's outcome, trap code and position; a trap's message is not compared.
       const key = (t: (typeof r.results)[number] | undefined): string => JSON.stringify(t && [t.name, t.ok, t.trap ? null : t.failure, t.trap?.code, t.pos?.file, t.pos?.line, t.pos?.col]);
+      if (rs.length === 2 && rs[1]!.results.length !== r.results.length) { // Q266: a result count that differs is a mismatch too
+        failed++;
+        out(line({ kind: "mismatch", file: f, js: r.results.length, c: rs[1]!.results.length }));
+      }
       for (const [i, t] of r.results.entries()) {
         const other = rs[1]?.results[i];
         if (rs.length === 2 && key(t) !== key(other)) {
@@ -83,6 +90,8 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
     if (!(e instanceof CliError) && !(e instanceof Error && /(?:no exported function|invalid) 'main'/.test(e.message))) { err(`${(e as Error).stack ?? e}\n`); return 70; } // internal errors keep their stack (Q252)
     err(`${CLI_NAME}: ${e.message}\n`);
     return 2;
+  } finally {
+    parser.close();
   }
 }
 

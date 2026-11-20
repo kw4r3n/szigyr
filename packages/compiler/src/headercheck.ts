@@ -14,21 +14,26 @@ const pkgKnown = new Map<string, boolean>();
 const pkgFlags = new Map<string, string[]>();
 const probeCache = new Map<string, boolean>();
 
+/** D160: the environment pkg-config answers from is part of the cache key (the caches live as long as the process, and the environment can change in it). */
+const pkgEnv = (pkg: string): string => ["PKG_CONFIG_PATH", "PKG_CONFIG_LIBDIR", "PKG_CONFIG_SYSROOT_DIR"].map((k) => process.env[k] ?? "").join("\0") + `\0${pkg}`;
+
 function pkgExists(pkg: string): boolean {
-  let ok = pkgKnown.get(pkg);
+  const k = pkgEnv(pkg);
+  let ok = pkgKnown.get(k);
   if (ok === undefined) {
     try { execFileSync("pkg-config", ["--exists", "--", pkg], { stdio: "ignore" }); ok = true; } catch { ok = false; }
-    pkgKnown.set(pkg, ok);
+    pkgKnown.set(k, ok);
   }
   return ok;
 }
 
 function cflagsOf(pkg: string): string[] {
-  let flags = pkgFlags.get(pkg);
+  const k = pkgEnv(pkg);
+  let flags = pkgFlags.get(k);
   if (flags === undefined) {
     try { flags = splitFlags(execFileSync("pkg-config", ["--cflags", "--", pkg], { encoding: "utf8" })); }
     catch { flags = []; }
-    pkgFlags.set(pkg, flags);
+    pkgFlags.set(k, flags);
   }
   return flags;
 }

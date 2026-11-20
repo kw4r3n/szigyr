@@ -735,3 +735,18 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - `emit-c.ts` の `sts_init`。D146 で見送った項目の確認。`native.ts` の `loadNative` は同じソースの `.so` をプロセスの中で 1 度だけ `process.dlopen` し（`loaded` の表）、2 度目以降は同じ `exports` に `init(host)` を呼ぶ。`sts_host` はスレッドローカル（D111）で、isolate は新しいスレッド（`sts_host` は NULL から始まる）、`main` のスレッドの再読み込みは同じ `exports`（同じ `napi_env`）なので、古い参照は新しい参照と同じ env で消せる。
 - 直し方: `sts_host` が NULL でなければ `napi_delete_reference` してから作り直す。漏れは `run` 1 回につき参照 1 つぶんだったが、読み直しが多い長生きのプロセス（テストの全件、`--backend=both`）では積み上がるので消す。
 - 確かめ方: 同じプログラムを同じプロセスで続けて走らせる既存のテスト（`cfn.test.ts` ほか）が通ること。参照の数を観測する手段はないので、専用のテストは足していない。
+
+## D160: `headercheck.ts` の pkg-config のキャッシュは環境変数を鍵に含める（監査の修正、2026-11-20）
+- `headercheck.ts` の `pkgKnown` と `pkgFlags` はパッケージ名だけを鍵にしていた。キャッシュはプロセスの間ずっと残るので、同じプロセスで `PKG_CONFIG_PATH` を変えると（テストが stscb の置き場を足すとき）、前の答えが返った。
+- 直し方: 鍵に `PKG_CONFIG_PATH`、`PKG_CONFIG_LIBDIR`、`PKG_CONFIG_SYSROOT_DIR` の値を足した。キャッシュはディスクには置かない（プローブの結果もプロセス内だけで、鍵に cflags を含む）。`native.ts` の `pkg-config` 呼び出しはキャッシュを持たない。
+- 確かめ方: `headercheck-env.test.ts`。`PKG_CONFIG_PATH` なしで E2009、`ensureStscb()` の後で同じファイルが通る。直す前は 2 度目も E2009 だった。
+
+## D161: CLI は 1 つのコマンドで tsgo を 1 つだけ起動し、import の連鎖は 1 回の呼び出しで読む（監査の修正、2026-11-20）
+- `loadProgram` は `check` / `run` / `runTestFile` の呼び出しごとに tsgo の子プロセス（約 105 ms）を起動していた。さらに import の深さごとに `parser.parse` を 1 回呼び、そのたびに `parse.ts` が開いている全ファイルを tsgo に送り直すため、深さに対して O(n²) だった（再 export ではなく import で 200 段のチェーンが約 0.9 s、800 段が約 13.9 s）。
+- 直し方（動作は変えない）: (1) `cli.ts` がコマンドごとに `createParser()` を 1 つ作り、`check(f, parser)` と `analyze(f, parser)` に渡して、最後に閉じる。パーサーは最初の `parse` で子プロセスを起動するので、引数の誤りなどでは起動しない。パーサーを渡さない呼び出し（テスト、`deterministicFunctions`、`rtTrapSites`）はこれまでどおり自前で起動して閉じる。(2) `loadProgram` は入口を読んだあと、ソースの文字列を正規表現で走査して `.ts` の相対指定を推移的に集め（候補は import の文字列が書かれたコメントなどを含みうる）、全部を 1 回の `parse` で読む。取り込むファイルは従来どおり AST の import から決める（候補を読んでも、import されていなければプログラムに入らない）ので、診断（E7001 を含む）は変わらない。見つからないファイルは 1 回目の呼び出しで結果に現れず、従来の 1 段ずつの処理がそのまま扱う。
+- 測定（負荷の高いマシン、`time` 相当）: 200 段 0.91 s → 0.55 s、800 段 13.9 s → 1.3 s。
+- 見送ったこと: `parse.ts` が毎回、開いている全ファイルを送る点は直していない（tsgo の `updateSnapshot` の `openFiles` を新しいファイルだけにしても、1 回あたりの時間はほとんど縮まなかった）。
+
+## D162: `--backend=both` は 1 つの解析を両方のバックエンドで使う（監査の修正、2026-11-20）
+- `both` は同じファイルの構文解析、検査、所有権の検査を 2 回していた（C のヘッダのプローブはプロセス内のキャッシュで 1 回だけ）。
+- 直し方: `analyze` を export し、`run` / `runTestFile` の `opts.analysis` で渡せるようにした。CLI は 1 ファイルについて 1 回 `analyze` して、JS と C の実行に同じ結果を渡す。2 つの実行は互いに独立なまま（`load` が毎回、新しいモジュールの実体と新しいランタイムの状態を作る。D031）。変換器は解析の結果を書き換えない前提で、適合テストの全件（両バックエンド）が通ることで確かめた。
