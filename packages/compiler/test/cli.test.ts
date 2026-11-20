@@ -369,6 +369,28 @@ export function main(sys: System): void {
   expect(existsSync(join(workDir, `${CLI_NAME}-native`))).toBe(false);
 });
 
+// D140 (C5c): a struct / union without JS <-> C converters (a `null` field) is fine as a local, and a boundary use is never a raw cc error.
+it("a type without boundary converters fails cleanly at the boundary, never as a cc build error (Q233, D140)", () => {
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-`));
+  const env = { ...process.env, XDG_CACHE_HOME: join(dir, "cache") };
+  const main = `export function main(sys: System): void { sys.log.info("x"); }\n`;
+  const probes: Record<string, string> = {
+    unionNullMember: `type U = { readonly kind: "a"; readonly v: null } | { readonly kind: "b" };\nfunction f(u: U): i32 { "use owned"; return 1; }\n${main}`,
+    structResultNull: `type S = Struct<{ readonly r: Result<null, i32> }>;\nfunction f(s: S): i32 { "use owned"; return 1; }\n${main}`,
+    structString: `type S = Struct<{ readonly s: string }>;\nfunction f(s: S): i32 { "use owned"; return 1; }\n${main}`,
+    resultNullParam: `function f(r: Result<null, i32>): i32 { "use owned"; return 1; }\n${main}`,
+    resultNullReturn: `function f(): Result<null, i32> { "use owned"; return ok(null); }\n${main}`,
+    genericNull: `function f<T>(x: T): T { "use owned"; return x; }\nexport function main(sys: System): void { const r = f<Result<null, i32>>(ok(null)); sys.log.info("x"); }\n`,
+  };
+  for (const [name, src] of Object.entries(probes)) {
+    const f = join(dir, `${name}.ts`);
+    writeFileSync(f, src);
+    const r = spawnSync("node", [CLI, "run", "--backend=c", f], { encoding: "utf8", env });
+    expect(r.status === 1 || r.status === 2, `${name}: ${r.status} ${r.stderr}`).toBe(true);
+    expect(r.stderr, name).not.toContain("failed:");
+  }
+}, 120000);
+
 // Q240: polymorphic recursion (a type argument that nests deeper on every call) stops the C backend with CUnsupported; the same type argument still works.
 it("a polymorphically recursive strict function stops the C backend quickly with CUnsupported (Q240)", () => {
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-`));

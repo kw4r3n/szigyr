@@ -131,7 +131,8 @@ export function emitC(prog: Program): EmittedC | undefined {
   const lits: string[] = [];
   const helpers: string[] = [];
   /** Structs / unions with no JS <-> C converters (a `null` field, Q233): fine as locals, never reaches the boundary (D140). */
-  const noConv = new Set<string>();
+  const noConv = new Map<string, CUnsupported>(); // the error `inConv` / `outConv` gave: rethrown when the type is used at the boundary
+  const needConv = (name: string): string => { const e = noConv.get(name); if (e) throw e; return name; };
   const litId = (s: string): number => { let i = lits.indexOf(s); if (i < 0) { lits.push(s); i = lits.length - 1; } return i; };
 
   function ctype(t: Type, where: string): string {
@@ -226,13 +227,12 @@ export function emitC(prog: Program): EmittedC | undefined {
     typedefs.push(`typedef struct { ${fs.join(" ")} } ${name};`);
     // JS <-> C conversion of the struct (boundary, D102). Keys are created in C field order (Q186).
     try {
-      if (cfields(t).some((f) => noConv.has(ctype(f.type, where)))) throw new CUnsupported(where, "a nested struct without converters");
       const hs: string[] = [];
       hs.push(`static ${name} in_${name}(napi_value o) { ${name} r; ${cfields(t).map((f) => `r.f_${f.name} = ${inConv(f.type, `sts_get(o, "${f.name}")`, where)};`).join(" ")} return r; }`);
       hs.push(`static napi_value out_${name}(${name} v) { napi_value o; STS_OK(napi_create_object(sts_env, &o)); ${cfields(t).map((f) => `sts_set(o, "${f.name}", ${outConv(f.type, `v.f_${f.name}`, where)});`).join(" ")} return o; }`);
       hs.push(`static void wb_${name}(napi_value o, ${name} *v) { ${cfields(t).map((f) => (isStruct(f.type) && !isCopy(f.type) ? `wb_${ctype(f.type, where)}(sts_get(o, "${f.name}"), &v->f_${f.name});` : `sts_set(o, "${f.name}", ${outConv(f.type, `v->f_${f.name}`, where)});`)).join(" ")} }`);
       helpers.push(...hs);
-    } catch (x) { if (!(x instanceof CUnsupported)) throw x; noConv.add(name); }
+    } catch (x) { if (!(x instanceof CUnsupported)) throw x; noConv.set(name, x); }
     return name;
   }
 
@@ -246,7 +246,8 @@ export function emitC(prog: Program): EmittedC | undefined {
     unions.set(key, name);
     typedefs.push(`typedef union { int32_t kind; ${ms.map((m, i) => `${m} m${i};`).join(" ")} } ${name};`);
     const ks = umembers(t).map((m) => litId(kindOf(m)!));
-    if (ms.some((m) => noConv.has(m))) { noConv.add(name); return name; }
+    const bad = ms.map((m) => noConv.get(m)).find(Boolean);
+    if (bad) { noConv.set(name, bad); return name; }
     helpers.push(`static ${name} in_${name}(napi_value o) { ${name} r; int32_t k = sts_lit_in(sts_get(o, "kind")); ${ks.map((k, i) => `if (k == ${k}) { r.m${i} = in_${ms[i]}(o); return r; }`).join(" ")} sts_fail("bad union tag"); }`);
     helpers.push(`static napi_value out_${name}(${name} v) { ${ks.map((k, i) => `if (v.kind == ${k}) return out_${ms[i]}(v.m${i});`).join(" ")} sts_fail("bad union tag"); }`);
     return name;
@@ -375,7 +376,7 @@ export function emitC(prog: Program): EmittedC | undefined {
     if (t.k === "num") return `(${CNUM[t.name]})sts_num(${v})`;
     if (isBool(t)) return `sts_bool(${v})`;
     if (t.k === "lit" || (t.k === "union" && t.members.every((m) => m.k === "lit"))) { ctype(t, where); return `sts_lit_in(${v})`; }
-    if (isStruct(t) || (t.k === "union" && isTaggedUnion(t))) return `in_${ctype(t, where)}(${v})`;
+    if (isStruct(t) || (t.k === "union" && isTaggedUnion(t))) return `in_${needConv(ctype(t, where))}(${v})`;
     if (isGen(t, "Vec")) { ctype(t, where); return `sts_vec_in(${v}, ${eargs(elemOf(t))})`; }
     if (isGen(t, "Pool")) { ctype(t, where); return `sts_pool_in(${v}, ${eargs(elemOf(t))})`; }
     if (isGen(t, "RingTx") || isGen(t, "RingRx")) { ctype(t, where); return `sts_ring_in(${v}, ${eargs(elemOf(t))})`; }
@@ -393,7 +394,7 @@ export function emitC(prog: Program): EmittedC | undefined {
     if (t.k === "num") return `sts_mknum((double)(${v}))`;
     if (isBool(t)) return `sts_mkbool(${v})`;
     if (t.k === "lit" || (t.k === "union" && t.members.every((m) => m.k === "lit"))) return `sts_mklit(${v})`;
-    if (isStruct(t) || (t.k === "union" && isTaggedUnion(t))) return `out_${ctype(t, where)}(${v})`;
+    if (isStruct(t) || (t.k === "union" && isTaggedUnion(t))) return `out_${needConv(ctype(t, where))}(${v})`;
     if (isGen(t, "Vec")) return `(${v})->obj`;
     if (isGen(t, "Pool")) return `(${v})->obj`;
     if (isGen(t, "RingTx") || isGen(t, "RingRx")) return `(${v}).obj`;
@@ -426,7 +427,7 @@ export function emitC(prog: Program): EmittedC | undefined {
         frame.push(`${ctype(a, where)} a${k};`);
         lines.push(`  fr->a${k} = ${inConv(a, `argv[${at}]`, where)};`);
         args.push(`&fr->a${k}`);
-        if (borrowMode(pt) === "Mut") wb.push(`wb_${ctype(a, where)}(argv[${at}], &fr->a${k});`);
+        if (borrowMode(pt) === "Mut") wb.push(`wb_${needConv(ctype(a, where))}(argv[${at}], &fr->a${k});`);
       } else {
         frame.push(`${ctype(pt, where)} a${k};`);
         lines.push(`  fr->a${k} = ${inConv(a, `argv[${at}]`, where)};`);
