@@ -3,10 +3,12 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import * as compiler from "../packages/compiler/src/index.ts";
 import { loadCases, passingRemovals, runCase } from "../packages/compiler/test/harness.ts";
+import { ensureStscb } from "../packages/compiler/test/stscb.ts";
 
 const allowRemove = process.argv.includes("--allow-remove");
 const prefixes = process.argv.slice(2).filter((a) => a !== "--allow-remove");
 if (!prefixes.length) { console.error("usage: update-passing.mjs [--allow-remove] <case-name-prefix>..."); process.exit(2); }
+ensureStscb(); // the stscb fixture cases need its pkg-config entry, as in conformance.conf.ts
 const pass = [], fail = [];
 for (const c of loadCases("conformance")) {
   if (prefixes.some((p) => c.name.startsWith(p))) ((await runCase(c, compiler)).length ? fail : pass).push(c.name);
