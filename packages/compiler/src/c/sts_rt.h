@@ -225,6 +225,7 @@ static sts_arena *sts_arena_create(napi_value alloc, uint32_t bytes, int pos) {
 /** A buf allocated in C: its offset and element kind go to the JS object at the boundary exit,
  * so a type-parameter `view` in managed code can read its bytes (D116). */
 static void sts_arena_note(sts_arena *a, uint32_t off, const char *desc) {
+  if (a->nrec && a->roff[a->nrec - 1] == off) { a->rdesc[a->nrec - 1] = desc; return; } // Q246: a zero-length alloc leaves `used` in place; JS keeps the last note per offset anyway
   if (a->nrec == a->caprec) {
     size_t c = a->caprec ? a->caprec * 2 : 8;
     uint32_t *o = realloc(a->roff, c * sizeof *o); if (!o) sts_fail("out of memory"); a->roff = o;
