@@ -90,6 +90,7 @@ reject/E1000-duplicate-class-member.ts
 reject/E1000-duplicate-constructor.ts
 reject/E1000-duplicate-interface-method.ts
 reject/E1000-duplicate-local.ts
+reject/E1000-duplicate-object-key-across-spread.ts
 reject/E1000-duplicate-object-key-shorthand.ts
 reject/E1000-duplicate-object-key.ts
 reject/E1000-duplicate-parameter.ts
