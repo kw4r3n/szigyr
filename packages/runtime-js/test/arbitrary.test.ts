@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createRng, formatArgs, generateRaw, materializeArgs, shrinkRaw, Vec, type GenDesc } from "../src/index.ts";
+import { createRng, formatArgs, generateRaw, materializeArgs, shrinkRaw, shrinkRawAsync, Vec, type GenDesc } from "../src/index.ts";
 
 describe("arbitrary value generator & shrinker", () => {
   it("createRng is deterministic mulberry32 with a fixed default seed", () => {
@@ -68,7 +68,7 @@ describe("arbitrary value generator & shrinker", () => {
     expect(a2[4].n).toBe(9);
   });
 
-  it("shrinkRaw deterministically shrinks numbers, strings, arrays, vecs towards 0 / empty", () => {
+  it("shrinkRaw deterministically shrinks numbers, strings, arrays, vecs towards 0 / empty", async () => {
     const descs: GenDesc[] = [
       { k: "num", t: "i32" },
       { k: "arr", of: { k: "num", t: "i32" } },
@@ -83,16 +83,30 @@ describe("arbitrary value generator & shrinker", () => {
     expect((shrunk[1] as number[]).length).toBe(2);
     expect(shrunk[1]).toEqual([0, 0]);
     expect((shrunk[2] as string).length).toBe(2);
+
+    // #4: f64 fractional values must shrink instead of being truncated to int
+    const frac = shrinkRaw([{ k: "num", t: "f64" }], [0.75], ([x]) => (x as number) > 0 && (x as number) < 1);
+    expect(frac[0] as number).toBeGreaterThan(0);
+    expect(frac[0] as number).toBeLessThan(0.5);
+
+    // #7: async shrinking
+    const asyncShrunk = await shrinkRawAsync(
+      [{ k: "num", t: "i32" }],
+      [50],
+      async ([x]) => Promise.resolve((x as number) >= 7),
+    );
+    expect(asyncShrunk).toEqual([7]);
   });
 
-  it("formatArgs produces JSON-friendly output including NaN and Infinity", () => {
+  it("formatArgs produces JSON-friendly output including NaN, Infinity, and -0", () => {
     const descs: GenDesc[] = [
+      { k: "num", t: "f64" },
       { k: "num", t: "f64" },
       { k: "num", t: "f64" },
       { k: "vec", of: { k: "num", t: "i32" }, elem: "i32" },
       { k: "map", key: { k: "str" }, val: { k: "bool" } },
     ];
-    const fmt = formatArgs(descs, [NaN, -Infinity, [1, 2], [["a", true]]]);
-    expect(JSON.stringify(fmt)).toBe('["NaN","-Infinity",[1,2],[["a",true]]]');
+    const fmt = formatArgs(descs, [NaN, -Infinity, -0, [1, 2], [["a", true]]]);
+    expect(JSON.stringify(fmt)).toBe('["NaN","-Infinity","-0",[1,2],[["a",true]]]');
   });
 });

@@ -106,7 +106,23 @@ export function emitC(prog: Program): EmittedC | undefined {
   for (const mod of prog.mods) {
     if (mod.pf.path === DETMATH_PATH) continue;
     const walk = (n: Node): void => {
-      if (n.kind === K.FunctionDeclaration && fns.some((f) => f.decl === n)) return;
+      const target = n.kind === K.FunctionDeclaration ? fns.find((f) => f.decl === n) : undefined;
+      if (target) {
+        // #3: `emitPreFn` emits leading `requires(...)` in JS so `forAll(fn)` skips only own preconditions; register any generic strict/rt calls inside them.
+        if (!target.unsafe && !target.sig.tparams.length && !fnParamIdx(target).length && target.decl.body) {
+          const ss = target.decl.body.statements;
+          let idx = 0;
+          while (idx < ss.length && ss[idx]!.kind === K.ExpressionStatement && (ss[idx] as ts.ExpressionStatement).expression.kind === K.StringLiteral) idx++;
+          for (; idx < ss.length; idx++) {
+            const s = ss[idx]!;
+            if (s.kind !== K.ExpressionStatement) break;
+            const ex = (s as ts.ExpressionStatement).expression;
+            if (ex.kind !== K.CallExpression || (ex as ts.CallExpression).expression.kind !== K.Identifier || ((ex as ts.CallExpression).expression as ts.Identifier).text !== "requires") break;
+            walk((ex as ts.CallExpression).arguments[0]!);
+          }
+        }
+        return;
+      }
       if (n.kind === K.CallExpression && (n as ts.CallExpression).expression.kind === K.Identifier) {
         const fn = callFns.get(n); // as the checker resolved it: a local binding shadows the module name
         if (fn && fn.layer !== "managed" && (fn.sig.tparams.length || fnParamIdx(fn).length)) {

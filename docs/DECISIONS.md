@@ -801,3 +801,21 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - **CLI と終了コード（`cli.ts`、`index.ts`）**:
   - `sts mutate [--json] [--no-cache] <file...>` を追加し、`index.ts` から `mutate` API を公開した。終了コードは完了 `0`（生存ありでも `0`）、診断エラー・`m = 0` テスト失敗 `1`、CLI の誤り（`--backend` の非 `js` 指定や他コマンドでの `--no-cache` を含む）`2`、内部エラー `70`。`--json` はミュータントごとに `{"kind":"mutant",...}` を 1 行ずつ出し、末尾に `{"kind":"summary","killed",...,"survived",...,"timeout",...,"cached",...}` を出す。
 - **確かめ方**: `packages/compiler/test/mutate.test.ts`（17 件: 6 演算子、契約除外、型絞り込み・所有権保存、対象自動選別、C 専用混在、無限ループ打ち切り、各種 witness と縮小、`forAll` 連携、差分キャッシュ無効化、CLI JSON/テキスト/終了コード）および全テスト・適合テスト・ベンチを実行して確認。
+
+## D170: 段階 4 監査の修正（Q278、2026-11-21）
+
+- **ゴーストミュータント重複の解消と JS 変換の一本化（#1、#8、`emit.ts`、`mutate.ts`）**:
+  - `mutate.ts` 内の複製だった `emitForMutate` / `hasAwait` / `desc` 等（約 690 行）を削除し、`emit.ts` の `emitFile(..., mut?)` へ一本化した。
+  - `binary()` の複合代入で `plain` 分岐前に `gen(b.right)` を呼んでいた箇所と、`call()` の末尾で `args = e.arguments.map(gen)` の後に `splice(e)` を呼んでいた箇所を直し、同じ部分式を 2 回走査して到達不能な重複ミュータント（ゴースト）を作る不具合を解消した。
+- **制御フローと健全性の穴の修正（#2、#3、#6、`emit.ts`、`emit-c.ts`）**:
+  - `while` / `for` / `do` の条件式直下の単独 `true` / `false` リテラル（`checker.ts` の到達可能性解析と `ownership.ts` の `do ... while (false)` が依存）を変異対象から除外した。
+  - `isCaseExpr` が `ParenthesizedExpression` を遡るようにし、`case (1):` / `case (-1):` が変異されないようにした。
+  - `emit-c.ts` で safe な非ジェネリック・関数引数なしの `strict` / `rt` 関数の先頭 `requires(...)` も走査して C 具体化 `keys` に登録し、`emit.ts` の `emitPreFn` が `"use unsafe"` 関数に対して発火しないようにして、`forAll(fn)` の `--backend=c` クラッシュを解消した。
+- **`arbitrary.ts` / `test.ts` / `mutate.ts` の精度と堅牢性（#4、#5、#7、#9、#10、#11）**:
+  - `arbitrary.ts` の `shrinkNum` で `"f64"` が `Math.trunc` に落ちていたのを修正し、小数も縮小できるようにした。`shrinkRawAsync` を追加し、`mutate.ts` で `async` 関数の witness も縮小するようにした。
+  - `arbitrary.ts` と `mutate.ts` の整形で `-0` を `"-0"` として出力するようにした。
+  - `runtime-js/src/test.ts` から `TestFailure` を export し、`mutate.ts` の `constructor.name === "Failure"` 判定を `instanceof rt.TestFailure` に改めた。
+  - `isMutableParam` で `ReadonlyArray<T>` が要素型 `T` の可変性を辿るようにし、`ReadonlyArray` 経由の要素書き換えも witness で検出できるようにした。
+  - `computeCacheKey`（`MUTATE_VERSION = "2"`）で `f.decl` 全体（シグネチャを含む）・`TypeReference` が参照する型エイリアス / class / interface・到達テスト内の推移的ヘルパ（`walkDeps`）・宣言名の非値位置除外を反映し、`const` 鍵も位置ではなく宣言名にした。
+  - `Q278` に従い、パラメータ型に `Test` を含む関数（`hasTestType`）を `sts mutate` の変異対象から除外した（SPEC §16.2・OPEN_QUESTIONS.md 更新）。
+- **確かめ方**: `arbitrary.test.ts`、`forall.test.ts`、`mutate.test.ts`（計 33 件、うち新規 5 件・21 件構成へ拡充）、`pnpm typecheck`、`pnpm verify:conformance`（`accept=82 reject=649 run=198`）、`pnpm vitest run --maxWorkers=2`（26 ファイル 292/292）、`vitest.conformance.config.ts`（1,093/1,093）、`conformance/run` 194 ファイル変異ファズチェック（`totalMutants=997, ghostDuplicates=0, crashes=0`）、`pnpm bench`（全 5 カーネル STS-C / 手書き C ≦ 1.38x）を実行して確認。

@@ -724,3 +724,168 @@ test("forAll kills mutants in named and inline property tests", (t: Test) => {
     expect(addSub!.status).toBe("killed");
   });
 });
+
+describe("mutate: audit regression checks (#1, #2, #5, #6, #7, #9)", () => {
+  it("does not emit duplicate ghost mutants in call args or f64 compound assigns", async () => {
+    const src = `function id(x: i32): i32 { return x; }
+function caller(a: i32, b: i32): i32 {
+  return id(a + b);
+}
+function f64Compound(a: f64): f64 {
+  let x: f64 = a;
+  x += 1;
+  return x;
+}
+test("strong", (t: Test) => {
+  t.eq(id(5), 5);
+  t.eq(caller(2, 3), 5);
+  t.eq(f64Compound(10), 11);
+});
+`;
+    const { file, cacheFile } = tmpFile("no-ghost.ts", src);
+    const res = await mutate(file, { cache: false, cacheFile });
+    expect(res.diagnostics).toEqual([]);
+    expect(res.baselineFailure).toBeNull();
+    expect(res.mutants.filter((m) => m.fn === "caller" && m.op === "+ -> -")).toHaveLength(1);
+    expect(res.mutants.filter((m) => m.fn === "f64Compound" && m.op === "num -> 0")).toHaveLength(1);
+    expect(res.summary.survived).toBe(0);
+  });
+
+  it("preserves loop-condition boolean literals, parenthesized switch case labels, and excludes Test-param helpers", async () => {
+    const src = `function loopTrue(x: i32): { readonly v: i32 } {
+  while (true) {
+    if (x > 0) return { v: x };
+    return { v: 0 };
+  }
+}
+function forTrue(x: i32): { readonly v: i32 } {
+  for (; true; ) {
+    return x > 0 ? { v: x } : { v: 0 };
+  }
+}
+function takeVec(v: Vec<i32>): usize { "use owned"; return v.length; }
+function doOnceMove(v: Vec<i32>): usize {
+  "use owned";
+  let n: usize = 0;
+  do {
+    n = takeVec(v);
+  } while (false);
+  return n;
+}
+function parenSwitch(x: i32): i32 {
+  switch (x) {
+    case (1):
+      return 10;
+    case (-1):
+      return 20;
+    default:
+      return 30;
+  }
+}
+function assertHelper(t: Test, got: i32, want: i32): void {
+  t.eq(got, want);
+}
+test("sound", (t: Test) => {
+  t.eq(loopTrue(5).v, 5);
+  t.eq(loopTrue(0).v, 0);
+  t.eq(forTrue(3).v, 3);
+  t.eq(forTrue(-1).v, 0);
+  const v = Vec.create<i32>(TestAlloc.create(), 1);
+  t.eq(doOnceMove(v), 0);
+  assertHelper(t, parenSwitch(1), 10);
+  assertHelper(t, parenSwitch(-1), 20);
+  assertHelper(t, parenSwitch(0), 30);
+});
+`;
+    const { file, cacheFile } = tmpFile("sound-loops.ts", src);
+    const res = await mutate(file, { cache: false, cacheFile });
+    expect(res.diagnostics).toEqual([]);
+    expect(res.baselineFailure).toBeNull();
+    // Loop-condition boolean literals must not be mutated
+    expect(res.mutants.filter((m) => ["loopTrue", "forTrue", "doOnceMove"].includes(m.fn) && (m.op === "true -> false" || m.op === "false -> true"))).toEqual([]);
+    // Parenthesized case (1) (line 23) and (-1) (line 25) must not be mutated
+    expect(res.mutants.filter((m) => m.fn === "parenSwitch" && (m.range.start.line === 23 || m.range.start.line === 25))).toEqual([]);
+    // Helper taking `Test` (Q278) must not be a mutation target
+    expect(res.mutants.filter((m) => m.fn === "assertHelper")).toEqual([]);
+  });
+
+  it("shrinks async witnesses and detects ReadonlyArray in-place element mutations", async () => {
+    const src = `type Cell = { a: i32 };
+async function clampAsync(x: i32): Promise<i32> {
+  if (x < 0) return 0;
+  return x;
+}
+function bumpFirst(xs: ReadonlyArray<Cell>, go: boolean): void {
+  if (go && xs.length > 0) {
+    xs[0].a = 99;
+  }
+}
+test("weak", async (t: Test) => {
+  t.eq(await clampAsync(5), 5);
+  bumpFirst([], false);
+});
+`;
+    const { file, cacheFile } = tmpFile("async-roarr.ts", src);
+    const res = await mutate(file, { cache: false, cacheFile });
+    expect(res.diagnostics).toEqual([]);
+    const asyncM = res.mutants.find((m) => m.fn === "clampAsync" && m.op === "if -> false");
+    expect(asyncM?.witness).toEqual({ args: [-1], base: 0, mutant: -1 });
+
+    const roM = res.mutants.find((m) => m.fn === "bumpFirst" && m.op === "if -> false");
+    expect(roM?.witness).not.toBeNull();
+    expect(roM?.witness?.base).not.toEqual(roM?.witness?.mutant);
+  });
+
+  it("invalidates diff cache on imported type alias change, imported class method change, and test helper change", async () => {
+    const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-cache2-`));
+    const cacheFile = join(dir, ".sts-cache", "mutate.json");
+    const typesFile = join(dir, "types.ts");
+    const clsFile = join(dir, "cls.ts");
+    const mainFile = join(dir, "main.ts");
+
+    writeFileSync(typesFile, `export type N = i32;\n`);
+    writeFileSync(clsFile, `export class Box { readonly v: i32; constructor(v: i32) { this.v = v; } scale(): i32 { return this.v; } }\n`);
+    const mainSrc = (helperArgs: string) => `import { N } from "./types.ts";
+import { Box } from "./cls.ts";
+function helper(t: Test): void {
+  t.eq(add(${helperArgs}), 1);
+}
+function add(a: N, b: N): N {
+  return a + b;
+}
+function useBox(b: Box, x: i32): i32 {
+  return x + b.scale();
+}
+test("add", (t: Test) => { helper(t); });
+test("box", (t: Test) => { const b = new Box(0); t.ok(useBox(b, 5) >= 5); });
+`;
+    writeFileSync(mainFile, mainSrc("1, 0"));
+
+    const r1 = await mutate(mainFile, { cache: true, cacheFile });
+    expect(r1.summary.cached).toBe(0);
+    expect(r1.mutants.find((m) => m.fn === "add" && m.op === "+ -> -")!.status).toBe("survived");
+    expect(r1.mutants.find((m) => m.fn === "useBox" && m.op === "+ -> -")!.status).toBe("survived");
+
+    // 1. Strengthen test helper -> only `add` cache invalidates and `+ -> -` becomes killed!
+    writeFileSync(mainFile, mainSrc("0, 1"));
+    const r2 = await mutate(mainFile, { cache: true, cacheFile });
+    const addM2 = r2.mutants.find((m) => m.fn === "add" && m.op === "+ -> -")!;
+    expect(addM2.cached).toBe(false);
+    expect(addM2.status).toBe("killed");
+    expect(r2.mutants.find((m) => m.fn === "useBox")!.cached).toBe(true);
+
+    // 2. Edit imported class method -> `useBox` cache invalidates and `+ -> -` becomes killed!
+    writeFileSync(clsFile, `export class Box { readonly v: i32; constructor(v: i32) { this.v = v; } scale(): i32 { return 10; } }\n`);
+    const r3 = await mutate(mainFile, { cache: true, cacheFile });
+    const boxM3 = r3.mutants.find((m) => m.fn === "useBox" && m.op === "+ -> -")!;
+    expect(boxM3.cached).toBe(false);
+    expect(boxM3.status).toBe("killed");
+    expect(r3.mutants.find((m) => m.fn === "add")!.cached).toBe(true);
+
+    // 3. Edit imported type alias -> `add` cache invalidates (`useBox` stays cached)
+    writeFileSync(typesFile, `export type N = f64;\n`);
+    const r4 = await mutate(mainFile, { cache: true, cacheFile });
+    expect(r4.mutants.filter((m) => m.fn === "add").every((m) => !m.cached)).toBe(true);
+    expect(r4.mutants.filter((m) => m.fn === "useBox").every((m) => m.cached)).toBe(true);
+  });
+});

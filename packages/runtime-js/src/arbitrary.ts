@@ -124,7 +124,8 @@ export function materializeArgs(descs: readonly GenDesc[], raw: readonly unknown
 }
 
 function shrinkNum(t: NumType, v: number): number[] {
-  const norm = (x: number): number => (t === "f32" ? Math.fround(x) : x === 0 ? 0 : Math.trunc(x));
+  const norm = (x: number): number =>
+    t === "f32" ? (x === 0 ? 0 : Math.fround(x)) : t === "f64" ? (x === 0 ? 0 : x) : x === 0 ? 0 : Math.trunc(x);
   const fits = (x: number): boolean => {
     if (t === "f64" || t === "f32") return true;
     const [min, max] = INT_BOUNDS[t];
@@ -234,6 +235,26 @@ export function shrinkRaw(descs: readonly GenDesc[], raw: readonly unknown[], fa
   return cur;
 }
 
+/** Async counterpart of `shrinkRaw` for shrinking failing inputs of async functions. */
+export async function shrinkRawAsync(descs: readonly GenDesc[], raw: readonly unknown[], fails: (cand: readonly unknown[]) => Promise<boolean>, maxSteps = 200): Promise<unknown[]> {
+  let cur = [...raw];
+  let steps = 0;
+  let improved = true;
+  while (improved && steps < maxSteps) {
+    improved = false;
+    for (let i = 0; i < descs.length && steps < maxSteps; i++) {
+      for (const c of shrinkOne(descs[i]!, cur[i])) {
+        if (steps >= maxSteps) break;
+        steps++;
+        const cand = cur.slice();
+        cand[i] = c;
+        if (await fails(cand)) { cur = cand; improved = true; break; }
+      }
+    }
+  }
+  return cur;
+}
+
 function formatOne(d: GenDesc, raw: unknown): unknown {
   switch (d.k) {
     case "num": {
@@ -241,7 +262,7 @@ function formatOne(d: GenDesc, raw: unknown): unknown {
       if (Number.isNaN(x)) return "NaN";
       if (x === Infinity) return "Infinity";
       if (x === -Infinity) return "-Infinity";
-      return Object.is(x, -0) ? 0 : x;
+      return Object.is(x, -0) ? "-0" : x;
     }
     case "bool": case "str": case "null": case "lit": return raw;
     case "rec": {

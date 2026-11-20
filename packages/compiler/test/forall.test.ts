@@ -244,4 +244,41 @@ test("composite types and Vec<Struct> agree on JS and C", (t: Test) => {
       expect(r.results[1]!.failure).toContain("[10]");
     }
   });
+
+  it("supports generic strict/rt calls inside named fn requires on --backend=c and formats -0 counterexamples", async () => {
+    const main = project({
+      "main.ts": `
+function isPos<T>(x: i32): boolean {
+  "use rt";
+  return x > 0;
+}
+
+function usePos(x: i32): i32 {
+  "use rt";
+  requires(isPos<i32>(x));
+  return x;
+}
+
+test("generic rt helper in requires works on C and JS", (t: Test) => {
+  forAll(usePos);
+});
+
+test("-0 counterexample formats distinctively", (t: Test) => {
+  forAll((x: f64): boolean => {
+    if (x === 0) {
+      return 1 / x > 0;
+    }
+    return true;
+  });
+});
+`,
+    });
+    for (const backend of ["js", "c"] as const) {
+      const r = await runTestFile(main, { backend });
+      expect(r.diagnostics).toEqual([]);
+      expect(r.results[0]).toMatchObject({ name: "generic rt helper in requires works on C and JS", ok: true });
+      expect(r.results[1]!.ok).toBe(false);
+      expect(r.results[1]!.failure).toContain('["-0"]');
+    }
+  });
 });
