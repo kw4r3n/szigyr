@@ -376,3 +376,27 @@ it("runs through a symlink to cli.ts and from a path containing % # ?", () => {
   expect(r.status).toBe(1);
   expect(jsonLines(r.stdout)[0].code).toBe("E1001");
 });
+
+// Q252: user input mistakes are CLI errors (exit 2) without a stack; internal errors exit 70.
+const tmpFile = (src: string): string => { const f = join(mkdtempSync(join(tmpdir(), "sts-q252-")), "a.ts"); writeFileSync(f, src); return f; };
+
+it("a directory as the entry file is a CLI error (Q252)", () => {
+  const r = sts("check", CONF);
+  expect(r.code).toBe(2);
+  expect(r.err).toContain("not a file");
+});
+
+it("run with an unresolvable npm: import is a CLI error naming the specifier (Q252)", () => {
+  const f = tmpFile(`import { x } from "npm:nonexistent-pkg-xyz";\nexport function main(sys: System): void { sys.log.info("hi"); }\n`);
+  const r = sts("run", "--json", f);
+  expect(r.code).toBe(2);
+  expect(r.err).toContain("npm:nonexistent-pkg-xyz");
+  expect(r.err).not.toContain("    at ");
+});
+
+it("a source nested too deeply is a CLI error, not a raw RangeError (Q252)", () => {
+  const f = tmpFile(`export function main(sys: System): void {\n  const a: i32 = 1;\n  const b: i32 = ${Array(20000).fill("a").join(" + ")};\n}\n`);
+  const r = sts("check", f);
+  expect(r.code).toBe(2);
+  expect(r.err).toBe("sts: source nests too deeply\n");
+});

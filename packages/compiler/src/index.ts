@@ -20,6 +20,9 @@ import { FakeClock, FakeFs, MemoryLog, SeededRandom, TestAlloc, runMain } from "
 export * from "./diagnostics.ts";
 export * from "./names.ts";
 
+/** A user input mistake the CLI reports without a stack, exit 2 (Q252). */
+export class CliError extends Error {}
+
 export class NotImplementedError extends Error {
   constructor(what: string) {
     super(`${what} is not implemented`);
@@ -204,7 +207,10 @@ async function load(files: ParsedFile[], entryFile: string, tests: boolean, decl
       const name = spec.slice(4);
       let url = name;
       try { url = pathToFileURL(createRequire(path).resolve(name)).href; } catch { /* shortcut: fall back to Node's own resolution from the compiler */ }
-      npm.set(spec, await import(url));
+      try { npm.set(spec, await import(url)); } catch (e) {
+        if ((e as { code?: string }).code === "ERR_MODULE_NOT_FOUND") throw new CliError(`cannot resolve '${spec}'`); // Q252
+        throw e;
+      }
     }
   }
   // Q035: stack exhaustion is reported at the innermost source call found in the JS stack.

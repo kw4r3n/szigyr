@@ -1,15 +1,13 @@
 #!/usr/bin/env node
-// CLI (Q060, Q061, Q110). Exit codes: 0 ok, 1 compile errors or failed tests, 2 usage / CLI error, 3 trap.
+// CLI (Q060, Q061, Q110). Exit codes: 0 ok, 1 compile errors or failed tests, 2 usage / CLI error, 3 trap, 70 internal error (Q252).
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
-import { check, CLI_NAME, run, runTestFile, type Backend, type Diagnostic, type RunResult } from "./index.ts";
+import { check, CLI_NAME, CliError, run, runTestFile, type Backend, type Diagnostic, type RunResult } from "./index.ts";
 import { CUnsupported } from "./emit-c.ts";
 import { CBuildError } from "./native.ts";
 
 const USAGE = `usage: ${CLI_NAME} <check|run|test> [--json] [--backend=js|c|both] <file...>`;
-
-class CliError extends Error {}
 
 export async function main(argv: string[], out: (s: string) => void, err: (s: string) => void): Promise<number> {
   let args;
@@ -26,7 +24,7 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
     if (cmd !== "check" && cmd !== "run" && cmd !== "test") throw new CliError(cmd ? `unknown command '${cmd}'\n${USAGE}` : USAGE);
     if (!files.length || (cmd === "run" && files.length > 1)) throw new CliError(`${cmd}: ${cmd === "run" ? "exactly one" : "at least one"} file required\n${USAGE}`);
     if (!["js", "c", "both"].includes(backend)) throw new CliError(`unknown backend '${backend}'\n${USAGE}`);
-    for (const f of files) if (!existsSync(f)) throw new CliError(`no such file: ${f}`);
+    for (const f of files) { if (!existsSync(f)) throw new CliError(`no such file: ${f}`); if (!statSync(f).isFile()) throw new CliError(`not a file: ${f}`); }
 
     if (cmd === "check") {
       const ds = files.flatMap((f) => check(f));
@@ -81,7 +79,8 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
     return failed || bad ? 1 : 0;
   } catch (e) {
     if (e instanceof CUnsupported || e instanceof CBuildError) { err(`${CLI_NAME}: ${e.message}\n`); return 2; }
-    if (!(e instanceof CliError) && !(e instanceof Error && /(?:no exported function|invalid) 'main'/.test(e.message))) throw e; // internal errors keep their stack
+    if (e instanceof RangeError && /call stack/.test(e.message)) { err(`${CLI_NAME}: source nests too deeply\n`); return 2; } // Q252
+    if (!(e instanceof CliError) && !(e instanceof Error && /(?:no exported function|invalid) 'main'/.test(e.message))) { err(`${(e as Error).stack ?? e}\n`); return 70; } // internal errors keep their stack (Q252)
     err(`${CLI_NAME}: ${e.message}\n`);
     return 2;
   }
