@@ -24,7 +24,6 @@ const RANGE: Record<string, [string, string]> = {
   u8: ["0LL", "255LL"], u16: ["0LL", "65535LL"], u32: ["0LL", "4294967295LL"], usize: ["0LL", "4294967295LL"],
 };
 const CNUM: Record<NumName, string> = { f64: "double", f32: "float", i8: "int8_t", i16: "int16_t", i32: "int32_t", u8: "uint8_t", u16: "uint16_t", u32: "uint32_t", usize: "uint32_t" };
-const TRAP: Record<string, number> = { T001: 1, T002: 2, T003: 3, T004: 4, T005: 5, T006: 6, T007: 7, T008: 8, T009: 9, T010: 10, T011: 11, T013: 13, T014: 14, T015: 15 };
 const numText = (n: ts.NumericLiteral): number => Number(n.text.replace(/_/g, ""));
 const isGen = (t: Type, n: string): boolean => t.k === "gen" && t.name === n;
 /** Structs, and the all-readonly Copy records strict / rt accepts as Copy Structs (Q043). */
@@ -66,9 +65,8 @@ const fnParamIdx = (f: FnSym): number[] => f.sig.params.flatMap((pt, i) => (unre
 const MAX_TYPE_NEST = 32;
 const nest = (s: string): number => { let d = 0, m = 0; for (const c of s) { if (c === "<" || c === "{") m = Math.max(m, ++d); else if (c === ">" || c === "}") d--; } return m; };
 
-export function emitC(prog: Program, display: (path: string) => string): EmittedC | undefined {
+export function emitC(prog: Program): EmittedC | undefined {
   // §12 (D117): managed DetMath calls run the JS module directly; C compiles only DetMath functions reached from strict / rt.
-  void display;
   const resolveFn = (mod: Module, name: string): FnSym | undefined => { const v = prog.lookupValue(mod, name); return v?.k === "fn" ? v : undefined; }; // across imports and re-exports (Q226)
   const fns = prog.fns.filter((f) => f.layer !== "managed" && f.mod.pf.path !== DETMATH_PATH);
   if (!fns.length) return undefined;
@@ -787,10 +785,9 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       if (t.k !== "num") throw this.no(anchor, `'${o}' on ${show(t)}`);
       const c = CNUM[t.name];
       if (isInt(t)) {
-        const [lo, hi] = RANGE[t.name]!;
         switch (o) {
           // the builtins check the exact result against the range of `c`; unlike a widened compare they keep loop-carried values in registers (D108)
-          case "+": case "-": case "*": void lo; void hi; return `STS_AOP(${o === "+" ? "add" : o === "-" ? "sub" : "mul"}, ${c}, ${l}, ${r}, ${this.pos(anchor)})`;
+          case "+": case "-": case "*": return `STS_AOP(${o === "+" ? "add" : o === "-" ? "sub" : "mul"}, ${c}, ${l}, ${r}, ${this.pos(anchor)})`;
           case "&": case "|": case "^": return `(${c})(${l} ${o} ${r})`;
           case "<<": return t.name === "i32" ? `(int32_t)((uint32_t)${l} << sts_amt(${r}, ${this.pos(anchor)}))` : `(uint32_t)(${l} << sts_amt(${r}, ${this.pos(anchor)}))`;
           case ">>": case ">>>": return `(${c})(${l} >> sts_amt(${r}, ${this.pos(anchor)}))`;
@@ -1425,5 +1422,3 @@ static napi_value sts_finish(napi_env env, napi_callback_info info) {
   pthread_mutex_lock(&sts_ftrap_mu); atomic_store(&sts_done, 1); pthread_mutex_unlock(&sts_ftrap_mu);
   return sts_ftrap_value(env);
 }`;
-
-export const TRAP_CODES = TRAP;

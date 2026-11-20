@@ -324,7 +324,6 @@ static sts_slice sts_sub(sts_slice s, uint32_t a, uint32_t b, size_t es, int pos
 /** Integer +, -, * with T001 on a result outside T (the builtin compares the exact result). */
 #define STS_AOP(op, T, a, b, pos) ({ T r_; if (__builtin_expect(__builtin_##op##_overflow((a), (b), &r_), 0)) sts_trap(1, (pos)); r_; })
 static int64_t sts_rng(int64_t r, int64_t lo, int64_t hi, int pos) { if (__builtin_expect(r < lo || r > hi, 0)) sts_trap(1, pos); return r; }
-static int64_t sts_mulr(int64_t a, int64_t b, int64_t lo, int64_t hi, int pos) { __int128 r = (__int128)a * b; if (__builtin_expect(r < lo || r > hi, 0)) sts_trap(1, pos); return (int64_t)r; }
 /** divTrunc / rem in T: T007 on a zero divisor; for signed T, x / -1 is a checked negation (MIN / -1 is T001) and x % -1 is 0. */
 #define STS_DIV(T, a, b, pos) ({ T a_ = (a), b_ = (b); if (__builtin_expect(b_ == 0, 0)) sts_trap(7, (pos)); ((T)-1 < 0 && b_ == (T)-1) ? STS_AOP(sub, T, (T)0, a_, (pos)) : (T)(a_ / b_); })
 #define STS_REM(T, a, b, pos) ({ T a_ = (a), b_ = (b); if (__builtin_expect(b_ == 0, 0)) sts_trap(7, (pos)); ((T)-1 < 0 && b_ == (T)-1) ? (T)0 : (T)(a_ % b_); })

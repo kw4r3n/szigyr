@@ -184,7 +184,7 @@ const HOST = {
 /** Emits every file and evaluates them as module factories in memory (D031). Returns the entry's exports and, for a C backend program, its native module. */
 async function load(files: ParsedFile[], entryFile: string, tests: boolean, decls?: Decls, backend: Backend = "js"): Promise<{ ex: Record<string, unknown>; native: Record<string, (...a: unknown[]) => unknown> | undefined }> {
   const entry = resolve(entryFile);
-  const c = backend === "c" && decls ? emitC(decls, displayPath) : undefined;
+  const c = backend === "c" && decls ? emitC(decls) : undefined;
   const native = c ? loadNative(c.c, HOST, c.pkgs) : undefined;
   // §15.4 (2): a foreign trap (a C thread's, or an isolate's) is polled at every task boundary
   // (emit wraps each await in rt.task; Port.recv checks too). The first one recorded wins.
