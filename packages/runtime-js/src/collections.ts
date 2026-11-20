@@ -356,18 +356,15 @@ export class Arena {
     if (elem.startsWith("{")) { const l = JSON.parse(elem) as { z: number; a: number }; return { z: l.z, a: l.a }; }
     const z = NUM_SIZE[elem]!; return { z, a: z };
   }
-  private writeAt(b: ArenaBuf, i: number, x: unknown, elem: ElemKind): void {
-    if (elem.startsWith("{")) codecOf(elem).wr(dvOf(this.buf), b.off + i * codecOf(elem).z, x);
-    else typedView(elem, this.buf, b.off, b.length)[i] = x as number;
-  }
   alloc<T>(n: number, init: T, elem: ElemKind = "other"): ArenaBuf | null {
     const { z, a } = this.sizeOf(elem);
     const off = Math.ceil(this.used / a) * a;
     if (off + n * z > this.buf.length) return null;
     this.used = off + n * z;
     const b: ArenaBuf = { arena: this.id, gen: this.gen, off, length: n };
-    if (elem === "other") this.recs.set(off, { elem, arr: new Array(n).fill(init) });
-    else { this.recs.set(off, { elem, arr: null }); for (let i = 0; i < n; i++) this.writeAt(b, i, init, elem); }
+    this.recs.set(off, { elem, arr: elem === "other" ? new Array(n).fill(init) : null });
+    if (elem.startsWith("{")) { const c = codecOf(elem), d = dvOf(this.buf); for (let i = 0; i < n; i++) c.wr(d, off + i * z, init); }
+    else if (elem !== "other") typedView(elem, this.buf, off, n).fill(init as number);
     return b;
   }
   /** C boundary: a buf the C side allocated at `off`; its values live in the bytes as `elem` (read back by a type-parameter view). */
