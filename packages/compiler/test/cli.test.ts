@@ -502,3 +502,26 @@ it("a source nested too deeply is a CLI error, not a raw RangeError (Q252)", () 
   expect(r.code).toBe(2);
   expect(r.err).toBe("sts: source nests too deeply\n");
 });
+
+// Q265: an isolate that dies with a non-Trap error (here: an npm module that throws only off the main thread) carries its cause as the trap's message.
+it("run shows the cause of an isolate's abnormal end in both modes (Q265)", () => {
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-`));
+  mkdirSync(join(dir, "node_modules/thrower"), { recursive: true });
+  writeFileSync(join(dir, "node_modules/thrower/package.json"), '{"name":"thrower","version":"1.0.0","main":"index.js"}');
+  writeFileSync(join(dir, "node_modules/thrower/index.js"), 'if (!require("node:worker_threads").isMainThread) throw new Error("boom in isolate");\nmodule.exports = { v: 1 };\n');
+  writeFileSync(join(dir, "m.ts"), `import { v } from "npm:thrower";
+function worker(port: Port<string, null>): void {
+  port.send("ready");
+}
+export async function main(sys: System): Promise<void> {
+  const p = sys.spawn.isolate(worker);
+  const a = await p.recv();
+  const b = await p.recv();
+}
+`);
+  const t = sts("run", join(dir, "m.ts"));
+  expect(t.code).toBe(3);
+  expect(t.err).toMatch(/^trap T006 at .*\n.*boom in isolate/);
+  const j = sts("run", "--json", join(dir, "m.ts"));
+  expect(jsonLines(j.err)[0]).toMatchObject({ kind: "trap", code: "T006", message: expect.stringContaining("boom in isolate") });
+}, 60000);

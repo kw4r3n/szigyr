@@ -165,9 +165,13 @@ export function rtTrapSites(entryFile: string): Record<string, TrapSite[]> {
 export type Backend = "js" | "c";
 export interface RunOptions { backend?: Backend }
 
+/** Q265: the cause an isolate's abnormal end recorded (no position, not a Trap); the foreign-trap check below rethrows it as main's own trap. */
+let isolateCause: string | undefined;
+
 /** Emits every file and evaluates them as module factories in memory (D031). Returns the entry's exports and, for a C backend program, its native module. */
 async function load(files: ParsedFile[], entryFile: string, tests: boolean, decls?: Decls, backend: Backend = "js"): Promise<{ ex: Record<string, unknown>; native: Record<string, (...a: unknown[]) => unknown> | undefined }> {
   const entry = canonPath(entryFile);
+  isolateCause = undefined;
   rt.takeIsolateTrap(); // D144: a record a previous program in this process left behind is not this program's
   const c = backend === "c" && decls ? emitC(decls) : undefined;
   const native = c ? loadNative(c.c, rt.NATIVE_HOST, c.pkgs) : undefined;
@@ -179,7 +183,7 @@ async function load(files: ParsedFile[], entryFile: string, tests: boolean, decl
       if (Array.isArray(v)) rt.trap(`T${String(v[0]).padStart(3, "0")}` as rt.TrapCode, "trap in C", v[1] ? { file: v[1] as string, line: v[2] as number, col: v[3] as number } : undefined);
     }
     const t = rt.takeIsolateTrap();
-    if (t) rt.trap(t.code as rt.TrapCode, t.message ?? "trap in an isolate", t.file ? { file: t.file, line: t.line!, col: t.col! } : undefined);
+    if (t) { isolateCause = t.message; rt.trap(t.code as rt.TrapCode, t.message ?? "trap in an isolate", t.file ? { file: t.file, line: t.line!, col: t.col! } : undefined); }
   });
   const emitted = new Map(files.map((f) => [f.path, emitFile(f, displayPath(f.path), tests && f.path === entry, c?.keys as Map<never, string> | undefined, decls?.isolateEntries.get(f.path))]));
   const npm = new Map<string, unknown>();
@@ -289,9 +293,9 @@ async function runNow(entryFile: string, backend?: Backend): Promise<RunResult> 
   // §15.4 (3): an isolate record may have landed after main trapped (stopIsolates lets messages land), so it does not beat main's own.
   const t = rt.takeIsolateTrap();
   const c = Array.isArray(v) ? { code: `T${String(v[0]).padStart(3, "0")}`, file: v[1] as string, line: v[2] as number, col: v[3] as number } : null;
-  const iso = t ? { code: t.code, file: t.file ?? "", line: t.line ?? 0, col: t.col ?? 0 } : null;
+  const iso = t ? { code: t.code, file: t.file ?? "", line: t.line ?? 0, col: t.col ?? 0, ...(t.message ? { message: t.message } : {}) } : null; // Q265: only an isolate record carries a message
   // Only stack exhaustion outside any source call (Q035) has no position.
-  const own = r.trap ? { code: r.trap.code, file: r.trap.pos?.file ?? "", line: r.trap.pos?.line ?? 0, col: r.trap.pos?.col ?? 0 } : null;
+  const own = r.trap ? { code: r.trap.code, file: r.trap.pos?.file ?? "", line: r.trap.pos?.line ?? 0, col: r.trap.pos?.col ?? 0, ...(isolateCause && r.trap.message === `${r.trap.code}: ${isolateCause}` ? { message: isolateCause } : {}) } : null;
   const trap = own ? (c ?? own) : (iso ?? c);
   return { diagnostics: [], stdout: r.stdout, trap };
 }

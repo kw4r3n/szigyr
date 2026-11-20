@@ -45,8 +45,8 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
       }
       out(r.stdout);
       if (!r.trap) return 0;
-      const { code, file, line: l, col } = r.trap;
-      err(json ? line({ kind: "trap", code, file, range: { start: { line: l, col }, end: { line: l, col } } }) : `trap ${code} at ${file}:${l}:${col}\n`);
+      const { code, file, line: l, col, message } = r.trap;
+      err(json ? line({ kind: "trap", code, file, range: { start: { line: l, col }, end: { line: l, col } }, ...(message ? { message } : {}) }) : `trap ${code} at ${file}:${l}:${col}\n${message ? `${message}\n` : ""}`);
       return 3;
     }
     let failed = 0, passed = 0, bad = false;
@@ -62,6 +62,10 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
       const r = rs[0]!;
       // D101: --backend=both compares each test's outcome, trap code and position; a trap's message is not compared.
       const key = (t: (typeof r.results)[number] | undefined): string => JSON.stringify(t && [t.name, t.ok, t.trap ? null : t.failure, t.trap?.code, t.pos?.file, t.pos?.line, t.pos?.col]);
+      if (rs.length === 2 && rs[1]!.results.length !== r.results.length) { // Q266: a result count that differs is a mismatch too
+        failed++;
+        out(line({ kind: "mismatch", file: f, js: r.results.length, c: rs[1]!.results.length }));
+      }
       for (const [i, t] of r.results.entries()) {
         const other = rs[1]?.results[i];
         if (rs.length === 2 && key(t) !== key(other)) {
