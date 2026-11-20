@@ -1,5 +1,6 @@
-import { asTrap, capturing, type Pos, type TrapCode } from "./trap.ts";
+import { asTrap, capturing, type Pos, type Trap, type TrapCode } from "./trap.ts";
 import type { Slice } from "./collections.ts";
+import { createRng, formatArgs, generateRaw, materializeArgs, shrinkRaw, type GenDesc } from "./arbitrary.ts";
 
 export interface TestResult {
   readonly name: string;
@@ -49,6 +50,57 @@ export class Test {
   }
 }
 const show = (x: unknown): string => { try { return JSON.stringify(x) ?? String(x); } catch { return String(x); } };
+
+const preMap = new WeakMap<(...args: never[]) => unknown, (...args: unknown[]) => boolean>();
+/** Registers a function's own leading `requires` precondition checker for `forAll`. */
+export function setPre(fn: (...args: never[]) => unknown, pre: (...args: unknown[]) => boolean): void { preMap.set(fn, pre); }
+
+type Trial = { kind: "ok" } | { kind: "skip" } | { kind: "fail"; reason: string; trap?: Trap; pos?: Pos };
+
+/** Runs property-based testing over 100 valid inputs (max 1,000 precondition skips) and shrinks any counterexample (SPEC §16.1). */
+export function forAll(
+  fn: (...args: unknown[]) => unknown,
+  descs: readonly GenDesc[],
+  checkBool: boolean,
+  pos?: Pos,
+  preArg?: (...args: unknown[]) => boolean,
+): void {
+  const pre = preArg ?? preMap.get(fn as (...args: never[]) => unknown);
+  const runTrial = (raw: readonly unknown[]): Trial => {
+    const args = materializeArgs(descs, raw);
+    try {
+      if (pre && !pre(...args)) return { kind: "skip" };
+      const res = fn(...args);
+      if (checkBool && res === false) return { kind: "fail", reason: "returned false" };
+      return { kind: "ok" };
+    } catch (x) {
+      if (x instanceof Failure) return { kind: "fail", reason: x.message, pos: x.pos };
+      const tr = asTrap(x);
+      if (tr) return { kind: "fail", reason: tr.code, trap: tr, pos: tr.pos };
+      throw x;
+    }
+  };
+  const rng = createRng();
+  let passed = 0, rejected = 0;
+  while (passed < 100) {
+    const raw = generateRaw(descs, rng, Math.min(30, 1 + Math.floor(passed / 3)));
+    const res = runTrial(raw);
+    if (res.kind === "skip") {
+      if (++rejected >= 1000) throw new Failure(`forAll: gave up after ${rejected} precondition rejections (${passed} passed)`, pos);
+      continue;
+    }
+    if (res.kind === "fail") {
+      let lastFail = res;
+      const shrunk = shrinkRaw(descs, raw, (cand) => {
+        const r = runTrial(cand);
+        if (r.kind === "fail") { lastFail = r; return true; }
+        return false;
+      });
+      throw new Failure(`forAll: counterexample ${JSON.stringify(formatArgs(descs, shrunk))} (${lastFail.trap ? lastFail.trap.code : lastFail.reason})`, pos);
+    }
+    passed++;
+  }
+}
 
 type TestFn = (t: Test) => void | Promise<void>;
 const registry: { name: string; fn: TestFn }[] = [];

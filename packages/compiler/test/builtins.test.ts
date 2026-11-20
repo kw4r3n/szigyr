@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
-import { BUILTIN_NAMES, NONDET_GEN, NONDET_OPAQUE, SPEC_RESERVED, builtinMethods } from "../src/builtins.ts";
+import { BUILTIN_FUNCTIONS, BUILTIN_NAMES, NONDET_GEN, NONDET_OPAQUE, SPEC_RESERVED, builtinMethods } from "../src/builtins.ts";
 import { check } from "../src/index.ts";
 import { isDeterministic } from "../src/determinism.ts";
 import { AUTHORITIES, F64, OPAQUE_NAMES, VOID, gen, opaque, type GenName, type Type } from "../src/types.ts";
@@ -101,3 +101,9 @@ it("treats a reserved §13 name exactly like a builtin name in every declaration
     for (const n of SPEC_RESERVED) expect(codes(src(n)), `${form} ${n}`).toBe(want);
   }
 }, 60_000);
+
+it("registers forAll as a builtin function rather than reserved (§12, §16.1)", () => {
+  expect(BUILTIN_FUNCTIONS.has("forAll")).toBe(true);
+  expect(SPEC_RESERVED).not.toContain("forAll");
+  expect(BUILTIN_NAMES.has("forAll")).toBe(true);
+});

@@ -771,3 +771,17 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - `crossOk` の孤立サロゲートの分岐は、どの経路でもそのリテラル型ができなくなったので消した。E4002 の行から Q238 を外した。
 - 副作用: タグ型が `ERROR` になったレコードを持つ union は、E2002 を重ねて出さない（`modules.ts` の union の検査）。
 - 確かめ方: `E2012-*` の 4 件、`E4002-lone-surrogate-value-to-strict-generic`（呼び出し側の値 `"\ud800"` は `T = string` と推論され、strict の境界の E4002 になる。C まで届かない）、`244-lone-surrogate-value-managed`。
+
+## D168: 性質テスト `forAll` と共有生成器・縮小器（段階 4-1、Q273・Q274、2026-11-20）
+
+- **共有生成器・縮小器（`packages/runtime-js/src/arbitrary.ts`、`packages/compiler/src/gendesc.ts`）**:
+  - `GenDesc` をランタイム（`arbitrary.ts`）とコンパイラ（`gendesc.ts`）で共有し、`isGeneratable` / `genDescOf` / `emitGenDesc` が §16.1（Q274）の生成可能型（数値、`boolean`、`string`、`null`、文字列リテラル・union、レコード、`T | null`、タグつき union、`Result`、`Array`、`ReadonlyArray`、`Set`、`Map`、`Struct`、§10.2 レイアウトを持つ `Vec` / `Slice` とその `Ref` / `Mut`）を判定して JSON 記述子を出力する。
+  - `createRng`（mulberry32、既定シード固定）、`generateRaw`（境界値優先混合、`f32` は `Math.fround`）、`materializeArgs`（反復ごとに新しい `Vec`・`Array`・`Map`・`Set`・レコード・`Struct` を生成し `Mut` 変更を分離）、`shrinkRaw`（試行回数上限つきで `0`・空・短い方向へ決定的に縮小）、`formatArgs`（非有限数の文字列化を含む JSON 表現）を提供する。`@mutate` の witness 探索からも再利用できる。
+- **構文・型検査（`builtins.ts`、`syntax.ts`、`expr.ts`）**:
+  - `forAll` を `SPEC_RESERVED` から `BUILTIN_FUNCTIONS` へ移動した。
+  - P1（`syntax.ts`）はモジュール直下の `test(...)` のコールバック本体の中（入れ子の `function` / `class` 宣言の外）でのみ `forAll(...)` を許し、それ以外は `E6004`（アンカー `forAll`）。`forAll` の直接の実引数であるブロック本体アロー関数・関数式の先頭 `requires(...)` だけを許し、`ensures` は `E6001` のまま。
+  - P2（`expr.ts`）は契約内を `E6002`、引数・型引数の誤りを `E2002`、0 引数・`async`・ジェネリック・`Promise` 戻り値・非 `boolean`/`void` 戻り値（アロー/関数式）を `E2002`、未注釈引数を `E2006`、`rt+unsafe` を `E4001`、C 関数を `E4003`、`"use unsafe"` を `E4008`、非生成可能引数を `E6005`（アロー/関数式は引数の型注釈、名前指定は識別子にアンカー）で拒否する。
+- **変換・実行（`emit.ts`、`runtime-js/src/test.ts`）**:
+  - `f` 自身の先頭 `requires` だけを事前条件のスキップ対象とし、再帰呼び出しや呼び出し先の `requires`（T004）を反例として確実に検出するため、トップレベル非ジェネリック `FunctionDeclaration` の先頭 `requires` をモジュール初期化時に `__sts_rt.setPre(fn, pre)` で登録し、`forAll` 呼び出し（インライン式では `pre` を直接渡す）では本体実行前に `pre` を評価する。`pre` の中の別関数呼び出しが起こしたトラップは捕捉せず反例にする。これにより `--backend=js` と `--backend=c`（`native` ラッパー経由）の両方で再帰・呼び出し先の T004 が一致する。
+  - 名前付き関数の `boolean` 戻り値 `false` は失敗にせず（`checkBool: false`）、インライン式の `boolean` 戻り値 `false` は失敗にする（`checkBool: true`）。トラップによる反例の失敗メッセージには `trap.message` ではなく `trap.code` のみを使い、`--backend=both` で JS と C の出力が一致するようにした。
+- **確かめ方**: `arbitrary.test.ts`、`forall.test.ts`、`builtins.test.ts`、conformance の `stage: 4` ケース（`accept/` 2 件、`run/` 1 件、`reject/` 35 件）、`pnpm typecheck`、`pnpm verify:conformance`、`pnpm test`、`pnpm conformance`、`sts test --backend=both` がすべて通過。

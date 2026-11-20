@@ -35,7 +35,7 @@ const BINARY_OPS = new Set<K>([
 const PREFIX_OPS = new Set<K>([K.MinusToken, K.ExclamationToken, K.TildeToken]);
 
 /** Codes owned by phase P1 (Q003). */
-export const P1_CODE = /^(E1\d{3}|E5002|E6001|E6003|E7001|E7002)$/;
+export const P1_CODE = /^(E1\d{3}|E5002|E6001|E6003|E6004|E7001|E7002)$/;
 
 type FnKind = "function" | "method" | "other";
 
@@ -63,8 +63,8 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
 
   /** Contract and `test` calls that sit in an allowed position (E6001 / E6003 otherwise). */
   const allowedCalls = new Set<Node>();
-  /** Q120 / Q124: what the enclosing function allows. Each function resets it; arrows inherit `thisOk`. */
-  let fc = { thisOk: false, async: false, loops: 0, breaks: 0 };
+  /** Q120 / Q124 / §16.1: what the enclosing function allows. Arrows inherit `thisOk` and `inTest`. */
+  let fc = { thisOk: false, async: false, inTest: false, loops: 0, breaks: 0 };
 
   const calleeName = (s: Node): { call: ts.CallExpression; name: string } | undefined => {
     if (s.kind !== K.ExpressionStatement) return;
@@ -144,7 +144,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         if (x0.kind === K.StringLiteral && (x0 as ts.StringLiteral).text === UNSAFE_DIRECTIVE) { at("E1009", x0, `'${UNSAFE_DIRECTIVE}' at module level`); break; }
         const c = calleeName(s);
         if (c?.name === "test") allowedCalls.add(c.call);
-        else { e1000(s, "this statement at module level"); break; }
+        else if (c?.name !== "forAll") { e1000(s, "this statement at module level"); break; }
         stmt(s);
         break;
       }
@@ -269,7 +269,10 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
   function fn(n: ts.FunctionDeclaration | ts.MethodDeclaration | ts.ArrowFunction | ts.FunctionExpression | ts.ConstructorDeclaration, kind: FnKind): void {
     const saved = fc;
     const thisOk = n.kind === K.ArrowFunction ? fc.thisOk : n.kind === K.Constructor || (n.kind === K.MethodDeclaration && !n.modifiers?.some((m) => m.kind === K.StaticKeyword));
-    fc = { thisOk, async: !!n.modifiers?.some((m) => m.kind === K.AsyncKeyword), loops: 0, breaks: 0 };
+    const isTestCb = (n.kind === K.ArrowFunction || n.kind === K.FunctionExpression) && n.parent?.kind === K.CallExpression &&
+      allowedCalls.has(n.parent) && (n.parent as ts.CallExpression).arguments[1] === n;
+    const inTest = (n.kind === K.ArrowFunction || n.kind === K.FunctionExpression) && (fc.inTest || isTestCb);
+    fc = { thisOk, async: !!n.modifiers?.some((m) => m.kind === K.AsyncKeyword), inTest, loops: 0, breaks: 0 };
     try { scoped(() => fn0(n, kind)); } finally { fc = saved; } // parameters and the top level of the body share one scope
   }
   function fn0(n: ts.FunctionDeclaration | ts.MethodDeclaration | ts.ArrowFunction | ts.FunctionExpression | ts.ConstructorDeclaration, kind: FnKind): void {
@@ -296,12 +299,21 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     const list = (body as ts.Block).statements;
     let i = prologue(list, kind === "function");
     const start = i;
+    const isForAllArg = (n.kind === K.ArrowFunction || n.kind === K.FunctionExpression) && n.parent?.kind === K.CallExpression &&
+      isId((n.parent as ts.CallExpression).expression) && ((n.parent as ts.CallExpression).expression as ts.Identifier).text === "forAll" &&
+      (n.parent as ts.CallExpression).arguments[0] === n;
     if (kind !== "other") { // Q057: directive, then requires*, then ensures*
       let seenEnsures = false;
       for (; i < list.length; i++) {
         const c = calleeName(list[i]!);
         if (c?.name === "requires" && !seenEnsures) allowedCalls.add(c.call);
         else if (c?.name === "ensures" && !isAsync) { seenEnsures = true; allowedCalls.add(c.call); }
+        else break;
+      }
+    } else if (isForAllArg) { // §16.1 (Q273): leading requires* in direct arrow/fn-expr argument of forAll
+      for (; i < list.length; i++) {
+        const c = calleeName(list[i]!);
+        if (c?.name === "requires") allowedCalls.add(c.call);
         else break;
       }
     }
@@ -603,6 +615,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         else {
           if (isId(callee) && CONTRACTS.has(callee.text) && !allowedCalls.has(c)) at("E6001", callee, `'${callee.text}' is not allowed here`);
           if (isId(callee) && callee.text === "test" && !allowedCalls.has(c)) at("E6003", callee, "'test' must be at module level");
+          if (isId(callee) && callee.text === "forAll" && !fc.inTest) at("E6004", callee, "'forAll' must be inside a top-level 'test' callback");
           expr(callee);
         }
         for (const t of c.typeArguments ?? []) type(t);
