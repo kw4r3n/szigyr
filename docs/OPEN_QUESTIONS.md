@@ -838,7 +838,7 @@
     - `Map` の `set`、`delete`、`clear`。`Set` の `add`、`delete`、`clear`。
     - `Vec` の `push`、`pop`、`clear`、`fill`。`Slice` の `fill`。`OwnedCell` の `take`、`put`。
     - 権限の `info`、`warn`、`error`、`writeText`、`nextF64`、`nextU32`。`js.call`、`js.await`。偽の権限の `advance`。
-  - 判定はメソッド名で行い、受け手がユーザーの class なら対象外にする。
+  - 判定はメソッド名で行い、受け手がユーザーの class なら対象外にする。（Q232 で、受け手の型での判定に替わった。）
 - 既知の制限: ユーザー関数・メソッドの呼び出しは拒否しない（副作用の解析が要る）。契約の中のアロー関数の本体で宣言した局所変数への代入も拒否される。
 
 
@@ -1485,3 +1485,12 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
   - (b) 今のまま、宣言を許す。
 - 既定案: (b)。挙動を変えない整理の中で見つけたので、挙動は変えない。
 - 2026-11-20 オーナー決定: (a)。§13 の予約名の宣言は、§12 の組み込み名と同じく E1000。`builtins.ts` の `SPEC_RESERVED`（`i64`、`u64`、`bigint`、`undefined`、`FixedArray`、`Rc`、`Weak`、`using`、`forAll`、`decreases`）を `BUILTIN_NAMES` に足した。参照は変わらず E2000（`RESERVED`）。SPEC §1 と §13 に書いた（D133）。ケースは reject の `E1000-reserved-i64-type`、`-u64-function`、`-bigint-class`、`-undefined-const`。
+
+### Q232 契約の中の組み込みメソッドの禁止を、名前でなく受け手の型で判定する
+- 関連: §9.1、Q134、Q230、D132
+- 状況: Q134 は契約の中のメソッド呼び出しを、名前が禁止の集合（`contract: false` の組み込みメソッドの名前）にあれば E6002 にしていた。受け手が class のときだけ対象外だった。そのため、ユーザーの interface のメソッドやレコードの関数フィールドが `close`、`send`、`recv`、`isolate`、`push` などの名前を持つと、`interface Cl { close(): boolean }` に対する `requires(c.close())` が E6002 になった。§9.1 の文言は「組み込みメソッド」で、これは文言と食い違う。
+- 選択肢:
+  - (a) E6002 にするのは、受け手の型が組み込みの型で、そのメソッドの `contract` が false のときだけにする。ユーザーの interface、class、レコードの関数フィールドは、この規則では拒否しない。
+  - (b) 名前で判定するまま。
+- 既定案: (b)。
+- 2026-11-20 オーナー決定: (a)。Q134 の「名前で判定」は置き換えた。`expr.ts` の `bannedCall` が、`Ref` / `Mut` を外した受け手の型で、`gen`、`opaque`、文字列、名前空間は `builtins.ts` の表の `contract` を引く。`union` はどれかの要素が対象なら対象、型パラメータは制約を見る。class、interface、レコード、関数型は対象外。型を決められない（`unknown`、エラー型、制約のない型パラメータ、上のどれでもない型）ときは、従来どおり名前で拒否する（失敗側に倒す）。ユーザー関数の呼び出しの扱い（Q175 など）は変えない。ケースは run の `181-contract-user-method-builtin-name`（JS と C の両方）、reject の `E6002-requires-builtin-through-ref`、`E6002-requires-builtin-through-nullable`。既存の拒否ケースは変えていない（D135）。

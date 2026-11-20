@@ -631,6 +631,8 @@ reject/E6002-ensures-consumes-result.ts
 reject/E6002-ensures-owned-arg.ts
 reject/E6002-invariant-mutating-method.ts
 reject/E6002-requires-arena-alloc.ts
+reject/E6002-requires-builtin-through-nullable.ts
+reject/E6002-requires-builtin-through-ref.ts
 reject/E6002-requires-generic-class-authority-second-param.ts
 reject/E6002-requires-mut-borrow.ts
 reject/E6002-requires-new-mut-borrow.ts
@@ -760,6 +762,7 @@ run/178-reexport-chain-12
 run/179-managed-container-null-element.ts
 run/18-trap-i32-unary-minus.ts
 run/180-module-destructure-const
+run/181-contract-user-method-builtin-name.ts
 run/19-trap-divtrunc-overflow.ts
 run/20-trap-array-index.ts
 run/21-trap-vec-index.ts

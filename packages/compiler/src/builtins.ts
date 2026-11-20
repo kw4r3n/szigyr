@@ -61,7 +61,7 @@ export const isGenName = (n: string): n is GenName => Object.hasOwn(GEN_ARITY, n
  * - `recv`: how the receiver is borrowed (§3.3, §14.4, §15.1; ownership.ts). `param`: only as a borrowed argument (else E3004),
  *   in the parameter's mode. `none`: not borrowed (managed values, authorities, `Ptr`, namespaces).
  * - `mutates`: changes the receiver or the outside world.
- * - `contract`: callable inside a contract (Q134: judged by the name over every builtin receiver, E6002 when false; expr.ts).
+ * - `contract`: callable inside a contract (Q134, Q232: E6002 when false, judged by the receiver type; expr.ts `bannedCall`).
  * - `traps`: the codes the §6 rt trap-site list gives at the member name (traps.ts).
  */
 export interface Fx { recv: "ref" | "mut" | "param" | "none"; mutates: boolean; contract: boolean; traps: readonly string[] }
@@ -294,5 +294,5 @@ export function builtinMethods(): { owner: string; name: string; fx: Fx }[] {
   return out;
 }
 let banned: Set<string> | undefined;
-/** Q134: the method names a contract cannot call, judged by name over every builtin receiver (built on first use). */
+/** Q232: the method names a contract cannot call over every builtin receiver; the fail-closed fallback when a receiver type is unknown (built on first use). */
 export const contractBanned = (): Set<string> => (banned ??= new Set(builtinMethods().filter((x) => !x.fx.contract).map((x) => x.name)));

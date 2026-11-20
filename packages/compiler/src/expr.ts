@@ -1001,6 +1001,30 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
   throw new Error(`P2: unhandled builtin '${name}'`);
 }
 
+/**
+ * Q232: a contract cannot call a builtin method whose `contract` is false, judged by the receiver's type (not the name).
+ * A user interface / class / record-field method is not banned here. Fail closed: a receiver whose type is unknown,
+ * an error, or not one of the kinds below falls back to the name over every builtin receiver (`contractBanned`).
+ */
+function bannedCall(p: ts.PropertyAccessExpression, recv: Type | undefined): boolean {
+  const n = p.name.text;
+  const bad = (m: Member | "variadic" | undefined): boolean => m !== undefined && m !== "variadic" && m.kind === "method" && !m.fx.contract;
+  const by = (t: Type): boolean => {
+    t = unref(t);
+    switch (t.k) {
+      case "class": case "iface": case "record": case "fn": return false;
+      case "union": return t.members.some(by); // `T | null` and unions of builtins: banned when any member is
+      case "tparam": return t.p.constraint ? by(t.p.constraint) : contractBanned().has(n);
+      case "gen": return bad(genMember(t, n));
+      case "opaque": return bad(opaqueMember(t.name, n));
+      case "prim": case "lit": return isStr(t) ? bad(stringMember(n)) : t.k === "prim" && t.name === "null" ? false : contractBanned().has(n);
+      default: return contractBanned().has(n);
+    }
+  };
+  if (!recv) return isId(p.expression) && NAMESPACES.has(p.expression.text) ? bad(nsMember(p.expression.text, n)) : contractBanned().has(n); // a namespace (`Vec`, `Math`) has no type
+  return by(recv);
+}
+
 /** Q134: a contract only observes. Assignments and mutating builtin calls inside it are E6002; user calls are not analysed. */
 function observeOnly(c: Checker, root: Node): void {
   const walk = (n: Node): void => {
@@ -1010,9 +1034,7 @@ function observeOnly(c: Checker, root: Node): void {
       c.at("E6002", n, "a contract cannot assign");
     } else if (n.kind === K.CallExpression && (n as ts.CallExpression).expression.kind === K.PropertyAccessExpression) {
       const p = (n as ts.CallExpression).expression as ts.PropertyAccessExpression;
-      const recv = exprTypes.get(p.expression);
-      const builtin = !recv || unref(nonNull(recv) ?? recv).k !== "class"; // a namespace (`Vec`, `Math`) has no type here
-      if (builtin && contractBanned().has(p.name.text)) c.at("E6002", p.name, `a contract cannot call '${p.name.text}'`);
+      if (bannedCall(p, exprTypes.get(p.expression))) c.at("E6002", p.name, `a contract cannot call '${p.name.text}'`);
     }
     const sig = n.kind === K.CallExpression || n.kind === K.NewExpression ? callSigs.get(n) : undefined;
     (n as ts.CallExpression).arguments?.forEach((a, i) => { // Q175: a contract neither consumes nor mutably borrows
