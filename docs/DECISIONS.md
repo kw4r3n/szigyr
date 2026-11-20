@@ -706,3 +706,8 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - 直し方: `sts_box_peek` を消し、`box` の中の記述子をそのままコピーして渡す。obj の位置には保持参照が残るが、借用した端点は値として JS に戻らず（返せない、移動できない）、`push` / `pop` は共有の領域の先頭と容量しか読まない。Struct のフィールドの端点を借用する場合（D123）と同じ扱いになる。D123 の「`borrow` で渡す端点の記述子は、参照から obj を復元したコピーにする」はこれで置き換える。
 - obj が JS に渡る経路がないことの確認: C の値を JS の値にするのは `outConv`（境界の戻り値）と `unbox`（`sts_box_unref`、JS のスレッド）だけである。借用した端点をそこへ運ぶ書き方は、検査器がすべて拒否する。`return p.borrow()`、`{ rx: p.borrow() }` は E3004（「`borrow` は借用の実引数か受け手にだけ書ける」）。借用のパラメータを返す、Struct に入れる、値渡しのパラメータに渡す、`Ptr.box` に入れる形も E3004。関数型パラメータに managed の関数を渡す形は E4001。`Port` は strict / rt に書けず、managed は `borrow` を書けない（unsafe）。最も直接の形を `reject/E3004-ptr-borrow-ring-returned.ts` で固定した。D123 が obj を戻していたのは、これらの経路がないことを確かめる前の用心で、obj を値として読む経路は当時もなかった（D123 自身が Struct のフィールドの場合をそう書いている）。
 - 確かめ方: 適合テスト `run/204-cfn-boxed-ring-borrow-thread.ts`（C 専用）。`RingRx<i32>` を直に `box` し、`stscb_thread` の C のスレッドで `borrow` して 2 回 pop する。直す前は `0`、`0`、直した後は `42`、`7`。
+
+## D160: `headercheck.ts` の pkg-config のキャッシュは環境変数を鍵に含める（監査の修正、2026-11-20）
+- `headercheck.ts` の `pkgKnown` と `pkgFlags` はパッケージ名だけを鍵にしていた。キャッシュはプロセスの間ずっと残るので、同じプロセスで `PKG_CONFIG_PATH` を変えると（テストが stscb の置き場を足すとき）、前の答えが返った。
+- 直し方: 鍵に `PKG_CONFIG_PATH`、`PKG_CONFIG_LIBDIR`、`PKG_CONFIG_SYSROOT_DIR` の値を足した。キャッシュはディスクには置かない（プローブの結果もプロセス内だけで、鍵に cflags を含む）。`native.ts` の `pkg-config` 呼び出しはキャッシュを持たない。
+- 確かめ方: `headercheck-env.test.ts`。`PKG_CONFIG_PATH` なしで E2009、`ensureStscb()` の後で同じファイルが通る。直す前は 2 度目も E2009 だった。
