@@ -675,3 +675,10 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 
 - `modules.ts` の `canonPath(...p)` は `resolve` したあとで `realpathSync` する。存在しないパスは `resolve` の結果のまま（E7001 の経路を変えない）。`loadProgram` の入口と import の解決、`Program` の import 名の検査と `checkInsts`、`emit.ts` の import の鍵、`index.ts` の入口の検索（`deterministicFunctions`、`rtTrapSites`、`load`、`checkMain`）が同じ関数を使う。
 - 同梱の DetMath の `DETMATH_PATH` は `import.meta.url` から作る絶対パスで、そのままにした（`syntax.ts` の比較と `files.has(DETMATH_PATH)` は変えていない）。適合テストはすべて通る。
+
+## D144: `main` がトラップで終わっても終わりの旗を立てる（監査の修正、2026-11-20）
+
+- `index.ts` の `runNow`。これまでは `main` がトラップしなかったときだけ `sts_finish` を呼び、isolate のトラップの記録を取っていた（D124 の (3)）。そのため `main` が managed のコードでトラップすると旗が立たず、まだ来ていない C のコールバックが `f` を最後まで動かしていた（§14.6 の「どこかのスレッドでトラップが起きたとき」と「`main` が終わったとき」に反する）。また、取られなかった isolate の記録が残り、同じプロセスの次の `run`（`--backend=both`、テスト）が T006 で終わっていた。
+- 直し方: `main` の終わり方によらず、`sts_finish` を呼んで旗を立て、isolate の記録を取る。報告するトラップは、isolate の記録、C の記録、`main` 自身のトラップの順に選ぶ。記録が残っているのは、`main` のトラップが旗を立てようとする（`sts_finish`）より前にほかのスレッドのトラップが旗を立てたときなので、§15.4 の「旗を最初に立てたトラップ」に合う。`main` が C の関数の中でトラップしたときは、`sts_throw` がすでに記録を取っているので、`main` のトラップがそのまま報告される。D124 の (3) の「`main` 自身がトラップした場合は `sts_finish` を呼ばない」はこれで置き換える。
+- `load` の初めにも isolate の記録を捨てる。前のプログラムが残した記録は、そのプログラムのものではない。
+- 確かめ方: `cfn.test.ts` に 2 件。`main` が `stscb_start` で 1 秒後のコールバックを仕掛けてから `panic` すると、直す前はコールバックが 2 回動き（`2 2 2 1`）、直した後は 1 回も動かない（`0 2 0 0`）。記録を先に入れてから素直なプログラムを `run` すると、直す前は T006、直した後はトラップなし。

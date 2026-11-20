@@ -181,6 +181,7 @@ const HOST = {
 /** Emits every file and evaluates them as module factories in memory (D031). Returns the entry's exports and, for a C backend program, its native module. */
 async function load(files: ParsedFile[], entryFile: string, tests: boolean, decls?: Decls, backend: Backend = "js"): Promise<{ ex: Record<string, unknown>; native: Record<string, (...a: unknown[]) => unknown> | undefined }> {
   const entry = canonPath(entryFile);
+  rt.takeIsolateTrap(); // D144: a record a previous program in this process left behind is not this program's
   const c = backend === "c" && decls ? emitC(decls) : undefined;
   const native = c ? loadNative(c.c, HOST, c.pkgs) : undefined;
   // §15.4 (2): a foreign trap (a C thread's, or an isolate's) is polled at every task boundary
@@ -287,16 +288,14 @@ async function runNow(entryFile: string, backend?: Backend): Promise<RunResult> 
   if (typeof main !== "function") throw new Error(`${entryFile}: no exported function 'main'`); // Q061: a CLI error, not a diagnostic
   const r = await runMain(main as Parameters<typeof runMain>[0]);
   await rt.stopIsolates(); // Q207: main ending stops isolates still running; undelivered messages are discarded
+  // §14.6 / §15.4 (3), D144: main ending, by a trap too, raises the end flag. A foreign trap that
+  // never surfaced was recorded first, so it is the reported one; only then main's own trap.
+  const v = native?.sts_finish!();
+  const t = rt.takeIsolateTrap();
   // Only stack exhaustion outside any source call (Q035) has no position.
-  let trap = r.trap ? { code: r.trap.code, file: r.trap.pos?.file ?? "", line: r.trap.pos?.line ?? 0, col: r.trap.pos?.col ?? 0 } : null;
-  if (!trap) { // §15.4 (3): an isolate trap that never surfaced is reported when main ends
-    const t = rt.takeIsolateTrap();
-    if (t) trap = { code: t.code, file: t.file ?? "", line: t.line ?? 0, col: t.col ?? 0 };
-  }
-  if (!trap && native) { // §15.4 (3): a foreign trap that never surfaced is reported when main ends (this also claims the end)
-    const v = native.sts_finish!();
-    if (Array.isArray(v)) trap = { code: `T${String(v[0]).padStart(3, "0")}`, file: v[1] as string, line: v[2] as number, col: v[3] as number };
-  }
+  const trap = t ? { code: t.code, file: t.file ?? "", line: t.line ?? 0, col: t.col ?? 0 }
+    : Array.isArray(v) ? { code: `T${String(v[0]).padStart(3, "0")}`, file: v[1] as string, line: v[2] as number, col: v[3] as number }
+    : r.trap ? { code: r.trap.code, file: r.trap.pos?.file ?? "", line: r.trap.pos?.line ?? 0, col: r.trap.pos?.col ?? 0 } : null;
   return { diagnostics: [], stdout: r.stdout, trap };
 }
 

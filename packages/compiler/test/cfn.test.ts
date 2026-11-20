@@ -7,6 +7,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
+import * as rt from "../../runtime-js/src/index.ts";
 import { run } from "../src/index.ts";
 import { ensureStscb } from "./stscb.ts";
 
@@ -79,5 +80,64 @@ export function main(sys: System): void {
     // bump ran twice (the cell), the fixture invoked the trampoline three times, and the
     // values it got back were 2 (bump ran), 0 (bump trapped), 0 (the flag: bump not run).
     expect(rb.stdout).toBe("2 3 2 0 0\n");
+  }, 120000);
+
+  it("main trapping in managed code raises the flag: a callback still pending is not run (§14.6)", async () => {
+    const a = project({ "main.ts": HEAD.replace("}\nimport {", `  function stscb_start(ffi: Ffi, f: Ptr<(ud: Ptr<void>, x: i32) => i32>, ud: Ptr<void>, x: i32, delay: i32, after: Ptr<(ud: Ptr<void>, x: i32) => i32>, aud: Ptr<void>): void;
+}
+import { stscb_start } from "c:stscb:stscb.h";
+import {`) + `
+function bump(ud: Ptr<void>, x: i32): i32 {
+  "use rt";
+  "use unsafe";
+  const p = ud.cast<i32>();
+  p.write(p.read() + 1);
+  return x + 1;
+}
+function arm(ffi: Ffi): void {
+  "use owned";
+  "use unsafe";
+  stscb_reset_stats(ffi);
+  const cell = stscb_cell(ffi);
+  cell.write(0);
+  stscb_start(ffi, cfn(bump), cell.cast<void>(), 1, 1000, cfn(bump), cell.cast<void>());
+}
+export function main(sys: System): void {
+  arm(sys.ffi);
+  panic("main");
+}
+` });
+    const ra = await run(a, { backend: "c" });
+    expect(ra.diagnostics).toEqual([]);
+    expect(ra.trap?.code).toBe("T006");
+
+    const b = project({ "main.ts": HEAD.replace("}\nimport {", `  function stscb_join(ffi: Ffi): void;
+}
+import { stscb_join } from "c:stscb:stscb.h";
+import {`) + `
+type S = Struct<{ runs: i32; n: i32; v0: i32; v1: i32 }>;
+function read(ffi: Ffi): S {
+  "use owned";
+  "use unsafe";
+  stscb_join(ffi);
+  const cell = stscb_cell(ffi);
+  return { runs: cell.read(), n: stscb_stat_n(ffi), v0: stscb_stat(ffi, 0), v1: stscb_stat(ffi, 1) };
+}
+export function main(sys: System): void {
+  const s = read(sys.ffi);
+  sys.log.info(\`\${s.runs} \${s.n} \${s.v0} \${s.v1}\`);
+}
+` });
+    const rb = await run(b, { backend: "c" });
+    expect(rb.diagnostics).toEqual([]);
+    expect(rb.trap).toBeNull();
+    expect(rb.stdout).toBe("0 2 0 0\n"); // both calls came after main's trap: the flag answered zero without running bump
+  }, 120000);
+
+  it("an isolate trap left from an earlier run does not surface in the next one", async () => {
+    rt.noteIsolateTrap({ code: "T006" });
+    const r = await run(project({ "main.ts": `export function main(sys: System): void {\n  sys.log.info("ok");\n}\n` }));
+    expect(r.trap).toBeNull();
+    expect(r.stdout).toBe("ok\n");
   }, 120000);
 });
