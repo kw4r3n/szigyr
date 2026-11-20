@@ -384,9 +384,9 @@ export class Program {
     }
   }
 
-  /** Follows import-then-export chains of any length; a cycle (a (module, name) pair met twice) resolves to nothing (Q226). */
-  lookupType(mod: Module, name: string, seen: Set<string> = new Set()): TypeSym | undefined {
-    const own = mod.types.get(name);
+  /** Follows import-then-export chains of any length; a cycle (a (module, name) pair met twice) resolves to nothing (Q226). `table` picks the symbol table: types or values. */
+  private follow<S>(mod: Module, name: string, table: (m: Module) => Map<string, S>, seen: Set<string>): S | undefined {
+    const own = table(mod).get(name);
     if (own) return own;
     const imp = mod.imports.get(name);
     if (!imp) return undefined;
@@ -394,20 +394,10 @@ export class Program {
     if (seen.has(hop)) return undefined;
     seen.add(hop);
     const local = imp.mod.exports.get(imp.name);
-    return local === undefined ? undefined : this.lookupType(imp.mod, local, seen);
+    return local === undefined ? undefined : this.follow(imp.mod, local, table, seen);
   }
-  /** Follows import-then-export chains of any length; a cycle (a (module, name) pair met twice) resolves to nothing (Q226). */
-  lookupValue(mod: Module, name: string, seen: Set<string> = new Set()): ValueSym | undefined {
-    const own = mod.values.get(name);
-    if (own) return own;
-    const imp = mod.imports.get(name);
-    if (!imp) return undefined;
-    const hop = `${mod.file}\0${name}`;
-    if (seen.has(hop)) return undefined;
-    seen.add(hop);
-    const local = imp.mod.exports.get(imp.name);
-    return local === undefined ? undefined : this.lookupValue(imp.mod, local, seen);
-  }
+  lookupType(mod: Module, name: string): TypeSym | undefined { return this.follow(mod, name, (m) => m.types, new Set()); }
+  lookupValue(mod: Module, name: string): ValueSym | undefined { return this.follow(mod, name, (m) => m.values, new Set()); }
 
   /** Resolves a type node (§3, §12). Unknown names are E2000; errors become ERROR (Q003 cascade). */
   /** `voidOk`: the node is a return type, where `void` may be written (Q028). */

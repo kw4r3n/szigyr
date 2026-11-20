@@ -1,6 +1,5 @@
 // W8001 (Q187): a call from managed code to a strict / rt function inside a loop crosses the layer boundary on every iteration.
 import { SyntaxKind as K, type Node, type ts } from "./parse.ts";
-import { resolveFn } from "./emit-c.ts";
 import type { Program as Decls, Reporter } from "./modules.ts";
 
 const FN_LIKE = new Set([K.FunctionDeclaration, K.FunctionExpression, K.ArrowFunction, K.MethodDeclaration, K.Constructor, K.GetAccessor, K.SetAccessor]);
@@ -15,7 +14,7 @@ export function loopBoundaryWarnings(decls: Decls, rep: Reporter): void {
       if (n.kind === K.CallExpression && loops > 0) {
         const callee = (n as ts.CallExpression).expression;
         if (callee.kind === K.Identifier) {
-          const f = resolveFn(mod, (callee as ts.Identifier).text);
+          const v = decls.lookupValue(mod, (callee as ts.Identifier).text), f = v?.k === "fn" ? v : undefined;
           if (f && f.layer !== "managed")
             rep.warn(mod, "W8001", callee, `call to the ${f.layer} function '${f.name}' inside a loop crosses the layer boundary on every iteration`, { callee: f.name, layer: f.layer });
         }

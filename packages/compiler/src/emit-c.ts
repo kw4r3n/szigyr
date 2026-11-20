@@ -49,31 +49,10 @@ const borrowMode = (t: Type): "Ref" | "Mut" | undefined => (t.k === "gen" && (t.
 
 interface Local { c: string; t: Type; ptr: boolean }
 
-/** Follows import / export chains (including re-exports) to the declaring module's value symbol. */
-function resolveValue(mod: Module, name: string, seen = new Set<string>()): Module["values"] extends Map<string, infer V> ? V | undefined : never {
-  const own = mod.values.get(name);
-  if (own) return own;
-  const key = `${mod.pf.path}:${name}`;
-  if (seen.has(key)) return undefined;
-  seen.add(key);
-  const imp = mod.imports.get(name);
-  if (!imp) return undefined;
-  const local = imp.mod.exports.get(imp.name);
-  return local === undefined ? undefined : resolveValue(imp.mod, local, seen);
-}
-/** The function a name refers to in `mod` (local or imported, across re-exports). */
-export function resolveFn(mod: Module, name: string): FnSym | undefined {
-  const v = resolveValue(mod, name);
-  return v?.k === "fn" ? v : undefined;
-}
 /** The C function a name refers to in `mod`: a `c:` declaration binds in its own file only (§14.1). */
 function resolveCFn(mod: Module, name: string): CFnSym | undefined {
   const v = mod.values.get(name);
   return v?.k === "cfn" ? v : undefined;
-}
-function resolveConst(mod: Module, name: string): Extract<Module["values"] extends Map<string, infer V> ? V : never, { k: "const" }> | undefined {
-  const v = resolveValue(mod, name);
-  return v?.k === "const" ? v : undefined;
 }
 
 /** One C function: a strict / rt function, or one instantiation of a generic one (D104). `fns` is the
@@ -88,8 +67,9 @@ const MAX_TYPE_NEST = 32;
 const nest = (s: string): number => { let d = 0, m = 0; for (const c of s) { if (c === "<" || c === "{") m = Math.max(m, ++d); else if (c === ">" || c === "}") d--; } return m; };
 
 export function emitC(prog: Program, display: (path: string) => string): EmittedC | undefined {
-  void display;
   // §12 (D117): managed DetMath calls run the JS module directly; C compiles only DetMath functions reached from strict / rt.
+  void display;
+  const resolveFn = (mod: Module, name: string): FnSym | undefined => { const v = prog.lookupValue(mod, name); return v?.k === "fn" ? v : undefined; }; // across imports and re-exports (Q226)
   const fns = prog.fns.filter((f) => f.layer !== "managed" && f.mod.pf.path !== DETMATH_PATH);
   if (!fns.length) return undefined;
   const keys = new Map<Node, string>();
@@ -761,7 +741,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     ident(id: ts.Identifier): string {
       const l = this.lookup(id.text);
       if (l) return this.t(this.typeOf(id), this.narrow(l.c, l.t, this.typeOf(id)), id); // a snapshot: a later operand may assign the local (D103, Q172)
-      const sym = resolveConst(this.mod, id.text);
+      const gv = prog.lookupValue(this.mod, id.text), sym = gv?.k === "const" ? gv : undefined;
       if (sym) { // §1: a literal, or a record literal of literals; translated at each use (D104)
         const saved = [this.mod, this.sf] as const;
         this.mod = sym.mod; this.sf = sym.mod.sf;
