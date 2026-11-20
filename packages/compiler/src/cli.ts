@@ -3,34 +3,75 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
-import { analyze, check, CLI_NAME, CliError, createParser, run, runTestFile, type Backend, type Diagnostic, type RunResult } from "./index.ts";
+import { analyze, check, CLI_NAME, CliError, createParser, mutate, run, runTestFile, type Backend, type Diagnostic, type RunResult } from "./index.ts";
 import { CUnsupported } from "./emit-c.ts";
 import { CBuildError } from "./native.ts";
 
-const USAGE = `usage: ${CLI_NAME} <check|run|test> [--json] [--backend=js|c|both] <file...>`;
+const USAGE = `usage: ${CLI_NAME} <check|run|test|mutate> [--json] [--no-cache] [--backend=js|c|both] <file...>`;
 
 export async function main(argv: string[], out: (s: string) => void, err: (s: string) => void): Promise<number> {
   let args;
   try {
-    args = parseArgs({ args: argv, allowPositionals: true, options: { json: { type: "boolean" }, backend: { type: "string", default: "js" } } });
+    args = parseArgs({ args: argv, allowPositionals: true, options: { json: { type: "boolean" }, "no-cache": { type: "boolean" }, backend: { type: "string", default: "js" } } });
   } catch (e) { err(`${(e as Error).message}\n${USAGE}\n`); return 2; }
   const [cmd, ...files] = args.positionals;
   const json = !!args.values.json;
+  const noCache = !!args.values["no-cache"];
   const backend = args.values.backend as string;
   const backends: Backend[] = backend === "both" ? ["js", "c"] : [backend as Backend];
   const line = (o: unknown): string => `${JSON.stringify(o)}\n`;
   const diags = (ds: Diagnostic[]): string => ds.map((d) => json ? line(d) : `${d.file}:${d.range.start.line}:${d.range.start.col}: ${d.severity} ${d.code}: ${d.message}\n`).join("");
   const parser = createParser(); // D161: one tsgo process for every file of this command (spawned on first use)
   try {
-    if (cmd !== "check" && cmd !== "run" && cmd !== "test") throw new CliError(cmd ? `unknown command '${cmd}'\n${USAGE}` : USAGE);
+    if (cmd !== "check" && cmd !== "run" && cmd !== "test" && cmd !== "mutate") throw new CliError(cmd ? `unknown command '${cmd}'\n${USAGE}` : USAGE);
     if (!files.length || (cmd === "run" && files.length > 1)) throw new CliError(`${cmd}: ${cmd === "run" ? "exactly one" : "at least one"} file required\n${USAGE}`);
     if (!["js", "c", "both"].includes(backend)) throw new CliError(`unknown backend '${backend}'\n${USAGE}`);
+    if (cmd === "mutate" && backend !== "js") throw new CliError(`mutate: JS backend only (--backend=${backend} is not supported)\n${USAGE}`);
+    if (noCache && cmd !== "mutate") throw new CliError(`${cmd}: --no-cache is only supported for mutate\n${USAGE}`);
     for (const f of files) { if (!existsSync(f)) throw new CliError(`no such file: ${f}`); if (!statSync(f).isFile()) throw new CliError(`not a file: ${f}`); }
 
     if (cmd === "check") {
       const ds = files.flatMap((f) => check(f, parser));
       out(diags(ds));
       return ds.some((d) => d.severity === "error") ? 1 : 0;
+    }
+    if (cmd === "mutate") {
+      let killed = 0, survived = 0, timeout = 0, cached = 0;
+      for (const f of files) {
+        const r = await mutate(f, { cache: !noCache, parser });
+        if (r.diagnostics.length) { out(diags(r.diagnostics)); return 1; }
+        if (r.baselineFailure) {
+          const bf = r.baselineFailure;
+          out(json
+            ? line({ kind: "baseline-failure", file: bf.file, name: bf.name, failure: bf.failure, ...(bf.trap ? { trap: bf.trap } : {}), ...(bf.pos ? { pos: bf.pos } : {}) })
+            : `FAIL baseline ${bf.name}: ${bf.failure}${bf.pos ? ` (${bf.pos.file}:${bf.pos.line}:${bf.pos.col})` : ""}\n`);
+          return 1;
+        }
+        killed += r.summary.killed;
+        survived += r.summary.survived;
+        timeout += r.summary.timeout;
+        cached += r.summary.cached;
+        for (const m of r.mutants) {
+          if (json) {
+            out(line({
+              kind: "mutant", file: m.file, fn: m.fn, id: m.id, op: m.op, range: m.range, status: m.status, cached: m.cached,
+              ...(m.deadCode ? { deadCode: true } : {}),
+              ...(m.status === "survived" ? { witness: m.witness ?? null } : {}),
+            }));
+          } else {
+            const loc = `${m.file}:${m.range.start.line}:${m.range.start.col}`;
+            const tag = m.status === "survived" ? "SURVIVED" : m.status;
+            const extra = [
+              m.deadCode ? "deadCode" : "",
+              m.cached ? "cached" : "",
+              m.status === "survived" && m.witness ? `witness=${JSON.stringify(m.witness)}` : "",
+            ].filter(Boolean).join(" ");
+            out(`${tag} ${loc} ${m.fn} [${m.op}]${extra ? ` ${extra}` : ""}\n`);
+          }
+        }
+      }
+      out(json ? line({ kind: "summary", killed, survived, timeout, cached }) : `${killed} killed, ${timeout} timeout, ${survived} survived (${cached} cached)\n`);
+      return 0;
     }
     if (cmd === "run") {
       const rs: RunResult[] = [];

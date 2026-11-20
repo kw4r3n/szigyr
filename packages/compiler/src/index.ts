@@ -14,6 +14,7 @@ import { emitFile, EXPORTS, IMP, RT, SOURCE_URL } from "./emit.ts";
 import { loopBoundaryWarnings } from "./boundary.ts";
 import { emitC } from "./emit-c.ts";
 import { loadNative, nativePathOf, nativeProgOf } from "./native.ts";
+import { mutateFile, type MutateOptions, type MutateResult } from "./mutate.ts";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import * as rt from "../../runtime-js/src/index.ts";
@@ -21,6 +22,7 @@ import { FakeClock, FakeFs, MemoryLog, SeededRandom, TestAlloc, runMain } from "
 export * from "./diagnostics.ts";
 export * from "./names.ts";
 export { createParser, type Parser } from "./parse.ts";
+export type { BaselineFailure, MutantReport, MutateOptions, MutateResult, MutateSummary, Witness } from "./mutate.ts";
 
 /** A user input mistake the CLI reports without a stack, exit 2 (Q252). */
 export class CliError extends Error {}
@@ -338,3 +340,6 @@ async function runTestFileNow(entryFile: string, backend?: Backend, analysis?: A
   await loadChecked(a.files, entryFile, true, a.decls, backend);
   try { return { diagnostics: [], results: await rt.runTests() }; } finally { rt.clearTests(); }
 }
+
+/** `sts mutate`: JS-only mutation testing with diff cache and witness search (SPEC §16.2, Q275–Q277). */
+export const mutate = (entryFile: string, opts: MutateOptions = {}): Promise<MutateResult> => exclusive(() => mutateFile(entryFile, opts));

@@ -8,3 +8,6 @@ conformance/fixtures/stscb/.build/
 
 # agent worktrees
 .claude/
+
+# sts mutate cache
+.sts-cache/
