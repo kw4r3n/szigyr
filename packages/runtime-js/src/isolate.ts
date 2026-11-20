@@ -59,6 +59,7 @@ interface Channel {
 /** §15.2: a Port<S, R> (the type parameters live in the checker; the runtime moves plain values). */
 export class Port {
   private ch: Channel;
+  // shortcut: unbounded; memory grows while the receiver does not read. Upgrade when a program streams without reading, which needs a SPEC rule for backpressure (Q260).
   private queue: unknown[] = [];
   private waiters: ((v: unknown) => void)[] = [];
   private peerClosed = false;
