@@ -598,3 +598,7 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
   - 各パスを表に切り替えるたびに、conformance とテストの fixtures の全 819 ファイルについて、診断、rt のトラップの一覧、決定性を開始時と比べ、差がないことを確かめた（`PKG_CONFIG_PATH` なしで実行したので、`c:` モジュールの 10 ファイルはヘッダの診断で止まり、トラップの一覧を比べていない）。終わりに `PKG_CONFIG_PATH=conformance/fixtures/stscb/.build` で開始時（2087f7f）と HEAD を比べ、差は `run/145-cfn-ring-thread-pop` の `popper` に T015 が 1 つ増えたことだけだった（1 の直し）。
 - 範囲の外: `emit.ts`、`emit-c.ts`、`runtime-js` のメソッド名の分岐と、`expr.ts` の確保（E4004）の一覧は切り替えていない。名前を挙げて頼まれた読み手ではないため。
 - 検証: `pnpm typecheck` 成功、`pnpm test` 223 件通過（`passing.test.ts` は負荷で時間切れになるので、時間の上限を延ばして通した）、`pnpm verify:conformance` accept=79 reject=546 run=165（PASSING 790 件。conformance のケースは足していない）、`pnpm conformance` 923 件通過。`pnpm bench` の 5 回中央値は dot_f32 1.00、saxpy_f32 1.16、prefix_i32 1.32、stencil_f64 1.00、particles_aos_f32 1.35 倍（単発の最大は 1.43 倍）。
+
+## D133: 2026-11-20 のオーナー決定の記録と実装（Q225〜Q231）
+
+- Q227 (a): `checker.ts` の `fnGraph` に、名前での呼び出し（`FnSite` の呼び出し先が関数そのもの）だけの呼び出しグラフを足した。rt の関数がこのグラフで循環に入れば E4005（アンカーは循環に入る呼び出しの呼び出し先の名前）。具体化ごとの検査はそのまま残る。関数型パラメータを通る再帰（`applyRt(loop, x)`）は、これまでどおり具体化ごとに判定する。拒否ケースは `E4005-fn-param-direct-recursion-no-caller`、`E4005-fn-param-mutual-recursion-no-caller`。SPEC §6 に書いた。

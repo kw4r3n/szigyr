@@ -553,6 +553,8 @@ reject/E4004-push-under-file-level-rt.ts
 reject/E4004-ring-create-in-rt.ts
 reject/E4004-unbox-in-rt.ts
 reject/E4005-direct-recursion.ts
+reject/E4005-fn-param-direct-recursion-no-caller.ts
+reject/E4005-fn-param-mutual-recursion-no-caller.ts
 reject/E4005-mutual-recursion.ts
 reject/E4005-recursion-over-mut-slice.ts
 reject/E4005-recursion-through-fn-param.ts

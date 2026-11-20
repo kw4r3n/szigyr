@@ -317,6 +317,24 @@ export class Checker {
         this.prog.rep.at(e.site.mod, "E4005", e.site.node, `recursive call to '${e.to.f.name}' in rt code`);
       }
     }
+    // Q227 (a): calls by name never depend on an instantiation, so a cycle of them is recursion even when
+    // nothing calls the function (a function with function-typed parameters has no instantiation then).
+    const direct = new Map<FnSym, FnSite[]>();
+    for (const s of this.fnSites) if (typeof s.callee !== "number" && s.from?.layer === "rt") (direct.get(s.from) ?? direct.set(s.from, []).get(s.from)!).push(s);
+    const reachesF = (from: FnSym, to: FnSym): boolean => {
+      const seen = new Set<FnSym>(), todo = [from];
+      for (let x = todo.pop(); x; x = todo.pop()) {
+        if (x === to) return true;
+        if (seen.has(x)) continue;
+        seen.add(x);
+        for (const s of direct.get(x) ?? []) todo.push(s.callee as FnSym);
+      }
+      return false;
+    };
+    for (const [from, ss] of direct) for (const s of ss) if (!reported.has(s.node) && reachesF(s.callee as FnSym, from)) {
+      reported.add(s.node);
+      this.prog.rep.at(s.mod, "E4005", s.node, `recursive call to '${(s.callee as FnSym).name}' in rt code`);
+    }
   }
 
   private ifaceMethods(_d: ts.InterfaceDeclaration): void { /* signatures were resolved in Program */ }
