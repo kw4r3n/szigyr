@@ -607,7 +607,8 @@ function arrLit(c: Checker, e: ts.ArrayLiteralExpression, want: Type | undefined
     else if (e.elements.every((x) => isLitOnly(x))) elem = F64;
     else if (e.elements.every((x) => x.kind === K.StringLiteral || x.kind === K.NoSubstitutionTemplateLiteral)) elem = STR;
     else { // only spreads: the element type comes from the first spread (arrays only, like the loop below)
-      const sp = e.elements.find((x) => x.kind === K.SpreadElement) as ts.SpreadElement;
+      const sp = e.elements.find((x) => x.kind === K.SpreadElement) as ts.SpreadElement | undefined;
+      if (!sp) { c.at("E2006", e, "an array literal of literals that share no type needs a type from its context"); return ERROR; } // Q235
       const st = expr(c, sp.expression);
       if (st.k === "gen" && (st.name === "Array" || st.name === "ReadonlyArray")) elem = st.args[0]!;
       else { if (!isErr(st)) c.at("E2002", sp.expression, `cannot spread '${show(st)}' into an array`); return ERROR; }
