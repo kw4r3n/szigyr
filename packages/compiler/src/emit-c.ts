@@ -1129,7 +1129,7 @@ export function emitC(prog: Program): EmittedC | undefined {
             const b = this.ex(e.arguments[0]!);
             return this.t(t, `sts_arena_view(${pv}, ${b}, ${this.pos(p.name)})`, e);
           }
-          case "reset": this.emit(`${pv}->gen += 1; ${pv}->used = 0;`); return stmt ? undefined : "0";
+          case "reset": this.emit(`${pv}->gen += 1; ${pv}->used = 0; ${pv}->nrec = 0;`); return stmt ? undefined : "0"; // Q246: earlier generations' bufs are dead (T012), so their notes go; the note array keeps its capacity
         }
         throw this.no(p.name, `the method '${m}' on ${show(rt)}`);
       }

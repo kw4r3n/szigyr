@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import * as rt from "../../runtime-js/src/index.ts";
 import { check, run, runTestFile } from "../src/index.ts";
 import { loadCases } from "./harness.ts";
 
@@ -445,4 +446,38 @@ it("Pool<null> and Arena.alloc<null> are E4002 in rt code", () => {
     });
     expect(check(main).map((d) => `${d.code} ${d.range.start.line}:${d.range.start.col}`)).toEqual(expect.arrayContaining(["E4002 1:16", "E4002 8:13"]));
   }
+});
+
+describe("C Arena (D116, Q246)", () => {
+  it("a reset in C drops the notes of earlier generations: only live bufs are replayed at the boundary exit", async () => {
+    const main = project({
+      "main.ts": `function churn(a: Mut<Arena>, n: i32): usize {
+  "use rt";
+  let last: usize = 0;
+  for (let i: i32 = 0; i < n; i += 1) {
+    a.reset();
+    const b = a.alloc<f32>(4, 1);
+    if (b !== null) { last = b.length; }
+  }
+  return last;
+}
+export function main(sys: System): void {
+  const a = Arena.create(sys.alloc, 64);
+  sys.log.info(\`\${churn(a, 1000)} \${a.remaining}\`);
+}
+`,
+    });
+    const proto = rt.Arena.prototype as unknown as { noteC: (...a: unknown[]) => void };
+    const orig = proto.noteC;
+    let notes = 0;
+    proto.noteC = function (this: unknown, ...a: unknown[]) { notes++; return orig.apply(this, a); };
+    try {
+      for (const backend of ["js", "c"] as const) {
+        const r = await run(main, { backend });
+        expect(r.trap).toBeNull();
+        expect(r.stdout).toBe("4 48\n");
+      }
+    } finally { proto.noteC = orig; }
+    expect(notes).toBe(1);
+  }, 120000);
 });
