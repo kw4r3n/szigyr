@@ -20,6 +20,8 @@ const pathOf = new WeakMap<object, string>();
 /** The `.node` file a loaded native module came from; an isolate loads the same file (§15.2, D111). */
 export function nativePathOf(mod: object): string | undefined { return pathOf.get(mod); }
 
+function touch(p: string): void { const now = new Date(); try { utimesSync(p, now, now); } catch { /* raced with a prune */ } }
+
 /** D149: past ~500 entries, delete (also stale `.tmp*`) what has not been used for 7 days. Processes and isolate workers share the directory, so races are ignored. */
 function prune(dir: string, keep: string): void {
   try {
@@ -48,14 +50,15 @@ export function loadNative(c: string, host: object, pkgs: string[] = []): Record
   const [cc, ccArgs] = ccCommand();
   const hash = createHash("sha256").update(process.env.CC || "cc").update("\0").update(c).update("\0").update(CFLAGS.join(" ")).update("\0").update(pkgCflags.join(" ")).update("\0").update(pkgLibs.join(" ")).update("\0").update(process.version).digest("hex").slice(0, 24);
   let mod = loaded.get(hash);
-  if (!mod) {
+  if (mod) touch(pathOf.get(mod)!); // a long-lived process keeps its entry fresh too (D149)
+  else {
     // A per-user cache: a loaded addon runs native code, so the directory must be ours and closed to others.
     const dir = join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), `${CLI_NAME}-native`);
     let st;
     try { mkdirSync(dir, { recursive: true, mode: 0o700 }); st = statSync(dir); } catch (e) { throw new CBuildError(`C backend: cache directory ${dir} is not usable: ${(e as Error).message}`); } // D150
     if ((process.getuid && st.uid !== process.getuid()) || (st.mode & 0o022)) throw new CBuildError(`C backend: cache directory ${dir} is not private to this user`);
     const out = join(dir, `${hash}.node`);
-    if (existsSync(out)) { const now = new Date(); try { utimesSync(out, now, now); } catch { /* raced with a prune */ } } // age = last use (D149)
+    if (existsSync(out)) touch(out); // age = last use (D149)
     else {
       // Workers of one process share the pid, so the temporary names also carry the thread id (D111).
       const tmp = `${out}.${process.pid}.${threadId}.tmp`, src = `${tmp}.c`;

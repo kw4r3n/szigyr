@@ -441,6 +441,22 @@ it("a module imported under two names (a symlink) loads once, in check and in ru
   expect(sts("run", join(d, "link.ts")).err).toContain("no exported function 'main'"); // the entry may itself be the link
 });
 
+it("a second load in the same process refreshes the cache entry too (D149)", async () => {
+  const f = tmpFile(`function inc(x: i32): i32 { "use owned"; return x + 4; }\nexport function main(sys: System): void { sys.log.info(\`\${inc(1)}\`); }\n`);
+  const cache = mkdtempSync(join(tmpdir(), "sts-d149b-"));
+  const prev = process.env.XDG_CACHE_HOME;
+  process.env.XDG_CACHE_HOME = cache;
+  try {
+    const { run } = await import("../src/index.ts");
+    expect((await run(f, { backend: "c" })).stdout).toBe("5\n");
+    const dir = join(cache, `${CLI_NAME}-native`), built = readdirSync(dir).find((n) => n.endsWith(".node"))!;
+    const old = new Date(Date.now() - 30 * 864e5);
+    utimesSync(join(dir, built), old, old);
+    await run(f, { backend: "c" }); // served from the in-process map
+    expect(Date.now() - statSync(join(dir, built)).mtimeMs).toBeLessThan(3600e3);
+  } finally { if (prev === undefined) delete process.env.XDG_CACHE_HOME; else process.env.XDG_CACHE_HOME = prev; }
+}, 30_000);
+
 // Q252: user input mistakes are CLI errors (exit 2) without a stack; internal errors exit 70.
 const tmpFile = (src: string): string => { const f = join(mkdtempSync(join(tmpdir(), "sts-q252-")), "a.ts"); writeFileSync(f, src); return f; };
 
