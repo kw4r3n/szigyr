@@ -603,3 +603,4 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 
 - Q227 (a): `checker.ts` の `fnGraph` に、名前での呼び出し（`FnSite` の呼び出し先が関数そのもの）だけの呼び出しグラフを足した。rt の関数がこのグラフで循環に入れば E4005（アンカーは循環に入る呼び出しの呼び出し先の名前）。具体化ごとの検査はそのまま残る。関数型パラメータを通る再帰（`applyRt(loop, x)`）は、これまでどおり具体化ごとに判定する。拒否ケースは `E4005-fn-param-direct-recursion-no-caller`、`E4005-fn-param-mutual-recursion-no-caller`。SPEC §6 に書いた。
 - Q226 (a): `modules.ts` の `lookupType` / `lookupValue` の固定の深さ 8 を、訪問済みの（ファイル、名前）の集合に替えた。同じ組を 2 度通ったら解決できないものとして `undefined` を返す。循環の診断は変わらず、使う位置の E2000。ケースは run の `178-reexport-chain-12`（型と関数を 12 段で再 export して実行、固定上限のときに落ちるのを確かめた）と reject の `E2000-reexport-cycle`（変更の前後とも通る）。SPEC §1 に書いた。
+- Q228 (a): 挙動は変えない。`Ptr.box` の型引数の `Ptr` / `ConstPtr` は E4008（アンカーは型引数の先頭）と SPEC §14.4 に書いた。これまで固定するケースがなかったので、reject の `E4008-box-of-ptr`、`E4008-box-of-constptr` を足した（実装の変更なしで通る）。

@@ -581,6 +581,8 @@ reject/E4007-ctype-as-param-type.ts
 reject/E4007-ctype-bad-name.ts
 reject/E4007-ptr-target-array.ts
 reject/E4007-ptr-target-non-copy-record.ts
+reject/E4008-box-of-constptr.ts
+reject/E4008-box-of-ptr.ts
 reject/E4008-c-call-in-safe-function.ts
 reject/E4008-call-ptr-signature-function.ts
 reject/E4008-cfn-in-safe-function.ts
