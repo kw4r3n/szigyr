@@ -19,6 +19,11 @@ export const GLOBAL_AUTHORITIES = new Set([
 export const NAMESPACES = new Set(["Math", "Number", "JSON", "String", "Promise", "Vec", "Pool", "Arena", "Ring", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "TestAlloc", "DetMath", "Ptr", "CHandle"]);
 /** Builtin functions handled by the checker (§12). */
 export const BUILTIN_FUNCTIONS = new Set([...NUM_NAMES, "wrapAdd", "wrapSub", "wrapMul", "divTrunc", "rem", "ok", "err", "panic", "cast", "requires", "ensures", "invariant", "test", "cfn"]);
+/** §12 global names; declaring any of them is E1000 (Q010). The tables here plus the names only the resolver and §7.1 know. */
+export const BUILTIN_NAMES = new Set<string>([
+  "boolean", "string", "number", "null", "void", "unknown", "never", "Result", "Struct", "RingPair", "JsError", "CastError", "IoError", "Net",
+  ...Object.keys(GEN_ARITY), ...OPAQUE_NAMES, ...NAMESPACES, ...BUILTIN_FUNCTIONS,
+]);
 
 /** Builtin type names (§12) that are not generic constructors. Struct and Result are handled by the resolver. */
 export function builtinType(name: string): Type | undefined {

@@ -1,20 +1,12 @@
 // Phase P1 (Q003): the syntax allowlist. Every node kind is accepted only by an explicit case below;
 // anything else falls to a default branch that reports E1000. Anchors follow docs/DIAGNOSTICS.md.
 import { dirname, resolve } from "node:path";
+import { BUILTIN_NAMES } from "./builtins.ts";
 import type { Diagnostic } from "./diagnostics.ts";
 import { DETMATH_PATH } from "./detmath.ts";
 import { NodeFlags, SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { RUNTIME_GLOBAL } from "./names.ts";
 
-/** §12 global names; declaring any of them is E1000 (Q010). */
-const BUILTIN_NAMES = new Set([
-  "boolean", "string", "number", "f64", "f32", "i8", "i16", "i32", "u8", "u16", "u32", "usize", "null", "void", "unknown", "never",
-  "Array", "ReadonlyArray", "Map", "Set", "Promise", "Result", "Struct", "Vec", "Slice", "Pool", "Handle", "Arena", "ArenaBuf", "Ref", "Mut", "OwnedCell",
-  "System", "Alloc", "Fs", "Net", "Clock", "Random", "Log", "Js", "Ffi", "Spawn", "JsRef", "JsError", "CastError", "IoError", "Test",
-  "Ptr", "ConstPtr", "CType", "CHandle", "cfn", "Ring", "RingTx", "RingRx", "RingPair", "Port",
-  "wrapAdd", "wrapSub", "wrapMul", "divTrunc", "rem", "ok", "err", "panic", "cast", "requires", "ensures", "invariant", "test",
-  "Math", "Number", "JSON", "String", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "TestAlloc", "DetMath",
-]);
 /** Q004: type names rejected as E1000 rather than E2000. */
 const E1000_TYPE_NAMES = new Set([
   "Function", "Partial", "Required", "Readonly", "Record", "Pick", "Omit", "Exclude", "Extract", "NonNullable", "Parameters",
