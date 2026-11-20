@@ -368,3 +368,25 @@ export function main(sys: System): void {
   expect(emptyXdg.status).toBe(0);
   expect(existsSync(join(workDir, `${CLI_NAME}-native`))).toBe(false);
 });
+
+// Q240: polymorphic recursion (a type argument that nests deeper on every call) stops the C backend with CUnsupported; the same type argument still works.
+it("a polymorphically recursive strict function stops the C backend quickly with CUnsupported (Q240)", () => {
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-`));
+  const env = { ...process.env, XDG_CACHE_HOME: join(dir, "cache") };
+  const main = `export function main(sys: System): void { sys.log.info(\`\${f<i32>(1, 3)}\`); }\n`;
+  const poly = join(dir, "poly.ts");
+  writeFileSync(poly, `type W<T> = Struct<{ readonly a: T }>;\nfunction f<T>(x: T, n: i32): i32 { "use owned"; if (n === 0) { return 0; } const p: W<T> = { a: x }; return 1 + f<W<T>>(p, n - 1); }\n${main}`);
+  const t0 = Date.now();
+  const r = spawnSync("node", [CLI, "run", "--backend=c", poly], { encoding: "utf8", env });
+  expect(r.status).toBe(2);
+  expect(r.stderr).toContain("C backend");
+  expect(r.stderr).not.toContain("RangeError");
+  expect(Date.now() - t0).toBeLessThan(20000);
+  const same = join(dir, "same.ts");
+  writeFileSync(same, `function f<T>(x: T, n: i32): i32 { "use owned"; if (n === 0) { return 0; } return 1 + f<T>(x, n - 1); }\n${main}`);
+  for (const b of ["js", "c"]) {
+    const ok = spawnSync("node", [CLI, "run", `--backend=${b}`, same], { encoding: "utf8", env });
+    expect(ok.status, ok.stderr).toBe(0);
+    expect(ok.stdout.trim()).toBe("3");
+  }
+}, 60000);
