@@ -1,7 +1,7 @@
 // Builds the C translation unit into a Node-API addon with the installed `cc` and loads it (D101). No node-gyp, no npm dependency.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { threadId } from "node:worker_threads";
@@ -19,6 +19,19 @@ const loaded = new Map<string, Record<string, (...a: unknown[]) => unknown>>();
 const pathOf = new WeakMap<object, string>();
 /** The `.node` file a loaded native module came from; an isolate loads the same file (§15.2, D111). */
 export function nativePathOf(mod: object): string | undefined { return pathOf.get(mod); }
+
+/** D149: past ~500 entries, delete (also stale `.tmp*`) what has not been used for 7 days. Processes and isolate workers share the directory, so races are ignored. */
+function prune(dir: string, keep: string): void {
+  try {
+    const names = readdirSync(dir);
+    if (names.length <= 500) return;
+    const cutoff = Date.now() - 7 * 864e5;
+    for (const n of names) {
+      const p = join(dir, n);
+      try { if (n !== keep && statSync(p).mtimeMs < cutoff) rmSync(p, { force: true }); } catch { /* gone already */ }
+    }
+  } catch { /* the cache is only an optimisation */ }
+}
 
 /** Compiles (cached by source hash) and loads the addon; `host` is passed to its `init`. */
 export function loadNative(c: string, host: object, pkgs: string[] = []): Record<string, (...a: unknown[]) => unknown> {
@@ -42,22 +55,24 @@ export function loadNative(c: string, host: object, pkgs: string[] = []): Record
     try { mkdirSync(dir, { recursive: true, mode: 0o700 }); st = statSync(dir); } catch (e) { throw new CBuildError(`C backend: cache directory ${dir} is not usable: ${(e as Error).message}`); } // D150
     if ((process.getuid && st.uid !== process.getuid()) || (st.mode & 0o022)) throw new CBuildError(`C backend: cache directory ${dir} is not private to this user`);
     const out = join(dir, `${hash}.node`);
-    if (!existsSync(out)) {
+    if (existsSync(out)) { const now = new Date(); try { utimesSync(out, now, now); } catch { /* raced with a prune */ } } // age = last use (D149)
+    else {
       // Workers of one process share the pid, so the temporary names also carry the thread id (D111).
       const tmp = `${out}.${process.pid}.${threadId}.tmp`, src = `${tmp}.c`;
       writeFileSync(src, c);
       let ok = false;
       try {
         execFileSync(cc, [...ccArgs, ...CFLAGS, ...pkgCflags, `-I${inc}`, src, "-o", tmp, "-lm", ...pkgLibs], { stdio: ["ignore", "ignore", "pipe"] });
-        renameSync(src, join(dir, `${hash}.c`));
         renameSync(tmp, out);
         ok = true;
       } catch (e) {
         const err = e as { code?: string; stderr?: Buffer };
         throw new CBuildError(err.code === "ENOENT" ? `C backend: no C compiler ('${cc}') found` : `C backend: compiling ${src} failed:\n${err.stderr?.toString() ?? String(e)}`);
       } finally {
-        if (!ok) { rmSync(src, { force: true }); rmSync(tmp, { force: true }); }
+        rmSync(src, { force: true });
+        if (!ok) rmSync(tmp, { force: true });
       }
+      prune(dir, `${hash}.node`);
     }
     const m = { exports: {} as Record<string, (...a: unknown[]) => unknown> };
     process.dlopen(m, out);

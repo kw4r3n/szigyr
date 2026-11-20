@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
@@ -386,6 +386,27 @@ it("CC may carry arguments; an unwritable cache directory is a CBuildError, exit
   expect(bad.status).toBe(2);
   expect(bad.stderr).toContain("cache directory");
   expect(bad.stderr).not.toContain("    at ");
+});
+
+it("the native cache drops entries unused for 7 days once it holds more than 500, and a hit refreshes its entry (D149)", () => {
+  const f = tmpFile(`function inc(x: i32): i32 { "use owned"; return x + 1; }\nexport function main(sys: System): void { sys.log.info(\`\${inc(2)}\`); }\n`);
+  const cache = mkdtempSync(join(tmpdir(), "sts-d149-"));
+  const env = { ...process.env, XDG_CACHE_HOME: cache };
+  const dir = join(cache, `${CLI_NAME}-native`);
+  mkdirSync(dir, { mode: 0o700 });
+  const old = new Date(Date.now() - 30 * 864e5);
+  for (let i = 0; i < 600; i++) { const p = join(dir, i % 3 ? `old${i}.node` : `old${i}.node.1.2.tmp.c`); writeFileSync(p, ""); utimesSync(p, old, old); }
+  writeFileSync(join(dir, "recent.node"), "");
+  const r = spawnSync("node", [CLI, "run", "--backend=c", f], { encoding: "utf8", env });
+  expect(r).toMatchObject({ status: 0, stdout: "3\n" });
+  const names = readdirSync(dir);
+  expect(names.sort()).toHaveLength(2);
+  expect(names).toContain("recent.node");
+  const built = names.find((n) => n !== "recent.node")!;
+  expect(built).toMatch(/^[0-9a-f]{24}\.node$/);
+  utimesSync(join(dir, built), old, old); // a hit must refresh it
+  expect(spawnSync("node", [CLI, "run", "--backend=c", f], { encoding: "utf8", env }).status).toBe(0);
+  expect(Date.now() - statSync(join(dir, built)).mtimeMs).toBeLessThan(3600e3);
 });
 
 // Q252: user input mistakes are CLI errors (exit 2) without a stack; internal errors exit 70.
