@@ -1,9 +1,10 @@
 // Phase P1 (Q003): the syntax allowlist. Every node kind is accepted only by an explicit case below;
 // anything else falls to a default branch that reports E1000. Anchors follow docs/DIAGNOSTICS.md.
-import { dirname, resolve } from "node:path";
+import { dirname } from "node:path";
 import { BUILTIN_NAMES } from "./builtins.ts";
 import type { Diagnostic } from "./diagnostics.ts";
 import { DETMATH_PATH } from "./detmath.ts";
+import { canonPath } from "./modules.ts";
 import { NodeFlags, SyntaxKind as K, isId, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { RUNTIME_GLOBAL } from "./names.ts";
 
@@ -241,7 +242,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       return;
     }
     const specText = (d.moduleSpecifier as ts.StringLiteral).text;
-    if (!specText.startsWith("npm:") && resolve(dirname(pf.path), specText) === DETMATH_PATH) { // §12 (Q191)
+    if (!specText.startsWith("npm:") && canonPath(dirname(pf.path), specText) === DETMATH_PATH) { // §12 (Q191); by realpath, so a symlink does not hide it (Q253)
       at("E7001", d.moduleSpecifier, "the bundled DetMath module cannot be imported; use the DetMath namespace");
       return;
     }

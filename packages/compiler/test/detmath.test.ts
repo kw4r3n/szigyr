@@ -1,6 +1,6 @@
 // Q191 (§12): the DetMath namespace and the bundled module in packages/std/detmath.ts.
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { expect, it } from "vitest";
@@ -50,6 +50,14 @@ it("importing the bundled DetMath module is E7001 at the specifier", () => {
   let spec = relative(dir, DETMATH_PATH);
   if (!spec.startsWith(".")) spec = `./${spec}`;
   writeFileSync(join(dir, "main.ts"), `import { sin } from "${spec}";\nexport function f(x: f64): f64 { return sin(x); }\n`);
+  const got = check(join(dir, "main.ts")).map((d) => `${d.code} ${d.range.start.line}:${d.range.start.col}`);
+  expect(got).toEqual(["E7001 1:21"]);
+});
+
+it("importing the bundled DetMath module through a symlink is E7001 too (Q253)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "szigyr-detmath-"));
+  symlinkSync(DETMATH_PATH, join(dir, "link.ts"));
+  writeFileSync(join(dir, "main.ts"), `import { sin } from "./link.ts";\nexport function f(x: f64): f64 { return sin(x); }\n`);
   const got = check(join(dir, "main.ts")).map((d) => `${d.code} ${d.range.start.line}:${d.range.start.col}`);
   expect(got).toEqual(["E7001 1:21"]);
 });
