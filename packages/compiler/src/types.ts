@@ -17,7 +17,7 @@ export const OPAQUE_NAMES = new Set<string>([...AUTHORITIES, "JsRef", "Test", "F
 export interface Field { name: string; type: Type; readonly: boolean }
 /** Q127: conditions a type parameter takes on from the positions it is used in, checked on every instantiation. */
 /** `nopromise`: every user type parameter has it (Q130 addendum): a Promise cannot hide behind a type parameter. */
-export type Need = "key" | "copy" | "layout" | "field" | "borrow" | "eq" | "nopromise" | "noabuf" | "send" | "noauth";
+export type Need = "key" | "copy" | "layout" | "cross" | "field" | "borrow" | "eq" | "nopromise" | "noabuf" | "send" | "noauth";
 /** `owner`: the declaring layer for user type parameters (Q068 b): "managed" ones never take owned types, strict / rt ones may. */
 export interface TParam { name: string; id: number; constraint?: Type; need?: Set<Need>; owner?: "managed" | "strict" | "rt" }
 /** `min`: builtin optional trailing parameters (Q032). `prefix`: a builtin callback may take a prefix of the parameters. */
@@ -369,12 +369,34 @@ export function demandLayout(t: Type): void {
 /** The element-carrying containers of §3.3 / §15.1: strict / rt code lays their elements out per §10.2. */
 export const ELEMENT_CONTAINERS = new Set(["Vec", "Slice", "Pool", "Handle", "ArenaBuf", "RingTx", "RingRx"]);
 
+/** §3.3 (Q233): whether a parameter (`ret` false) or return (`ret` true) type of a strict / rt function can cross the
+ * managed / C boundary. `null` as a value has no C representation there (the `Result` payload and `T | null` payload
+ * included), and `never` is a return type only. A type parameter is judged where it is instantiated (the "cross" need). */
+export function crossOk(t: Type, ret = false): boolean {
+  t = unref(t);
+  switch (t.k) {
+    case "prim": return t.name === "null" ? false : t.name === "never" ? ret : true;
+    case "record": return t.fields.every((f) => crossOk(f.type));
+    case "union": { const n = nonNull(t); return n ? crossOk(n, ret) : t.members.every((m) => crossOk(m)); }
+    default: return true;
+  }
+}
+/** The type parameters whose value crosses the boundary as such: `T`, `T | null`, a field of a record or `Result`. */
+export function crossTParams(t: Type, out: TParam[] = []): TParam[] {
+  t = unref(t);
+  if (t.k === "tparam") out.push(t.p);
+  else if (t.k === "union") t.members.forEach((m) => crossTParams(m, out));
+  else if (t.k === "record") t.fields.forEach((f) => crossTParams(f.type, out));
+  return out;
+}
+
 /** Q127: whether a type that is not a type parameter meets a condition. */
 export function needOk(n: Need, t: Type): boolean {
   switch (n) {
     case "key": return keyOk(t);
     case "copy": return t.k === "error" || isCopy(t);
     case "layout": return hasLayout(t);
+    case "cross": return crossOk(t);
     case "field": return structField(t);
     case "borrow": return t.k === "error" || isOwned(t) || (t.k === "gen" && t.name === "Slice");
     case "eq": return comparable(t);
@@ -385,7 +407,7 @@ export function needOk(n: Need, t: Type): boolean {
   }
 }
 /** Needs that propagate structurally into type parameters nested inside composite types (records, unions, generics). */
-export const DEEP_NEEDS = new Set<Need>(["layout", "eq", "noabuf", "send", "nopromise", "noauth"]);
+export const DEEP_NEEDS = new Set<Need>(["layout", "cross", "eq", "noabuf", "send", "nopromise", "noauth"]);
 /** All type parameters occurring anywhere inside `t`. */
 export function collectTParams(t: Type, out: TParam[] = []): TParam[] {
   switch (t.k) {

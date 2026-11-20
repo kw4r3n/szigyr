@@ -621,3 +621,9 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - 調べたこと: bun 1.4.4 でコンパイラを動かせるか。動かない。`typescript/unstable/sync`（D005）が子プロセスの `child.stdout._handle.fd` を読み、bun にはこの内部の項目がない。`bun --bun` で conformance 923 件を流すと、通るのは 1 件だけだった。
 - パッケージマネージャとしてだけ使うと、インストールで減る時間は 50 ミリ秒未満だった。
 - 決定: pnpm のままにする。TypeScript の API が変わったときに、もう一度調べる。
+
+## D135: 契約の禁止を受け手の型で判定する（Q232）、境界を越えられない型を検査で拒否する（Q233）（2026-11-20）
+
+- Q232 (a): `expr.ts` の `bannedCall` が、契約の中のメソッド呼び出しの受け手の型で判定する。`Ref` / `Mut` を外し、`gen`、`opaque`、文字列は `builtins.ts` の表（D132）の `contract`、名前空間は `nsMember` の `contract` を引く。`union` はどれかの要素が対象なら対象、型パラメータは制約を見る。class、interface、レコード、関数型は対象外（D133 の Q230 の注の「受け手が interface でも同じ名前なら E6002」は、これで置き換わった）。型が決められない場合（`unknown`、エラー型、制約のない型パラメータ、上のどれでもない型、型のない名前空間以外の受け手）は、`contractBanned()`（全ての組み込みの受け手の名前の集合）で拒否する。失敗側に倒す。ユーザー関数の呼び出しの規則（Q175）は変えていない。ケースは run の `181-contract-user-method-builtin-name`、reject の `E6002-requires-builtin-through-ref`、`E6002-requires-builtin-through-nullable`。既存のケースの期待は変えていない。
+- Q233 (a): `types.ts` の `crossOk`、`crossTParams`、need「cross」、`checker.ts` の `layerSig`、`modules.ts` の署名の解決と `checkInsts`。コードは E4002。拒否する集合は `null` だけの型（`Result` の `null` の側を含む）と `never` のパラメータ。調べ方: `emit-c.ts` の `inConv` / `outConv` に場合がない型を、strict の署名に書いて `--backend=c` で実行した。止まったのは `null`（単独、`Result<null, E>`、`Result<T, null>`）と `never` のパラメータだけ。`Struct` や `null` のフィールドを持つ tagged union は、Q229 以前から E4002。ケースは reject の `E4002-strict-param-null-only`、`-strict-return-null-only`、`-rt-result-null-payload-param`、`-strict-result-null-error-return`、`-strict-param-never`、`-strict-generic-identity-instantiated-with-null`、`-strict-generic-instantiated-with-result-null`、run の `182-strict-boundary-types`（JS と C の両方で同じ出力）。strict から strict の `null` は、C が全ての strict / rt の関数に入口を作るので、C では今も動かない。そのため同じ規則で拒否にした。既存のケースの期待は変えていない。
+

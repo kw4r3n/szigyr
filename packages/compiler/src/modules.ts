@@ -5,7 +5,7 @@ import type { Diagnostic } from "./diagnostics.ts";
 import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { RESERVED, builtinType, isGenName } from "./builtins.ts";
 import {
-  ERROR, GEN_ARITY, NULL, VOID, gen, assignable, bindTParams, collectTParams, DEEP_NEEDS, ELEMENT_CONTAINERS, demand, demandLayout, fn, isTaggedUnion, sendable, hasAuthority, field, kindOf, layerOk, movesLike, needOk, holdsOwned, ownedDeep, CONTAINERS, newTParam, nonNull, record, result, show, subst, union,
+  ERROR, GEN_ARITY, NULL, VOID, gen, assignable, bindTParams, collectTParams, DEEP_NEEDS, ELEMENT_CONTAINERS, demand, demandLayout, crossTParams, fn, isTaggedUnion, sendable, hasAuthority, field, kindOf, layerOk, movesLike, needOk, holdsOwned, ownedDeep, CONTAINERS, newTParam, nonNull, record, result, show, subst, union,
   type ClassSym, type Field, type FnType, type IfaceSym, type TParam, type Type,
 } from "./types.ts";
 
@@ -270,7 +270,7 @@ export class Program {
     }
     for (const table of mod.cdecls.values()) for (const cs of table.values()) cs.sig = this.signature(cs.decl, cs.decl.name!, env());
     for (const v of mod.values.values()) {
-      if (v.k === "fn" && v.mod === mod) { v.sig = this.signature(v.decl, v.decl.name!, env()); for (const p of v.sig.tparams) p.owner = v.layer; }
+      if (v.k === "fn" && v.mod === mod) { v.sig = this.signature(v.decl, v.decl.name!, env()); for (const p of v.sig.tparams) p.owner = v.layer; if (v.layer !== "managed") for (const t of [...v.sig.params.filter((x) => x.k !== "fn"), v.sig.ret]) for (const p of crossTParams(t)) (p.need ??= new Set()).add("cross"); } // Q233
       else if (v.k === "class" && v.mod === mod) this.classMembers(v.cls, env(v.cls.tparams));
       else if (v.k === "const" && v.mod === mod) {
         if (!v.decl.type) { if (!v.bind || v.bind === (v.decl.name as ts.ObjectBindingPattern).elements.find((el) => isId(el.name))) this.rep.at(mod, "E2006", v.decl.name, "module-level const needs a type annotation"); } // once per declaration
@@ -374,10 +374,10 @@ export class Program {
     }
     const seen: Set<string> = new Set();
     for (const { mod, node, p, arg } of this.insts) {
-      const bad = arg.k === "tparam" ? undefined : [...p.need ?? []].find((n) => !needOk(n, arg) && (n !== "layout" || (p.owner !== undefined && p.owner !== "managed"))); // Q229: layout only for strict / rt generics
+      const bad = arg.k === "tparam" ? undefined : [...p.need ?? []].find((n) => !needOk(n, arg) && ((n !== "layout" && n !== "cross") || (p.owner !== undefined && p.owner !== "managed"))); // Q229: layout only for strict / rt generics
       const key = `${mod.file}:${node.pos}:${p.id}`;
       if (seen.has(key)) continue;
-      if (bad) { seen.add(key); this.rep.at(mod, bad === "copy" || bad === "field" || bad === "layout" ? "E4002" : bad === "send" ? "E2010" : bad === "noauth" ? "E4006" : "E2002", node, `'${show(arg)}' cannot instantiate '${p.name}' (${bad} condition)`); } // Q086: copy / field are §3.3 codes; send is §15.2's; noauth is §6's
+      if (bad) { seen.add(key); this.rep.at(mod, bad === "copy" || bad === "field" || bad === "layout" || bad === "cross" ? "E4002" : bad === "send" ? "E2010" : bad === "noauth" ? "E4006" : "E2002", node, `'${show(arg)}' cannot instantiate '${p.name}' (${bad} condition)`); } // Q086: copy / field are §3.3 codes; send is §15.2's; noauth is §6's
       else if (p.owner && p.owner !== "managed" && arg.k === "tparam" && arg.p.owner === "managed") { seen.add(key); this.rep.at(mod, "E4002", node, `the managed type parameter '${arg.p.name}' cannot instantiate '${p.name}' of a strict / rt function (§3.3 is not checked through it)`); }
       else if (p.owner === "rt" && hasAuthority(arg)) { seen.add(key); this.rep.at(mod, "E4006", node, `'${show(arg)}' cannot instantiate '${p.name}' of an rt function (§6)`); }
       else if (p.owner && p.owner !== "managed" && !layerOk(arg)) { seen.add(key); this.rep.at(mod, "E4002", node, `'${show(arg)}' cannot instantiate '${p.name}' of a strict / rt function (§3.3)`); }

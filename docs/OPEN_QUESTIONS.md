@@ -1494,3 +1494,13 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
   - (b) 名前で判定するまま。
 - 既定案: (b)。
 - 2026-11-20 オーナー決定: (a)。Q134 の「名前で判定」は置き換えた。`expr.ts` の `bannedCall` が、`Ref` / `Mut` を外した受け手の型で、`gen`、`opaque`、文字列、名前空間は `builtins.ts` の表の `contract` を引く。`union` はどれかの要素が対象なら対象、型パラメータは制約を見る。class、interface、レコード、関数型は対象外。型を決められない（`unknown`、エラー型、制約のない型パラメータ、上のどれでもない型）ときは、従来どおり名前で拒否する（失敗側に倒す）。ユーザー関数の呼び出しの扱い（Q175 など）は変えない。ケースは run の `181-contract-user-method-builtin-name`（JS と C の両方）、reject の `E6002-requires-builtin-through-ref`、`E6002-requires-builtin-through-nullable`。既存の拒否ケースは変えていない（D135）。
+
+### Q233 `null` だけの値を、strict / rt の関数の境界で渡せるか
+- 関連: §3.3、§10.2、Q229、D105
+- 状況: strict / rt のジェネリックな関数 `function id<T>(x: T): T { "use owned"; return x; }` を managed から `id<null>(null)` や `id<Result<null, i32>>(ok(null))` で呼ぶと、検査を通り、JS では動く。`--backend=c` では「passing 'null' between managed code and C is not supported」で止まる。明示した署名（`function g(x: null): null`、`Result<i32, null>` の戻り値）も同じ。C のコードは全ての strict / rt の関数に managed 向けの入口を作るので、strict から strict だけの呼び出しでも止まる。原因は、`null` の C の型 `sts_null` はあるが、入口の変換（`inConv` / `outConv`）に `null` と `never` の場合がないこと。Q229 は要素の型だけを扱った。
+- 選択肢:
+  - (a) 検査で拒否する。strict / rt の関数のパラメータと戻り値の型、およびジェネリックな関数の具体化のうち、C が渡せない型を E4002 にする。
+  - (b) §10.2 に `null` の表現を足して C でも渡せるようにする。
+  - (c) 今のまま。
+- 既定案: (c)。
+- 2026-11-20 オーナー決定: (a)。コードは E4002（意味は「strict / rt で使えない型」。Q229 と同じ種類の条件で、新しいコードは作らない）。拒否する集合は `crossOk`（`types.ts`）が判定する: `null` そのもの、`Result` の `null` の側や `null` のフィールドを持つレコード、`never` のパラメータ（戻り値の `never` は可）。`T | null` は `T` を見る。型パラメータは新しい need「cross」で、パラメータ・戻り値の直接の位置（`T`、`T | null`、レコードと `Result` の要素）にあるものだけに付き、具体化で `crossOk` を調べる。署名は `checker.ts` の `layerSig` が調べる。strict から strict の呼び出しは、C が全ての strict / rt の関数に入口を作るので、同じ規則で拒否になる（C が今も扱えるのは本体の中の `null` で、これは制限しない）。managed のジェネリックな関数は対象外。調べた範囲で、ほかに「受理されるが C で止まる」境界の型は `never` のパラメータだけだった。他の型（数値、`boolean`、リテラル、Struct、タグつき union、`T | null`、`Vec`、`Pool`、`Handle`、`Arena`、`ArenaBuf`、リング、`Ptr`、`CHandle`、権限）は入口が通る（D135）。
