@@ -595,6 +595,6 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
   1. `traps.ts` に T015 がなかった。§14.4 の `Ptr` / `ConstPtr` の `read`、`write`、`offset`、`slice`、`borrow`、`unbox` は null で T015 になり（C の変換は検査を入れている）、rt かつ unsafe の関数で使えるのに、トラップの一覧に載っていなかった。§6 と §14.4 が決めているので直した（`check.test.ts` の「lists T015 ...」。先に落ちるのを確かめた）。
   2. 契約の中の `port.send` / `recv` / `close` と `spawn.isolate` は E6002 にならず、`Ptr.box` は E6002 なのに `*.create` はならない。§9.1 と Q134 が決めていないので Q230 にし、挙動は変えていない。
   3. §13 の予約名（`i64` など）は参照すると E2000 だが、宣言は拒否されない。Q231 にし、挙動は変えていない。
-  - 各パスを表に切り替えるたびに、conformance とテストの fixtures の全 819 ファイルについて、診断、rt のトラップの一覧、決定性を開始時と比べ、差がないことを確かめた（1 の T015 は、これらのファイルの rt の関数には現れない）。
+  - 各パスを表に切り替えるたびに、conformance とテストの fixtures の全 819 ファイルについて、診断、rt のトラップの一覧、決定性を開始時と比べ、差がないことを確かめた（`PKG_CONFIG_PATH` なしで実行したので、`c:` モジュールの 10 ファイルはヘッダの診断で止まり、トラップの一覧を比べていない）。終わりに `PKG_CONFIG_PATH=conformance/fixtures/stscb/.build` で開始時（2087f7f）と HEAD を比べ、差は `run/145-cfn-ring-thread-pop` の `popper` に T015 が 1 つ増えたことだけだった（1 の直し）。
 - 範囲の外: `emit.ts`、`emit-c.ts`、`runtime-js` のメソッド名の分岐と、`expr.ts` の確保（E4004）の一覧は切り替えていない。名前を挙げて頼まれた読み手ではないため。
 - 検証: `pnpm typecheck` 成功、`pnpm test` 223 件通過（`passing.test.ts` は負荷で時間切れになるので、時間の上限を延ばして通した）、`pnpm verify:conformance` accept=79 reject=546 run=165（PASSING 790 件。conformance のケースは足していない）、`pnpm conformance` 923 件通過。`pnpm bench` の 5 回中央値は dot_f32 1.00、saxpy_f32 1.16、prefix_i32 1.32、stencil_f64 1.00、particles_aos_f32 1.35 倍（単発の最大は 1.43 倍）。
