@@ -9,6 +9,7 @@ import {
   BOOL, ERROR, ERROR_RECORD, F64, NEVER, NULL, NUM_NAMES, STR, UNKNOWN, USIZE, VOID, assignable, bindTParams, boxable, field, fn, gen, hasPtr, hasRawPtr, hasTParam,
   isBool, isCopy, isInt, isNull, isNum, isOwned, isStr, movesLike, holdsOwned, ownedDeep, ptrTargetOk, isTaggedUnion, kindOf, literalFits, nonNull, nullable, num, opaque, result, resultParts,
   same, sendable, show, subst, unify, union, unref, castable, collectTParams, demand, demandLayout, layerOk, type FnType, type NumName, type Type,
+  hasLoneSurrogate,
 } from "./types.ts";
 
 const isErr = (t: Type): boolean => t.k === "error";
@@ -156,7 +157,7 @@ function numLit(c: Checker, anchor: Node, value: number, want: Type | undefined)
 function strLit(value: string, want: Type | undefined): Type {
   const w = want && (nonNull(want) ?? want);
   const lits = w && (w.k === "lit" || (w.k === "union" && w.members.some((m) => m.k === "lit")));
-  return lits ? { k: "lit", value } : STR;
+  return lits && !hasLoneSurrogate(value) ? { k: "lit", value } : STR; // Q238
 }
 
 // ---- names

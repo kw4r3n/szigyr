@@ -374,6 +374,9 @@ export function demandLayout(t: Type): void {
 /** The element-carrying containers of §3.3 / §15.1: strict / rt code lays their elements out per §10.2. */
 export const ELEMENT_CONTAINERS = new Set(["Vec", "Slice", "Pool", "Handle", "ArenaBuf", "RingTx", "RingRx"]);
 
+/** A lone (unpaired) UTF-16 surrogate has no UTF-8 form, so no string-literal type may contain one (E2012, Q238). */
+export const hasLoneSurrogate = (s: string): boolean => /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(s);
+
 /** §3.3 (Q233): whether a parameter (`ret` false) or return (`ret` true) type of a strict / rt function can cross the
  * managed / C boundary. `null` as a value has no C representation there (the `Result` payload and `T | null` payload
  * included), and `never` is a return type only. A type parameter is judged where it is instantiated (the "cross" need). */
@@ -381,7 +384,6 @@ export function crossOk(t: Type, ret = false): boolean {
   t = unref(t);
   switch (t.k) {
     case "prim": return t.name === "null" ? false : t.name === "never" ? ret : true;
-    case "lit": return !/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(t.value); // a lone surrogate would become U+FFFD in the C string (Q238)
     case "record": return t.fields.every((f) => crossOk(f.type));
     case "union": { const n = nonNull(t); return n ? crossOk(n, ret) : t.members.every((m) => crossOk(m)); }
     default: return true;

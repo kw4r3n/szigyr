@@ -386,6 +386,10 @@ reject/E2011-isolate-bad-return.ts
 reject/E2011-isolate-generic.ts
 reject/E2011-isolate-strict.ts
 reject/E2011-isolate-typearg-mismatch.ts
+reject/E2012-lone-high-surrogate-annotation.ts
+reject/E2012-lone-low-surrogate-union-member.ts
+reject/E2012-reversed-surrogate-pair-literal.ts
+reject/E2012-strict-return-lone-surrogate-literal.ts
 reject/E3001-assignment-as-argument.ts
 reject/E3001-assignment-as-initializer.ts
 reject/E3001-chained-assignment.ts
@@ -543,6 +547,7 @@ reject/E4002-arena-alloc-owned.ts
 reject/E4002-arenabuf-string.ts
 reject/E4002-array-param-in-strict.ts
 reject/E4002-async-in-strict.ts
+reject/E4002-lone-surrogate-value-to-strict-generic.ts
 reject/E4002-managed-type-parameter-into-strict-generic.ts
 reject/E4002-owned-cell-in-strict.ts
 reject/E4002-pool-create-string.ts
@@ -562,7 +567,6 @@ reject/E4002-strict-generic-vec-instantiated-with-null.ts
 reject/E4002-strict-param-never.ts
 reject/E4002-strict-param-null-only.ts
 reject/E4002-strict-result-null-error-return.ts
-reject/E4002-strict-return-lone-surrogate-literal.ts
 reject/E4002-strict-return-null-only.ts
 reject/E4002-string-literal-local-in-strict.ts
 reject/E4002-string-param-in-rt.ts
@@ -824,6 +828,7 @@ run/240-polymorphic-recursion-allowed-shapes.ts
 run/241-switch-boolean-exhaustive.ts
 run/242-number-infinity-nan-constants.ts
 run/243-number-infinity-rt.ts
+run/244-lone-surrogate-value-managed.ts
 run/25-trap-panic.ts
 run/26-trap-div-by-zero.ts
 run/27-trap-ownedcell-empty.ts

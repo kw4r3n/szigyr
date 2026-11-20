@@ -1,4 +1,4 @@
-// expect: E4002 @ 5:22
+// expect: E2012 @ 4:28
 // stage: 3
 // open-question: Q238
 type Sh = { readonly kind: "\ud800"; readonly x: i32 } | { readonly kind: "�"; readonly y: f64 };

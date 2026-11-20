@@ -13,6 +13,7 @@ import { RESERVED, builtinType, isGenName } from "./builtins.ts";
 import {
   ERROR, GEN_ARITY, NULL, VOID, gen, assignable, bindTParams, collectTParams, DEEP_NEEDS, ELEMENT_CONTAINERS, demand, demandLayout, crossTParams, fn, isTaggedUnion, sendable, hasAuthority, field, kindOf, layerOk, movesLike, needOk, holdsOwned, ownedDeep, CONTAINERS, newTParam, nonNull, record, result, show, subst, union,
   type ClassSym, type Field, type FnType, type IfaceSym, type TParam, type Type,
+  hasLoneSurrogate,
 } from "./types.ts";
 
 export type Layer = "managed" | "strict" | "rt";
@@ -424,12 +425,15 @@ export class Program {
         return ERROR;
       case K.LiteralType: {
         const l = (t as ts.LiteralTypeNode).literal;
-        return l.kind === K.NullKeyword ? NULL : { k: "lit", value: (l as ts.StringLiteral).text };
+        if (l.kind === K.NullKeyword) return NULL;
+        const v = (l as ts.StringLiteral).text;
+        if (hasLoneSurrogate(v)) { this.rep.at(e.mod, "E2012", t, "a string-literal type cannot contain an unpaired surrogate"); return ERROR; } // Q238
+        return { k: "lit", value: v };
       }
       case K.ParenthesizedType: return this.typeOf((t as ts.ParenthesizedTypeNode).type, e, voidOk);
       case K.UnionType: { // §3.2: tagged unions, string-literal unions and `T | null` only (Q080)
         const u = union((t as ts.UnionTypeNode).types.map((x) => this.typeOf(x, e)));
-        if (u.k === "union" && u.members.some((m) => m.k === "error")) return ERROR;
+        if (u.k === "union" && u.members.some((m) => m.k === "error" || (m.k === "record" && m.fields.some((f) => f.type.k === "error")))) return ERROR;
         if (!legalUnion(u)) { this.rep.at(e.mod, "E2002", t, `'${show(u)}' is not a tagged union, a string-literal union or 'T | null'`); return ERROR; }
         return u;
       }

@@ -764,3 +764,10 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - 状況: 検査器は `Number` の定数（`MAX_SAFE_INTEGER`、`EPSILON`）を全層で受理していたが、C への変換は型のない式として拒否していた。
 - 判断: `emit-c.ts` の `prop` に `Number` の表を足した。無限大は `INFINITY` と `(-INFINITY)`、NaN は `NAN`。`EPSILON` と `MAX_SAFE_INTEGER` は JS と同じ値の浮動小数点リテラル。生成コードはすでに `INFINITY` を使っていて、`<math.h>` が入っている。
 - 確かめ方: `242-number-infinity-nan-constants`、`243-number-infinity-rt` が両方のバックエンドで同じ出力になる。
+
+## D167: 孤立サロゲートの文字列リテラル型は作らない。値のリテラルは `string` に広げる（Q238、2026-11-20）
+- 状況: Q238 はオーナーが (d) に決めた。孤立サロゲートを含む文字列リテラル型は、どの層にも存在しない。
+- 判断: 型の位置の文字列リテラル型（`modules.ts` の `K.LiteralType`）は E2012 で `ERROR` にする。値のリテラルが型を持つ 2 か所、`const` の初期化子（`checker.ts`）と、文脈つきの文字列リテラル（`expr.ts` の `strLit`）は、孤立サロゲートがあれば `string` にする。`hasLoneSurrogate`（`types.ts`）を共有する。ほかの文字列リテラル型の作り手（`builtins.ts` の名前、`switch` と `===` の絞り込み、`Result` の `kind`、ジェネリクスの推論の `lit` から `string` への広げ）は、既存の型から来るか固定の値なので、孤立サロゲートを新しく作らない。
+- `crossOk` の孤立サロゲートの分岐は、どの経路でもそのリテラル型ができなくなったので消した。E4002 の行から Q238 を外した。
+- 副作用: タグ型が `ERROR` になったレコードを持つ union は、E2002 を重ねて出さない（`modules.ts` の union の検査）。
+- 確かめ方: `E2012-*` の 4 件、`E4002-lone-surrogate-value-to-strict-generic`（呼び出し側の値 `"\ud800"` は `T = string` と推論され、strict の境界の E4002 になる。C まで届かない）、`244-lone-surrogate-value-managed`。

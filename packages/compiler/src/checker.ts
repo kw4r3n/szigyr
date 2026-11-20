@@ -5,6 +5,7 @@ import { PROMISE_CONTAINERS, assignTarget, checkTo, exprTypes, hasPromise, cond,
 import {
   AUTHORITIES, ERROR, NEVER, NULL, STR, VOID, assignable, hasAuthority, hasTParam, hasPtr, layerOk, crossOk, ptrTargetOk, field, isBool, isErr, isNull, isTaggedUnion, kindOf, nonNull, same, show, subst, bindTParams, unref, union, subUnion,
   type ClassSym, type FnType, type TParam, type Type,
+  hasLoneSurrogate,
 } from "./types.ts";
 
 interface FnCtx {
@@ -749,7 +750,7 @@ export class Checker {
         this.at("E2006", d.name, "cannot determine the type without an annotation");
         t = ERROR;
       } else if (init.kind === K.StringLiteral && !mutableDecl) {
-        t = { k: "lit", value: (init as ts.StringLiteral).text }; // Q016
+        t = hasLoneSurrogate((init as ts.StringLiteral).text) ? STR : { k: "lit", value: (init as ts.StringLiteral).text }; // Q016, Q238
         if (this.fx.layer !== "managed") this.at("E4002", init, `strings cannot be used in ${this.fx.layer} code`); // Q042
       } else {
         t = expr(this, init);

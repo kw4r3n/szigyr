@@ -1553,14 +1553,15 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
 - 既定案: (a)。Q190 (a) の「別のフィールドは別の場所」と同じ見方。テストは `check.test.ts` の「slices of two different Struct fields」。
 
 ### Q238 孤立サロゲートを含む文字列リテラル型を、strict / rt の境界で渡せるか（監査の修正）
-- 2026-11-20: オーナーが検討中で、未決定。決まるまでは既定案 (a) の実装のままにする。
+- 決定（2026-11-20、オーナー）: (d)。
 - 関連: §3.3、§10.2、Q229、Q233
 - 状況: C バックエンドは文字列リテラル型（タグの `kind` の値）を UTF-8 で書く。JS の文字列の孤立サロゲート（`"\ud800"`）は UTF-8 にできず U+FFFD になるので、strict の関数が返す `{ kind: "\ud800" } | { kind: "\ufffd" }` が JS と C で別の値になり、`--backend=both` が不一致を報告した。
 - 選択肢:
   - (a) 孤立サロゲートを含む文字列リテラル型は、strict / rt の関数の境界を越えられない型とする（E4002。Q233 と同じ `crossOk`）。サロゲートペア（絵文字）と整形式の非 ASCII は受理する。
   - (b) C 側のリテラルの書き方を変えて、JS と同じ値にする。
   - (c) 今のまま。
-- 既定案: (a)。ケースは reject の `E4002-strict-return-lone-surrogate-literal`、run の `201-strict-return-surrogate-pair-literal`。
+  - (d) 全層で、対になっていないサロゲートを含む文字列リテラル型を拒否する。値のリテラルは managed で使える。新しいコード（E2012）。
+- 既定案: (d)。型の位置のリテラル型は E2012、値のリテラルは型を `string` にする（D167）。ケースは reject の `E2012-*`（`-strict-return-lone-surrogate-literal` ほか）、`E4002-lone-surrogate-value-to-strict-generic`、run の `201-strict-return-surrogate-pair-literal`、`244-lone-surrogate-value-managed`。
 ### Q252 利用者の入力の誤りと内部エラーの終了コード
 - 決定（2026-11-20、オーナー）: (a)。
 - 関連: Q060、Q061、Q110
