@@ -332,6 +332,7 @@ reject/E2004-ternary-string-condition.ts
 reject/E2004-while-nullable-condition.ts
 reject/E2005-number-switch-without-default.ts
 reject/E2005-string-literal-union-missing-case.ts
+reject/E2005-switch-boolean-one-label.ts
 reject/E2005-union-missing-case.ts
 reject/E2006-array-literal-null-only.ts
 reject/E2006-array-literal-number-and-null.ts
@@ -351,7 +352,10 @@ reject/E2007-u32-divide-assign.ts
 reject/E2007-usize-length-halved.ts
 reject/E2008-argument-literal-out-of-i32.ts
 reject/E2008-binary-operand-context.ts
+reject/E2008-f32-literal-infinite.ts
 reject/E2008-f32-literal-overflows.ts
+reject/E2008-f64-literal-infinite.ts
+reject/E2008-f64-literal-negative-infinite.ts
 reject/E2008-i32-fractional-literal.ts
 reject/E2008-i8-literal-minus-129.ts
 reject/E2008-index-negative-literal.ts
@@ -427,6 +431,8 @@ reject/E3004-borrow-type-as-return-type.ts
 reject/E3004-borrow-type-as-type-argument.ts
 reject/E3004-constptr-slice-index-write.ts
 reject/E3004-mut-borrow-saved-in-local.ts
+reject/E3004-port-send-mut-borrow.ts
+reject/E3004-port-send-ref-borrow.ts
 reject/E3004-ptr-borrow-field-write.ts
 reject/E3004-ptr-borrow-ring-returned.ts
 reject/E3004-ptr-slice-index-write.ts
@@ -628,6 +634,8 @@ reject/E4008-ptr-in-struct-field.ts
 reject/E4008-ptr-param-in-safe-function.ts
 reject/E4009-c-module.ts
 reject/E4009-unsafe-op.ts
+reject/E4010-polymorphic-recursion-cycle.ts
+reject/E4010-polymorphic-recursion-direct.ts
 reject/E5001-console.ts
 reject/E5001-math-random.ts
 reject/E5001-new-date.ts
@@ -803,10 +811,16 @@ run/202-isolate-empty-vec-push.ts
 run/203-cfn-trap-before-main-trap.ts
 run/204-cfn-boxed-ring-borrow-thread.ts
 run/205-trap-slice-overlap-parenthesized-field.ts
+run/206-trap-ptr-null-write-arg-first.ts
+run/207-trap-ptr-null-offset-arg-first.ts
+run/208-trap-ptr-null-slice-arg-first.ts
+run/209-paren-borrow-arg.ts
 run/21-trap-vec-index.ts
 run/22-trap-u8-conversion.ts
 run/23-trap-requires.ts
 run/24-trap-ensures.ts
+run/240-polymorphic-recursion-allowed-shapes.ts
+run/241-switch-boolean-exhaustive.ts
 run/25-trap-panic.ts
 run/26-trap-div-by-zero.ts
 run/27-trap-ownedcell-empty.ts
