@@ -486,10 +486,10 @@ function eqable(t: Type): boolean {
   return isNum(a) || isBool(a) || isStr(a) || a.k === "class";
 }
 
-/** Q058: the first argument of `t.traps` is a string literal naming an implemented trap (T001 - T014). */
+/** Q058: the first argument of `t.traps` is a string literal naming an implemented trap (T001 - T015). */
 function trapCode(c: Checker, a: ts.Expression): void {
-  const ok = (a.kind === K.StringLiteral || a.kind === K.NoSubstitutionTemplateLiteral) && /^T(00[1-9]|01[0-4])$/.test((a as ts.StringLiteral).text);
-  if (!ok) c.at("E2002", a, "the first argument of 'traps' must be a trap code literal \"T001\" - \"T014\"");
+  const ok = (a.kind === K.StringLiteral || a.kind === K.NoSubstitutionTemplateLiteral) && /^T(00[1-9]|01[0-5])$/.test((a as ts.StringLiteral).text);
+  if (!ok) c.at("E2002", a, "the first argument of 'traps' must be a trap code literal \"T001\" - \"T015\"");
 }
 
 /** Q017: which types `===` / `!==` accept. */
@@ -533,9 +533,18 @@ function conditional(c: Checker, e: ts.ConditionalExpression, want: Type | undef
   const m0 = c.mark();
   cond(c, e.condition);
   const saved = c.narrow, m1 = c.mark();
-  const a = c.branch(() => (want ? checkTo(c, e.whenTrue, want) : expr(c, e.whenTrue)), c.facts(e.condition, true), m0, m1);
-  c.narrow = saved; // the two branches are alternatives
-  const b = c.branch(() => (want ? checkTo(c, e.whenFalse, want) : expr(c, e.whenFalse, deferrable(e.whenFalse) ? sideCtx(a) : undefined)), c.facts(e.condition, false), m0, m1);
+  const tb = (ctx?: Type): Type => c.branch(() => (want ? checkTo(c, e.whenTrue, want) : expr(c, e.whenTrue, ctx)), c.facts(e.condition, true), m0, m1);
+  const fb = (ctx?: Type): Type => c.branch(() => (want ? checkTo(c, e.whenFalse, want) : expr(c, e.whenFalse, ctx)), c.facts(e.condition, false), m0, m1);
+  let a: Type, b: Type;
+  if (!want && deferrable(e.whenTrue) && !deferrable(e.whenFalse)) { // a literal takes its type from the other branch (§3.1, Q237)
+    b = fb();
+    c.narrow = saved;
+    a = tb(sideCtx(b));
+  } else {
+    a = tb();
+    c.narrow = saved; // the two branches are alternatives
+    b = fb(deferrable(e.whenFalse) ? sideCtx(a) : undefined);
+  }
   c.restore(saved, m1);
   if (want) return isErr(a) || isErr(b) ? ERROR : want;
   if (isErr(a) || isErr(b)) return ERROR;
