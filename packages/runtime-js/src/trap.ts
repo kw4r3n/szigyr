@@ -27,7 +27,7 @@ export function setForeignTrapCheck(f: (() => void) | undefined): void { foreign
 export function task<T>(v: T): T { foreignTrapCheck?.(); return v; }
 
 /** A trap from another thread or isolate, on its way to the managed side (§15.4). */
-export interface ForeignTrap { code: string; file?: string; line?: number; col?: number }
+export interface ForeignTrap { code: string; file?: string; line?: number; col?: number; message?: string }
 let isolateTrap: ForeignTrap | undefined;
 /** §15.4: the first foreign trap recorded wins; later ones are dropped. */
 export function noteIsolateTrap(t: ForeignTrap): void { isolateTrap ??= t; }

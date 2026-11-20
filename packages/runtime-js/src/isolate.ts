@@ -134,7 +134,7 @@ export function spawnIsolate(path: string, name: string): Port {
     close: () => { /* the isolate runs until its entry returns; main ending terminates it (stopIsolates) */ },
   };
   w.on("exit", () => { liveWorkers.delete(w); gone?.(); });
-  w.on("error", () => { noteIsolateTrap({ code: "T006" }); gone?.(); });
+  w.on("error", (e) => { noteIsolateTrap({ code: "T006", message: String(e) }); gone?.(); });
   return new Port(ch);
 }
 
@@ -163,7 +163,7 @@ export function isolateMain(f: (port: Port) => unknown): void {
       await f(port);
     } catch (e) {
       const t = asTrap(e);
-      const ft: ForeignTrap = t ? { code: t.code, ...(t.pos ? { file: t.pos.file, line: t.pos.line, col: t.pos.col } : {}) } : { code: "T006" };
+      const ft: ForeignTrap = t ? { code: t.code, ...(t.pos ? { file: t.pos.file, line: t.pos.line, col: t.pos.col } : {}) } : { code: "T006", message: String(e) };
       try { pp.postMessage({ t: ft }); } catch { /* the main side is gone */ }
     }
     port.close();
@@ -237,7 +237,7 @@ const { pathToFileURL } = require("node:url");
   const entry = instantiate(workerData.path)[workerData.name];
   if (typeof entry !== "function") throw new Error("isolate entry not found: " + workerData.name);
   rt.isolateMain(entry);
-})().catch(() => {
-  try { parentPort.postMessage({ t: { code: "T006" } }); parentPort.close(); } catch { /* the main side is gone */ }
+})().catch((e) => {
+  try { parentPort.postMessage({ t: { code: "T006", message: String(e) } }); parentPort.close(); } catch { /* the main side is gone */ }
 });
 `;

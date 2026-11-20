@@ -192,7 +192,7 @@ async function load(files: ParsedFile[], entryFile: string, tests: boolean, decl
       if (Array.isArray(v)) rt.trap(`T${String(v[0]).padStart(3, "0")}` as rt.TrapCode, "trap in C", v[1] ? { file: v[1] as string, line: v[2] as number, col: v[3] as number } : undefined);
     }
     const t = rt.takeIsolateTrap();
-    if (t) rt.trap(t.code as rt.TrapCode, "trap in an isolate", t.file ? { file: t.file, line: t.line!, col: t.col! } : undefined);
+    if (t) rt.trap(t.code as rt.TrapCode, t.message ?? "trap in an isolate", t.file ? { file: t.file, line: t.line!, col: t.col! } : undefined);
   });
   const emitted = new Map(files.map((f) => [f.path, emitFile(f, displayPath(f.path), tests && f.path === entry, c?.keys as Map<never, string> | undefined, decls?.isolateEntries.get(f.path))]));
   const npm = new Map<string, unknown>();
