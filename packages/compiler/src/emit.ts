@@ -1,12 +1,12 @@
 // JS backend (SPEC §10, D030): one file -> the body of a module factory `(rt, imp) => exports`.
 // Splices the source text: every node prints as its own text with its children replaced by their emission,
 // type syntax deleted, and the §10 rewrites applied to the nodes that need them. Types come from P2 (exprTypes).
-import { resolve, dirname } from "node:path";
+import { dirname } from "node:path";
 import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { assignTarget, callSigs, exprTypes, isolateCalls } from "./expr.ts";
 import { sliceGroups, type SliceGroupEntry } from "./ownership.ts";
 import { elemDesc } from "./layout.ts";
-import { declBindings } from "./modules.ts";
+import { canonPath, declBindings } from "./modules.ts";
 import { NUM_NAMES, isInt, isStr, nonNull, resultParts, unref, type FnType, type Type } from "./types.ts";
 import { CLI_NAME, RUNTIME_GLOBAL } from "./names.ts";
 import { DETMATH_PATH, dmBinding } from "./detmath.ts";
@@ -351,7 +351,7 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
       const d = s as ts.ImportDeclaration;
       const spec = (d.moduleSpecifier as ts.StringLiteral).text;
       if (spec.startsWith("c:")) continue; // §14: C functions have no JS value; calls to them live in strict / rt bodies, emitted to C
-      const key = spec.startsWith("npm:") ? spec : resolve(dirname(pf.path), spec);
+      const key = spec.startsWith("npm:") ? spec : canonPath(dirname(pf.path), spec);
       imports.push(key);
       const els = (d.importClause!.namedBindings as ts.NamedImports).elements.map((x) => (x.propertyName ? `${x.propertyName.text}: ${x.name.text}` : x.name.text));
       body.push(`const { ${els.join(", ")} } = ${IMP}(${JSON.stringify(key)});`);

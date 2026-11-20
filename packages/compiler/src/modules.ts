@@ -1,8 +1,14 @@
 // P2 declarations (D011): one Module per file, top-level symbols, imports, type-node resolution, signatures, layers.
 // Signatures come from annotations only (§10: "シグネチャはすべて注釈されているので、構文だけから取り出せる").
+import { realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { Diagnostic } from "./diagnostics.ts";
 import { SyntaxKind as K, hasMod, isId, type Node, type ParsedFile, type ts } from "./parse.ts";
+/** The absolute path with symlinks resolved, so one file reached through two names is one module (Q253). A path that does not exist stays as resolved (E7001). */
+export function canonPath(...p: string[]): string {
+  const r = resolve(...p);
+  try { return realpathSync(r); } catch { return r; }
+}
 import { RESERVED, builtinType, isGenName } from "./builtins.ts";
 import {
   ERROR, GEN_ARITY, NULL, VOID, gen, assignable, bindTParams, collectTParams, DEEP_NEEDS, ELEMENT_CONTAINERS, demand, demandLayout, crossTParams, fn, isTaggedUnion, sendable, hasAuthority, field, kindOf, layerOk, movesLike, needOk, holdsOwned, ownedDeep, CONTAINERS, newTParam, nonNull, record, result, show, subst, union,
@@ -142,7 +148,7 @@ export function checkImportNames(files: ParsedFile[], display: (p: string) => st
       }
       if (s.kind !== K.ImportDeclaration) continue;
       const d = s as ts.ImportDeclaration;
-      const target = byPath.get(resolve(dirname(pf.path), (d.moduleSpecifier as ts.StringLiteral).text));
+      const target = byPath.get(canonPath(dirname(pf.path), (d.moduleSpecifier as ts.StringLiteral).text));
       const nb = d.importClause?.namedBindings;
       if (!target || nb?.kind !== K.NamedImports) continue;
       const ex = exportTable(target.sourceFile);
@@ -205,7 +211,7 @@ export class Program {
           const d = s as ts.ImportDeclaration;
           const spec = (d.moduleSpecifier as ts.StringLiteral).text;
           const nb = d.importClause?.namedBindings as ts.NamedImports;
-          const target = this.byPath.get(resolve(dirname(mod.pf.path), spec));
+          const target = this.byPath.get(canonPath(dirname(mod.pf.path), spec));
           if (spec.startsWith("c:")) { // §14.1: binds this file's own declarations, never another file
             const table = mod.cdecls.get(spec);
             for (const e of nb.elements) {

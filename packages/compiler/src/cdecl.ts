@@ -32,6 +32,12 @@ export function splitFlags(s: string): string[] {
   return out;
 }
 
+/** `$CC` (default `cc`) as a command and its leading arguments, so `CC="ccache cc"` and `CC="cc -m64"` work (D150). */
+export function ccCommand(): [string, string[]] {
+  const [cmd = "cc", ...args] = splitFlags(process.env.CC || "cc");
+  return [cmd, args];
+}
+
 const CINT: Record<NumName, string> = {
   i8: "int8_t", i16: "int16_t", i32: "int32_t", u8: "uint8_t", u16: "uint16_t", u32: "uint32_t",
   usize: "size_t", f32: "float", f64: "double",

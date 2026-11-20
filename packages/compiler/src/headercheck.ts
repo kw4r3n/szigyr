@@ -8,7 +8,7 @@
 import { execFileSync } from "node:child_process";
 import { SyntaxKind as K, type ts } from "./parse.ts";
 import type { Module, Program, Reporter } from "./modules.ts";
-import { cTypeOf, parseCSpec, splitFlags } from "./cdecl.ts";
+import { ccCommand, cTypeOf, parseCSpec, splitFlags } from "./cdecl.ts";
 
 const pkgKnown = new Map<string, boolean>();
 const pkgFlags = new Map<string, string[]>();
@@ -34,12 +34,12 @@ function cflagsOf(pkg: string): string[] {
 }
 
 function probe(source: string, cflags: string[]): boolean {
-  const cc = process.env.CC || "cc";
-  const key = `${cc}\0${cflags.join("\0")}\0${source}`;
+  const [cc, ccArgs] = ccCommand();
+  const key = `${cc}\0${ccArgs.join("\0")}\0${cflags.join("\0")}\0${source}`;
   let ok = probeCache.get(key);
   if (ok === undefined) {
     try {
-      execFileSync(cc, ["-std=gnu11", ...cflags, "-fsyntax-only", "-x", "c", "-"], { input: source, stdio: ["pipe", "ignore", "ignore"], timeout: 60_000 });
+      execFileSync(cc, [...ccArgs, "-std=gnu11", ...cflags, "-fsyntax-only", "-x", "c", "-"], { input: source, stdio: ["pipe", "ignore", "ignore"], timeout: 60_000 });
       ok = true;
     } catch { ok = false; }
     probeCache.set(key, ok);

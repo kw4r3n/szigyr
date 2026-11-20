@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { Diagnostic, RunResult } from "../src/diagnostics.ts";
@@ -114,6 +115,22 @@ export function loadCases(root: string): CaseSpec[] {
     }
   }
   return cases;
+}
+
+/** STS_STAGE: unset keeps all stages; anything but a positive integer throws, so a typo cannot select 0 cases and go green. */
+export function parseStage(v: string | undefined): number | undefined {
+  if (v === undefined) return undefined;
+  if (!/^[1-9]\d*$/.test(v)) throw new Error(`STS_STAGE must be a positive integer, got '${v}'`);
+  return Number(v);
+}
+
+/** The cases listed in the old PASSING.txt that the new list would drop (failing now, or no longer selected): a regression to refuse, not to hide (D148). */
+export const passingRemovals = (old: string[], pass: string[]): string[] => old.filter((n) => !pass.includes(n));
+
+/** Whether pkg-config knows `pkg`. A missing pkg-config binary throws: D120 lets a missing package skip a case, not a missing tool. */
+export function pkgExists(pkg: string, bin = "pkg-config"): boolean {
+  try { execFileSync(bin, ["--exists", pkg], { stdio: "ignore" }); return true; }
+  catch (e) { if ((e as { code?: string }).code === "ENOENT") throw new Error(`'${bin}' not found: cannot tell whether C package '${pkg}' exists`); return false; }
 }
 
 /** Keep cases with stage <= maxStage; undefined keeps all. */

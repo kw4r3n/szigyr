@@ -653,3 +653,25 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 
 - `conditional`（`expr.ts`）は、真の側がリテラルで偽の側がそうでないとき、偽の側を先に型づけして、その型を真の側の文脈にする（§3.1。二項演算子と `??` と同じ向きの規則）。ほかの組み合わせは今までどおり。
 - `t.traps` の第 1 引数の検査（Q058）は T015（Q198。実装済み）も受理し、`TrapCode` の型に `"T015"` を足した。
+## D148: 適合テストの実行が、何も検査せずに通らないようにする（2026-11-20）
+
+- `STS_STAGE` は正の整数だけを受け付ける。空文字や数字でない値は例外にする（`harness.ts` の `parseStage`）。以前は `NaN` や 0 になり、段階の絞り込みで 0 件が残って「0 cases」だけのテストが通った。
+- `pkg-config` の実行ファイルがないときは、`// backend: c` のケースを飛ばさずに失敗させる（`pkgExists`、`conformance.conf.ts` と `passing.test.ts` が共有）。D120 が飛ばしてよいと言うのは、パッケージがない場合であって、道具がない場合ではない。
+- `scripts/update-passing.mjs` は、古い `PASSING.txt` にあったケースが新しい一覧から消えるとき（失敗している、または指定の接頭辞に入らなくなった）、名前を出して何も書かず終了コード 1 にする。意図して消すときは `--allow-remove` を付ける。判定は `passingRemovals`（単体テストあり）。
+
+## D150: `CC` は空白で区切って、コマンドと先頭の引数にする。キャッシュの作れない場合は CBuildError（2026-11-20）
+
+- `cdecl.ts` の `ccCommand()` が `$CC`（既定 `cc`）を `splitFlags` で分ける。`native.ts` と `headercheck.ts` が使う。`CC="ccache cc"` や `CC="cc -m64"` が使える。キャッシュのキーは `$CC` の文字列そのまま。
+- ネイティブのキャッシュの作成と所有者の確認が失敗したら（`XDG_CACHE_HOME=/proc/nope` など）、生の ENOENT でなく `CBuildError`（終了コード 2）にする。
+- `splitFlags`（`pkg-config` の出力を C コンパイラの引数にする）の単体テストを `cdecl.test.ts` に足した。単引用符、二重引用符、バックスラッシュ、空白の連続、末尾の改行、空入力を調べて、欠陥は見つからなかった。
+
+## D149: ネイティブのキャッシュは使われなくなったものから消す（2026-11-20）
+
+- `native.ts`。キャッシュに当たったら、そのエントリの更新時刻を現在にする（`utimesSync`）。つまり古さは「最後に使われた時」。ビルドした後で、ディレクトリのエントリが 500 を超えていれば、7 日使われていないもの（途中で止まったビルドの `*.tmp*` を含む）を消す。今ビルドしたものは消さない。複数のプロセスと Worker が同じディレクトリを使うので（D111）、消す時の競合（ENOENT など）は無視する。
+- `<hash>.c` はどこからも読まれず、デバッグ用と書いた記録もなかったので、書くのをやめた（ビルド用の一時ファイルはビルドの後に消す）。古い `<hash>.c` は上の規則で消える。
+- テストは `XDG_CACHE_HOME` を一時ディレクトリにして確かめる。実際の `~/.cache/sts-native` は、この変更では消していない。
+
+## D151: モジュールのパスは `canonPath` で実パスにそろえる（Q253）（2026-11-20）
+
+- `modules.ts` の `canonPath(...p)` は `resolve` したあとで `realpathSync` する。存在しないパスは `resolve` の結果のまま（E7001 の経路を変えない）。`loadProgram` の入口と import の解決、`Program` の import 名の検査と `checkInsts`、`emit.ts` の import の鍵、`index.ts` の入口の検索（`deterministicFunctions`、`rtTrapSites`、`load`、`checkMain`）が同じ関数を使う。
+- 同梱の DetMath の `DETMATH_PATH` は `import.meta.url` から作る絶対パスで、そのままにした（`syntax.ts` の比較と `files.has(DETMATH_PATH)` は変えていない）。適合テストはすべて通る。

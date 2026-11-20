@@ -3,12 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 import * as compiler from "../src/index.ts";
-import { execFileSync } from "node:child_process";
-import { atCSpecifier, loadCases, missingCPackages, runCase } from "./harness.ts";
-
-const pkgExists = (pkg: string): boolean => {
-  try { execFileSync("pkg-config", ["--exists", pkg], { stdio: "ignore" }); return true; } catch { return false; }
-};
+import { atCSpecifier, loadCases, missingCPackages, pkgExists, runCase } from "./harness.ts";
 
 const root = fileURLToPath(new URL("../../../conformance", import.meta.url));
 

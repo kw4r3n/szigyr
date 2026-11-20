@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
@@ -390,3 +390,77 @@ it("a polymorphically recursive strict function stops the C backend quickly with
     expect(ok.stdout.trim()).toBe("3");
   }
 }, 60000);
+it("runs through a symlink to cli.ts and from a path containing % # ?", () => {
+  const d = mkdtempSync(join(tmpdir(), "sts-link-%#?-"));
+  symlinkSync(CLI, join(d, "sts"));
+  const r = spawnSync(join(d, "sts"), ["check", "--json", `${CONF}reject/E1001-var-in-function.ts`], { encoding: "utf8" });
+  expect(r.status).toBe(1);
+  expect(jsonLines(r.stdout)[0].code).toBe("E1001");
+});
+
+it("CC may carry arguments; an unwritable cache directory is a CBuildError, exit 2 (D150)", () => {
+  const f = tmpFile(`function inc(x: i32): i32 { "use owned"; return x + 1; }\nexport function main(sys: System): void { sys.log.info(\`\${inc(1)}\`); }\n`);
+  const cache = mkdtempSync(join(tmpdir(), "sts-d150-"));
+  const ok = spawnSync("node", [CLI, "run", "--backend=c", f], { encoding: "utf8", env: { ...process.env, XDG_CACHE_HOME: cache, CC: "cc -O1 -DSTS_D150" } });
+  expect(ok).toMatchObject({ status: 0, stdout: "2\n" });
+  const bad = spawnSync("node", [CLI, "run", "--backend=c", f], { encoding: "utf8", env: { ...process.env, XDG_CACHE_HOME: "/proc/nope" } });
+  expect(bad.status).toBe(2);
+  expect(bad.stderr).toContain("cache directory");
+  expect(bad.stderr).not.toContain("    at ");
+});
+
+it("the native cache drops entries unused for 7 days once it holds more than 500, and a hit refreshes its entry (D149)", () => {
+  const f = tmpFile(`function inc(x: i32): i32 { "use owned"; return x + 1; }\nexport function main(sys: System): void { sys.log.info(\`\${inc(2)}\`); }\n`);
+  const cache = mkdtempSync(join(tmpdir(), "sts-d149-"));
+  const env = { ...process.env, XDG_CACHE_HOME: cache };
+  const dir = join(cache, `${CLI_NAME}-native`);
+  mkdirSync(dir, { mode: 0o700 });
+  const old = new Date(Date.now() - 30 * 864e5);
+  for (let i = 0; i < 600; i++) { const p = join(dir, i % 3 ? `old${i}.node` : `old${i}.node.1.2.tmp.c`); writeFileSync(p, ""); utimesSync(p, old, old); }
+  writeFileSync(join(dir, "recent.node"), "");
+  const r = spawnSync("node", [CLI, "run", "--backend=c", f], { encoding: "utf8", env });
+  expect(r).toMatchObject({ status: 0, stdout: "3\n" });
+  const names = readdirSync(dir);
+  expect(names.sort()).toHaveLength(2);
+  expect(names).toContain("recent.node");
+  const built = names.find((n) => n !== "recent.node")!;
+  expect(built).toMatch(/^[0-9a-f]{24}\.node$/);
+  utimesSync(join(dir, built), old, old); // a hit must refresh it
+  expect(spawnSync("node", [CLI, "run", "--backend=c", f], { encoding: "utf8", env }).status).toBe(0);
+  expect(Date.now() - statSync(join(dir, built)).mtimeMs).toBeLessThan(3600e3);
+});
+
+it("a module imported under two names (a symlink) loads once, in check and in run (Q253)", () => {
+  const d = mkdtempSync(join(tmpdir(), "sts-q253-"));
+  writeFileSync(join(d, "a.ts"), "export class C { x: f64 = 1; }\nexport function mk(): C { return new C(); }\nexport function use(c: C): f64 { return c.x; }\n");
+  symlinkSync("a.ts", join(d, "link.ts"));
+  const main = join(d, "main.ts");
+  writeFileSync(main, `import { mk } from "./a.ts";\nimport { use } from "./link.ts";\nexport function main(sys: System): void { sys.log.info(\`\${use(mk())}\`); }\n`);
+  expect(sts("check", main)).toEqual({ code: 0, out: "", err: "" });
+  expect(sts("run", main)).toMatchObject({ code: 0, out: "1\n" });
+  expect(sts("run", join(d, "link.ts")).err).toContain("no exported function 'main'"); // the entry may itself be the link
+});
+
+// Q252: user input mistakes are CLI errors (exit 2) without a stack; internal errors exit 70.
+const tmpFile = (src: string): string => { const f = join(mkdtempSync(join(tmpdir(), "sts-q252-")), "a.ts"); writeFileSync(f, src); return f; };
+
+it("a directory as the entry file is a CLI error (Q252)", () => {
+  const r = sts("check", CONF);
+  expect(r.code).toBe(2);
+  expect(r.err).toContain("not a file");
+});
+
+it("run with an unresolvable npm: import is a CLI error naming the specifier (Q252)", () => {
+  const f = tmpFile(`import { x } from "npm:nonexistent-pkg-xyz";\nexport function main(sys: System): void { sys.log.info("hi"); }\n`);
+  const r = sts("run", "--json", f);
+  expect(r.code).toBe(2);
+  expect(r.err).toContain("npm:nonexistent-pkg-xyz");
+  expect(r.err).not.toContain("    at ");
+});
+
+it("a source nested too deeply is a CLI error, not a raw RangeError (Q252)", () => {
+  const f = tmpFile(`export function main(sys: System): void {\n  const a: i32 = 1;\n  const b: i32 = ${Array(20000).fill("a").join(" + ")};\n}\n`);
+  const r = sts("check", f);
+  expect(r.code).toBe(2);
+  expect(r.err).toBe("sts: source nests too deeply\n");
+});

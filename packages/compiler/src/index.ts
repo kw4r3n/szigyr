@@ -3,7 +3,7 @@ import type { Diagnostic, RunResult } from "./diagnostics.ts";
 import { createParser, SyntaxKind, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { DETMATH_PATH } from "./detmath.ts";
 import { checkSyntax } from "./syntax.ts";
-import { Program as Decls, Reporter, checkImportNames, type Module } from "./modules.ts";
+import { Program as Decls, Reporter, canonPath, checkImportNames, type Module } from "./modules.ts";
 import { Checker } from "./checker.ts";
 import { checkOwnership } from "./ownership.ts";
 import { checkHeaders } from "./headercheck.ts";
@@ -20,12 +20,8 @@ import { FakeClock, FakeFs, MemoryLog, SeededRandom, TestAlloc, runMain } from "
 export * from "./diagnostics.ts";
 export * from "./names.ts";
 
-export class NotImplementedError extends Error {
-  constructor(what: string) {
-    super(`${what} is not implemented`);
-    this.name = "NotImplementedError";
-  }
-}
+/** A user input mistake the CLI reports without a stack, exit 2 (Q252). */
+export class CliError extends Error {}
 
 /** Entry file plus every file reachable through relative static imports, parsed with one tsgo process. */
 interface Program {
@@ -39,7 +35,8 @@ function loadProgram(entryFile: string): Program {
   const files = new Map<string, ParsedFile>();
   const missing: Diagnostic[] = [];
   try {
-    const entry = parser.parse([entryFile]).get(resolve(entryFile));
+    const entryPath = canonPath(entryFile);
+    const entry = parser.parse([entryPath]).get(entryPath);
     if (!entry) throw new Error(`cannot read ${entryFile}`);
     files.set(entry.path, entry);
     let round = [entry];
@@ -52,7 +49,7 @@ function loadProgram(entryFile: string): Program {
           if (spec.kind !== SyntaxKind.StringLiteral) continue;
           const t = (spec as ts.StringLiteral).text;
           if (!/^\.\.?\//.test(t) || !t.endsWith(".ts")) continue; // npm: and malformed specifiers are not loaded
-          const p = resolve(dirname(pf.path), t);
+          const p = canonPath(dirname(pf.path), t);
           if (!files.has(p) && !wanted.has(p)) wanted.set(p, { from: pf, spec: spec as ts.StringLiteral });
         }
       }
@@ -153,7 +150,7 @@ function cOnlyDiagnostic(files: ParsedFile[], ops: { mod: Module; node: Node }[]
 export function deterministicFunctions(entryFile: string): Record<string, boolean> {
   const prog = loadProgram(entryFile);
   const decls = new Decls(prog.files, displayPath, new Reporter());
-  const entry = decls.mods.find((m) => m.pf.path === resolve(entryFile))!;
+  const entry = decls.mods.find((m) => m.pf.path === canonPath(entryFile))!;
   return Object.fromEntries(decls.fns.filter((f) => f.mod === entry).map((f) => [f.name, isDeterministic(f.sig, f.layer === "rt" && f.unsafe)]));
 }
 
@@ -161,7 +158,7 @@ export function deterministicFunctions(entryFile: string): Record<string, boolea
 export function rtTrapSites(entryFile: string): Record<string, TrapSite[]> {
   const a = analyze(entryFile);
   if (a.diagnostics.length) throw new Error(`${entryFile}: the program has diagnostics`);
-  return trapSites(a.files.find((f) => f.path === resolve(entryFile))!);
+  return trapSites(a.files.find((f) => f.path === canonPath(entryFile))!);
 }
 
 /** Which backend runs strict / rt functions (D101). Managed code always runs on the JS engine. */
@@ -183,7 +180,7 @@ const HOST = {
 
 /** Emits every file and evaluates them as module factories in memory (D031). Returns the entry's exports and, for a C backend program, its native module. */
 async function load(files: ParsedFile[], entryFile: string, tests: boolean, decls?: Decls, backend: Backend = "js"): Promise<{ ex: Record<string, unknown>; native: Record<string, (...a: unknown[]) => unknown> | undefined }> {
-  const entry = resolve(entryFile);
+  const entry = canonPath(entryFile);
   const c = backend === "c" && decls ? emitC(decls) : undefined;
   const native = c ? loadNative(c.c, HOST, c.pkgs) : undefined;
   // §15.4 (2): a foreign trap (a C thread's, or an isolate's) is polled at every task boundary
@@ -204,7 +201,10 @@ async function load(files: ParsedFile[], entryFile: string, tests: boolean, decl
       const name = spec.slice(4);
       let url = name;
       try { url = pathToFileURL(createRequire(path).resolve(name)).href; } catch { /* shortcut: fall back to Node's own resolution from the compiler */ }
-      npm.set(spec, await import(url));
+      try { npm.set(spec, await import(url)); } catch (e) {
+        if ((e as { code?: string }).code === "ERR_MODULE_NOT_FOUND") throw new CliError(`cannot resolve '${spec}'`); // Q252
+        throw e;
+      }
     }
   }
   // Q035: stack exhaustion is reported at the innermost source call found in the JS stack.
@@ -261,7 +261,7 @@ async function loadChecked(files: ParsedFile[], entryFile: string, tests: boolea
 
 /** Q061: `sts run` entry must be an exported managed `function main(sys: System): void | Promise<void>`. */
 function checkMain(decls: Decls, entryFile: string): void {
-  const mod = decls.mods.find((m) => m.pf.path === resolve(entryFile));
+  const mod = decls.mods.find((m) => m.pf.path === canonPath(entryFile));
   const local = mod?.exports.get("main");
   const sym = local !== undefined ? decls.lookupValue(mod!, local) : undefined;
   if (sym?.k !== "fn") throw new Error(`${entryFile}: no exported function 'main'`);

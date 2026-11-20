@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Diagnostic, RunResult } from "../src/diagnostics.ts";
-import { cPackages, filterByStage, loadCases, missingCPackages, parseCase, runCase, type CaseSpec, type Compiler } from "./harness.ts";
+import { cPackages, filterByStage, loadCases, missingCPackages, parseCase, parseStage, passingRemovals, pkgExists, runCase, type CaseSpec, type Compiler } from "./harness.ts";
 
 const fx = (p: string) => fileURLToPath(new URL(`./fixtures/${p}`, import.meta.url));
 const diag = (code: string, line: number, col: number): Diagnostic => ({
@@ -124,4 +124,20 @@ describe("C library skip (§14.7)", () => {
     expect(cPackages(byName("run/conly.ts"))).toEqual([]);
     expect(missingCPackages(byName("run/conly.ts"), () => false)).toEqual([]);
   });
+});
+
+it("STS_STAGE must be a positive integer or unset (D148)", () => {
+  expect(parseStage(undefined)).toBeUndefined();
+  expect(parseStage("3")).toBe(3);
+  for (const bad of ["", "x", "0", "-1", "1.5", " 2"]) expect(() => parseStage(bad)).toThrow(/STS_STAGE/);
+});
+
+it("pkgExists: a missing package is false, a missing pkg-config binary throws (D120)", () => {
+  expect(pkgExists("no-such-package-xyz")).toBe(false);
+  expect(() => pkgExists("x", "no-such-pkg-config-binary")).toThrow(/not found/);
+});
+
+it("passingRemovals names every listed case the new list would drop (D148)", () => {
+  expect(passingRemovals(["a", "b", "c"], ["a", "c", "d"])).toEqual(["b"]);
+  expect(passingRemovals(["a"], ["a", "b"])).toEqual([]);
 });

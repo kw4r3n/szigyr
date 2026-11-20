@@ -1,16 +1,15 @@
 // Runs conformance/ against the real compiler. Run with `pnpm conformance` (STS_STAGE=N to limit).
-import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import * as compiler from "../src/index.ts";
-import { atCSpecifier, filterByStage, loadCases, missingCPackages, runCase } from "./harness.ts";
+import { atCSpecifier, filterByStage, loadCases, missingCPackages, parseStage, pkgExists, runCase } from "./harness.ts";
 import { ensureStscb } from "./stscb.ts";
 
 // The stscb fixture (stage 3-6) is built before the cases load, so its cases do not skip.
 ensureStscb();
 
 const root = fileURLToPath(new URL("../../../conformance", import.meta.url));
-const stage = process.env.STS_STAGE === undefined ? undefined : Number(process.env.STS_STAGE);
+const stage = parseStage(process.env.STS_STAGE);
 const cases = filterByStage(loadCases(root), stage);
 
 /** D101: stage 2+ run cases also run with strict / rt compiled to C. A missing C toolchain fails these cases (no skip). */
@@ -18,9 +17,6 @@ const cBackend = { ...compiler, backend: "c" as const, run: (f: string) => compi
 
 /** §14.7: a `// backend: c` case needs the pkg-config packages its `c:` specifiers name.
  * Where one is unavailable the case is skipped (and counted below), never failed. */
-const pkgExists = (pkg: string): boolean => {
-  try { execFileSync("pkg-config", ["--exists", pkg], { stdio: "ignore" }); return true; } catch { return false; }
-};
 const skipped: string[] = [];
 /** Cases whose strict / rt code uses what the C backend does not translate yet (D102). They must fail with that error, so the list stays exact. */
 const C_PENDING = new Set<string>([]); // stage-2 run cases the C backend does not translate yet (none since D105)
