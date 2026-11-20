@@ -3,7 +3,7 @@
 // exit, so the flag's two effects — a trapping callback answers zero, and a callback
 // after the flag is not run at all — are checked here with two programs in one process:
 // they share the fixture library, so the second program reads what the first one did.
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -31,6 +31,52 @@ const HEAD = `declare module "c:stscb:stscb.h" {
 }
 import { stscb_call, stscb_cell, stscb_reset_stats, stscb_stat_n, stscb_stat } from "c:stscb:stscb.h";
 `;
+
+const withDecl = (decl: string, name: string): string => HEAD.replace("}\nimport {", `  ${decl}\n}\nimport { ${name} } from "c:stscb:stscb.h";\nimport {`);
+
+/** A program whose main arms the fixture: after `delay` ms, a fixture thread calls bump twice on the cell; then `rest` runs. */
+const armed = (delay: number, rest: string, extra = ""): string => project({ "main.ts": withDecl("function stscb_start(ffi: Ffi, f: Ptr<(ud: Ptr<void>, x: i32) => i32>, ud: Ptr<void>, x: i32, delay: i32, after: Ptr<(ud: Ptr<void>, x: i32) => i32>, aud: Ptr<void>): void;", "stscb_start") + `
+function bump(ud: Ptr<void>, x: i32): i32 {
+  "use rt";
+  "use unsafe";
+  const p = ud.cast<i32>();
+  p.write(p.read() + 1);
+  return x + 1;
+}
+function arm(ffi: Ffi): void {
+  "use owned";
+  "use unsafe";
+  stscb_reset_stats(ffi);
+  const cell = stscb_cell(ffi);
+  cell.write(0);
+  stscb_start(ffi, cfn(bump), cell.cast<void>(), 1, ${delay}, cfn(bump), cell.cast<void>());
+}
+${extra}export function main(sys: System): void {
+  arm(sys.ffi);
+${rest}
+}
+` });
+
+/** Joins the armed fixture thread and returns "runs n v0 v1": bump's runs, then what the fixture got back. */
+async function readCell(): Promise<string> {
+  const r = await run(project({ "main.ts": withDecl("function stscb_join(ffi: Ffi): void;", "stscb_join") + `
+type S = Struct<{ runs: i32; n: i32; v0: i32; v1: i32 }>;
+function read(ffi: Ffi): S {
+  "use owned";
+  "use unsafe";
+  stscb_join(ffi);
+  const cell = stscb_cell(ffi);
+  return { runs: cell.read(), n: stscb_stat_n(ffi), v0: stscb_stat(ffi, 0), v1: stscb_stat(ffi, 1) };
+}
+export function main(sys: System): void {
+  const s = read(sys.ffi);
+  sys.log.info(\`\${s.runs} \${s.n} \${s.v0} \${s.v1}\`);
+}
+` }), { backend: "c" });
+  expect(r.diagnostics).toEqual([]);
+  expect(r.trap).toBeNull();
+  return r.stdout;
+}
 
 describe("cfn and the end flag", () => {
   it("a trapping callback answers zero, and after the flag the callback is not run", async () => {
@@ -83,55 +129,21 @@ export function main(sys: System): void {
   }, 120000);
 
   it("main trapping in managed code raises the flag: a callback still pending is not run (§14.6)", async () => {
-    const a = project({ "main.ts": HEAD.replace("}\nimport {", `  function stscb_start(ffi: Ffi, f: Ptr<(ud: Ptr<void>, x: i32) => i32>, ud: Ptr<void>, x: i32, delay: i32, after: Ptr<(ud: Ptr<void>, x: i32) => i32>, aud: Ptr<void>): void;
-}
-import { stscb_start } from "c:stscb:stscb.h";
-import {`) + `
-function bump(ud: Ptr<void>, x: i32): i32 {
-  "use rt";
-  "use unsafe";
-  const p = ud.cast<i32>();
-  p.write(p.read() + 1);
-  return x + 1;
-}
-function arm(ffi: Ffi): void {
-  "use owned";
-  "use unsafe";
-  stscb_reset_stats(ffi);
-  const cell = stscb_cell(ffi);
-  cell.write(0);
-  stscb_start(ffi, cfn(bump), cell.cast<void>(), 1, 1000, cfn(bump), cell.cast<void>());
-}
-export function main(sys: System): void {
-  arm(sys.ffi);
-  panic("main");
-}
-` });
-    const ra = await run(a, { backend: "c" });
+    const ra = await run(armed(1000, `  panic("main");`), { backend: "c" });
     expect(ra.diagnostics).toEqual([]);
     expect(ra.trap?.code).toBe("T006");
+    expect(await readCell()).toBe("0 2 0 0\n"); // both calls came after main's trap: the flag answered zero without running bump
+  }, 120000);
 
-    const b = project({ "main.ts": HEAD.replace("}\nimport {", `  function stscb_join(ffi: Ffi): void;
-}
-import { stscb_join } from "c:stscb:stscb.h";
-import {`) + `
-type S = Struct<{ runs: i32; n: i32; v0: i32; v1: i32 }>;
-function read(ffi: Ffi): S {
-  "use owned";
-  "use unsafe";
-  stscb_join(ffi);
-  const cell = stscb_cell(ffi);
-  return { runs: cell.read(), n: stscb_stat_n(ffi), v0: stscb_stat(ffi, 0), v1: stscb_stat(ffi, 1) };
-}
-export function main(sys: System): void {
-  const s = read(sys.ffi);
-  sys.log.info(\`\${s.runs} \${s.n} \${s.v0} \${s.v1}\`);
-}
-` });
-    const rb = await run(b, { backend: "c" });
-    expect(rb.diagnostics).toEqual([]);
-    expect(rb.trap).toBeNull();
-    expect(rb.stdout).toBe("0 2 0 0\n"); // both calls came after main's trap: the flag answered zero without running bump
+  it("an isolate starting after the flag is up does not lower it (D146)", async () => {
+    const a = armed(4000, `  const p = sys.spawn.isolate(idle);`, `function idle(port: Port<i32, i32>): void {\n}\n`);
+    const ra = await run(a, { backend: "c" });
+    expect(ra.diagnostics).toEqual([]);
+    expect(ra.trap).toBeNull();
+    // main ended, so the flag is up. The loader keeps the program installed: start one more
+    // isolate on the same addon, as a spawn would, and wait until it ran (its init came first).
+    expect(await rt.spawnIsolate(realpathSync(a), "idle").recv()).toBeNull();
+    expect(await readCell()).toBe("0 2 0 0\n");
   }, 120000);
 
   it("an isolate trap left from an earlier run does not surface in the next one", async () => {

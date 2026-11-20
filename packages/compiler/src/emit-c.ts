@@ -1398,8 +1398,10 @@ const THROW = `static napi_value sts_throw(void) {
   return 0;
 }
 static napi_value sts_init(napi_env env, napi_callback_info info) {
-  size_t argc = 1; napi_value h; napi_get_cb_info(env, info, &argc, &h, 0, 0);
-  napi_create_reference(env, h, 1, &sts_host); sts_ftrap_reset(); return 0;
+  size_t argc = 2; napi_value a[2]; napi_get_cb_info(env, info, &argc, a, 0, 0);
+  napi_create_reference(env, a[0], 1, &sts_host);
+  if (argc < 2) sts_ftrap_reset(); // D146: init(host, true) is an isolate binding its thread's host; only main's load resets the program's flag and record
+  return 0;
 }
 #define STS_INIT_EXPORT(n, fn) napi_create_function(env, n, NAPI_AUTO_LENGTH, fn, 0, &f); napi_set_named_property(env, exports, n, f)`;
 

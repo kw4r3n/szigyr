@@ -183,9 +183,7 @@ const { pathToFileURL } = require("node:url");
     const m = { exports: {} };
     process.dlopen(m, workerData.nativePath);
     native = m.exports;
-    // D124: init() resets the shared foreign-trap record, so a trap already recorded is claimed
-    // first and forwarded; loading this isolate cannot erase it (§15.4).
-    const pending = native.sts_poll();
+    // D146: init(host, true) binds this thread's host only; the program's end flag and trap record stay as they are.
     native.init({
       trap: (code, file, line, col) => rt.trap("T" + String(code).padStart(3, "0"), "trap in C", file ? { file, line, col } : undefined),
       create: (alloc, cap, elem) => rt.Vec.create(alloc, cap, elem),
@@ -196,8 +194,7 @@ const { pathToFileURL } = require("node:url");
       adoptPool: (v, elem) => v.adopt(elem),
       adopt: (v, elem) => v.adopt(elem),
       reserve: (v, cap, len) => v.reserve(cap, len),
-    });
-    if (Array.isArray(pending)) parentPort.postMessage({ t: { code: "T" + String(pending[0]).padStart(3, "0"), file: pending[1], line: pending[2], col: pending[3] } });
+    }, true);
     rt.setForeignTrapCheck(() => {
       const v = native.sts_poll();
       if (Array.isArray(v)) rt.trap("T" + String(v[0]).padStart(3, "0"), "trap in C", v[1] ? { file: v[1], line: v[2], col: v[3] } : undefined);
