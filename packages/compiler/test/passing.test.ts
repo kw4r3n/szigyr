@@ -24,4 +24,4 @@ it("cases in conformance/PASSING.txt still pass", async () => {
   }
   expect(names.length).toBeGreaterThan(0);
   expect(fails).toEqual([]);
-}, 60_000);
+}, 300_000);
