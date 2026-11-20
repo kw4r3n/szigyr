@@ -709,7 +709,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         case K.ParenthesizedExpression: return this.ex((e as ts.ParenthesizedExpression).expression);
         case K.NumericLiteral: return this.lit(numText(e as ts.NumericLiteral), this.typeOf(e));
         case K.TrueKeyword: return "true";
-        case K.StringLiteral: return `((int32_t)${litId((e as ts.StringLiteral).text)})`; // Q043: a `kind` value
+        case K.StringLiteral: case K.NoSubstitutionTemplateLiteral: return `((int32_t)${litId((e as ts.StringLiteral).text)})`; // Q043: a `kind` value
         case K.FalseKeyword: return "false";
         case K.NullKeyword: return "((sts_null){ false })";
         case K.Identifier: return this.ident(e as ts.Identifier);
