@@ -337,8 +337,8 @@ const typedView = (elem: string, buf: Uint8Array, off: number, n: number): Typed
  * A bump arena over one host ArrayBuffer (Q188 (b), D102). Allocations are byte ranges handed out in
  * order; `reset` bumps the generation (a u32, wrapping) and rewinds. An allocation whose element type
  * has no byte layout ("other": `null`, `Result<null, i32>`, Q229; a type parameter is rejected at compile time, Q215 (c)) keeps
- * its values in a side array until a concrete `view` packs them into the bytes. A type-parameter `view`
- * reads the bytes into a side array, and a later concrete `view` packs it back (D116, D130).
+ * its values in a side array. A type-parameter `view` of any other allocation reads and writes the
+ * bytes through the element type recorded at `alloc` (or by `noteC`), so it never goes stale (D131).
  * The fields `buf` / `used` / `gen` / `id` are read and written back by the C backend, like Pool's.
  */
 export class Arena {
@@ -360,10 +360,6 @@ export class Arena {
     if (elem.startsWith("{")) codecOf(elem).wr(dvOf(this.buf), b.off + i * codecOf(elem).z, x);
     else typedView(elem, this.buf, b.off, b.length)[i] = x as number;
   }
-  private readAt(b: ArenaBuf, i: number, elem: ElemKind): unknown {
-    if (elem.startsWith("{")) return codecOf(elem).rd(dvOf(this.buf), b.off + i * codecOf(elem).z);
-    return typedView(elem, this.buf, b.off, b.length)[i];
-  }
   alloc<T>(n: number, init: T, elem: ElemKind = "other"): ArenaBuf | null {
     const { z, a } = this.sizeOf(elem);
     const off = Math.ceil(this.used / a) * a;
@@ -379,14 +375,8 @@ export class Arena {
   view<T>(b: ArenaBuf, elem: ElemKind = "other", pos?: Pos): Slice<T> {
     if (!b || b.arena !== this.id || b.gen !== this.gen) trap("T012", "invalid ArenaBuf", pos);
     const rec = this.recs.get(b.off);
-    if (elem === "other") {
-      if (rec) {
-        if (!rec.arr) { const arr = new Array(b.length); for (let i = 0; i < b.length; i++) arr[i] = this.readAt(b, i, rec.elem); rec.arr = arr; }
-        return new Slice(rec.arr as T[], 0, b.length);
-      }
-      return new Slice(new Array(b.length) as T[], 0, b.length); // made on the C side; its values live in the bytes (D116)
-    }
-    if (rec?.arr) { for (let i = 0; i < b.length; i++) this.writeAt(b, i, rec.arr[i], elem); rec.elem = elem; rec.arr = null; }
+    if (elem === "other" && rec && rec.elem !== "other") elem = rec.elem; // a type-parameter view reads the bytes directly, so C writes stay visible (D129, D131)
+    if (elem === "other") return new Slice((rec?.arr ?? new Array(b.length)) as T[], 0, b.length); // an element without a byte layout (Q229)
     const { z } = this.sizeOf(elem);
     const span = { root: this as object, lo: b.off, hi: b.off + b.length * z, z };
     if (elem.startsWith("{")) return new Slice(this.buf as unknown as Buf<T>, 0, b.length, codecOf(elem), undefined, b.off, span);

@@ -717,6 +717,10 @@ run/170-string-literal-long.ts
 run/171-shadowed-strict-name.ts
 run/172-comments-in-type-syntax.ts
 run/173-c-names-vs-header-macros.ts
+run/174-arena-generic-view-sees-c-write.ts
+run/175-arena-c-alloc-generic-view-sees-c-write.ts
+run/176-arena-generic-view-write-then-c-read.ts
+run/177-arena-generic-view-after-reset.ts
 run/18-trap-i32-unary-minus.ts
 run/19-trap-divtrunc-overflow.ts
 run/20-trap-array-index.ts
