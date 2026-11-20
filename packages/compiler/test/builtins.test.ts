@@ -1,7 +1,8 @@
 // D132: the builtin effect table is complete and its by-name readings agree with its per-type entries.
 import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
-import { BUILTIN_NAMES, builtinMethods } from "../src/builtins.ts";
+import { BUILTIN_NAMES, NONDET_OPAQUE, builtinMethods } from "../src/builtins.ts";
+import { OPAQUE_NAMES } from "../src/types.ts";
 
 const methods = builtinMethods();
 
@@ -29,6 +30,10 @@ it("gives each method name one contract verdict, so Q134's by-name rule reads th
     expect(verdict.get(name) ?? fx.contract, `${owner} ${name}`).toBe(fx.contract);
     verdict.set(name, fx.contract);
   }
+});
+
+it("decides §7.3 determinism for every opaque builtin type", () => {
+  expect(Object.keys(NONDET_OPAQUE).sort()).toEqual([...OPAQUE_NAMES].sort());
 });
 
 it("reserves exactly the global names SPEC §12 and §7.1 list", () => {

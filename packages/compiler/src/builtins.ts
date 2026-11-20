@@ -1,7 +1,7 @@
 // §12 allowlist for P2 (D010): builtin type names, global values, namespace and member tables (signatures from Q032, Q033, Q038).
 import {
   BOOL, ERROR_RECORD, F64, NULL, STR, UNKNOWN, USIZE, VOID, fn, gen, newTParam, nullable, num, opaque, result, record, ro, unref,
-  type FnType, type GenName, type NumName, type Type, NUM_NAMES, GEN_ARITY, OPAQUE_NAMES,
+  type FnType, type GenName, type NumName, type Type, AUTHORITIES, NUM_NAMES, GEN_ARITY, OPAQUE_NAMES,
 } from "./types.ts";
 import { DETMATH_BINARY, DETMATH_UNARY } from "./detmath.ts";
 
@@ -24,6 +24,16 @@ export const BUILTIN_NAMES = new Set<string>([
   "boolean", "string", "number", "null", "void", "unknown", "never", "Result", "Struct", "RingPair", "JsError", "CastError", "IoError", "Net",
   ...Object.keys(GEN_ARITY), ...OPAQUE_NAMES, ...NAMESPACES, ...BUILTIN_FUNCTIONS,
 ]);
+
+/** §7.3: builtin types that make a function nondeterministic when a parameter type contains them (D132; determinism.ts). */
+export const NONDET_GEN: Record<GenName, boolean> = {
+  Array: false, ReadonlyArray: false, Map: false, Set: false, Promise: false, Vec: false, Slice: false, Pool: false, Handle: false, Arena: false, ArenaBuf: false,
+  Ref: false, Mut: false, OwnedCell: false, CType: false, RingTx: true, RingRx: true, Ptr: true, ConstPtr: true, CHandle: true, Port: true, // §15.1, §14.4, §14.5, §15.2
+};
+/** The opaque ones (keys: OPAQUE_NAMES): the authorities, `JsRef` and the fakes, not `Test`. */
+export const NONDET_OPAQUE: Record<string, boolean> = {
+  ...Object.fromEntries(AUTHORITIES.map((a) => [a, true])), JsRef: true, Test: false, FakeClock: true, SeededRandom: true, MemoryLog: true, FakeFs: true,
+};
 
 /** Builtin type names (§12) that are not generic constructors. Struct and Result are handled by the resolver. */
 export function builtinType(name: string): Type | undefined {
