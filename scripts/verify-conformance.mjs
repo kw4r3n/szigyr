@@ -22,12 +22,6 @@ if (missing.length) problems.push(`no reject case for: ${missing.join(" ")}`);
 // all .ts files under conformance/
 const files = (d) => readdirSync(d, { withFileTypes: true }).flatMap((e) =>
   e.isDirectory() ? files(join(d, e.name)) : e.name.endsWith(".ts") ? [join(d, e.name)] : []);
-const leafStarts = (sf) => {
-  const s = new Set();
-  const walk = (n) => { const ch = n.getChildren(sf); if (!ch.length) s.add(n.getStart(sf)); else ch.forEach(walk); };
-  walk(sf);
-  return s;
-};
 const paths = files("conformance");
 const parsed = parseSources(Object.fromEntries(paths.map((f) => [f, readFileSync(f, "utf8")])));
 const get = (f) => parsed.get(resolve(f));

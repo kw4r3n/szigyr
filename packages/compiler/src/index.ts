@@ -23,13 +23,6 @@ export * from "./names.ts";
 /** A user input mistake the CLI reports without a stack, exit 2 (Q252). */
 export class CliError extends Error {}
 
-export class NotImplementedError extends Error {
-  constructor(what: string) {
-    super(`${what} is not implemented`);
-    this.name = "NotImplementedError";
-  }
-}
-
 /** Entry file plus every file reachable through relative static imports, parsed with one tsgo process. */
 interface Program {
   files: ParsedFile[];
