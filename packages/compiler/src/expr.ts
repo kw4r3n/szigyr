@@ -1,6 +1,6 @@
 // P2 expressions (D012): bidirectional checking. `expr(c, e, want)` types `e` with the contextual type `want`
 // (numeric literals Q014, string literals Q016, object / array literals Q021, ok / err Q037, generic calls Q030).
-import { NodeFlags, SyntaxKind as K, type Node, type ts } from "./parse.ts";
+import { NodeFlags, SyntaxKind as K, isId, type Node, type ts } from "./parse.ts";
 import type { Checker } from "./checker.ts";
 import { tparamShells, type FnSym, type Layer, type LocalSym } from "./modules.ts";
 import { BUILTIN_FUNCTIONS, GLOBAL_AUTHORITIES, NAMESPACES, RESERVED, contractBanned, genMember, nsMember, opaqueMember, stringMember, type Member } from "./builtins.ts";
@@ -11,7 +11,6 @@ import {
   same, sendable, show, subst, unify, union, unref, castable, collectTParams, demand, demandLayout, layerOk, type FnType, type NumName, type Type,
 } from "./types.ts";
 
-const isId = (n: Node | undefined): n is ts.Identifier => n?.kind === K.Identifier;
 const isErr = (t: Type): boolean => t.k === "error";
 
 /** A numeric expression made only of literals (Q014): it takes the type of its context. */

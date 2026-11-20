@@ -2,7 +2,7 @@
 // Signatures come from annotations only (§10: "シグネチャはすべて注釈されているので、構文だけから取り出せる").
 import { dirname, resolve } from "node:path";
 import type { Diagnostic } from "./diagnostics.ts";
-import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
+import { SyntaxKind as K, hasMod, isId, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { RESERVED, builtinType, isGenName } from "./builtins.ts";
 import {
   ERROR, GEN_ARITY, NULL, VOID, gen, assignable, bindTParams, collectTParams, DEEP_NEEDS, ELEMENT_CONTAINERS, demand, demandLayout, crossTParams, fn, isTaggedUnion, sendable, hasAuthority, field, kindOf, layerOk, movesLike, needOk, holdsOwned, ownedDeep, CONTAINERS, newTParam, nonNull, record, result, show, subst, union,
@@ -82,8 +82,6 @@ export function unsafeOf(list: readonly ts.Statement[]): boolean {
   return false;
 }
 
-const hasMod = (n: Node, k: K): boolean => !!(n as Node & { modifiers?: ts.NodeArray<ts.ModifierLike> }).modifiers?.some((m) => m.kind === k);
-const isId = (n: Node | undefined): n is ts.Identifier => n?.kind === K.Identifier;
 /** Q225 (b): the names a module-level const declaration binds: its identifier, or the names of a record destructuring
  * (with the element they come from). Tuple / array destructuring binds nothing here (P1 rejects it). */
 export function declBindings(d: ts.VariableDeclaration): { id: ts.Identifier; el?: ts.BindingElement }[] {
@@ -346,7 +344,6 @@ export class Program {
     return a.body;
   }
 
-  /** Q127: propagates conditions through type parameters instantiated by type parameters, then checks the rest. */
   /**
    * Q174 (D092): an alias / class / interface instantiation that holds a container of owned values only through the
    * substitution (`Bx<Vec<f32>>` for `type Bx<T> = { readonly xs: Array<T> }`) is E3007 at the written instantiation.
@@ -358,6 +355,7 @@ export class Program {
     }
   }
 
+  /** Q127: propagates conditions through type parameters instantiated by type parameters, then checks the rest. */
   checkInsts(): void {
     this.checkSubstInsts();
     for (let changed = true; changed;) {

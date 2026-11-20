@@ -1,5 +1,5 @@
 // P2 checker (D012): declarations, statements, control flow, narrowing. Expressions live in expr.ts.
-import { NodeFlags, SyntaxKind as K, type Node, type ts } from "./parse.ts";
+import { NodeFlags, SyntaxKind as K, hasMod, isId, type Node, type ts } from "./parse.ts";
 import { Program, declBindings, legalUnion, type ClassValueSym, type FnSym, type Layer, type LocalSym, type Module, type ValueSym } from "./modules.ts";
 import { PROMISE_CONTAINERS, assignTarget, checkTo, exprTypes, hasPromise, cond, expr, isLitOnly, localOf, promiseOk, type FnArgRef } from "./expr.ts";
 import {
@@ -37,8 +37,6 @@ export class Scope {
 }
 
 let localId = 0;
-const isId = (n: Node | undefined): n is ts.Identifier => n?.kind === K.Identifier;
-const hasMod = (n: Node, k: K): boolean => !!(n as Node & { modifiers?: ts.NodeArray<ts.ModifierLike> }).modifiers?.some((m) => m.kind === k);
 
 /** A call to a strict / rt function, or through a function-typed parameter (Q189 (b); see Checker.fnSites). */
 export interface FnSite { from: FnSym | undefined; callee: FnSym | number; refs: Map<number, FnArgRef>; node: Node; mod: Module }
@@ -225,7 +223,6 @@ export class Checker {
           }
           break;
         case K.ExpressionStatement: expr(this, (s as ts.ExpressionStatement).expression); break; // test(...) (§9.2)
-        case K.InterfaceDeclaration: this.ifaceMethods(s as ts.InterfaceDeclaration); break;
       }
     }
   }
@@ -340,7 +337,6 @@ export class Checker {
     }
   }
 
-  private ifaceMethods(_d: ts.InterfaceDeclaration): void { /* signatures were resolved in Program */ }
 
   /** Module-level const and static field initializers (Q054, Q072). */
   private moduleConst(t: Type, init: ts.Expression): void {

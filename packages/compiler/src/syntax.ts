@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path";
 import { BUILTIN_NAMES } from "./builtins.ts";
 import type { Diagnostic } from "./diagnostics.ts";
 import { DETMATH_PATH } from "./detmath.ts";
-import { NodeFlags, SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
+import { NodeFlags, SyntaxKind as K, isId, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { RUNTIME_GLOBAL } from "./names.ts";
 
 /** Q004: type names rejected as E1000 rather than E2000. */
@@ -65,7 +65,6 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
   /** Q120 / Q124: what the enclosing function allows. Each function resets it; arrows inherit `thisOk`. */
   let fc = { thisOk: false, async: false, loops: 0, breaks: 0 };
 
-  const isId = (n: Node | undefined): n is ts.Identifier => n?.kind === K.Identifier;
   const calleeName = (s: Node): { call: ts.CallExpression; name: string } | undefined => {
     if (s.kind !== K.ExpressionStatement) return;
     const c = (s as ts.ExpressionStatement).expression;
