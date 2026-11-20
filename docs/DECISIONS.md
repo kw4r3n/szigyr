@@ -712,6 +712,7 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - オーナー承認（2026-11-20）: Q240 は (a)。C バックエンドの入れ子の上限（32）と、その CUnsupported は消した。
 - `checker.ts` の `polyRec`。呼び出しの型引数（`callTArgs`）を `FnSite.targs` に持たせ、strict / rt のジェネリックな関数の呼び出しごとに、呼び出し元の型パラメータの id から呼び出し先の型パラメータの id へ辺を引く（`T` そのものなら増えない辺、ほかは増える辺）。増える辺の先から元へ戻れるなら E4010。
 - 呼び出し元が managed の関数は対象にしない（単相化しない）。
+- 型引数の union は特別扱いしない（`T` そのものでなければ「増える」）。strict / rt では型パラメータを直接メンバに持つ union が使えないので（E4002 / E2002）、`f<T | null>` のような冪等な形を通しても受理されるプログラムは増えない（Q240 の「既知の保守的な判定」）。
 - 確かめ方: reject の `E4010-polymorphic-recursion-direct`、`E4010-polymorphic-recursion-cycle`、run の `240-polymorphic-recursion-allowed-shapes`（両バックエンド）、`cli.test.ts` の E4010 の件。
 
 ## D156: `Ptr.write` / `offset` / `slice` は引数を評価してから T015 を検査する（監査の修正、2026-11-20）
