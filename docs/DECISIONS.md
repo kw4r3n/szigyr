@@ -579,3 +579,22 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - 修正: 側配列をやめた。型パラメータの `view` は、`alloc`（または C の確保の `noteC`）で控えた要素の種類を使い、具体的な `view` と同じくバイト列の上の `Slice` を返す。読み書きはいつもバイト列に行くので、JS と C で同じ値が見える。T013 のバイト範囲も付く。側配列が残るのは、バイト配置のない要素（`null` など。Q229）の `alloc` だけで、C はその型を CUnsupported で止める。使われなくなった詰め戻しの分岐と `readAt` を消した。
 - 該当ケース（C で先に落ちるのを確かめた）: `run/174-arena-generic-view-sees-c-write`（managed で確保、C の書き込みを 2 回挟む）、`run/175-arena-c-alloc-generic-view-sees-c-write`（C で確保）、`run/176-arena-generic-view-write-then-c-read`（型パラメータの `view` で書いて C で読む。確保は C と managed の両方）、`run/177-arena-generic-view-after-reset`（`reset` を挟む。修正前も通っていた）。
 - 検証: `pnpm typecheck` 成功、`pnpm test` 217 件通過（`passing.test.ts` は負荷で 1 回時間切れになり、単独で通った）、`pnpm verify:conformance` accept=79 reject=546 run=165（PASSING 790 件）、`pnpm conformance` 923 件通過。`pnpm bench` の 5 回中央値は dot_f32 1.00、saxpy_f32 1.17、prefix_i32 1.29、stencil_f64 1.01、particles_aos_f32 1.39 倍（単発の最大は 1.43 倍）。
+
+## D132: 組み込みの効果を 1 つの表にまとめた（設計監査の修正 5、2026-11-20）
+
+- 問題: 組み込みのメソッドごとの事実が、`syntax.ts`（`BUILTIN_NAMES`）、`ownership.ts`（`MUT_METHODS` と、借用する受け手の型の一覧）、`expr.ts`（`MUTATORS`）、`determinism.ts`、`traps.ts` に書き写されていて、`Pool`、`Arena`、`Ring`、`Ptr` を足すたびにずれた（監査の #4、#22c、#28、#37）。オーナーが承認した構造の変更は、この表だけ。型つきの中間表現と、検査を解決後の型へ移すことは範囲外。
+- 表の形: `builtins.ts` のメンバの定義を、名前からメンバへの記録（`genMembers`、`opaqueMembers`、`nsMembers`、`stringMembers`）にした。メソッドを作る `m()` は効果 `Fx` を最初の引数に取る（省くと typecheck が落ちる）。`Fx` の項目は次の 4 つ。
+  - `recv`: 受け手の借用。`ref`、`mut`、`param`（借用の実引数の位置にだけ書け、モードはパラメータに従う。`slice`、`view`、`Ptr` の `slice` / `borrow`）、`none`（managed の値、権限、`Ptr`、名前空間）。`ownership.ts` が読む。
+  - `mutates`: 受け手か外界を変える。
+  - `contract`: 契約の中で呼べる。`expr.ts` は、契約で呼べないメソッド名の集合（`contractBanned()`）を表から作り、Q134 のとおり名前で判定する。どの名前も、受け手によって判定が変わらないことを単体テストで固定した。
+  - `traps`: §6 の rt のトラップの一覧に、メンバ名の位置で載せるコード。`traps.ts` が読む。
+  - 決定性（§7.3）はメソッドではなくパラメータの型で決まるので、型ごとの `NONDET_GEN`（`Record<GenName, boolean>`。総称型を足すと typecheck が判断を求める）と `NONDET_OPAQUE` にした。`determinism.ts` が読む。
+  - `BUILTIN_NAMES` は `builtins.ts` の一覧から作り、`syntax.ts` が読む。
+- 単体テスト（`packages/compiler/test/builtins.test.ts`）: すべてのメソッドに 4 つの項目がある。`recv: mut` なら `mutates`、変えないなら契約で呼べる。名前ごとに契約の判定が 1 つ。`NONDET_OPAQUE` の鍵が `OPAQUE_NAMES` と同じ。`BUILTIN_NAMES` が SPEC §12 と §7.1 の名前と一致する。
+- 見つかったずれ:
+  1. `traps.ts` に T015 がなかった。§14.4 の `Ptr` / `ConstPtr` の `read`、`write`、`offset`、`slice`、`borrow`、`unbox` は null で T015 になり（C の変換は検査を入れている）、rt かつ unsafe の関数で使えるのに、トラップの一覧に載っていなかった。§6 と §14.4 が決めているので直した（`check.test.ts` の「lists T015 ...」。先に落ちるのを確かめた）。
+  2. 契約の中の `port.send` / `recv` / `close` と `spawn.isolate` は E6002 にならず、`Ptr.box` は E6002 なのに `*.create` はならない。§9.1 と Q134 が決めていないので Q230 にし、挙動は変えていない。
+  3. §13 の予約名（`i64` など）は参照すると E2000 だが、宣言は拒否されない。Q231 にし、挙動は変えていない。
+  - 各パスを表に切り替えるたびに、conformance とテストの fixtures の全 819 ファイルについて、診断、rt のトラップの一覧、決定性を開始時と比べ、差がないことを確かめた（1 の T015 は、これらのファイルの rt の関数には現れない）。
+- 範囲の外: `emit.ts`、`emit-c.ts`、`runtime-js` のメソッド名の分岐と、`expr.ts` の確保（E4004）の一覧は切り替えていない。名前を挙げて頼まれた読み手ではないため。
+- 検証: `pnpm typecheck` 成功、`pnpm test` 223 件通過（`passing.test.ts` は負荷で時間切れになるので、時間の上限を延ばして通した）、`pnpm verify:conformance` accept=79 reject=546 run=165（PASSING 790 件。conformance のケースは足していない）、`pnpm conformance` 923 件通過。`pnpm bench` の 5 回中央値は dot_f32 1.00、saxpy_f32 1.16、prefix_i32 1.32、stencil_f64 1.00、particles_aos_f32 1.35 倍（単発の最大は 1.43 倍）。
