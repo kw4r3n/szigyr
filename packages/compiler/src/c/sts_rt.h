@@ -26,31 +26,37 @@ static _Thread_local const char *sts_err; // internal (non-trap) error message
 // trap to claim the record is the one reported trap; later claims are discarded. The
 // record is written before the flag is stored, under the same mutex, so a reader that
 // sees the flag up can take the record.
-static _Atomic int sts_done;
-static pthread_mutex_t sts_ftrap_mu = PTHREAD_MUTEX_INITIALIZER;
-static int sts_ftrap_code, sts_ftrap_pos, sts_ftrap_taken;
-static _Atomic int sts_ftrap_ready;
+// D165: two programs can share this .so in one process (a Worker each, D111), so the record
+// is per program: main's `init` makes one per thread, an isolate's `init` names its program's,
+// and a foreign C thread (no `init`) uses the program loaded last (Q270).
+typedef struct { _Atomic int done, ready; pthread_mutex_t mu; int code, pos, taken; } sts_prog_t;
+static _Thread_local sts_prog_t *sts_pg;
+static sts_prog_t *_Atomic sts_pg_last;
+static sts_prog_t sts_pg_none = { .mu = PTHREAD_MUTEX_INITIALIZER }; // before any init
+static sts_prog_t *sts_cur(void) { sts_prog_t *p = sts_pg; if (!p) p = atomic_load(&sts_pg_last); return p ? p : &sts_pg_none; }
 static void sts_claim_trap(int code, int pos) {
-  pthread_mutex_lock(&sts_ftrap_mu);
-  if (!atomic_load(&sts_ftrap_ready)) { sts_ftrap_code = code; sts_ftrap_pos = pos; sts_ftrap_taken = 0; atomic_store(&sts_ftrap_ready, 1); }
-  atomic_store(&sts_done, 1);
-  pthread_mutex_unlock(&sts_ftrap_mu);
+  sts_prog_t *g = sts_cur();
+  pthread_mutex_lock(&g->mu);
+  if (!atomic_load(&g->ready)) { g->code = code; g->pos = pos; g->taken = 0; atomic_store(&g->ready, 1); }
+  atomic_store(&g->done, 1);
+  pthread_mutex_unlock(&g->mu);
 }
 /** Takes the recorded trap if it has not been reported yet (15.4: exactly one is reported). */
 static int sts_take_ftrap(int *code, int *pos) {
-  if (!atomic_load(&sts_ftrap_ready)) return 0;
-  pthread_mutex_lock(&sts_ftrap_mu);
-  int got = atomic_load(&sts_ftrap_ready) && !sts_ftrap_taken;
-  if (got) { *code = sts_ftrap_code; *pos = sts_ftrap_pos; sts_ftrap_taken = 1; }
-  pthread_mutex_unlock(&sts_ftrap_mu);
+  sts_prog_t *g = sts_cur();
+  if (!atomic_load(&g->ready)) return 0;
+  pthread_mutex_lock(&g->mu);
+  int got = atomic_load(&g->ready) && !g->taken;
+  if (got) { *code = g->code; *pos = g->pos; g->taken = 1; }
+  pthread_mutex_unlock(&g->mu);
   return got;
 }
-static void sts_ftrap_reset(void) {
-  pthread_mutex_lock(&sts_ftrap_mu);
-  sts_ftrap_code = 0; sts_ftrap_pos = 0; sts_ftrap_taken = 0;
-  atomic_store(&sts_ftrap_ready, 0);
-  atomic_store(&sts_done, 0);
-  pthread_mutex_unlock(&sts_ftrap_mu);
+static void sts_ftrap_reset(sts_prog_t *g) {
+  pthread_mutex_lock(&g->mu);
+  g->code = 0; g->pos = 0; g->taken = 0;
+  atomic_store(&g->ready, 0);
+  atomic_store(&g->done, 0);
+  pthread_mutex_unlock(&g->mu);
 }
 
 __attribute__((cold)) _Noreturn static void sts_trap(int code, int pos) { if (code >= 1) sts_claim_trap(code, pos); sts_trap_code = code; sts_trap_pos = pos; longjmp(sts_jb, 1); }

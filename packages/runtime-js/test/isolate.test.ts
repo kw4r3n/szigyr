@@ -8,7 +8,7 @@ async function failure(js: string, name: string): Promise<ReturnType<typeof take
     files: [["/m.ts", { js, imports: [], calls: [] }]],
     runtimeUrl: new URL("../src/index.ts", import.meta.url).href,
     stdUrl: new URL("../../std/src/index.ts", import.meta.url).href,
-    nativePath: null, rtName: "RT", impName: "IMP", exportsName: "EX", framePattern: "^$",
+    nativePath: null, nativeProg: null, rtName: "RT", impName: "IMP", exportsName: "EX", framePattern: "^$",
   });
   try {
     expect(await spawnIsolate("/m.ts", name).recv()).toBeNull(); // the trap is posted before the port closes

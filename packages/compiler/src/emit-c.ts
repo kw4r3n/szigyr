@@ -1325,7 +1325,7 @@ export function emitC(prog: Program): EmittedC | undefined {
     const ps = i.params.map((pt, k) => `${abiType(pt)} a${k}`);
     const lines: string[] = [
       `static ${abiType(ret)} ${name}(${ps.join(", ") || "void"}) {`,
-      `  if (atomic_load(&sts_done)) ${zero}`,
+      `  if (atomic_load(&sts_cur()->done)) ${zero}`,
       `  struct { jmp_buf jb; int depth; } *fr = calloc(1, sizeof *fr); if (!fr) ${zero}`,
       `  memcpy(fr->jb, sts_jb, sizeof fr->jb); fr->depth = sts_depth;`,
       `  if (!sts_stack_lim) sts_tramp_stack_init();`,
@@ -1403,8 +1403,11 @@ static napi_value sts_init(napi_env env, napi_callback_info info) {
   size_t argc = 2; napi_value a[2]; napi_get_cb_info(env, info, &argc, a, 0, 0);
   if (sts_host) napi_delete_reference(env, sts_host); // D159: a reload on this thread reuses the same exports (native.ts loaded), so the env is the one that made the old reference
   napi_create_reference(env, a[0], 1, &sts_host);
-  if (argc < 2) sts_ftrap_reset(); // D146: init(host, true) is an isolate binding its thread's host; only main's load resets the program's flag and record
-  return 0;
+  // D146, D165: init(host, prog) is an isolate joining its program's flag and record; main's load resets its thread's own (never freed: a foreign thread may still hold it)
+  if (argc >= 2) { double h = 0; napi_get_value_double(env, a[1], &h); sts_pg = h ? (sts_prog_t *)(uintptr_t)h : 0; } // no handle: sts_cur falls back to the last program
+  else { static _Thread_local sts_prog_t *own; if (!own) { if (!(own = calloc(1, sizeof *own))) { napi_throw_error(env, "STS_INTERNAL", "out of memory"); return 0; } pthread_mutex_init(&own->mu, 0); } sts_pg = own; sts_ftrap_reset(own); atomic_store(&sts_pg_last, own); }
+  napi_value r; napi_create_double(env, (double)(uintptr_t)sts_pg, &r); // the handle main passes to its isolates (exact: user addresses fit in 53 bits)
+  return r;
 }
 #define STS_INIT_EXPORT(n, fn) napi_create_function(env, n, NAPI_AUTO_LENGTH, fn, 0, &f); napi_set_named_property(env, exports, n, f)`;
 
@@ -1424,6 +1427,6 @@ const FTRAP = `static napi_value sts_ftrap_value(napi_env env) {
 static napi_value sts_poll(napi_env env, napi_callback_info info) { (void)info; return sts_ftrap_value(env); }
 static napi_value sts_finish(napi_env env, napi_callback_info info) {
   (void)info;
-  pthread_mutex_lock(&sts_ftrap_mu); atomic_store(&sts_done, 1); pthread_mutex_unlock(&sts_ftrap_mu);
+  sts_prog_t *g = sts_cur(); pthread_mutex_lock(&g->mu); atomic_store(&g->done, 1); pthread_mutex_unlock(&g->mu);
   return sts_ftrap_value(env);
 }`;

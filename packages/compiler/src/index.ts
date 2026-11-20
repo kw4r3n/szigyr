@@ -13,7 +13,7 @@ import { isDeterministic } from "./determinism.ts";
 import { emitFile, EXPORTS, IMP, RT, SOURCE_URL } from "./emit.ts";
 import { loopBoundaryWarnings } from "./boundary.ts";
 import { emitC } from "./emit-c.ts";
-import { loadNative, nativePathOf } from "./native.ts";
+import { loadNative, nativePathOf, nativeProgOf } from "./native.ts";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import * as rt from "../../runtime-js/src/index.ts";
@@ -240,6 +240,7 @@ async function load(files: ParsedFile[], entryFile: string, tests: boolean, decl
     runtimeUrl: new URL("../../runtime-js/src/index.ts", import.meta.url).href,
     stdUrl: new URL("../../std/src/index.ts", import.meta.url).href,
     nativePath: native ? (nativePathOf(native) ?? null) : null,
+    nativeProg: native ? (nativeProgOf(native) ?? null) : null,
     rtName: RT, impName: IMP, exportsName: EXPORTS,
     framePattern: frame.source,
   });

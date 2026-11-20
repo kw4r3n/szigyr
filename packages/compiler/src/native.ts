@@ -19,6 +19,9 @@ const loaded = new Map<string, Record<string, (...a: unknown[]) => unknown>>();
 const pathOf = new WeakMap<object, string>();
 /** The `.node` file a loaded native module came from; an isolate loads the same file (§15.2, D111). */
 export function nativePathOf(mod: object): string | undefined { return pathOf.get(mod); }
+const progOf = new WeakMap<object, number>();
+/** What `init` returned on this thread: the program handle an isolate passes to its own `init` (D165). */
+export function nativeProgOf(mod: object): number | undefined { return progOf.get(mod); }
 
 function touch(p: string): void { const now = new Date(); try { utimesSync(p, now, now); } catch { /* raced with a prune */ } }
 
@@ -83,6 +86,6 @@ export function loadNative(c: string, host: object, pkgs: string[] = []): Record
     pathOf.set(mod, out);
     loaded.set(hash, mod);
   }
-  mod.init!(host);
+  progOf.set(mod, mod.init!(host) as number);
   return mod;
 }

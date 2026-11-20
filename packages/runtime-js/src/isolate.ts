@@ -110,6 +110,7 @@ export interface IsolateProgram {
   runtimeUrl: string;
   stdUrl: string;
   nativePath: string | null;
+  nativeProg: number | null; // what main's `init` returned: its program's flag and record (D165)
   rtName: string;
   impName: string;
   exportsName: string;
@@ -184,8 +185,8 @@ const { pathToFileURL } = require("node:url");
     const m = { exports: {} };
     process.dlopen(m, workerData.nativePath);
     native = m.exports;
-    // D146: init(host, true) binds this thread's host only; the program's end flag and trap record stay as they are.
-    native.init(rt.NATIVE_HOST, true);
+    // D146, D165: init(host, prog) binds this thread's host and joins main's end flag and trap record without resetting them.
+    native.init(rt.NATIVE_HOST, workerData.nativeProg);
     rt.setForeignTrapCheck(() => {
       const v = native.sts_poll();
       if (Array.isArray(v)) rt.trap("T" + String(v[0]).padStart(3, "0"), "trap in C", v[1] ? { file: v[1], line: v[2], col: v[3] } : undefined);
