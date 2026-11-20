@@ -428,6 +428,7 @@ reject/E3004-borrow-type-as-type-argument.ts
 reject/E3004-constptr-slice-index-write.ts
 reject/E3004-mut-borrow-saved-in-local.ts
 reject/E3004-ptr-borrow-field-write.ts
+reject/E3004-ptr-borrow-ring-returned.ts
 reject/E3004-ptr-slice-index-write.ts
 reject/E3004-ptr-slice-stored.ts
 reject/E3004-slice-bound-to-local.ts
@@ -801,6 +802,7 @@ run/201-strict-return-surrogate-pair-literal.ts
 run/202-isolate-empty-vec-push.ts
 run/203-cfn-trap-before-main-trap.ts
 run/204-cfn-boxed-ring-borrow-thread.ts
+run/205-trap-slice-overlap-parenthesized-field.ts
 run/21-trap-vec-index.ts
 run/22-trap-u8-conversion.ts
 run/23-trap-requires.ts
