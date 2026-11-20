@@ -17,6 +17,7 @@ accept/16-npm-js.ts
 accept/17-contracts.ts
 accept/18-test-fakes.ts
 accept/19-destructure-spread.ts
+accept/193-traps-t015-literal.ts
 accept/20-template-strings.ts
 accept/21-imports
 accept/22-class-across-files
@@ -304,6 +305,7 @@ reject/E2002-struct-readonly-field-assign.ts
 reject/E2002-tagged-union-unknown-kind.ts
 reject/E2002-traps-code-not-literal.ts
 reject/E2002-traps-unknown-code.ts
+reject/E2002-union-common-field-write-differing.ts
 reject/E2002-union-duplicate-kind.ts
 reject/E2002-union-i32-or-string.ts
 reject/E2002-union-nullable-mixed.ts
@@ -331,6 +333,9 @@ reject/E2004-while-nullable-condition.ts
 reject/E2005-number-switch-without-default.ts
 reject/E2005-string-literal-union-missing-case.ts
 reject/E2005-union-missing-case.ts
+reject/E2006-array-literal-null-only.ts
+reject/E2006-array-literal-number-and-null.ts
+reject/E2006-array-literal-string-and-null.ts
 reject/E2006-arrow-parameter-without-annotation.ts
 reject/E2006-empty-array-without-context.ts
 reject/E2006-js-callback-plain-parameter.ts
@@ -365,6 +370,9 @@ reject/E2009-variadic.ts
 reject/E2009-wrong-c-type.ts
 reject/E2010-port-arenabuf-record.ts
 reject/E2010-port-array.ts
+reject/E2010-port-generic-struct-arena.ts
+reject/E2010-port-generic-struct-chandle.ts
+reject/E2010-port-handle-of-arenabuf.ts
 reject/E2010-port-map-receive.ts
 reject/E2010-port-ownedcell.ts
 reject/E2010-port-pool.ts
@@ -546,6 +554,7 @@ reject/E4002-strict-generic-vec-instantiated-with-null.ts
 reject/E4002-strict-param-never.ts
 reject/E4002-strict-param-null-only.ts
 reject/E4002-strict-result-null-error-return.ts
+reject/E4002-strict-return-lone-surrogate-literal.ts
 reject/E4002-strict-return-null-only.ts
 reject/E4002-string-literal-local-in-strict.ts
 reject/E4002-string-param-in-rt.ts
@@ -776,7 +785,22 @@ run/182-strict-boundary-types.ts
 run/183-strict-generic-never-return-only.ts
 run/184-contract-user-static-method-builtin-name.ts
 run/19-trap-divtrunc-overflow.ts
+run/190-ptr-box-nullable.ts
+run/191-ptr-box-tagged.ts
+run/192-paren-assign-target.ts
+run/193-never-in-struct-value.ts
+run/194-trap-never-in-struct-value.ts
+run/195-struct-spread-shapes.ts
+run/196-switch-boolean.ts
+run/197-template-literal-union.ts
+run/198-local-result-null.ts
+run/199-union-common-field-write-same-type.ts
 run/20-trap-array-index.ts
+run/200-ternary-literal-true-branch-context.ts
+run/201-strict-return-surrogate-pair-literal.ts
+run/202-isolate-empty-vec-push.ts
+run/203-cfn-trap-before-main-trap.ts
+run/204-cfn-boxed-ring-borrow-thread.ts
 run/21-trap-vec-index.ts
 run/22-trap-u8-conversion.ts
 run/23-trap-requires.ts
