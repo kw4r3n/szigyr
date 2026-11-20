@@ -3,7 +3,7 @@
 // type syntax deleted, and the §10 rewrites applied to the nodes that need them. Types come from P2 (exprTypes).
 import { resolve, dirname } from "node:path";
 import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
-import { callSigs, exprTypes, isolateCalls } from "./expr.ts";
+import { assignTarget, callSigs, exprTypes, isolateCalls } from "./expr.ts";
 import { sliceGroups, type SliceGroupEntry } from "./ownership.ts";
 import { elemDesc } from "./layout.ts";
 import { declBindings } from "./modules.ts";
@@ -181,8 +181,9 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
     const k = b.operatorToken.kind;
     const o = b.operatorToken.getText(sf);
     const anchor = (): string => at(b.operatorToken);
-    if (k === K.EqualsToken && b.left.kind === K.ElementAccessExpression) {
-      const e = b.left as ts.ElementAccessExpression;
+    const left = k === K.EqualsToken || COMPOUND[k] !== undefined ? assignTarget(b.left) : b.left; // Q133: the target without its parentheses
+    if (k === K.EqualsToken && left.kind === K.ElementAccessExpression) {
+      const e = left as ts.ElementAccessExpression;
       return `${RT}.setAt(${gen(e.expression)}, ${gen(e.argumentExpression)}, ${gen(b.right)}, ${at(e.argumentExpression)})`;
     }
     const base = COMPOUND[k];
@@ -193,22 +194,22 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
       // Element / property targets evaluate the receiver (and index) once by passing them to an arrow; the right side runs inside it,
       // after the read, as in JS. With `await` on the right the arrow is async and awaited (§10.1 order unchanged).
       const aw = hasAwait(b.right), fa = aw ? "async " : "", call = aw ? `(await ${AP}` : AP, close = aw ? ")" : "";
-      if (b.left.kind === K.ElementAccessExpression) {
+      if (left.kind === K.ElementAccessExpression) {
         needAp = true;
-        const e = b.left as ts.ElementAccessExpression, ip = at(e.argumentExpression);
+        const e = left as ts.ElementAccessExpression, ip = at(e.argumentExpression);
         return `${call}(${fa}(${O}, ${KEY}) => { const ${V} = ${op(t, base, `${RT}.at(${O}, ${KEY}, ${ip})`, rhs, anchor())}; ${RT}.setAt(${O}, ${KEY}, ${V}, ${ip}); return ${V}; }, ${gen(e.expression)}, ${gen(e.argumentExpression)})${close}`;
       }
       if (plain) return splice(b);
-      if (b.left.kind === K.PropertyAccessExpression) {
+      if (left.kind === K.PropertyAccessExpression) {
         needAp = true;
-        const p = b.left as ts.PropertyAccessExpression, f = p.name.text;
+        const p = left as ts.PropertyAccessExpression, f = p.name.text;
         return `${call}(${fa}(${O}) => ${O}.${f} = ${op(t, base, `${O}.${f}`, rhs, anchor())}, ${gen(p.expression)})${close}`;
       }
-      const l = gen(b.left);
+      const l = gen(left);
       return `${l} = ${op(t, base, l, rhs, anchor())}`;
     }
     const t = numName(b);
-    if (t && ["+", "-", "*", "/", "%", "**", "<<", ">>", ">>>", "&", "|", "^"].includes(o)) return op(t, o, gen(b.left), gen(b.right), anchor());
+    if (t && ["+", "-", "*", "/", "%", "**", "<<", ">>", ">>>", "&", "|", "^"].includes(o)) return op(t, o, gen(left), gen(b.right), anchor());
     return splice(b);
   }
 

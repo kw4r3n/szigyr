@@ -1,0 +1,36 @@
+// expect-output: managed 99 100 8 9 evals 2
+// expect-output: strict 99 100 8 9
+// stage: 3
+// Parenthesized assignment targets are unwrapped like the checkers do (Q133, D140).
+type P = Struct<{ x: i32 }>;
+type R = { x: i32 };
+function strictFn(v: Mut<Vec<i32>>, p: Mut<P>): void {
+  "use owned";
+  (v[0]) = 99;
+  (v[1]) += 1;
+  (p.x) = 8;
+  (p.x) += 1;
+}
+function pick(c: Mut<Vec<i32>>, r: R): R {
+  c[0] += 1;
+  return r;
+}
+export function main(sys: System): void {
+  const v = Vec.create<i32>(sys.alloc, 2);
+  v.push(1);
+  v.push(99);
+  const c = Vec.create<i32>(sys.alloc, 1);
+  c.push(0);
+  const r: R = { x: 7 };
+  (v[0]) = 99;
+  (v[1]) += 1;
+  (pick(c, r).x) = 8;
+  (pick(c, r).x) += 1;
+  sys.log.info(`managed ${v[0]} ${v[1]} ${r.x - 1} ${r.x} evals ${c[0]}`);
+  const w = Vec.create<i32>(sys.alloc, 2);
+  w.push(1);
+  w.push(99);
+  const p: P = { x: 7 };
+  strictFn(w, p);
+  sys.log.info(`strict ${w[0]} ${w[1]} ${p.x - 1} ${p.x}`);
+}

@@ -2,7 +2,7 @@
 // plus a Node-API wrapper per function that managed JS calls. Every subexpression goes through a temporary, in source order (D103).
 import { readFileSync } from "node:fs";
 import { SyntaxKind as K, type Node, type ts } from "./parse.ts";
-import { callFnArgs, callFns, callTArgs, exprTypes } from "./expr.ts";
+import { assignTarget, callFnArgs, callFns, callTArgs, exprTypes } from "./expr.ts";
 import { sliceGroups } from "./ownership.ts";
 import type { CFnSym, FnSym, Module, Program } from "./modules.ts";
 import { layout, elemDesc, type Lay } from "./layout.ts";
@@ -854,7 +854,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
 
     /** `x = e` / `x op= e` (D103 order). The value of the expression is the stored value. */
     assign(b: ts.BinaryExpression, op: string | undefined): string {
-      const left = b.left;
+      const left = assignTarget(b.left); // Q133
       if (left.kind === K.ElementAccessExpression) {
         const a = left as ts.ElementAccessExpression;
         const { data, len, et } = this.seq(a.expression);
