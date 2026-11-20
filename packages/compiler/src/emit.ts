@@ -3,9 +3,10 @@
 // type syntax deleted, and the §10 rewrites applied to the nodes that need them. Types come from P2 (exprTypes).
 import { dirname } from "node:path";
 import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
-import { assignTarget, callSigs, exprTypes, isolateCalls } from "./expr.ts";
+import { assignTarget, callSigs, exprTypes, forAllMeta, isolateCalls } from "./expr.ts";
 import { sliceGroups, type SliceGroupEntry } from "./ownership.ts";
 import { elemDesc } from "./layout.ts";
+import { emitGenDesc, genDescOf } from "./gendesc.ts";
 import { canonPath, declBindings } from "./modules.ts";
 import { NUM_NAMES, isInt, isStr, nonNull, resultParts, unref, type FnType, type Type } from "./types.ts";
 import { CLI_NAME, RUNTIME_GLOBAL } from "./names.ts";
@@ -70,7 +71,23 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
   const typeOf = (n: Node): Type | undefined => { const t = exprTypes.get(n); return t && unref(t); };
   const numName = (n: Node): string | undefined => { const t = typeOf(n); return t?.k === "num" ? t.name : undefined; };
   const skipWs = (i: number): number => { while (/\s/.test(text[i] ?? "")) i++; return i; };
-  const backWs = (i: number): number => { while (i > 0 && /\s/.test(text[i - 1]!)) i--; return i; };
+  const emitPreFn = (fn: ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression): string | undefined => {
+    if (!fn.body || fn.body.kind !== K.Block) return undefined;
+    const ss = (fn.body as ts.Block).statements;
+    let i = 0;
+    while (i < ss.length && ss[i]!.kind === K.ExpressionStatement && (ss[i] as ts.ExpressionStatement).expression.kind === K.StringLiteral) i++;
+    const checks: string[] = [];
+    for (; i < ss.length; i++) {
+      const s = ss[i]!;
+      if (s.kind !== K.ExpressionStatement) break;
+      const ex = (s as ts.ExpressionStatement).expression;
+      if (ex.kind !== K.CallExpression || (ex as ts.CallExpression).expression.kind !== K.Identifier || ((ex as ts.CallExpression).expression as ts.Identifier).text !== "requires") break;
+      checks.push(`if (!(${gen((ex as ts.CallExpression).arguments[0]!)})) return false;`);
+    }
+    if (!checks.length) return undefined;
+    const ps = fn.parameters.map((p) => (p.name as ts.Identifier).text).join(", ");
+    return `(${ps}) => { ${checks.join(" ")} return true; }`;
+  };
 
   /** The `>` closing a type argument / parameter list, from `i` on, past whitespace, comments and a trailing comma. */
   const closeAngle = (i: number, end: number): number => {
@@ -138,11 +155,15 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
       }
       case K.Block: return block(n as ts.Block);
       case K.FunctionDeclaration: {
+        const f = n as ts.FunctionDeclaration;
         const key = native?.get(n);
-        if (!key) break;
-        const f = n as ts.FunctionDeclaration, ps = f.parameters.map((p) => p.name.getText(sf));
+        const isTop = n.parent?.kind === K.SourceFile && !f.typeParameters?.length && !f.modifiers?.some((m) => m.kind === K.AsyncKeyword) && !!f.name && !!f.body;
+        const pre = isTop ? emitPreFn(f) : undefined;
+        const tail = pre ? `\n${RT}.setPre(${f.name!.text}, ${pre});` : "";
+        if (!key) return splice(n) + tail;
+        const ps = f.parameters.map((p) => p.name.getText(sf));
         if (key === "!generic") return `function ${f.name!.text}() { throw new Error("internal: a generic strict / rt function runs only through its C instances (D104)"); }`;
-        return `function ${f.name!.text}(${ps.join(", ")}) { return ${RT}.native.${key}(${ps.join(", ")}); }`;
+        return `function ${f.name!.text}(${ps.join(", ")}) { return ${RT}.native.${key}(${ps.join(", ")}); }${tail}`;
       }
     }
     return splice(n);
@@ -262,6 +283,12 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
         case "panic": case "requires": case "invariant": return `${RT}.${name}(${args[0]}, ${at(callee)})`;
         case "cast": return `${RT}.cast(${args[0]}, ${desc(resultParts(self!)!.ok)})`;
         case "test": return `${RT}.test(${args.join(", ")})`;
+        case "forAll": {
+          const meta = forAllMeta.get(e)!;
+          const descs = `[${meta.params.map((p) => emitGenDesc(genDescOf(p))).join(", ")}]`;
+          const pre = meta.checkBool ? emitPreFn(e.arguments[0] as ts.ArrowFunction | ts.FunctionExpression) : undefined;
+          return `${RT}.forAll(${args[0]}, ${descs}, ${meta.checkBool}, ${at(callee)}${pre ? `, ${pre}` : ""})`;
+        }
         case "ensures": throw new Error("emit: ensures outside a function body prologue");
       }
       return groups ? grouped(e, groups, args, (refs) => `${gen(callee)}(${refs.join(", ")})`) : splice(e);

@@ -489,6 +489,8 @@ rt かつ unsafe の関数は、権限なしで C の関数を呼べる（§14.3
   | E6001 | 契約の位置が不正 |
   | E6002 | 契約が参照できない名前を参照 |
   | E6003 | `test` がモジュール直下にない |
+  | E6004 | `forAll` がモジュール直下の `test` の中にない（§16.1、Q273） |
+  | E6005 | `forAll` の対象のパラメータに生成できない型がある（§16.1、Q274） |
   | E7001 | 不正な import / export の形 |
   | E7002 | `c:` モジュールの宣言と import の不一致 |
   | W8001 | 警告: managed のループの中から strict / rt の関数を呼んでいる（反復ごとに層の境界をまたぐ。段階 2） |
@@ -500,7 +502,7 @@ rt かつ unsafe の関数は、権限なしで C の関数を呼べる（§14.3
 ここにない大域名は E2000、ここにないメンバは E2001。追加が必要なら `docs/OPEN_QUESTIONS.md` に書く。
 
 - **型**: `boolean`、`string`、`number`、`f64`、`f32`、`i8`、`i16`、`i32`、`u8`、`u16`、`u32`、`usize`、`null`、`void`、`unknown`、`never`、`Array`、`ReadonlyArray`、`Map`、`Set`、`Promise`、`Result`、`Struct`、`Vec`、`Slice`、`Pool`、`Handle`、`Arena`、`ArenaBuf`、`Ref`、`Mut`、`OwnedCell`、§7.1 の権限型、`JsRef`、`JsError`、`CastError`、`IoError`、`Test`、`Ptr`、`ConstPtr`、`CType`、`CHandle`、`RingTx`、`RingRx`、`RingPair`、`Port`。
-- **関数**: 数値型と同名の変換関数、`wrapAdd`、`wrapSub`、`wrapMul`、`divTrunc`、`rem`、`ok`、`err`、`panic`、`cast`、`requires`、`ensures`、`invariant`、`test`、`cfn`（§14.6）。
+- **関数**: 数値型と同名の変換関数、`wrapAdd`、`wrapSub`、`wrapMul`、`divTrunc`、`rem`、`ok`、`err`、`panic`、`cast`、`requires`、`ensures`、`invariant`、`test`、`forAll`、`cfn`（§14.6）。
 - **名前空間の関数**: `Ring.create`（§15.1）、`Ptr.box`（§14.4）、`CHandle.create`（§14.5）。
 - **`Math`**:
   - 全層: `abs`、`sqrt`、`floor`、`ceil`、`trunc`、`round`、`min`、`max`、`sign`、`fround`、定数 `PI`、`E`。
@@ -524,7 +526,7 @@ rt かつ unsafe の関数は、権限なしで C の関数を呼べる（§14.3
 
 実装しない。使われたら E1000 か E2000 で拒否する。括弧内は導入予定の段階。
 
-名前としては `i64`、`u64`、`bigint`、`undefined`、`FixedArray`、`Rc`、`Weak`、`using`、`forAll`、`decreases` を予約する。これらの名前の宣言（型、関数、class、const、パラメータ、局所変数、interface、型パラメータ）は、§12 の組み込み名と同じく E1000（Q231）。プロパティ名やメソッド名には書ける。
+名前としては `i64`、`u64`、`bigint`、`undefined`、`FixedArray`、`Rc`、`Weak`、`using`、`decreases` を予約する。これらの名前の宣言（型、関数、class、const、パラメータ、局所変数、interface、型パラメータ）は、§12 の組み込み名と同じく E1000（Q231）。プロパティ名やメソッド名には書ける。
 
 - `i64`、`u64`、64 ビットの `usize`（未定）
 - `Vec` の非 Copy 要素、`FixedArray<T, N>`
@@ -535,7 +537,7 @@ rt かつ unsafe の関数は、権限なしで C の関数を呼べる（§14.3
 - C の構造体の値渡し、可変長引数の C 関数、C の 64 ビット整数型と `char`、C のマクロと定数の取り込み（未定。Q193、Q211）
 - `Ptr` の比較、null の `Ptr` を作る組み込み、`Vec` の領域を指す `Ptr`（未定）
 - isolate への権限の受け渡し、isolate の中からの isolate の起動（未定。Q200）
-- `forAll` と性質テスト、ミューテーションテスト（§16。未実装。実装するときに `forAll` を §12 へ移す）
+- ミューテーションテスト（§16.2。未実装）
 - 本物の権限を使う統合テストと、権限の記録・再生（保留。Q272）
 - `decreases` と静的証明（段階 6）
 - タプル、既定引数、interface の `extends`（未定）
@@ -746,7 +748,7 @@ rt かつ unsafe の関数は、権限なしで C の関数を呼べる（§14.3
 
 ## 16. 性質テストとミューテーション（段階 4）
 
-この節の機能とコード（E6004、E6005）は未実装。
+この節のうち §16.1（`forAll`、E6004、E6005）は実装済み。§16.2（ミューテーションテスト）は未実装。
 
 ### 16.1 性質テスト（`forAll`）（Q273、Q274）
 

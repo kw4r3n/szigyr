@@ -18,9 +18,9 @@ export const GLOBAL_AUTHORITIES = new Set([
 /** Namespace objects (Q034). */
 export const NAMESPACES = new Set(["Math", "Number", "JSON", "String", "Promise", "Vec", "Pool", "Arena", "Ring", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "TestAlloc", "DetMath", "Ptr", "CHandle"]);
 /** Builtin functions handled by the checker (§12). */
-export const BUILTIN_FUNCTIONS = new Set([...NUM_NAMES, "wrapAdd", "wrapSub", "wrapMul", "divTrunc", "rem", "ok", "err", "panic", "cast", "requires", "ensures", "invariant", "test", "cfn"]);
+export const BUILTIN_FUNCTIONS = new Set([...NUM_NAMES, "wrapAdd", "wrapSub", "wrapMul", "divTrunc", "rem", "ok", "err", "panic", "cast", "requires", "ensures", "invariant", "test", "forAll", "cfn"]);
 /** §13: the identifier-like names it reserves (types, functions, `using`). Declaring one is E1000 like a builtin name (Q231 (a)). */
-export const SPEC_RESERVED = ["i64", "u64", "bigint", "undefined", "FixedArray", "Rc", "Weak", "using", "forAll", "decreases"];
+export const SPEC_RESERVED = ["i64", "u64", "bigint", "undefined", "FixedArray", "Rc", "Weak", "using", "decreases"];
 /** §12 global names, §13 reserved names; declaring any of them is E1000 (Q010, Q231). The tables here plus the names only the resolver and §7.1 know. */
 export const BUILTIN_NAMES = new Set<string>([
   ...SPEC_RESERVED,

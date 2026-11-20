@@ -78,6 +78,8 @@ accept/75-isolate-spawn.ts
 accept/76-cast-to-ctype.ts
 accept/77-chandle-create-void.ts
 accept/78-reexport-loop-warning
+accept/79-forAll-basic.ts
+accept/80-forAll-generatable-types.ts
 reject/E1000-array-suffix-type.ts
 reject/E1000-await-in-non-async-arrow.ts
 reject/E1000-await-outside-async.ts
@@ -207,6 +209,18 @@ reject/E2002-eq-need-through-record-authority.ts
 reject/E2002-eq-need-through-record-fn.ts
 reject/E2002-eq-owned-vec.ts
 reject/E2002-fn-arg-type-mismatch.ts
+reject/E2002-forAll-arity-two.ts
+reject/E2002-forAll-arity-zero.ts
+reject/E2002-forAll-async-arrow.ts
+reject/E2002-forAll-bad-return-arrow.ts
+reject/E2002-forAll-generic-arrow.ts
+reject/E2002-forAll-generic-named.ts
+reject/E2002-forAll-local-fn.ts
+reject/E2002-forAll-named-zero-params.ts
+reject/E2002-forAll-not-fn.ts
+reject/E2002-forAll-promise-named.ts
+reject/E2002-forAll-type-args.ts
+reject/E2002-forAll-zero-params.ts
 reject/E2002-generic-class-key-instantiation.ts
 reject/E2002-generic-map-key-through-type-parameter.ts
 reject/E2002-generic-set-element-record.ts
@@ -340,6 +354,7 @@ reject/E2006-array-literal-number-and-null.ts
 reject/E2006-array-literal-string-and-null.ts
 reject/E2006-arrow-parameter-without-annotation.ts
 reject/E2006-empty-array-without-context.ts
+reject/E2006-forAll-unannotated-param.ts
 reject/E2006-js-callback-plain-parameter.ts
 reject/E2006-module-const-without-annotation.ts
 reject/E2006-module-destructuring-without-type.ts
@@ -530,6 +545,7 @@ reject/E3008-struct-literal-as-ref-arg.ts
 reject/E3008-vec-create-as-ref-arg.ts
 reject/E4001-cfn-of-strict-function.ts
 reject/E4001-file-rt-function-override-strict.ts
+reject/E4001-forAll-rt-unsafe.ts
 reject/E4001-managed-calls-rt-unsafe.ts
 reject/E4001-managed-function-as-fn-arg.ts
 reject/E4001-pow-assign-in-strict.ts
@@ -585,6 +601,7 @@ reject/E4003-arrow-in-rt.ts
 reject/E4003-arrow-in-strict.ts
 reject/E4003-capturing-arrow-in-strict.ts
 reject/E4003-fn-param-as-value.ts
+reject/E4003-forAll-cfn.ts
 reject/E4003-function-expression-in-strict.ts
 reject/E4003-function-type-local-in-strict.ts
 reject/E4003-function-type-return-in-strict.ts
@@ -634,6 +651,7 @@ reject/E4008-c-call-in-safe-function.ts
 reject/E4008-call-ptr-signature-function.ts
 reject/E4008-cfn-in-safe-function.ts
 reject/E4008-chandle-get-in-safe-function.ts
+reject/E4008-forAll-strict-unsafe.ts
 reject/E4008-inferred-ptr-null.ts
 reject/E4008-ptr-in-struct-field.ts
 reject/E4008-ptr-param-in-safe-function.ts
@@ -650,6 +668,8 @@ reject/E5002-module-destructuring-call.ts
 reject/E5002-module-destructuring-let.ts
 reject/E5002-module-let.ts
 reject/E6001-ensures-before-requires.ts
+reject/E6001-forAll-ensures.ts
+reject/E6001-forAll-requires-after-stmt.ts
 reject/E6001-invariant-not-first.ts
 reject/E6001-invariant-outside-loop.ts
 reject/E6001-requires-after-statement.ts
@@ -661,6 +681,7 @@ reject/E6002-contract-mutating-method.ts
 reject/E6002-ensures-assigns.ts
 reject/E6002-ensures-consumes-result.ts
 reject/E6002-ensures-owned-arg.ts
+reject/E6002-forAll-in-requires.ts
 reject/E6002-invariant-mutating-method.ts
 reject/E6002-requires-arena-alloc.ts
 reject/E6002-requires-builtin-through-nullable.ts
@@ -678,6 +699,22 @@ reject/E6002-requires-ring-nondeterministic.ts
 reject/E6002-requires-spawn-isolate.ts
 reject/E6003-test-in-function.ts
 reject/E6003-test-in-test.ts
+reject/E6004-forAll-at-module-level.ts
+reject/E6004-forAll-in-function.ts
+reject/E6004-forAll-in-method.ts
+reject/E6004-forAll-in-test-name.ts
+reject/E6005-forAll-arrow-arena.ts
+reject/E6005-forAll-arrow-authority.ts
+reject/E6005-forAll-arrow-class.ts
+reject/E6005-forAll-arrow-fn-type.ts
+reject/E6005-forAll-arrow-handle.ts
+reject/E6005-forAll-arrow-ownedcell.ts
+reject/E6005-forAll-arrow-pool.ts
+reject/E6005-forAll-arrow-ring.ts
+reject/E6005-forAll-arrow-slice-handle.ts
+reject/E6005-forAll-arrow-unknown.ts
+reject/E6005-forAll-arrow-vec-null.ts
+reject/E6005-forAll-named-fn.ts
 reject/E7001-default-import.ts
 reject/E7001-detmath-import.ts
 reject/E7001-dynamic-import.ts
@@ -829,6 +866,7 @@ run/241-switch-boolean-exhaustive.ts
 run/242-number-infinity-nan-constants.ts
 run/243-number-infinity-rt.ts
 run/244-lone-surrogate-value-managed.ts
+run/245-forAll-stripped-in-run.ts
 run/25-trap-panic.ts
 run/26-trap-div-by-zero.ts
 run/27-trap-ownedcell-empty.ts

@@ -1,0 +1,23 @@
+// expect-output: ok
+// stage: 4
+function addStrict(a: i32, b: i32): i32 {
+  "use owned";
+  requires(a >= -1000 && a <= 1000);
+  requires(b >= -1000 && b <= 1000);
+  return a + b;
+}
+
+test("stripped in run", (t: Test) => {
+  forAll((a: i32, b: i32): void => {
+    requires(a >= -1000 && a <= 1000);
+    requires(b >= -1000 && b <= 1000);
+    t.eq(addStrict(a, b), addStrict(b, a));
+  });
+  forAll(addStrict);
+});
+
+export function main(sys: System): void {
+  if (addStrict(2, 3) === 5) {
+    sys.log.info("ok");
+  }
+}
