@@ -118,6 +118,29 @@ it("lists the trap sites of rt functions (§6)", () => {
   });
 });
 
+it("lists T015 at the member name of Ptr / ConstPtr operations in rt + unsafe functions (§6, §14.4)", () => {
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-t015-`));
+  writeFileSync(join(dir, "main.ts"), [
+    "function z(s: Mut<Slice<i32>>): void {",
+    '  "use rt";',
+    "  s.fill(0);",
+    "}",
+    "function pw(p: Ptr<i32>, q: ConstPtr<i32>): i32 {",
+    '  "use rt";',
+    '  "use unsafe";',
+    "  p.write(q.read());",
+    "  z(p.offset(1).slice(2));",
+    "  return p.isNull() ? 0 : 1;",
+    "}",
+    "",
+  ].join("\n"));
+  const at = (code: string, line: number, col: number): { code: string; line: number; col: number } => ({ code, line, col });
+  expect(rtTrapSites(join(dir, "main.ts"))).toEqual({
+    z: [],
+    pw: [at("T015", 8, 5), at("T015", 8, 13), at("T015", 9, 7), at("T015", 9, 17)],
+  });
+});
+
 it("determinism checks generic class type arguments across parameters (§7.3)", () => {
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-det-`));
   writeFileSync(join(dir, "main.ts"), [

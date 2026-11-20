@@ -63,7 +63,9 @@ export const isGenName = (n: string): n is GenName => Object.hasOwn(GEN_ARITY, n
  */
 export interface Fx { recv: "ref" | "mut" | "param" | "none"; mutates: boolean; contract: boolean; traps: readonly string[] }
 const fx = (recv: Fx["recv"], mutates: boolean, contract = !mutates, traps: readonly string[] = []): Fx => ({ recv, mutates, contract, traps });
-const RD = fx("none", false), WR = fx("none", true), REF = fx("ref", false), MUT = fx("mut", true), PARAM = fx("param", false);
+const RD = fx("none", false), WR = fx("none", true), REF = fx("ref", false), MUT = fx("mut", true);
+const NUL = (f: Fx): Fx => ({ ...f, traps: ["T015"] }); // §14.4: a null Ptr / ConstPtr traps at the member name
+const PRD = NUL(RD), PWR = NUL(WR), PARAM = NUL(fx("param", false));
 const Q230 = fx("none", true, true); // changes state, yet a contract may call it (Q230: kept as before)
 
 export type Member =
@@ -203,17 +205,17 @@ export function genMembers(t: { name: GenName; args: Type[] }): Members {
     case "Ptr": { // §14.4: which of these a given T allows is the checker's E2001 table, not this list
       const U = newTParam("U"), tU: Type = { k: "tparam", p: U };
       return {
-        isNull: m(RD, [], BOOL), read: m(RD, [], a), write: m(WR, [a], VOID),
-        offset: m(RD, [USIZE], gen("Ptr", a)), slice: m(PARAM, [USIZE], gen("Slice", a)),
-        borrow: m(PARAM, [], a), unbox: m(WR, [], a),
+        isNull: m(RD, [], BOOL), read: m(PRD, [], a), write: m(PWR, [a], VOID),
+        offset: m(PRD, [USIZE], gen("Ptr", a)), slice: m(PARAM, [USIZE], gen("Slice", a)),
+        borrow: m(PARAM, [], a), unbox: m(PWR, [], a),
         cast: m(RD, [], gen("Ptr", tU), { tparams: [U], tcheck: "castptr" }),
       };
     }
     case "ConstPtr": {
       const U = newTParam("U"), tU: Type = { k: "tparam", p: U };
       return {
-        isNull: m(RD, [], BOOL), read: m(RD, [], a),
-        offset: m(RD, [USIZE], gen("ConstPtr", a)), slice: m(PARAM, [USIZE], gen("Slice", a)),
+        isNull: m(RD, [], BOOL), read: m(PRD, [], a),
+        offset: m(PRD, [USIZE], gen("ConstPtr", a)), slice: m(PARAM, [USIZE], gen("Slice", a)),
         borrow: m(PARAM, [], a),
         cast: m(RD, [], gen("ConstPtr", tU), { tparams: [U], tcheck: "castptr" }),
       };
