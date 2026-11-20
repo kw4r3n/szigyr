@@ -135,6 +135,33 @@ export function main(sys: System): void {
     expect(await readCell()).toBe("0 2 0 0\n"); // both calls came after main's trap: the flag answered zero without running bump
   }, 120000);
 
+  it("a C thread trapping after main's own trap does not displace it (§15.4, D144)", async () => {
+    // An npm package blocks the main thread for 1.5 s in the first macrotask after main, so the
+    // fixture thread's trap 200 ms after main's panic lands before runNow finishes. Main's trap came first.
+    const a = project({ "main.ts": `import { block } from "npm:blockpkg";\n` + withDecl("function stscb_start(ffi: Ffi, f: Ptr<(ud: Ptr<void>, x: i32) => i32>, ud: Ptr<void>, x: i32, delay: i32, after: Ptr<(ud: Ptr<void>, x: i32) => i32>, aud: Ptr<void>): void;", "stscb_start") + `
+function boom(ud: Ptr<void>, x: i32): i32 {
+  "use rt";
+  "use unsafe";
+  return x + 1;
+}
+function arm(ffi: Ffi): void {
+  "use owned";
+  "use unsafe";
+  const cell = stscb_cell(ffi);
+  stscb_start(ffi, cfn(boom), cell.cast<void>(), 2147483647, 200, cfn(boom), cell.cast<void>());
+}
+export function main(sys: System): void {
+  const b = sys.js.call(block, []);
+  arm(sys.ffi);
+  panic("main");
+}
+`, "node_modules/blockpkg/package.json": JSON.stringify({ name: "blockpkg", type: "module", main: "index.js" }),
+      "node_modules/blockpkg/index.js": "export const block = () => { setImmediate(() => { const t = Date.now(); while (Date.now() - t < 1500); }); };\n" });
+    const ra = await run(a, { backend: "c" });
+    expect(ra.diagnostics).toEqual([]);
+    expect(ra.trap).toMatchObject({ code: "T006", line: 27, col: 3 }); // panic("main"), not boom's T001
+  }, 120000);
+
   it("an isolate starting after the flag is up does not lower it (D146)", async () => {
     const a = armed(4000, `  const p = sys.spawn.isolate(idle);`, `function idle(port: Port<i32, i32>): void {\n}\n`);
     const ra = await run(a, { backend: "c" });

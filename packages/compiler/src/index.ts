@@ -272,12 +272,21 @@ async function runNow(entryFile: string, backend?: Backend): Promise<RunResult> 
   const { ex, native } = await loadChecked(a.files, entryFile, false, a.decls, backend);
   const main = ex.main;
   if (typeof main !== "function") throw new Error(`${entryFile}: no exported function 'main'`); // Q061: a CLI error, not a diagnostic
-  const r = await runMain(main as Parameters<typeof runMain>[0]);
+  // §14.6 / §15.4, D144: main ending, by a trap too, raises the end flag at once, before any later task
+  // runs, and claims the C record. A C record there claimed the flag before main ended, so it wins over
+  // main's own trap; a C trap after that is never recorded (§15.4: not observed after main ends).
+  let v: unknown;
+  const finish = (): void => { v ??= native?.sts_finish!() ?? null; };
+  const m = main as (sys: unknown) => unknown;
+  const r = await runMain((sys) => {
+    let p: unknown;
+    try { p = m(sys); } catch (e) { finish(); throw e; }
+    if (p instanceof Promise) return p.finally(finish);
+    finish();
+    return p as void;
+  });
   await rt.stopIsolates(); // Q207: main ending stops isolates still running; undelivered messages are discarded
-  // §14.6 / §15.4 (3), D144: main ending, by a trap too, raises the end flag and claims both records.
-  // A C record still there claimed the flag before main's trap did, so it wins over main's own; an
-  // isolate record may have landed after main trapped (stopIsolates lets messages land), so it does not.
-  const v = native?.sts_finish!();
+  // §15.4 (3): an isolate record may have landed after main trapped (stopIsolates lets messages land), so it does not beat main's own.
   const t = rt.takeIsolateTrap();
   const c = Array.isArray(v) ? { code: `T${String(v[0]).padStart(3, "0")}`, file: v[1] as string, line: v[2] as number, col: v[3] as number } : null;
   const iso = t ? { code: t.code, file: t.file ?? "", line: t.line ?? 0, col: t.col ?? 0 } : null;
