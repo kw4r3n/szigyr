@@ -1,8 +1,9 @@
 // D132: the builtin effect table is complete and its by-name readings agree with its per-type entries.
 import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
-import { BUILTIN_NAMES, NONDET_OPAQUE, builtinMethods } from "../src/builtins.ts";
-import { OPAQUE_NAMES } from "../src/types.ts";
+import { BUILTIN_NAMES, NONDET_GEN, NONDET_OPAQUE, builtinMethods } from "../src/builtins.ts";
+import { isDeterministic } from "../src/determinism.ts";
+import { AUTHORITIES, F64, OPAQUE_NAMES, VOID, gen, opaque, type GenName, type Type } from "../src/types.ts";
 
 const methods = builtinMethods();
 
@@ -52,4 +53,13 @@ it("reserves exactly the global names SPEC §12 and §7.1 list", () => {
     if (head) names.add(head[1]!);
   }
   expect([...names].sort()).toEqual([...BUILTIN_NAMES].sort());
+});
+
+// The expected sets are written out here, not read from the tables, so flipping a table entry fails this test.
+const NONDET_GEN_EXPECTED = ["RingTx", "RingRx", "Ptr", "ConstPtr", "CHandle", "Port"];
+const NONDET_OPAQUE_EXPECTED = [...AUTHORITIES, "JsRef", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs"];
+it("reports a function nondeterministic exactly for the §7.3 builtin types", () => {
+  const det = (p: Type): boolean => isDeterministic({ k: "fn", tparams: [], params: [p], ret: VOID });
+  for (const name of Object.keys(NONDET_GEN)) expect(det(gen(name as GenName, F64)), `gen ${name}`).toBe(!NONDET_GEN_EXPECTED.includes(name));
+  for (const name of OPAQUE_NAMES) expect(det(opaque(name)), `opaque ${name}`).toBe(!NONDET_OPAQUE_EXPECTED.includes(name));
 });
