@@ -287,14 +287,16 @@ async function runNow(entryFile: string, backend?: Backend): Promise<RunResult> 
   if (typeof main !== "function") throw new Error(`${entryFile}: no exported function 'main'`); // Q061: a CLI error, not a diagnostic
   const r = await runMain(main as Parameters<typeof runMain>[0]);
   await rt.stopIsolates(); // Q207: main ending stops isolates still running; undelivered messages are discarded
-  // §14.6 / §15.4 (3), D144: main ending, by a trap too, raises the end flag. A foreign trap that
-  // never surfaced was recorded first, so it is the reported one; only then main's own trap.
+  // §14.6 / §15.4 (3), D144: main ending, by a trap too, raises the end flag and claims both records.
+  // A C record still there claimed the flag before main's trap did, so it wins over main's own; an
+  // isolate record may have landed after main trapped (stopIsolates lets messages land), so it does not.
   const v = native?.sts_finish!();
   const t = rt.takeIsolateTrap();
+  const c = Array.isArray(v) ? { code: `T${String(v[0]).padStart(3, "0")}`, file: v[1] as string, line: v[2] as number, col: v[3] as number } : null;
+  const iso = t ? { code: t.code, file: t.file ?? "", line: t.line ?? 0, col: t.col ?? 0 } : null;
   // Only stack exhaustion outside any source call (Q035) has no position.
-  const trap = t ? { code: t.code, file: t.file ?? "", line: t.line ?? 0, col: t.col ?? 0 }
-    : Array.isArray(v) ? { code: `T${String(v[0]).padStart(3, "0")}`, file: v[1] as string, line: v[2] as number, col: v[3] as number }
-    : r.trap ? { code: r.trap.code, file: r.trap.pos?.file ?? "", line: r.trap.pos?.line ?? 0, col: r.trap.pos?.col ?? 0 } : null;
+  const own = r.trap ? { code: r.trap.code, file: r.trap.pos?.file ?? "", line: r.trap.pos?.line ?? 0, col: r.trap.pos?.col ?? 0 } : null;
+  const trap = own ? (c ?? own) : (iso ?? c);
   return { diagnostics: [], stdout: r.stdout, trap };
 }
 
