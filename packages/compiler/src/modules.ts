@@ -357,7 +357,7 @@ export class Program {
         }
       }
     }
-    const seen = new Set<string>();
+    const seen: Set<string> = new Set();
     for (const { mod, node, p, arg } of this.insts) {
       const bad = arg.k === "tparam" ? undefined : [...p.need ?? []].find((n) => !needOk(n, arg));
       const key = `${mod.file}:${node.pos}:${p.id}`;
@@ -369,21 +369,29 @@ export class Program {
     }
   }
 
-  lookupType(mod: Module, name: string, depth = 0): TypeSym | undefined {
+  /** Follows import-then-export chains of any length; a cycle (a (module, name) pair met twice) resolves to nothing (Q226). */
+  lookupType(mod: Module, name: string, seen: Set<string> = new Set()): TypeSym | undefined {
     const own = mod.types.get(name);
-    if (own || depth > 8) return own;
+    if (own) return own;
     const imp = mod.imports.get(name);
     if (!imp) return undefined;
+    const hop = `${mod.file}\0${name}`;
+    if (seen.has(hop)) return undefined;
+    seen.add(hop);
     const local = imp.mod.exports.get(imp.name);
-    return local === undefined ? undefined : this.lookupType(imp.mod, local, depth + 1);
+    return local === undefined ? undefined : this.lookupType(imp.mod, local, seen);
   }
-  lookupValue(mod: Module, name: string, depth = 0): ValueSym | undefined {
+  /** Follows import-then-export chains of any length; a cycle (a (module, name) pair met twice) resolves to nothing (Q226). */
+  lookupValue(mod: Module, name: string, seen: Set<string> = new Set()): ValueSym | undefined {
     const own = mod.values.get(name);
-    if (own || depth > 8) return own;
+    if (own) return own;
     const imp = mod.imports.get(name);
     if (!imp) return undefined;
+    const hop = `${mod.file}\0${name}`;
+    if (seen.has(hop)) return undefined;
+    seen.add(hop);
     const local = imp.mod.exports.get(imp.name);
-    return local === undefined ? undefined : this.lookupValue(imp.mod, local, depth + 1);
+    return local === undefined ? undefined : this.lookupValue(imp.mod, local, seen);
   }
 
   /** Resolves a type node (§3, §12). Unknown names are E2000; errors become ERROR (Q003 cascade). */

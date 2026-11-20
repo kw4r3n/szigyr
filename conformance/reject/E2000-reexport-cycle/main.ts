@@ -1,0 +1,7 @@
+// expect: E2000 @ 6:19
+// stage: 3
+// open-question: Q226
+import { f } from "./a.ts";
+export function main(sys: System): void {
+  sys.log.info(`${f(1)}`);
+}

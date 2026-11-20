@@ -146,6 +146,7 @@ reject/E1009-unsafe-twice.ts
 reject/E2000-bare-namespace-call.ts
 reject/E2000-new-array-builtin.ts
 reject/E2000-number-conversion-function.ts
+reject/E2000-reexport-cycle
 reject/E2000-reserved-i64-type.ts
 reject/E2000-undefined-variable.ts
 reject/E2000-unknown-type-name.ts
@@ -730,6 +731,7 @@ run/174-arena-generic-view-sees-c-write.ts
 run/175-arena-c-alloc-generic-view-sees-c-write.ts
 run/176-arena-generic-view-write-then-c-read.ts
 run/177-arena-generic-view-after-reset.ts
+run/178-reexport-chain-12
 run/18-trap-i32-unary-minus.ts
 run/19-trap-divtrunc-overflow.ts
 run/20-trap-array-index.ts

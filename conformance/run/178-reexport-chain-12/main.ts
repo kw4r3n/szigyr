@@ -1,0 +1,8 @@
+// expect-output: 8
+// stage: 3
+// open-question: Q226
+import { f, P } from "./m12.ts";
+export function main(sys: System): void {
+  const p: P = { x: 7 };
+  sys.log.info(`${f(p)}`);
+}
