@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
@@ -367,4 +367,12 @@ export function main(sys: System): void {
   const emptyXdg = spawnSync("node", [CLI, "run", "--backend=c", simpleTs], { encoding: "utf8", cwd: workDir, env: { ...process.env, XDG_CACHE_HOME: "" } });
   expect(emptyXdg.status).toBe(0);
   expect(existsSync(join(workDir, `${CLI_NAME}-native`))).toBe(false);
+});
+
+it("runs through a symlink to cli.ts and from a path containing % # ?", () => {
+  const d = mkdtempSync(join(tmpdir(), "sts-link-%#?-"));
+  symlinkSync(CLI, join(d, "sts"));
+  const r = spawnSync(join(d, "sts"), ["check", "--json", `${CONF}reject/E1001-var-in-function.ts`], { encoding: "utf8" });
+  expect(r.status).toBe(1);
+  expect(jsonLines(r.stdout)[0].code).toBe("E1001");
 });

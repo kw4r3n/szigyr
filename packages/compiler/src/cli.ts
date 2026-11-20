@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // CLI (Q060, Q061, Q110). Exit codes: 0 ok, 1 compile errors or failed tests, 2 usage / CLI error, 3 trap.
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { check, CLI_NAME, run, runTestFile, type Backend, type Diagnostic, type RunResult } from "./index.ts";
 import { CUnsupported } from "./emit-c.ts";
@@ -86,6 +87,6 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
   }
 }
 
-if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   process.exitCode = await main(process.argv.slice(2), (s) => process.stdout.write(s), (s) => process.stderr.write(s));
 }
