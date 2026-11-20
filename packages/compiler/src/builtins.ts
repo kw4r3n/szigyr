@@ -278,3 +278,6 @@ export function builtinMethods(): { owner: string; name: string; fx: Fx }[] {
   add("string", stringMembers());
   return out;
 }
+let banned: Set<string> | undefined;
+/** Q134: the method names a contract cannot call, judged by name over every builtin receiver (built on first use). */
+export const contractBanned = (): Set<string> => (banned ??= new Set(builtinMethods().filter((x) => !x.fx.contract).map((x) => x.name)));

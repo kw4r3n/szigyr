@@ -3,7 +3,7 @@
 import { NodeFlags, SyntaxKind as K, type Node, type ts } from "./parse.ts";
 import type { Checker } from "./checker.ts";
 import { tparamShells, type FnSym, type Layer, type LocalSym } from "./modules.ts";
-import { BUILTIN_FUNCTIONS, GLOBAL_AUTHORITIES, NAMESPACES, RESERVED, genMember, nsMember, opaqueMember, stringMember, type Member } from "./builtins.ts";
+import { BUILTIN_FUNCTIONS, GLOBAL_AUTHORITIES, NAMESPACES, RESERVED, contractBanned, genMember, nsMember, opaqueMember, stringMember, type Member } from "./builtins.ts";
 import { isDeterministic } from "./determinism.ts";
 import {
   BOOL, ERROR, ERROR_RECORD, F64, NEVER, NULL, NUM_NAMES, STR, UNKNOWN, USIZE, VOID, assignable, bindTParams, boxable, field, fn, gen, hasPtr, hasRawPtr, hasTParam,
@@ -1000,8 +1000,6 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
   throw new Error(`P2: unhandled builtin '${name}'`);
 }
 
-/** Builtin methods that change their receiver or the outside world (§3.3, §7.1, §7.4, §12). */
-const MUTATORS = new Set(["push", "pop", "reverse", "sort", "fill", "set", "delete", "clear", "add", "take", "put", "insert", "remove", "alloc", "reset", "write", "box", "unbox", "info", "warn", "error", "writeText", "nextF64", "nextU32", "call", "await", "advance"]);
 /** Q134: a contract only observes. Assignments and mutating builtin calls inside it are E6002; user calls are not analysed. */
 function observeOnly(c: Checker, root: Node): void {
   const walk = (n: Node): void => {
@@ -1013,7 +1011,7 @@ function observeOnly(c: Checker, root: Node): void {
       const p = (n as ts.CallExpression).expression as ts.PropertyAccessExpression;
       const recv = exprTypes.get(p.expression);
       const builtin = !recv || unref(nonNull(recv) ?? recv).k !== "class"; // a namespace (`Vec`, `Math`) has no type here
-      if (builtin && MUTATORS.has(p.name.text)) c.at("E6002", p.name, `a contract cannot call '${p.name.text}'`);
+      if (builtin && contractBanned().has(p.name.text)) c.at("E6002", p.name, `a contract cannot call '${p.name.text}'`);
     }
     const sig = n.kind === K.CallExpression || n.kind === K.NewExpression ? callSigs.get(n) : undefined;
     (n as ts.CallExpression).arguments?.forEach((a, i) => { // Q175: a contract neither consumes nor mutably borrows
