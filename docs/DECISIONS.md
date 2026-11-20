@@ -706,3 +706,10 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - 直し方: `sts_box_peek` を消し、`box` の中の記述子をそのままコピーして渡す。obj の位置には保持参照が残るが、借用した端点は値として JS に戻らず（返せない、移動できない）、`push` / `pop` は共有の領域の先頭と容量しか読まない。Struct のフィールドの端点を借用する場合（D123）と同じ扱いになる。D123 の「`borrow` で渡す端点の記述子は、参照から obj を復元したコピーにする」はこれで置き換える。
 - obj が JS に渡る経路がないことの確認: C の値を JS の値にするのは `outConv`（境界の戻り値）と `unbox`（`sts_box_unref`、JS のスレッド）だけである。借用した端点をそこへ運ぶ書き方は、検査器がすべて拒否する。`return p.borrow()`、`{ rx: p.borrow() }` は E3004（「`borrow` は借用の実引数か受け手にだけ書ける」）。借用のパラメータを返す、Struct に入れる、値渡しのパラメータに渡す、`Ptr.box` に入れる形も E3004。関数型パラメータに managed の関数を渡す形は E4001。`Port` は strict / rt に書けず、managed は `borrow` を書けない（unsafe）。最も直接の形を `reject/E3004-ptr-borrow-ring-returned.ts` で固定した。D123 が obj を戻していたのは、これらの経路がないことを確かめる前の用心で、obj を値として読む経路は当時もなかった（D123 自身が Struct のフィールドの場合をそう書いている）。
 - 確かめ方: 適合テスト `run/204-cfn-boxed-ring-borrow-thread.ts`（C 専用）。`RingRx<i32>` を直に `box` し、`stscb_thread` の C のスレッドで `borrow` して 2 回 pop する。直す前は `0`、`0`、直した後は `42`、`7`。
+
+## D152: 多相再帰は型パラメータのグラフで検査する（Q240 (a)、2026-11-20）
+
+- オーナー承認（2026-11-20）: Q240 は (a)。C バックエンドの入れ子の上限（32）と、その CUnsupported は消した。
+- `checker.ts` の `polyRec`。呼び出しの型引数（`callTArgs`）を `FnSite.targs` に持たせ、strict / rt のジェネリックな関数の呼び出しごとに、呼び出し元の型パラメータの id から呼び出し先の型パラメータの id へ辺を引く（`T` そのものなら増えない辺、ほかは増える辺）。増える辺の先から元へ戻れるなら E4010。
+- 呼び出し元が managed の関数は対象にしない（単相化しない）。
+- 確かめ方: reject の `E4010-polymorphic-recursion-direct`、`E4010-polymorphic-recursion-cycle`、run の `240-polymorphic-recursion-allowed-shapes`（両バックエンド）、`cli.test.ts` の E4010 の件。

@@ -355,9 +355,10 @@ export const INT_RANGE: Partial<Record<NumName, [number, number]>> = {
 };
 /** Whether a literal value fits the numeric type (E2008, Q015). */
 export function literalFits(value: number, t: NumName): boolean {
+  if (!Number.isFinite(value)) return false; // Q255: `1e400` would be a back door to Infinity
   const r = INT_RANGE[t];
   if (r) return Number.isInteger(value) && value >= r[0] && value <= r[1];
-  if (t === "f32") return !Number.isFinite(value) || Number.isFinite(Math.fround(value));
+  if (t === "f32") return Number.isFinite(Math.fround(value));
   return true;
 }
 

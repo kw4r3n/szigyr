@@ -708,7 +708,7 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
       }
       if (c.fx.contract && !isDeterministic(sym.sig, sym.layer === "rt" && sym.unsafe)) c.at("E6002", callee, `a contract can only call deterministic functions ('${sym.name}' is not)`);
       const got = callSig(c, sym.sig, e, callee, want, sym.layer === "managed" ? undefined : sym.layer);
-      if (sym.layer !== "managed") c.fnSites.push({ from: c.fn, callee: sym, refs: callFnArgs.get(e) ?? new Map(), node: callee, mod: c.mod }); // Q189 (b): E4005 per instantiation
+      if (sym.layer !== "managed") c.fnSites.push({ from: c.fn, callee: sym, refs: callFnArgs.get(e) ?? new Map(), node: callee, mod: c.mod, targs: callTArgs.get(e) }); // Q189 (b): E4005 per instantiation
       return got;
     }
     if (sym?.k === "cfn") { // §14.1 / §14.3: unsafe callers only; rt + unsafe drops the Ffi argument
