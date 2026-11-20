@@ -5,3 +5,6 @@ dist/
 
 # stage 3-6 fixture build output (stscb)
 conformance/fixtures/stscb/.build/
+
+# agent worktrees
+.claude/
