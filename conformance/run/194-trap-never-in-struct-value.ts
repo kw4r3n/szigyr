@@ -1,0 +1,15 @@
+// expect-output: 3
+// expect-trap: T006 @ 8:21
+// stage: 3
+// The trapping path of a struct-valued `??` with a `never` right side (D140).
+type S = Struct<{ readonly x: i32 }>;
+function orPanic(v: Mut<Vec<S>>): S {
+  "use owned";
+  return v.pop() ?? panic("missing");
+}
+export function main(sys: System): void {
+  const v = Vec.create<S>(sys.alloc, 1);
+  v.push({ x: 3 });
+  sys.log.info(`${orPanic(v).x}`);
+  sys.log.info(`${orPanic(v).x}`);
+}

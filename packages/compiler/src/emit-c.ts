@@ -674,6 +674,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     /** Value of type `from` stored where `to` is expected: wraps into / out of `T | null`. */
     conv(v: string, from: Type, to0: Type): string {
       const to = unref(to0);
+      if (from.k === "prim" && from.name === "never" && !(to.k === "prim" && (to.name === "never" || to.name === "void"))) return `((${ctype(to, this.where)}){0})`; // D140: dead path after a trap, but still a typed value
       if (to.k === "union" && isTaggedUnion(to) && from.k === "record") { // a member into its union
         const i = memberOf(to, kindOf(from)!);
         return `((${ctype(to, this.where)}){ .m${i} = ${v} })`;

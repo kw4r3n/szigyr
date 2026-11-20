@@ -632,3 +632,4 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 
 - C1: `Ptr.box<T>(alloc, x)` は、サイズとレイアウトを引数の型でなく `T` から決める。`T` が `i32 | null` や 2 つの variant を持つタグ付き union のとき、引数の型（`i32` や片方の variant）で確保すると、4 バイトしか取らず `unbox` が 0 を返し、タグが 0 に固定された。`conv` で `T` に広げてから書く。ケースは run の `190-ptr-box-nullable`、`191-ptr-box-tagged`（どちらも C のみ）。
 - C2: 代入の対象が括弧で包まれていても（`(a[0]) = 99`、`(v[1]) += 1`、`(o.x) += 1`）、`emit.ts` の `binary` と `emit-c.ts` の `assign` は `assignTarget`（Q133）で括弧を外してから出力する。外さないと JS は `Invalid left-hand side`、C は `CUnsupported`、`(o.x) += 1` は受け手を 2 回評価した。ケースは run の `192-paren-assign-target`。
+- C3: `panic(...)` などの `never` の呼び出しが値の位置にあるとき、C の出力は `0` を返していたため、構造体の型の一時変数（Struct、Result、Handle）への代入が C のコンパイルエラーになった。`conv` が `never` から値の型への変換で、その型のゼロ値 `((T){0})` を返す。トラップの後の到達しない経路にだけ現れる。ケースは run の `193-never-in-struct-value`、`194-trap-never-in-struct-value`。

@@ -1,0 +1,33 @@
+// expect-output: 5 5 6 20
+// stage: 3
+// A `never` call in a struct-valued `??` / `?:` yields a typed zero on the dead path (D140).
+type S = Struct<{ readonly x: i32 }>;
+function orPanic(v: Mut<Vec<S>>): S {
+  "use owned";
+  return v.pop() ?? panic("missing");
+}
+function pick(flag: boolean, a: S): S {
+  "use owned";
+  return flag ? a : panic("bad");
+}
+function resPick(flag: boolean, r: Result<i32, i32>): Result<i32, i32> {
+  "use owned";
+  return flag ? r : panic("bad");
+}
+function hdl(p: Mut<Pool<i32>>): i32 {
+  "use owned";
+  const g: Handle<i32> = p.insert(20) ?? panic("full");
+  return p.get(g);
+}
+function val(r: Result<i32, i32>): i32 {
+  "use owned";
+  return r.kind === "ok" ? r.value : -1;
+}
+export function main(sys: System): void {
+  const pool = Pool.create<i32>(sys.alloc, 2);
+  const v = Vec.create<S>(sys.alloc, 1);
+  v.push({ x: 5 });
+  const a = orPanic(v);
+  const b = pick(true, { x: 5 });
+  sys.log.info(`${a.x} ${b.x} ${val(resPick(true, ok(6)))} ${hdl(pool)}`);
+}
