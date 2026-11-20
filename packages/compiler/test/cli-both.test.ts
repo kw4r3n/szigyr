@@ -1,3 +1,6 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 
 // Q266: stubbed backends, since no program can make the two backends register a different number of tests.
@@ -9,7 +12,9 @@ const { main } = await import("../src/cli.ts");
 
 it("test --backend=both reports a differing result count as a mismatch and exits 1 (Q266)", async () => {
   let out = "";
-  const code = await main(["test", "--json", "--backend=both", new URL(import.meta.url).pathname], (s) => (out += s), () => {});
+  const f = join(mkdtempSync(join(tmpdir(), "sts-both-")), "t.ts");
+  writeFileSync(f, 'test("a", (t: Test) => {\n  t.ok(true);\n});\n'); // the real analysis runs on this tiny STS file; the stub supplies the results
+  const code = await main(["test", "--json", "--backend=both", f], (s) => (out += s), () => {});
   expect(code).toBe(1);
   expect(out).toContain('"kind":"mismatch"');
 });

@@ -694,7 +694,7 @@ function isolateCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpre
 
 function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
   // `a?.m(args)`: the arguments may not run (Q133)
-  if (e.flags & NodeFlags.OptionalChain && !optCall.has(e)) { optCall.add(e); return c.branch(() => call(c, e, want)); }
+  if (e.flags & NodeFlags.OptionalChain && !optCall.has(e)) { optCall.add(e); try { return c.branch(() => call(c, e, want)); } finally { optCall.delete(e); } } // D161: the marker must not outlive this visit; a shared parser hands the next entry the same nodes
   const callee = e.expression;
   if (isId(callee) && !c.scope.lookup(callee.text)) {
     const sym = c.prog.lookupValue(c.mod, callee.text);

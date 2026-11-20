@@ -511,3 +511,22 @@ export async function main(sys: System): Promise<void> {
   const j = sts("run", "--json", join(dir, "m.ts"));
   expect(jsonLines(j.err)[0]).toMatchObject({ kind: "trap", code: "T006", message: expect.stringContaining("boom in isolate") });
 }, 60000);
+
+// D161: files that share a module are checked with one tsgo process, which hands back the same AST nodes; the checker's per-node markers (`optCall`) must not leak from one entry's check into the next.
+it("check a.ts b.ts reports what each file reports alone, also with a repeated entry (D161)", () => {
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-`));
+  writeFileSync(join(dir, "shared.ts"), `class A { m(s: string | null): usize { return 1; } }
+export function main(sys: System): void {
+  let x: string | null = null;
+  const a: A | null = sys.clock.nowMs() < 0 ? new A() : null;
+  const r = a?.m(x = "a");
+  sys.log.info(\`\${x.length}\`);
+}
+`);
+  for (const n of ["a", "b"]) writeFileSync(join(dir, `${n}.ts`), `import { main } from "./shared.ts";\nexport function ${n}(): i32 {\n  return 1;\n}\n`);
+  const a = join(dir, "a.ts"), b = join(dir, "b.ts");
+  const alone = sts("check", "--json", b).out;
+  expect(alone).toContain("E2002");
+  expect(sts("check", "--json", a, b).out).toBe(sts("check", "--json", a).out + alone);
+  expect(sts("check", "--json", b, a, b).out).toBe(alone + sts("check", "--json", a).out + alone);
+});
