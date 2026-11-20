@@ -1,9 +1,9 @@
 // P2 checker (D012): declarations, statements, control flow, narrowing. Expressions live in expr.ts.
-import { NodeFlags, SyntaxKind as K, type Node, type ts } from "./parse.ts";
+import { NodeFlags, SyntaxKind as K, hasMod, isId, type Node, type ts } from "./parse.ts";
 import { Program, declBindings, legalUnion, type ClassValueSym, type FnSym, type Layer, type LocalSym, type Module, type ValueSym } from "./modules.ts";
 import { PROMISE_CONTAINERS, assignTarget, checkTo, exprTypes, hasPromise, cond, expr, isLitOnly, localOf, promiseOk, type FnArgRef } from "./expr.ts";
 import {
-  AUTHORITIES, ERROR, NEVER, NULL, STR, VOID, assignable, hasAuthority, hasPtr, layerOk, crossOk, ptrTargetOk, field, isBool, isErr, isNull, isTaggedUnion, kindOf, nonNull, same, show, subst, bindTParams, unref, union,
+  AUTHORITIES, ERROR, NEVER, NULL, STR, VOID, assignable, hasAuthority, hasPtr, layerOk, crossOk, ptrTargetOk, field, isBool, isErr, isNull, isTaggedUnion, kindOf, nonNull, same, show, subst, bindTParams, unref, union, subUnion,
   type ClassSym, type FnType, type TParam, type Type,
 } from "./types.ts";
 
@@ -37,8 +37,6 @@ export class Scope {
 }
 
 let localId = 0;
-const isId = (n: Node | undefined): n is ts.Identifier => n?.kind === K.Identifier;
-const hasMod = (n: Node, k: K): boolean => !!(n as Node & { modifiers?: ts.NodeArray<ts.ModifierLike> }).modifiers?.some((m) => m.kind === k);
 
 /** A call to a strict / rt function, or through a function-typed parameter (Q189 (b); see Checker.fnSites). */
 export interface FnSite { from: FnSym | undefined; callee: FnSym | number; refs: Map<number, FnArgRef>; node: Node; mod: Module }
@@ -146,14 +144,14 @@ export class Checker {
         const t = r && unref(r.type);
         if (r && t && isTaggedUnion(t)) {
           const v = (y as ts.StringLiteral).text;
-          out.set(r.key, union(t.members.filter((m) => (kindOf(m) === v) === eq)));
+          out.set(r.key, subUnion(t.members.filter((m) => (kindOf(m) === v) === eq)));
         }
       } else if (y.kind === K.StringLiteral) { // x === "a" on a string-literal union
         const r = this.keyOf(x);
         if (r && r.type.k === "union" && r.type.members.every((m) => m.k === "lit")) {
           const v = (y as ts.StringLiteral).text;
           const rest = r.type.members.filter((m) => (m.k === "lit" && m.value === v) === eq);
-          if (rest.length) out.set(r.key, union(rest));
+          if (rest.length) out.set(r.key, subUnion(rest));
         }
       }
     }
@@ -225,7 +223,6 @@ export class Checker {
           }
           break;
         case K.ExpressionStatement: expr(this, (s as ts.ExpressionStatement).expression); break; // test(...) (§9.2)
-        case K.InterfaceDeclaration: this.ifaceMethods(s as ts.InterfaceDeclaration); break;
       }
     }
   }
@@ -340,7 +337,6 @@ export class Checker {
     }
   }
 
-  private ifaceMethods(_d: ts.InterfaceDeclaration): void { /* signatures were resolved in Program */ }
 
   /** Module-level const and static field initializers (Q054, Q072). */
   private moduleConst(t: Type, init: ts.Expression): void {
@@ -681,7 +677,7 @@ export class Checker {
       this.narrow = new Map(this.narrow);
       if (tagged && !this.killedSince(m0).has(tagged.key.split(".")[0]!)) {
         const ms = tagged.members.filter((m) => fall.includes(kindOf(m)!));
-        if (ms.length) this.narrow.set(tagged.key, union(ms));
+        if (ms.length) this.narrow.set(tagged.key, subUnion(ms));
       }
       const r = this.blockNoScope(c.statements);
       if (!r) fall = [];

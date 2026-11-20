@@ -84,7 +84,7 @@ STS は仮称。この文書が言語の唯一の規範である。
 ### 3.2 managed の複合型
 
 - **レコード**: `type P = { readonly x: f64; y: f64 }`。閉じた正確な型。余剰プロパティ不可、幅による部分型なし。省略可能プロパティ（`?`）は禁止（E1008）。
-- **タグつき union**: 各メンバがレコードで、共通フィールド `kind` に互いに異なる文字列リテラル型を持つ。絞り込みは `x.kind === "..."` と `switch (x.kind)`。`switch` は全メンバを網羅すること（E2005）。
+- **タグつき union**: 各メンバがレコードで、共通フィールド `kind` に互いに異なる文字列リテラル型を持つ。絞り込みは `x.kind === "..."` と `switch (x.kind)`。`switch` は全メンバを網羅すること（E2005）。全メンバが持つフィールドは union のまま読める。union を通した代入は、全メンバでそのフィールドの型が同じで、どのメンバでも `readonly` でないときだけ許す（それ以外は E2002、Q234）。
 - **文字列リテラルの union**: `type Color = "red" | "green"`。
 - **`T | null`**: 絞り込みは `x === null` / `x !== null`。`??` と `?.` を使える。
 - 上記以外の union と intersection は禁止。
@@ -718,8 +718,8 @@ rt かつ unsafe の関数は、権限なしで C の関数を呼べる（§14.3
   1. 数値型、`boolean`、`null`、`string`、文字列リテラル型とその union。
   2. 全フィールドが `readonly` で、各フィールドの型が送れる型であるレコード。そのようなレコードだけからなるタグつき union。`T` が送れる型である `T | null`。
   3. Copy の Struct。
-  4. 所有型のうち、`CHandle` を含まないもの（`Vec<T>`、非 Copy の Struct、`RingTx<T>`、`RingRx<T>`）。`Pool<T>`、`Arena`、`ArenaBuf<T>` と、それらを含む型は送れない（アリーナの番号は isolate ごとに 1 から振るので、別の isolate の `ArenaBuf` が `view` の番号と世代の検査を通りうる）。`Handle<T>` は Copy 型で、無効なハンドルは T011 で止まるので送れる（Q210）。
-  - `Array`、`ReadonlyArray`、`Map`、`Set`、class、関数、権限、`unknown`、`JsRef`、`Promise`、`Port`、`OwnedCell`、`CHandle` と、これらを含む型は送れない。
+  4. 所有型のうち、`CHandle` を含まないもの（`Vec<T>`、非 Copy の Struct、`RingTx<T>`、`RingRx<T>`）。`Pool<T>`、`Arena`、`ArenaBuf<T>` と、それらを含む型は送れない（アリーナの番号は isolate ごとに 1 から振るので、別の isolate の `ArenaBuf` が `view` の番号と世代の検査を通りうる）。`Handle<T>` は Copy 型で、無効なハンドルは T011 で止まるので送れる（Q210）。ただし `T` が送れない型を含むなら送れない。型パラメータを持つ Struct のフィールドも、この一覧の検査を受ける（Q236）。
+  - `Array`、`ReadonlyArray`、`Map`、`Set`、class、関数、権限、`unknown`、`JsRef`、`Promise`、`Port`、`OwnedCell`、`CHandle`、`Ptr`、`ConstPtr`、`CType` と、これらを含む型は送れない（Q236）。
 - 1〜3 の値はコピーして渡す（深く不変なので、コピーか共有かは観測できない）。所有型の値は移動する。`Vec` の領域は相手の isolate に移る（ArrayBuffer の移譲）。リングの端点は同じ共有の領域を指したまま移る。
 - `R` が所有型を含むとき、`port.recv()` は `await` のオペランドとしてだけ書ける（§5.6 の E3007 の例外。ほかの位置は E3007）。結果の `R | null` は `const` のローカル変数に受け、`x !== null` で絞り込んでから、変数全体を移動して使う（§3.3 の `T | null` の Copy の条件の例外）（Q207）。
 - `main` が終わると（同期に戻るか、返した `Promise` が解決すると）、まだ動いている isolate は止められ、届いていないメッセージは捨てられる（Q207）。

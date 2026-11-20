@@ -3,7 +3,7 @@
 import { resolve } from "node:path";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
-import { LanguageVariant, NodeFlags, SyntaxKind, type Node, type SourceFile } from "typescript/unstable/ast";
+import { LanguageVariant, NodeFlags, SyntaxKind, type Identifier, type ModifierLike, type NodeArray, type Node, type SourceFile } from "typescript/unstable/ast";
 import { createScanner } from "typescript/unstable/ast/scanner";
 import type { Position } from "./diagnostics.ts";
 
@@ -102,3 +102,6 @@ function wrap(path: string, sf: SourceFile, syntaxErrors: SyntaxError[]): Parsed
     },
   };
 }
+
+export const isId = (n: Node | undefined): n is Identifier => n?.kind === SyntaxKind.Identifier;
+export const hasMod = (n: Node, k: SyntaxKind): boolean => !!(n as Node & { modifiers?: NodeArray<ModifierLike> }).modifiers?.some((m) => m.kind === k);

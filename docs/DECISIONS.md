@@ -640,3 +640,16 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - C6（Q240）: `emit-c.ts` の `inst` が、型引数の入れ子の深さ（`show` した文字列の `<` と `{` の深さ）が 32 を超える具体化を CUnsupported で止める。`show` が深い型で落ちる前、かつ具体化が無限に増える前に止まる。テストは `cli.test.ts` の「a polymorphically recursive strict function stops the C backend quickly」（終了コード 2、`RangeError` なし、同じ型引数での再帰は js / c の両方で動く）。
 - C7 / C8: `emit-c.ts` の記号の解決 3 つ（`resolveValue`、`resolveFn`、`resolveConst`）は `Program.lookupValue`（`modules.ts`）と同じ再エクスポートの追跡（Q226）だったので消し、`prog.lookupValue` を使う。`boundary.ts`（検査側の W8001）が C バックエンドから import していたのも、これでなくなる。違いは循環の検出の鍵だけ（`pf.path` と、表示名の `file`）で、表示名が重なる 2 つのファイルがない限り同じ。`lookupType` と `lookupValue` は、表だけが違う（`types` と `values`）ので、1 つの private な `follow` にまとめた。挙動は変わらない。
 - C9: 参照のなくなった `TRAP` / `TRAP_CODES`（`emit-c.ts`）、`sts_mulr`（`c/sts_rt.h`）、`emitC` の使っていない引数 `display`（`index.ts` の呼び出しも）、`arith` の使っていない `lo` / `hi` を消した。消す前に、名前の参照が定義だけなのを `grep -rnw` で確かめた。挙動は変わらない。
+## D136: 診断の重複除去と大きなタグつき union の絞り込みを線形に近づけた（監査の修正、2026-11-20）
+
+- `Reporter.report`（`modules.ts`）の重複除去（Q133）を、毎回 `out` を線形に探す形から、コード・ファイル・開始オフセットの鍵を持つ `Set` に変えた。挙動は同じで、30000 件の診断でも二乗にならない。
+- `types.ts` の `union()` は、文字列リテラルの重複を `Set` で除く（それ以外は今までどおり `same` で比べる）。`x.kind` の読み取りのたびに、メンバ数の二乗の比較が走っていた。`x.kind === "..."` の絞り込みと `switch` は、union 自身のメンバの部分列を作るだけなので、重複の検査を通さない `subUnion` で作る（`checker.ts`）。タグ 1000 個の if の連鎖は 6.6 秒から 1 秒弱になった。
+
+## D137: 使われていない宣言と重複した小さな関数の整理（監査の修正、2026-11-20）
+
+- 空の `ifaceMethods` とその呼び出し、`LANG_NAME`（定義だけで、どこからも参照されていなかった）を消した。`isId` と `hasMod` は 5 つのファイルに複製があったので、`parse.ts` の 1 か所に置いて import する。`modules.ts` の、`checkInsts` の説明が別のメソッドの上に置かれていたコメントは、`checkInsts` の上に移した。挙動は変えない。
+
+## D138: 三項演算子のリテラルの文脈を両方向にした、`t.traps` に T015 を通した（監査の修正、2026-11-20）
+
+- `conditional`（`expr.ts`）は、真の側がリテラルで偽の側がそうでないとき、偽の側を先に型づけして、その型を真の側の文脈にする（§3.1。二項演算子と `??` と同じ向きの規則）。ほかの組み合わせは今までどおり。
+- `t.traps` の第 1 引数の検査（Q058）は T015（Q198。実装済み）も受理し、`TrapCode` の型に `"T015"` を足した。

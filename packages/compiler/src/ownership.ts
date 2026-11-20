@@ -1,5 +1,5 @@
 // P3 (D070): ownership and borrowing (§5), run only when P1 and P2 report nothing (Q003). Reads P2's types and symbols.
-import { NodeFlags, SyntaxKind as K, type Node, type ts } from "./parse.ts";
+import { NodeFlags, SyntaxKind as K, isId, type Node, type ts } from "./parse.ts";
 import type { LocalSym, Module, Program } from "./modules.ts";
 import { assignTarget, callSigs, exprTypes, localOf } from "./expr.ts";
 import { genFx } from "./builtins.ts";
@@ -31,7 +31,6 @@ export interface SliceGroupEntry { arg: number; mut: boolean; name: Node }
 export const sliceGroups = new WeakMap<Node, SliceGroupEntry[][]>();
 interface Frame { loop: boolean; depth: number; breaks: State[]; continues: State[]; moves: { sym: LocalSym; node: Node }[] }
 
-const isId = (n: Node | undefined): n is ts.Identifier => n?.kind === K.Identifier;
 const strip = (e: ts.Expression): ts.Expression => {
   while (e.kind === K.ParenthesizedExpression) e = (e as ts.ParenthesizedExpression).expression;
   return e;
@@ -611,8 +610,8 @@ class Flow {
       if (v) this.exclusive(u.node, u.sym);
     });
     // Q190 (b): record the slice groups the emitters must check at runtime (T013).
-    const byRoot = new Map<number, Use[]>();
-    for (const u of uses) if (u.slice && !u.ptrSlice && u.arg >= 0) { const l = byRoot.get(u.sym.id) ?? []; l.push(u); byRoot.set(u.sym.id, l); }
+    const byRoot = new Map<string, Use[]>(); // keyed by root and field path: slices of two fields are different memory (Q239)
+    for (const u of uses) if (u.slice && !u.ptrSlice && u.arg >= 0) { const k = `${u.sym.id}:${u.path.join(".")}`, l = byRoot.get(k) ?? []; l.push(u); byRoot.set(k, l); }
     const groups: SliceGroupEntry[][] = [];
     for (const l of byRoot.values()) {
       if (l.length < 2) continue;

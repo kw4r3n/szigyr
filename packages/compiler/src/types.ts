@@ -75,11 +75,15 @@ export const newTParam = (name: string, constraint?: Type): TParam => ({ name, i
 
 /** Flattened union; a single member collapses. Duplicates (by identity) are dropped. */
 export function union(ts: Type[]): Type {
-  const out: Type[] = [];
-  for (const t of ts.flatMap((x) => (x.k === "union" ? x.members : [x]))) if (!out.some((o) => same(o, t))) out.push(t);
+  const out: Type[] = [], lits = new Set<string>(); // string literals dedup by hash: the tags of a big tagged union are read on every `x.kind`
+  for (const t of ts.flatMap((x) => (x.k === "union" ? x.members : [x]))) {
+    if (t.k === "lit") { if (!lits.has(t.value)) { lits.add(t.value); out.push(t); } } else if (!out.some((o) => same(o, t))) out.push(t);
+  }
   return out.length === 1 ? out[0]! : { k: "union", members: out };
 }
-export const nullable = (t: Type): Type => union([t, NULL]);
+/** A sub-list of a union's own members: already flat and duplicate-free, so `union()`'s quadratic dedup is skipped (narrowing a big tagged union). */
+export const subUnion = (ms: Type[]): Type => (ms.length === 1 ? ms[0]! : { k: "union", members: ms });
+export const nullable =(t: Type): Type => union([t, NULL]);
 /** `T | null` -> T; otherwise undefined. */
 export function nonNull(t: Type): Type | undefined {
   if (t.k !== "union" || !t.members.some(isNull)) return undefined;
@@ -376,6 +380,7 @@ export function crossOk(t: Type, ret = false): boolean {
   t = unref(t);
   switch (t.k) {
     case "prim": return t.name === "null" ? false : t.name === "never" ? ret : true;
+    case "lit": return !/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(t.value); // a lone surrogate would become U+FFFD in the C string (Q238)
     case "record": return t.fields.every((f) => crossOk(f.type));
     case "union": { const n = nonNull(t); return n ? crossOk(n, ret) : t.members.every((m) => crossOk(m)); }
     default: return true;
@@ -477,7 +482,7 @@ export function hasArenaBuf(t: Type): boolean {
  * (their ids are per-isolate), a CHandle, or one of the types §15.2 lists as unsendable. */
 function hasUnsendable(t: Type): boolean {
   switch (t.k) {
-    case "gen": return t.name === "Pool" || t.name === "Arena" || t.name === "ArenaBuf" || t.name === "CHandle" ||
+    case "gen": return t.name === "Pool" || t.name === "Arena" || t.name === "ArenaBuf" || t.name === "CHandle" || t.name === "Ptr" || t.name === "ConstPtr" || t.name === "CType" ||
       t.name === "Array" || t.name === "ReadonlyArray" || t.name === "Map" || t.name === "Set" || t.name === "Promise" ||
       t.name === "Port" || t.name === "OwnedCell" || t.args.some(hasUnsendable);
     case "record": return t.fields.some((f) => hasUnsendable(f.type));
@@ -497,10 +502,13 @@ export function sendable(t: Type): boolean {
     case "num": case "lit": return true;
     case "prim": return t.name === "boolean" || t.name === "null" || t.name === "string";
     case "union": return t.members.every(sendable);
-    case "record": return t.struct ? !hasUnsendable(t) : t.fields.every((f) => f.readonly && sendable(f.type));
+    case "record": { // a Struct's type parameters get the `send` demand like a Vec's (Q236); no short-circuit, so every field is visited
+      if (t.struct) return t.fields.map((f) => sendable(f.type)).every(Boolean) && !hasUnsendable(t);
+      return t.fields.every((f) => f.readonly && sendable(f.type));
+    }
     case "gen":
       if (t.name === "Vec" || t.name === "RingTx" || t.name === "RingRx") { t.args.forEach((a) => void sendable(a)); return !hasUnsendable(t); }
-      return t.name === "Handle";
+      return t.name === "Handle" && !hasUnsendable(t);
     default: return false;
   }
 }
