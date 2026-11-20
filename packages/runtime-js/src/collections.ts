@@ -1,4 +1,4 @@
-import { trap, type Pos } from "./trap.ts";
+import { trap, type Pos, type TrapCode } from "./trap.ts";
 import type { NumType } from "./num.ts";
 
 const inBounds = (i: number, len: number): boolean => Number.isInteger(i) && i >= 0 && i < len;
@@ -543,6 +543,20 @@ export class OwnedCell<T> {
   }
   isEmpty(): boolean { return !this.full; }
 }
+
+/** The host object the C addon calls back into: traps (D103) and container creation (D102). The
+ * main thread's loader and each isolate's bootstrap pass their own runtime's copy to `init`. */
+export const NATIVE_HOST = {
+  trap: (code: number, file: string, line: number, col: number): never => trap(`T${String(code).padStart(3, "0")}` as TrapCode, "trap in C", file ? { file, line, col } : undefined),
+  create: (alloc: unknown, cap: number, elem: ElemKind): unknown => Vec.create(alloc, cap, elem),
+  createPool: (alloc: unknown, cap: number, elem: ElemKind): unknown => Pool.create(alloc, cap, elem),
+  createArena: (alloc: unknown, bytes: number): unknown => Arena.create(alloc, bytes),
+  createRing: (alloc: unknown, cap: number, elem: ElemKind): unknown => Ring.create(alloc, cap, elem),
+  adoptRing: (v: RingTx | RingRx, elem: ElemKind): void => v.adopt(elem),
+  adoptPool: (v: Pool, elem: ElemKind): void => v.adopt(elem),
+  adopt: (v: Vec | Slice, elem: ElemKind): void => v.adopt(elem),
+  reserve: (v: Vec, cap: number, len: number): void => v.reserve(cap, len),
+};
 
 /** undefined -> null (Map.get, find, ?. ...). */
 export const nn = <T>(x: T | undefined): T | null => (x === undefined ? null : x);

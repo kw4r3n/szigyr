@@ -165,25 +165,12 @@ export function rtTrapSites(entryFile: string): Record<string, TrapSite[]> {
 export type Backend = "js" | "c";
 export interface RunOptions { backend?: Backend }
 
-/** The host object the C addon calls back into: traps (D103) and Vec creation (D102). */
-const HOST = {
-  trap: (code: number, file: string, line: number, col: number): never => rt.trap(`T${String(code).padStart(3, "0")}` as rt.TrapCode, "trap in C", file ? { file, line, col } : undefined),
-  create: (alloc: unknown, cap: number, elem: rt.ElemKind): unknown => rt.Vec.create(alloc, cap, elem),
-  createPool: (alloc: unknown, cap: number, elem: rt.ElemKind): unknown => rt.Pool.create(alloc, cap, elem),
-  createArena: (alloc: unknown, bytes: number): unknown => rt.Arena.create(alloc, bytes),
-  createRing: (alloc: unknown, cap: number, elem: rt.ElemKind): unknown => rt.Ring.create(alloc, cap, elem),
-  adoptRing: (v: rt.RingTx | rt.RingRx, elem: rt.ElemKind): void => v.adopt(elem),
-  adoptPool: (v: rt.Pool, elem: rt.ElemKind): void => v.adopt(elem),
-  adopt: (v: rt.Vec | rt.Slice, elem: rt.ElemKind): void => v.adopt(elem),
-  reserve: (v: rt.Vec, cap: number, len: number): void => v.reserve(cap, len),
-};
-
 /** Emits every file and evaluates them as module factories in memory (D031). Returns the entry's exports and, for a C backend program, its native module. */
 async function load(files: ParsedFile[], entryFile: string, tests: boolean, decls?: Decls, backend: Backend = "js"): Promise<{ ex: Record<string, unknown>; native: Record<string, (...a: unknown[]) => unknown> | undefined }> {
   const entry = canonPath(entryFile);
   rt.takeIsolateTrap(); // D144: a record a previous program in this process left behind is not this program's
   const c = backend === "c" && decls ? emitC(decls) : undefined;
-  const native = c ? loadNative(c.c, HOST, c.pkgs) : undefined;
+  const native = c ? loadNative(c.c, rt.NATIVE_HOST, c.pkgs) : undefined;
   // §15.4 (2): a foreign trap (a C thread's, or an isolate's) is polled at every task boundary
   // (emit wraps each await in rt.task; Port.recv checks too). The first one recorded wins.
   rt.setForeignTrapCheck(() => {
