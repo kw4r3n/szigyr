@@ -1052,7 +1052,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
         }
         if (ns === "Ptr" && m === "box") { // §14.4 (Q209): a Copy value is stored packed (§10.2), an owned value in its C form
           this.ex(e.arguments[0]!); // the Alloc is a capability only; C needs nothing of it
-          const vt = this.typeOf(e.arguments[1]!);
+          const vt = elemOf(t);
           const xv = this.t(vt, this.conv(this.ex(e.arguments[1]!), this.typeOf(e.arguments[1]!), vt), e);
           const pos = this.pos(p.name), b = `t${this.tmp++}`;
           if (isCopy(vt)) {
