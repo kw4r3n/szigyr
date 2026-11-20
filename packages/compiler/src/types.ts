@@ -4,7 +4,7 @@ import { layout } from "./layout.ts";
 
 export type NumName = "f64" | "f32" | "i8" | "i16" | "i32" | "u8" | "u16" | "u32" | "usize";
 export const NUM_NAMES: readonly NumName[] = ["f64", "f32", "i8", "i16", "i32", "u8", "u16", "u32", "usize"];
-export type PrimName = "boolean" | "string" | "null" | "void" | "unknown" | "never";
+type PrimName = "boolean" | "string" | "null" | "void" | "unknown" | "never";
 /** Builtin generic types (§3.2, §3.3). */
 export type GenName = "Array" | "ReadonlyArray" | "Map" | "Set" | "Promise" | "Vec" | "Slice" | "Pool" | "Handle" | "Arena" | "ArenaBuf" | "RingTx" | "RingRx" | "Ref" | "Mut" | "OwnedCell" | "Ptr" | "ConstPtr" | "CType" | "CHandle" | "Port";
 export const GEN_ARITY: Record<GenName, number> = {
@@ -169,7 +169,7 @@ export function assignable(s: Type, t: Type, arg = false): boolean {
   return false;
 }
 /** An `implements` clause type, with the class's own type parameters replaced by the instance's arguments. */
-export const substClass = (t: Type, inst: { cls: ClassSym; args: Type[] }): Type => subst(t, bindTParams(inst.cls.tparams, inst.args));
+const substClass = (t: Type, inst: { cls: ClassSym; args: Type[] }): Type => subst(t, bindTParams(inst.cls.tparams, inst.args));
 
 export const bindTParams = (ps: TParam[], args: Type[]): Map<number, Type> => new Map(ps.map((p, i) => [p.id, args[i] ?? ERROR]));
 
@@ -318,7 +318,7 @@ export function show(t: Type): string {
 }
 
 /** `Map` key / `Set` element types (§3.2, Q081). Type parameters cannot be checked here. */
-export const keyOk = (t: Type): boolean =>
+const keyOk = (t: Type): boolean =>
   t.k === "error" || t.k === "tparam" || t.k === "num" || t.k === "lit" || (t.k === "prim" && (t.name === "string" || t.name === "boolean")) ||
   (t.k === "union" && t.members.every((m) => m.k === "lit"));
 
@@ -335,7 +335,7 @@ export function castable(t: Type): boolean {
 }
 
 /** `Test.eq` operands (§9.2, Q086): no owned values, function values or authorities anywhere inside. */
-export function comparable(t: Type): boolean {
+function comparable(t: Type): boolean {
   switch (t.k) {
     case "fn": case "opaque": case "ns": case "iter": return false;
     case "record": return !isOwned(t) && t.fields.every((f) => comparable(f.type));
@@ -349,7 +349,7 @@ export function comparable(t: Type): boolean {
 export const structField = (t: Type): boolean => t.k === "error" || t.k === "tparam" || t.k === "num" || isBool(t) || (t.k === "record" && t.struct) || (t.k === "gen" && (t.name === "Vec" || t.name === "Pool" || t.name === "Handle" || t.name === "Arena" || t.name === "ArenaBuf" || t.name === "RingTx" || t.name === "RingRx" || t.name === "CHandle" || t.name === "Ptr" || t.name === "ConstPtr" || t.name === "CType")); // Arena as a field: Q214; CHandle as a field: §14.5. Ptr / CType in a field are the checker's E4008 / E4007, not E4002
 
 /** Integer ranges (§3.1). */
-export const INT_RANGE: Partial<Record<NumName, [number, number]>> = {
+const INT_RANGE: Partial<Record<NumName, [number, number]>> = {
   i8: [-128, 127], i16: [-32768, 32767], i32: [-2147483648, 2147483647],
   u8: [0, 255], u16: [0, 65535], u32: [0, 4294967295], usize: [0, 4294967295],
 };
@@ -469,7 +469,7 @@ export function hasPtr(t: Type): boolean {
   }
 }
 /** §15.1 (Q210): `t` is or contains an `ArenaBuf`, which a ring element may not be (the endpoints are isolate-sendable). */
-export function hasArenaBuf(t: Type): boolean {
+function hasArenaBuf(t: Type): boolean {
   switch (t.k) {
     case "gen": return t.name === "ArenaBuf" || t.args.some(hasArenaBuf);
     case "record": return t.fields.some((f) => hasArenaBuf(f.type));

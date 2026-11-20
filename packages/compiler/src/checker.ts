@@ -7,7 +7,7 @@ import {
   type ClassSym, type FnType, type TParam, type Type,
 } from "./types.ts";
 
-export interface FnCtx {
+interface FnCtx {
   mod: Module;
   layer: Layer;
   /** Declared return type (Promise unwrapped for async); undefined: inferred (arrow without annotation). */
@@ -29,7 +29,7 @@ export interface FnCtx {
   unsafe: boolean;
 }
 
-export class Scope {
+class Scope {
   readonly vars = new Map<string, LocalSym>();
   readonly parent: Scope | undefined;
   constructor(parent?: Scope) { this.parent = parent; }
