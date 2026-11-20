@@ -1519,7 +1519,7 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
 - 選択肢:
   - (a) union を通した代入は、全メンバでフィールドの型が同じで、どのメンバでも `readonly` でないときだけ許す。それ以外は E2002。
   - (b) 今のまま（Q076 の既定案）。
-- 既定案: (a)。読み取りは Q076 のまま。ケースは reject の `E2002-union-common-field-write-differing`、run の `190-union-common-field-write-same-type`。
+- 既定案: (a)。読み取りは Q076 のまま。ケースは reject の `E2002-union-common-field-write-differing`、run の `199-union-common-field-write-same-type`。
 
 ### Q235 型を決められない配列リテラル（`["a", null]`、`[1, null]`、`[null, null]`）（監査の修正）
 - 関連: §3.2、Q021、Q030
@@ -1552,7 +1552,7 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
   - (a) 孤立サロゲートを含む文字列リテラル型は、strict / rt の関数の境界を越えられない型とする（E4002。Q233 と同じ `crossOk`）。サロゲートペア（絵文字）と整形式の非 ASCII は受理する。
   - (b) C 側のリテラルの書き方を変えて、JS と同じ値にする。
   - (c) 今のまま。
-- 既定案: (a)。ケースは reject の `E4002-strict-return-lone-surrogate-literal`、run の `192-strict-return-surrogate-pair-literal`。
+- 既定案: (a)。ケースは reject の `E4002-strict-return-lone-surrogate-literal`、run の `201-strict-return-surrogate-pair-literal`。
 ### Q252 利用者の入力の誤りと内部エラーの終了コード
 - 関連: Q060、Q061、Q110
 - 状況: Q110 は終了コードを 0 / 1 / 2 / 3 と決めたが、次の入力の誤りがスタックトレースつきの内部エラー（終了コード 1）になっていた。(a) ディレクトリを入口のファイルとして渡す、(b) 解決できない `npm:` の import を `run` する（`ERR_MODULE_NOT_FOUND`）、(c) 数千項の式や深いネストで検査器のスタックが尽きる（`RangeError`）。1 は「診断あり・テスト失敗」と同じなので、`--json` の利用者が内部エラーと区別できない。
