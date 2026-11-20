@@ -21,4 +21,4 @@ Put it in `accept/`, `reject/` or `run/`. The header lives in the entry file, fr
    executing), since `check` never reports E4009.
 4. Optional `// open-question: Q012` lines (ignored by the harness).
 
-Messages are never compared. Commands: `pnpm conformance` (run), `pnpm verify:conformance` (static checks).
+Messages are never compared. Commands: `pnpm conformance` (run), `pnpm verify:conformance` (static checks). A versioned pre-push hook runs `pnpm typecheck && pnpm test`: enable it with `git config core.hooksPath scripts/hooks` (skip once with `git push --no-verify`); it does not run the conformance suite.
