@@ -611,8 +611,8 @@ class Flow {
       if (v) this.exclusive(u.node, u.sym);
     });
     // Q190 (b): record the slice groups the emitters must check at runtime (T013).
-    const byRoot = new Map<number, Use[]>();
-    for (const u of uses) if (u.slice && !u.ptrSlice && u.arg >= 0) { const l = byRoot.get(u.sym.id) ?? []; l.push(u); byRoot.set(u.sym.id, l); }
+    const byRoot = new Map<string, Use[]>(); // keyed by root and field path: slices of two fields are different memory (Q239)
+    for (const u of uses) if (u.slice && !u.ptrSlice && u.arg >= 0) { const k = `${u.sym.id}:${u.path.join(".")}`, l = byRoot.get(k) ?? []; l.push(u); byRoot.set(k, l); }
     const groups: SliceGroupEntry[][] = [];
     for (const l of byRoot.values()) {
       if (l.length < 2) continue;

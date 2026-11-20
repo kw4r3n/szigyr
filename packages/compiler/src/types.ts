@@ -380,6 +380,7 @@ export function crossOk(t: Type, ret = false): boolean {
   t = unref(t);
   switch (t.k) {
     case "prim": return t.name === "null" ? false : t.name === "never" ? ret : true;
+    case "lit": return !/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(t.value); // a lone surrogate would become U+FFFD in the C string (Q238)
     case "record": return t.fields.every((f) => crossOk(f.type));
     case "union": { const n = nonNull(t); return n ? crossOk(n, ret) : t.members.every((m) => crossOk(m)); }
     default: return true;

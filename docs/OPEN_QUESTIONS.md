@@ -1528,3 +1528,20 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
   - (a) Struct のフィールドも送れる型の検査に通し（型パラメータには `send` の条件）、`Handle<T>` は `T` が送れない型を含まないときだけ送れる。`Ptr`、`ConstPtr`、`CType` を含む型は、一覧にない型として送れない（E2010）。
   - (b) 今のまま。
 - 既定案: (a)。`Ptr` 系は一覧が許可リストなので送れない側に倒した。ケースは reject の `E2010-port-generic-struct-arena`、`E2010-port-generic-struct-chandle`、`E2010-port-handle-of-arenabuf`。
+
+### Q239 1 つの呼び出しで、別々の Struct フィールドの `slice` を実行時の重なりの検査に入れるか（監査の修正）
+- 関連: §5.5、Q190、D113
+- 状況: Q190 (b) の `slice` のグループは根の変数だけで束ねていて、フィールドパスを見なかった。`copy(p.a.slice(0, 1), p.b.slice(0, 1))` は別々の `Vec` なのに、重なりの検査（T013）が入り、rt のトラップ箇所の一覧にも T013 が載った。
+- 選択肢:
+  - (a) グループの鍵を根とフィールドパスにする。別のフィールドの `slice` は検査しない。同じフィールドの `slice` どうし、アリーナの `view`（パスが空）は今までどおり検査する。
+  - (b) 今のまま。
+- 既定案: (a)。Q190 (a) の「別のフィールドは別の場所」と同じ見方。テストは `check.test.ts` の「slices of two different Struct fields」。
+
+### Q238 孤立サロゲートを含む文字列リテラル型を、strict / rt の境界で渡せるか（監査の修正）
+- 関連: §3.3、§10.2、Q229、Q233
+- 状況: C バックエンドは文字列リテラル型（タグの `kind` の値）を UTF-8 で書く。JS の文字列の孤立サロゲート（`"\ud800"`）は UTF-8 にできず U+FFFD になるので、strict の関数が返す `{ kind: "\ud800" } | { kind: "\ufffd" }` が JS と C で別の値になり、`--backend=both` が不一致を報告した。
+- 選択肢:
+  - (a) 孤立サロゲートを含む文字列リテラル型は、strict / rt の関数の境界を越えられない型とする（E4002。Q233 と同じ `crossOk`）。サロゲートペア（絵文字）と整形式の非 ASCII は受理する。
+  - (b) C 側のリテラルの書き方を変えて、JS と同じ値にする。
+  - (c) 今のまま。
+- 既定案: (a)。ケースは reject の `E4002-strict-return-lone-surrogate-literal`、run の `192-strict-return-surrogate-pair-literal`。
