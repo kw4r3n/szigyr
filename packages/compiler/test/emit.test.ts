@@ -142,6 +142,41 @@ export async function main(sys: System): Promise<void> {
       expect(r.trap).toMatchObject({ code: "T006", line: 3, col: 3 });
     }
   }, 120000);
+
+  it("an isolate resolves each npm: import from the importing module's own directory", async () => {
+    const main = project({
+      "main.ts": `import { tripled } from "./sub/lib.ts";
+function echo(port: Port<f64, f64>): void {
+  port.send(2);
+}
+export async function main(sys: System): Promise<void> {
+  const p = sys.spawn.isolate(echo);
+  const x = await p.recv();
+  if (x !== null) {
+    sys.log.info(\`\${tripled(sys.js, x)}\`);
+  }
+}
+`,
+      "sub/lib.ts": `import { triple } from "npm:subpkg";
+export function tripled(js: Js, x: f64): f64 {
+  const r = js.call(triple, [js.encode<f64>(x)]);
+  if (r.kind === "ok") {
+    const d = js.decode<f64>(r.value);
+    if (d.kind === "ok") {
+      return d.value;
+    }
+  }
+  return -1;
+}
+`,
+      "sub/node_modules/subpkg/package.json": JSON.stringify({ name: "subpkg", type: "module", main: "index.js" }),
+      "sub/node_modules/subpkg/index.js": "export const triple = (x) => x * 3;\n",
+    });
+    const r = await run(main);
+    expect(r.diagnostics).toEqual([]);
+    expect(r.trap).toBeNull();
+    expect(r.stdout).toBe("6\n");
+  }, 120000);
 });
 
 describe("Q035: JS exceptions and stack exhaustion are T006 at the callee name", () => {

@@ -5,7 +5,7 @@ import { setIsolateProgram, spawnIsolate, takeIsolateTrap } from "../src/index.t
 async function failure(js: string, name: string): Promise<ReturnType<typeof takeIsolateTrap>> {
   takeIsolateTrap();
   setIsolateProgram({
-    files: [["/m.ts", { js, imports: [], calls: [] }]], entry: "/m.ts",
+    files: [["/m.ts", { js, imports: [], calls: [] }]],
     runtimeUrl: new URL("../src/index.ts", import.meta.url).href,
     stdUrl: new URL("../../std/src/index.ts", import.meta.url).href,
     nativePath: null, rtName: "RT", impName: "IMP", exportsName: "EX", framePattern: "^$",

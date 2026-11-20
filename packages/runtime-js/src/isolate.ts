@@ -106,7 +106,6 @@ export class Port {
 /** What an isolate needs to load the same program: the emitted module factories and the hosts' parts. */
 export interface IsolateProgram {
   files: [string, { js: string; imports: string[]; calls: [string, Pos][] }][];
-  entry: string;
   runtimeUrl: string;
   stdUrl: string;
   nativePath: string | null;
@@ -214,12 +213,12 @@ const { pathToFileURL } = require("node:url");
     return undefined;
   });
   const npm = new Map();
-  for (const [, e] of files) {
+  for (const [path, e] of files) {
     for (const spec of e.imports) {
       if (!spec.startsWith("npm:") || npm.has(spec)) continue;
       const name = spec.slice(4);
       let url = name;
-      try { url = pathToFileURL(createRequire(workerData.entry).resolve(name)).href; } catch { /* fall back to Node's own resolution */ }
+      try { url = pathToFileURL(createRequire(path).resolve(name)).href; } catch { /* fall back to Node's own resolution */ }
       npm.set(spec, await import(url));
     }
   }

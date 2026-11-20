@@ -220,7 +220,6 @@ async function load(files: ParsedFile[], entryFile: string, tests: boolean, decl
   // §15.2: an isolate loads this same program in a Worker; the runtime keeps what it needs here.
   rt.setIsolateProgram({
     files: [...emitted].map(([path, e]) => [path, { js: e.js, imports: e.imports, calls: [...e.calls] }] as [string, { js: string; imports: string[]; calls: [string, rt.Pos][] }]),
-    entry,
     runtimeUrl: new URL("../../runtime-js/src/index.ts", import.meta.url).href,
     stdUrl: new URL("../../std/src/index.ts", import.meta.url).href,
     nativePath: native ? (nativePathOf(native) ?? null) : null,
