@@ -430,6 +430,14 @@ function ringAlloc<T>(cap: number, elem: ElemKind): SharedArrayBuffer {
   const z = elem.startsWith("{") ? codecOf(elem).z : NUM_SIZE[elem]!;
   return new SharedArrayBuffer(RING_ELEMS + cap * z);
 }
+/** A ring made where its element type was a type parameter switches to the representation of `elem` (C boundary, D105); the queued values move in. */
+function ringAdopt<T>(s: RingShared<T>, elem: ElemKind): void {
+  if (s.sab || elem === "other") return;
+  ringAttach(s, ringAlloc(s.cap, elem), elem);
+  for (let i = 0; i < s.queue.length; i++) ringWrite(s, i, s.queue[i]!);
+  Atomics.store(s.pos!, 1, s.queue.length);
+  s.queue = [];
+}
 
 export class RingTx<T = unknown> {
   private s: RingShared<T>;
@@ -441,14 +449,7 @@ export class RingTx<T = unknown> {
   /** The capacity the C backend reads (sts_ring_in). */
   get cap(): number { return this.s.cap; }
   /** C boundary: switch a type-parameter element to its concrete representation (like Vec.adopt). */
-  adopt(elem: ElemKind): void {
-    const s = this.s;
-    if (s.sab || elem === "other") return;
-    ringAttach(s, ringAlloc(s.cap, elem), elem);
-    for (let i = 0; i < s.queue.length; i++) ringWrite(s, i, s.queue[i]!);
-    Atomics.store(s.pos!, 1, s.queue.length);
-    s.queue = [];
-  }
+  adopt(elem: ElemKind): void { ringAdopt(this.s, elem); }
   push(x: T): boolean {
     const s = this.s;
     if (!s.sab) {
@@ -475,14 +476,7 @@ export class RingRx<T = unknown> {
   /** The capacity the C backend reads (sts_ring_in). */
   get cap(): number { return this.s.cap; }
   /** C boundary: switch a type-parameter element to its concrete representation (like Vec.adopt). */
-  adopt(elem: ElemKind): void {
-    const s = this.s;
-    if (s.sab || elem === "other") return;
-    ringAttach(s, ringAlloc(s.cap, elem), elem);
-    for (let i = 0; i < s.queue.length; i++) ringWrite(s, i, s.queue[i]!);
-    Atomics.store(s.pos!, 1, s.queue.length);
-    s.queue = [];
-  }
+  adopt(elem: ElemKind): void { ringAdopt(this.s, elem); }
   pop(): T | null {
     const s = this.s;
     if (!s.sab) return s.queue.length ? s.queue.shift()! : null;
