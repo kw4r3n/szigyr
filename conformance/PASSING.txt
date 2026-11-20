@@ -774,6 +774,7 @@ run/180-module-destructure-const
 run/181-contract-user-method-builtin-name.ts
 run/182-strict-boundary-types.ts
 run/183-strict-generic-never-return-only.ts
+run/184-contract-user-static-method-builtin-name.ts
 run/19-trap-divtrunc-overflow.ts
 run/20-trap-array-index.ts
 run/21-trap-vec-index.ts

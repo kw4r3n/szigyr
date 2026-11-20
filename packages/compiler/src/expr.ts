@@ -1006,7 +1006,7 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
  * A user interface / class / record-field method is not banned here. Fail closed: a receiver whose type is unknown,
  * an error, or not one of the kinds below falls back to the name over every builtin receiver (`contractBanned`).
  */
-function bannedCall(p: ts.PropertyAccessExpression, recv: Type | undefined): boolean {
+function bannedCall(c: Checker, p: ts.PropertyAccessExpression, recv: Type | undefined): boolean {
   const n = p.name.text;
   const bad = (m: Member | "variadic" | undefined): boolean => m !== undefined && m !== "variadic" && m.kind === "method" && !m.fx.contract;
   const by = (t: Type): boolean => {
@@ -1021,7 +1021,12 @@ function bannedCall(p: ts.PropertyAccessExpression, recv: Type | undefined): boo
       default: return contractBanned().has(n);
     }
   };
-  if (!recv) return isId(p.expression) && NAMESPACES.has(p.expression.text) ? bad(nsMember(p.expression.text, n)) : contractBanned().has(n); // a namespace (`Vec`, `Math`) has no type
+  if (!recv) {
+    if (!isId(p.expression)) return contractBanned().has(n);
+    const id = p.expression.text;
+    if (NAMESPACES.has(id)) return bad(nsMember(id, n)); // a namespace (`Vec`, `Math`) has no type
+    return c.prog.lookupValue(c.mod, id)?.k === "class" ? false : contractBanned().has(n); // a static call on a user class (Q232)
+  }
   return by(recv);
 }
 
@@ -1034,7 +1039,7 @@ function observeOnly(c: Checker, root: Node): void {
       c.at("E6002", n, "a contract cannot assign");
     } else if (n.kind === K.CallExpression && (n as ts.CallExpression).expression.kind === K.PropertyAccessExpression) {
       const p = (n as ts.CallExpression).expression as ts.PropertyAccessExpression;
-      if (bannedCall(p, exprTypes.get(p.expression))) c.at("E6002", p.name, `a contract cannot call '${p.name.text}'`);
+      if (bannedCall(c, p, exprTypes.get(p.expression))) c.at("E6002", p.name, `a contract cannot call '${p.name.text}'`);
     }
     const sig = n.kind === K.CallExpression || n.kind === K.NewExpression ? callSigs.get(n) : undefined;
     (n as ts.CallExpression).arguments?.forEach((a, i) => { // Q175: a contract neither consumes nor mutably borrows
