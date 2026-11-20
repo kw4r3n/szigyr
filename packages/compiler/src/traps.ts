@@ -3,7 +3,8 @@ import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts
 import { directiveOf } from "./modules.ts";
 import { exprTypes, localOf } from "./expr.ts";
 import { sliceGroups } from "./ownership.ts";
-import { isInt, unref, type Type } from "./types.ts";
+import { isInt, type Type } from "./types.ts";
+import { genFx } from "./builtins.ts";
 
 export interface TrapSite { code: string; line: number; col: number }
 
@@ -51,18 +52,9 @@ export function trapSites(pf: ParsedFile): Record<string, TrapSite[]> {
             if (ret?.k === "num" && ret.name === "usize") add("T003", c); // §14.2 (D121)
           }
           for (const code of CALL_TRAPS[name] ?? []) add(code, c);
-        } else if (c.kind === K.PropertyAccessExpression && (c as ts.PropertyAccessExpression).name.text === "slice") {
-          const r = exprTypes.get((c as ts.PropertyAccessExpression).expression);
-          const u = r && unref(r);
-          if (u?.k === "gen" && (u.name === "Vec" || u.name === "Slice")) add("T002", (c as ts.PropertyAccessExpression).name);
-        } else if (c.kind === K.PropertyAccessExpression && ["get", "set", "remove"].includes((c as ts.PropertyAccessExpression).name.text)) {
-          const r = exprTypes.get((c as ts.PropertyAccessExpression).expression);
-          const u = r && unref(r);
-          if (u?.k === "gen" && u.name === "Pool") add("T011", (c as ts.PropertyAccessExpression).name); // Q188 (a)
-        } else if (c.kind === K.PropertyAccessExpression && (c as ts.PropertyAccessExpression).name.text === "view") {
-          const r = exprTypes.get((c as ts.PropertyAccessExpression).expression);
-          const u = r && unref(r);
-          if (u?.k === "gen" && u.name === "Arena") add("T012", (c as ts.PropertyAccessExpression).name); // Q188 (b)
+        } else if (c.kind === K.PropertyAccessExpression) { // D132: e.g. `slice` T002, Pool T011 (Q188 (a)), `view` T012 (Q188 (b))
+          const pa = c as ts.PropertyAccessExpression;
+          for (const code of genFx(exprTypes.get(pa.expression), pa.name.text)?.traps ?? []) add(code, pa.name);
         }
         // Q190 (b): a runtime-checked slice group can trap T013 at each later entry that may overlap an earlier Mut pair.
         for (const g of sliceGroups.get(n) ?? []) for (let j = 1; j < g.length; j++) if (g.slice(0, j).some((w) => w.mut || g[j]!.mut)) add("T013", g[j]!.name);
