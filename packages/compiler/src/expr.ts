@@ -292,7 +292,8 @@ function lookupMember(c: Checker, t: Type, name: ts.Identifier, inCall: boolean)
       const fs = t.members.map((m) => field(m, n));
       if (!isTaggedUnion(t) || fs.some((f) => !f)) return missing("E2002");
       // writing the tag through the union could flip it under a caller's narrowing (Q122)
-      return { kind: "value", type: union(fs.map((f) => f!.type)), readonly: n === "kind" || fs.every((f) => f!.readonly) };
+      // a write through the union is sound only if every member's field has one type (Q234)
+      return { kind: "value", type: union(fs.map((f) => f!.type)), readonly: n === "kind" || fs.some((f) => f!.readonly) || fs.some((f) => !same(f!.type, fs[0]!.type)) };
     }
     case "tparam": return t.p.constraint ? lookupMember(c, t.p.constraint, name, inCall) : missing("E2002");
     case "gen": {

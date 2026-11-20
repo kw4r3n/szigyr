@@ -1504,3 +1504,11 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
   - (c) 今のまま。
 - 既定案: (c)。
 - 2026-11-20 オーナー決定: (a)。コードは E4002（意味は「strict / rt で使えない型」。Q229 と同じ種類の条件で、新しいコードは作らない）。拒否する集合は `crossOk`（`types.ts`）が判定する: `null` そのもの、`Result` の `null` の側や `null` のフィールドを持つレコード、`never` のパラメータ（戻り値の `never` は可）。`T | null` は `T` を見る。型パラメータは新しい need「cross」で、パラメータ・戻り値の直接の位置（`T`、`T | null`、レコードと `Result` の要素）にあるものだけに付き、具体化で `crossOk` を調べる。署名は `checker.ts` の `layerSig` が調べる。strict から strict の呼び出しは、C が全ての strict / rt の関数に入口を作るので、同じ規則で拒否になる（C が今も扱えるのは本体の中の `null` で、これは制限しない）。managed のジェネリックな関数は対象外。調べた範囲で、ほかに「受理されるが C で止まる」境界の型は `never` のパラメータだけだった。他の型（数値、`boolean`、リテラル、Struct、タグつき union、`T | null`、`Vec`、`Pool`、`Handle`、`Arena`、`ArenaBuf`、リング、`Ptr`、`CHandle`、権限）は入口が通る（D135）。
+
+### Q234 タグつき union の共通フィールドへの代入（監査の修正）
+- 関連: §3.2、Q076、Q122
+- 状況: Q076 の既定案は読み取りの規則で、代入にも同じ型（各メンバのフィールド型の union）を使っていた。`type A = {kind:"a"; v:i32} | {kind:"b"; v:f64}` で `x.v = 1.5` が通り、`kind === "a"` で絞った後の `i32` の変数が 1.5 を持った。また、一部のメンバだけ `readonly` のフィールドにも、union を通せば書けた。
+- 選択肢:
+  - (a) union を通した代入は、全メンバでフィールドの型が同じで、どのメンバでも `readonly` でないときだけ許す。それ以外は E2002。
+  - (b) 今のまま（Q076 の既定案）。
+- 既定案: (a)。読み取りは Q076 のまま。ケースは reject の `E2002-union-common-field-write-differing`、run の `190-union-common-field-write-same-type`。
