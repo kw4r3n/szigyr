@@ -1,6 +1,6 @@
 // §12 allowlist for P2 (D010): builtin type names, global values, namespace and member tables (signatures from Q032, Q033, Q038).
 import {
-  BOOL, ERROR_RECORD, F64, NULL, STR, UNKNOWN, USIZE, VOID, fn, gen, newTParam, nullable, num, opaque, result, record, ro,
+  BOOL, ERROR_RECORD, F64, NULL, STR, UNKNOWN, USIZE, VOID, fn, gen, newTParam, nullable, num, opaque, result, record, ro, unref,
   type FnType, type GenName, type NumName, type Type, NUM_NAMES, GEN_ARITY, OPAQUE_NAMES,
 } from "./types.ts";
 import { DETMATH_BINARY, DETMATH_UNARY } from "./detmath.ts";
@@ -38,226 +38,238 @@ export function builtinType(name: string): Type | undefined {
 }
 export const isGenName = (n: string): n is GenName => Object.hasOwn(GEN_ARITY, n);
 
+/**
+ * D132: the effects of a builtin method, declared once next to its signature and read by the other passes.
+ * - `recv`: how the receiver is borrowed (§3.3, §14.4, §15.1; ownership.ts). `param`: only as a borrowed argument (else E3004),
+ *   in the parameter's mode. `none`: not borrowed (managed values, authorities, `Ptr`, namespaces).
+ * - `mutates`: changes the receiver or the outside world.
+ * - `contract`: callable inside a contract (Q134: judged by the name over every builtin receiver, E6002 when false; expr.ts).
+ * - `traps`: the codes the §6 rt trap-site list gives at the member name (traps.ts).
+ */
+export interface Fx { recv: "ref" | "mut" | "param" | "none"; mutates: boolean; contract: boolean; traps: readonly string[] }
+const fx = (recv: Fx["recv"], mutates: boolean, contract = !mutates, traps: readonly string[] = []): Fx => ({ recv, mutates, contract, traps });
+const RD = fx("none", false), WR = fx("none", true), REF = fx("ref", false), MUT = fx("mut", true), PARAM = fx("param", false);
+const Q230 = fx("none", true, true); // changes state, yet a contract may call it (Q230: kept as before)
+
 export type Member =
   | { kind: "prop"; type: Type; readonly: boolean }
   /** `managedOnly`: E4001 from strict / rt (Q044). */
-  | { kind: "method"; sig: FnType; managedOnly?: boolean };
+  | { kind: "method"; sig: FnType; fx: Fx; managedOnly?: boolean };
+type Members = Record<string, Member>;
 
 const prop = (type: Type): Member => ({ kind: "prop", type, readonly: true });
-const m = (params: Type[], ret: Type, extra: Partial<FnType> = {}): Member => ({ kind: "method", sig: { ...fn(params, ret), ...extra } });
+const m = (f: Fx, params: Type[], ret: Type, extra: Partial<FnType> = {}): Member => ({ kind: "method", sig: { ...fn(params, ret), ...extra }, fx: f });
 const cb = (params: Type[], ret: Type): FnType => ({ ...fn(params, ret), prefix: true });
 const mo = (x: Member): Member => ({ ...x, managedOnly: true } as Member);
 const ioResult = (t: Type): Type => result(t, ERROR_RECORD);
+const pick = <M>(sigs: Record<string, M>, name: string): M | undefined => (Object.hasOwn(sigs, name) ? sigs[name] : undefined);
+const mapValues = (o: Members, f: (x: Member) => Member): Members => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, f(v)]));
 
-const LOG: Record<string, Member> = { info: m([STR], VOID), warn: m([STR], VOID), error: m([STR], VOID) };
-const RANDOM: Record<string, Member> = { nextF64: m([], F64), nextU32: m([], num("u32")) };
-const FS: Record<string, Member> = { readText: m([STR], ioResult(STR)), writeText: m([STR, STR], ioResult(NULL)) };
+const LOG: Members = { info: m(WR, [STR], VOID), warn: m(WR, [STR], VOID), error: m(WR, [STR], VOID) };
+const RANDOM: Members = { nextF64: m(WR, [], F64), nextU32: m(WR, [], num("u32")) };
+const FS: Members = { readText: m(RD, [STR], ioResult(STR)), writeText: m(WR, [STR, STR], ioResult(NULL)) };
 
-function opaqueMember(name: string, member: string): Member | undefined {
+/** Members of an opaque builtin type. */
+export function opaqueMembers(name: string): Members {
   const lit = (v: string): Type => ({ k: "lit", value: v });
-  const table: Record<string, () => Record<string, Member>> = {
+  const table: Record<string, () => Members> = {
     System: () => ({ alloc: prop(opaque("Alloc")), fs: prop(opaque("Fs")), clock: prop(opaque("Clock")), random: prop(opaque("Random")), log: prop(opaque("Log")), js: prop(opaque("Js")), ffi: prop(opaque("Ffi")), spawn: prop(opaque("Spawn")) }),
     Log: () => LOG,
-    Clock: () => ({ nowMs: m([], F64) }),
+    Clock: () => ({ nowMs: m(RD, [], F64) }),
     Random: () => RANDOM,
     Fs: () => FS,
     Alloc: () => ({}),
     Ffi: () => ({}), // §14: the Ffi value itself has no members; it is only passed to C functions
     // §15.2: `isolate` never reaches callSig; expr.ts checks the call itself (E2011) because the
     // argument is a function *name*, not a value. This entry only lets member() resolve the name.
-    Spawn: () => ({ isolate: m([UNKNOWN], VOID) }),
+    Spawn: () => ({ isolate: m(Q230, [UNKNOWN], VOID) }),
     JsRef: () => ({}),
     Js: () => {
       const J = opaque("JsRef"), jr = result(J, ERROR_RECORD);
       const T = newTParam("T"), U = newTParam("T"), A = newTParam("T");
       return {
         // Q128: the callback gets its one argument from JS, checked like `decode` does.
-        callback: m([fn([result({ k: "tparam", p: A }, ERROR_RECORD)], VOID)], J, { tparams: [A], tcheck: "cast" }),
-        call: m([J, gen("Array", J)], jr), get: m([J, STR], jr), await: m([J], gen("Promise", jr)),
-        decode: m([J], result({ k: "tparam", p: T }, ERROR_RECORD), { tparams: [T], tcheck: "cast" }), encode: m([{ k: "tparam", p: U }], J, { tparams: [U], tcheck: "cast" }), // Q128
+        callback: m(RD, [fn([result({ k: "tparam", p: A }, ERROR_RECORD)], VOID)], J, { tparams: [A], tcheck: "cast" }),
+        call: m(WR, [J, gen("Array", J)], jr), get: m(RD, [J, STR], jr), await: m(WR, [J], gen("Promise", jr)),
+        decode: m(RD, [J], result({ k: "tparam", p: T }, ERROR_RECORD), { tparams: [T], tcheck: "cast" }), encode: m(RD, [{ k: "tparam", p: U }], J, { tparams: [U], tcheck: "cast" }), // Q128
       };
     },
     Test: () => {
       const T = newTParam("T"), U = newTParam("T");
       const tT: Type = { k: "tparam", p: T }, tU: Type = { k: "tparam", p: U };
       return mapValues({
-        ok: m([BOOL], VOID), eq: m([tT, tT], VOID, { tparams: [T], tcheck: "eq" }),
-        eqSlice: m([gen("Ref", gen("Slice", tU)), gen("Ref", gen("Slice", tU))], VOID, { tparams: [U] }),
-        traps: m([STR, fn([], VOID)], VOID, { tcheck: "trap" }),
+        ok: m(RD, [BOOL], VOID), eq: m(RD, [tT, tT], VOID, { tparams: [T], tcheck: "eq" }),
+        eqSlice: m(RD, [gen("Ref", gen("Slice", tU)), gen("Ref", gen("Slice", tU))], VOID, { tparams: [U] }),
+        traps: m(RD, [STR, fn([], VOID)], VOID, { tcheck: "trap" }),
       }, mo);
     },
-    FakeClock: () => ({ nowMs: m([], F64), advance: m([F64], VOID) }),
+    FakeClock: () => ({ nowMs: m(RD, [], F64), advance: m(WR, [F64], VOID) }),
     SeededRandom: () => RANDOM,
-    MemoryLog: () => ({ ...LOG, entries: m([], gen("Array", record([ro("level", { k: "union", members: [lit("info"), lit("warn"), lit("error")] }), ro("message", STR)]))) }),
+    MemoryLog: () => ({ ...LOG, entries: m(RD, [], gen("Array", record([ro("level", { k: "union", members: [lit("info"), lit("warn"), lit("error")] }), ro("message", STR)]))) }),
     FakeFs: () => FS,
   };
-  const t = table[name]?.();
-  return t && Object.hasOwn(t, member) ? t[member] : undefined;
+  return Object.hasOwn(table, name) ? table[name]!() : {};
 }
-const mapValues = (o: Record<string, Member>, f: (x: Member) => Member): Record<string, Member> => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, f(v)]));
+export const opaqueMember = (name: string, member: string): Member | undefined => pick(opaqueMembers(name), member);
 
-export function stringMember(name: string): Member | undefined {
-  const sigs: Record<string, Member> = {
+export function stringMembers(): Members {
+  return {
     length: prop(USIZE),
-    slice: m([USIZE, USIZE], STR, { min: 1 }), indexOf: m([STR], nullable(USIZE)), includes: m([STR], BOOL), startsWith: m([STR], BOOL),
-    endsWith: m([STR], BOOL), split: m([STR], gen("Array", STR)), trim: m([], STR), toUpperCase: m([], STR), toLowerCase: m([], STR),
-    padStart: m([USIZE, STR], STR), padEnd: m([USIZE, STR], STR), replaceAll: m([STR, STR], STR),
-    charCodeAt: m([USIZE], num("u16")), codePointAt: m([USIZE], nullable(num("u32"))),
+    slice: m(RD, [USIZE, USIZE], STR, { min: 1 }), indexOf: m(RD, [STR], nullable(USIZE)), includes: m(RD, [STR], BOOL), startsWith: m(RD, [STR], BOOL),
+    endsWith: m(RD, [STR], BOOL), split: m(RD, [STR], gen("Array", STR)), trim: m(RD, [], STR), toUpperCase: m(RD, [], STR), toLowerCase: m(RD, [], STR),
+    padStart: m(RD, [USIZE, STR], STR), padEnd: m(RD, [USIZE, STR], STR), replaceAll: m(RD, [STR, STR], STR),
+    charCodeAt: m(RD, [USIZE], num("u16")), codePointAt: m(RD, [USIZE], nullable(num("u32"))),
   };
-  return Object.hasOwn(sigs, name) ? sigs[name] : undefined;
 }
+export const stringMember = (name: string): Member | undefined => pick(stringMembers(), name);
 
-function arrayMember(name: string, T: Type, readonly: boolean): Member | undefined {
+function arrayMembers(T: Type, readonly: boolean): Members {
   const A = newTParam("A"), U = newTParam("U");
   const tA: Type = { k: "tparam", p: A }, tU: Type = { k: "tparam", p: U };
   const pred = cb([T, USIZE], BOOL);
-  const sigs: Record<string, Member> = {
+  const sigs: Members = {
     length: prop(USIZE),
-    slice: m([USIZE, USIZE], gen("Array", T), { min: 0 }),
-    map: m([cb([T, USIZE], tU)], gen("Array", tU), { tparams: [U] }),
-    filter: m([pred], gen("Array", T)),
-    reduce: m([cb([tA, T, USIZE], tA), tA], tA, { tparams: [A] }),
-    forEach: m([cb([T, USIZE], VOID)], VOID),
-    find: m([pred], nullable(T)), findIndex: m([pred], nullable(USIZE)), some: m([pred], BOOL), every: m([pred], BOOL),
-    includes: m([T], BOOL), indexOf: m([T], nullable(USIZE)), join: m([STR], STR, { min: 0 }),
-    concat: m([gen("ReadonlyArray", T)], gen("Array", T)),
+    slice: m(RD, [USIZE, USIZE], gen("Array", T), { min: 0 }),
+    map: m(RD, [cb([T, USIZE], tU)], gen("Array", tU), { tparams: [U] }),
+    filter: m(RD, [pred], gen("Array", T)),
+    reduce: m(RD, [cb([tA, T, USIZE], tA), tA], tA, { tparams: [A] }),
+    forEach: m(RD, [cb([T, USIZE], VOID)], VOID),
+    find: m(RD, [pred], nullable(T)), findIndex: m(RD, [pred], nullable(USIZE)), some: m(RD, [pred], BOOL), every: m(RD, [pred], BOOL),
+    includes: m(RD, [T], BOOL), indexOf: m(RD, [T], nullable(USIZE)), join: m(RD, [STR], STR, { min: 0 }),
+    concat: m(RD, [gen("ReadonlyArray", T)], gen("Array", T)),
   };
   if (!readonly) {
     Object.assign(sigs, {
-      push: m([T], USIZE), pop: m([], nullable(T)), reverse: m([], gen("Array", T)),
-      sort: m([cb([T, T], F64)], gen("Array", T)), fill: m([T, USIZE, USIZE], gen("Array", T), { min: 1 }),
+      push: m(WR, [T], USIZE), pop: m(WR, [], nullable(T)), reverse: m(WR, [], gen("Array", T)),
+      sort: m(WR, [cb([T, T], F64)], gen("Array", T)), fill: m(WR, [T, USIZE, USIZE], gen("Array", T), { min: 1 }),
     });
   }
-  return Object.hasOwn(sigs, name) ? sigs[name] : undefined;
+  return sigs;
 }
 
-/** Members of builtin generic types. undefined = not in the allowlist (E2001). */
-export function genMember(t: { name: GenName; args: Type[] }, name: string): Member | undefined {
+/** Members of builtin generic types. */
+export function genMembers(t: { name: GenName; args: Type[] }): Members {
   const [a, b] = t.args as [Type, Type];
   switch (t.name) {
-    case "Array": return arrayMember(name, a, false);
-    case "ReadonlyArray": return arrayMember(name, a, true);
-    case "Map": {
-      const sigs: Record<string, Member> = {
-        get: m([a], nullable(b)), set: m([a, b], t as Type), has: m([a], BOOL), delete: m([a], BOOL), size: prop(USIZE), clear: m([], VOID),
-        keys: m([], { k: "iter", elem: a }), values: m([], { k: "iter", elem: b }), forEach: m([cb([b, a], VOID)], VOID),
-      };
-      return Object.hasOwn(sigs, name) ? sigs[name] : undefined;
-    }
-    case "Set": {
-      const sigs: Record<string, Member> = {
-        add: m([a], t as Type), has: m([a], BOOL), delete: m([a], BOOL), size: prop(USIZE), clear: m([], VOID),
-        values: m([], { k: "iter", elem: a }), forEach: m([cb([a], VOID)], VOID),
-      };
-      return Object.hasOwn(sigs, name) ? sigs[name] : undefined;
-    }
-    case "Vec": case "Slice": {
-      const sigs: Record<string, Member> = {
-        length: prop(USIZE), fill: m([a], VOID), slice: m([USIZE, USIZE], gen("Slice", a)),
-        ...(t.name === "Vec" ? { push: m([a], VOID), pop: m([], nullable(a)), clear: m([], VOID) } : {}),
-      };
-      return Object.hasOwn(sigs, name) ? sigs[name] : undefined;
-    }
+    case "Array": return arrayMembers(a, false);
+    case "ReadonlyArray": return arrayMembers(a, true);
+    case "Map": return {
+      get: m(RD, [a], nullable(b)), set: m(WR, [a, b], t as Type), has: m(RD, [a], BOOL), delete: m(WR, [a], BOOL), size: prop(USIZE), clear: m(WR, [], VOID),
+      keys: m(RD, [], { k: "iter", elem: a }), values: m(RD, [], { k: "iter", elem: b }), forEach: m(RD, [cb([b, a], VOID)], VOID),
+    };
+    case "Set": return {
+      add: m(WR, [a], t as Type), has: m(RD, [a], BOOL), delete: m(WR, [a], BOOL), size: prop(USIZE), clear: m(WR, [], VOID),
+      values: m(RD, [], { k: "iter", elem: a }), forEach: m(RD, [cb([a], VOID)], VOID),
+    };
+    case "Vec": case "Slice": return {
+      length: prop(USIZE), fill: m(MUT, [a], VOID), slice: m(fx("param", false, true, ["T002"]), [USIZE, USIZE], gen("Slice", a)),
+      ...(t.name === "Vec" ? { push: m(MUT, [a], VOID), pop: m(MUT, [], nullable(a)), clear: m(MUT, [], VOID) } : {}),
+    };
     case "Pool": {
       const h = gen("Handle", a);
-      const sigs: Record<string, Member> = {
+      return {
         length: prop(USIZE), capacity: prop(USIZE),
-        insert: m([a], nullable(h)), get: m([h], a), set: m([h, a], VOID), remove: m([h], a), has: m([h], BOOL),
+        insert: m(MUT, [a], nullable(h)), get: m(fx("ref", false, true, ["T011"]), [h], a), set: m(fx("mut", true, false, ["T011"]), [h, a], VOID),
+        remove: m(fx("mut", true, false, ["T011"]), [h], a), has: m(REF, [h], BOOL),
       };
-      return Object.hasOwn(sigs, name) ? sigs[name] : undefined;
     }
     case "Arena": {
       const T = newTParam("T"), tT: Type = { k: "tparam", p: T };
-      const sigs: Record<string, Member> = {
-        remaining: prop(USIZE), reset: m([], VOID),
-        alloc: m([USIZE, tT], nullable(gen("ArenaBuf", tT)), { tparams: [T], tcheck: "alloc" }), // Q215 (c)
-        view: m([gen("ArenaBuf", tT)], gen("Slice", tT), { tparams: [T], tcheck: "copy" }),
+      return {
+        remaining: prop(USIZE), reset: m(MUT, [], VOID),
+        alloc: m(MUT, [USIZE, tT], nullable(gen("ArenaBuf", tT)), { tparams: [T], tcheck: "alloc" }), // Q215 (c)
+        view: m(fx("param", false, true, ["T012"]), [gen("ArenaBuf", tT)], gen("Slice", tT), { tparams: [T], tcheck: "copy" }),
       };
-      return Object.hasOwn(sigs, name) ? sigs[name] : undefined;
     }
-    case "ArenaBuf": return name === "length" ? prop(USIZE) : undefined;
-    case "RingTx": return name === "push" ? m([a], BOOL) : undefined; // §15.1: Mut receiver (ownership.ts), no allocation
-    case "RingRx": return name === "pop" ? m([], nullable(a)) : undefined;
-    case "OwnedCell": {
-      const sigs: Record<string, Member> = { take: m([], a), put: m([a], VOID), isEmpty: m([], BOOL) };
-      return Object.hasOwn(sigs, name) ? sigs[name] : undefined;
-    }
+    case "ArenaBuf": return { length: prop(USIZE) };
+    case "RingTx": return { push: m(MUT, [a], BOOL) }; // §15.1: no allocation
+    case "RingRx": return { pop: m(MUT, [], nullable(a)) };
+    case "OwnedCell": return { take: m(WR, [], a), put: m(WR, [a], VOID), isEmpty: m(RD, [], BOOL) };
     case "Ptr": { // §14.4: which of these a given T allows is the checker's E2001 table, not this list
       const U = newTParam("U"), tU: Type = { k: "tparam", p: U };
-      const sigs: Record<string, Member> = {
-        isNull: m([], BOOL), read: m([], a), write: m([a], VOID),
-        offset: m([USIZE], gen("Ptr", a)), slice: m([USIZE], gen("Slice", a)),
-        borrow: m([], a), unbox: m([], a),
-        cast: m([], gen("Ptr", tU), { tparams: [U], tcheck: "castptr" }),
+      return {
+        isNull: m(RD, [], BOOL), read: m(RD, [], a), write: m(WR, [a], VOID),
+        offset: m(RD, [USIZE], gen("Ptr", a)), slice: m(PARAM, [USIZE], gen("Slice", a)),
+        borrow: m(PARAM, [], a), unbox: m(WR, [], a),
+        cast: m(RD, [], gen("Ptr", tU), { tparams: [U], tcheck: "castptr" }),
       };
-      return Object.hasOwn(sigs, name) ? sigs[name] : undefined;
     }
     case "ConstPtr": {
       const U = newTParam("U"), tU: Type = { k: "tparam", p: U };
-      const sigs: Record<string, Member> = {
-        isNull: m([], BOOL), read: m([], a),
-        offset: m([USIZE], gen("ConstPtr", a)), slice: m([USIZE], gen("Slice", a)),
-        borrow: m([], a),
-        cast: m([], gen("ConstPtr", tU), { tparams: [U], tcheck: "castptr" }),
+      return {
+        isNull: m(RD, [], BOOL), read: m(RD, [], a),
+        offset: m(RD, [USIZE], gen("ConstPtr", a)), slice: m(PARAM, [USIZE], gen("Slice", a)),
+        borrow: m(PARAM, [], a),
+        cast: m(RD, [], gen("ConstPtr", tU), { tparams: [U], tcheck: "castptr" }),
       };
-      return Object.hasOwn(sigs, name) ? sigs[name] : undefined;
     }
-    case "CHandle": return name === "get" ? m([], gen("Ptr", a)) : undefined; // §14.5
-    case "Port": { // §15.2: S is sent, R is received; recv's Promise may be awaited (and, for an owned R, only awaited: §5.6)
-      const sigs: Record<string, Member> = { send: m([a], VOID), recv: m([], gen("Promise", nullable(b))), close: m([], VOID) };
-      return Object.hasOwn(sigs, name) ? sigs[name] : undefined;
-    }
-    default: return undefined; // Promise: await and Promise.all only (§12); Ref / Mut are unwrapped before lookup
+    case "CHandle": return { get: m(RD, [], gen("Ptr", a)) }; // §14.5
+    // §15.2: S is sent, R is received; recv's Promise may be awaited (and, for an owned R, only awaited: §5.6)
+    case "Port": return { send: m(Q230, [a], VOID), recv: m(Q230, [], gen("Promise", nullable(b))), close: m(Q230, [], VOID) };
+    default: return {}; // Promise: await and Promise.all only (§12); Ref / Mut are unwrapped before lookup
   }
 }
-
-export { opaqueMember };
+/** undefined = not in the allowlist (E2001). */
+export const genMember = (t: { name: GenName; args: Type[] }, name: string): Member | undefined => pick(genMembers(t), name);
+/** The effects of a method on a builtin generic receiver, seen through `Ref` / `Mut`. */
+export function genFx(t: Type | undefined, name: string): Fx | undefined {
+  const u = t && unref(t);
+  const x = u?.k === "gen" ? genMember(u, name) : undefined;
+  return x?.kind === "method" ? x.fx : undefined;
+}
 
 const MATH_ALL = ["abs", "sqrt", "floor", "ceil", "trunc", "round", "sign"];
 const MATH_MANAGED = ["sin", "cos", "tan", "asin", "acos", "atan", "exp", "log", "log2", "log10", "cbrt"];
+const each = (names: readonly string[], x: () => Member): Members => Object.fromEntries(names.map((n) => [n, x()]));
 
 /** Members of namespace objects (Q032 - Q034, Q038). `min`/`max` are variadic and handled by the checker. */
-export function nsMember(ns: string, name: string): Member | "variadic" | undefined {
+export function nsMembers(ns: string): Record<string, Member | "variadic"> {
   const T = newTParam("T"), tT: Type = { k: "tparam", p: T };
   switch (ns) {
-    case "Math":
-      if (name === "random") return undefined; // E5001, reported by the checker
-      if (MATH_ALL.includes(name)) return m([F64], F64);
-      if (MATH_MANAGED.includes(name)) return mo(m([F64], F64));
-      if (name === "atan2" || name === "pow" || name === "hypot") return mo(m([F64, F64], F64));
-      if (name === "fround") return m([F64], num("f32"));
-      if (name === "min" || name === "max") return "variadic";
-      if (name === "PI" || name === "E") return prop(F64);
-      return undefined;
-    case "Number": {
-      const sigs: Record<string, Member> = {
-        isFinite: m([F64], BOOL), isNaN: m([F64], BOOL), isInteger: m([F64], BOOL), parseFloat: m([STR], F64),
-        MAX_SAFE_INTEGER: prop(F64), EPSILON: prop(F64),
+    case "Math": // `random` is absent: E5001, reported by the checker
+      return {
+        ...each(MATH_ALL, () => m(RD, [F64], F64)), ...each(MATH_MANAGED, () => mo(m(RD, [F64], F64))),
+        ...each(["atan2", "pow", "hypot"], () => mo(m(RD, [F64, F64], F64))), fround: m(RD, [F64], num("f32")),
+        min: "variadic", max: "variadic", PI: prop(F64), E: prop(F64),
       };
-      return Object.hasOwn(sigs, name) ? mo(sigs[name]!) : undefined;
-    }
-    case "JSON":
-      if (name === "parse") return mo(m([STR], result(UNKNOWN, ERROR_RECORD))); // Q035
-      if (name === "stringify") return mo(m([tT], STR, { tparams: [T], tcheck: "cast" }));
-      return undefined;
-    case "String": return name === "fromCodePoint" ? mo(m([num("u32")], STR)) : undefined;
-    case "Promise": return name === "all" ? mo(m([gen("Array", gen("Promise", tT))], gen("Promise", gen("Array", tT)), { tparams: [T] })) : undefined;
+    case "Number": return mapValues({
+      isFinite: m(RD, [F64], BOOL), isNaN: m(RD, [F64], BOOL), isInteger: m(RD, [F64], BOOL), parseFloat: m(RD, [STR], F64),
+      MAX_SAFE_INTEGER: prop(F64), EPSILON: prop(F64),
+    }, mo);
+    case "JSON": return {
+      parse: mo(m(RD, [STR], result(UNKNOWN, ERROR_RECORD))), // Q035
+      stringify: mo(m(RD, [tT], STR, { tparams: [T], tcheck: "cast" })),
+    };
+    case "String": return { fromCodePoint: mo(m(RD, [num("u32")], STR)) };
+    case "Promise": return { all: mo(m(RD, [gen("Array", gen("Promise", tT))], gen("Promise", gen("Array", tT)), { tparams: [T] })) };
     case "DetMath": // §12 (Q191): rt functions, so callable from every layer; f64 only
-      if (DETMATH_UNARY.includes(name)) return m([F64], F64);
-      if (DETMATH_BINARY.includes(name)) return m([F64, F64], F64);
-      return undefined;
-    case "Vec": return name === "create" ? m([opaque("Alloc"), USIZE], gen("Vec", tT), { tparams: [T], tcheck: "copy" }) : undefined;
-    case "Pool": return name === "create" ? m([opaque("Alloc"), USIZE], gen("Pool", tT), { tparams: [T], tcheck: "copy" }) : undefined;
-    case "Arena": return name === "create" ? m([opaque("Alloc"), USIZE], gen("Arena")) : undefined;
-    case "Ring": return name === "create" ? m([opaque("Alloc"), USIZE], record([{ name: "tx", type: gen("RingTx", tT), readonly: false }, { name: "rx", type: gen("RingRx", tT), readonly: false }], true), { tparams: [T], tcheck: "ring" }) : undefined; // §15.1 (Q199)
-    case "OwnedCell": return name === "create" ? m([tT], gen("OwnedCell", tT), { tparams: [T] }) : undefined;
-    case "Ptr": return name === "box" ? m([opaque("Alloc"), tT], gen("Ptr", tT), { tparams: [T], tcheck: "box" }) : undefined; // §14.4
-    case "CHandle": return name === "create" ? m([gen("Ptr", tT)], gen("CHandle", tT), { tparams: [T], tcheck: "chandle" }) : undefined; // §14.5
-    case "FakeClock": return name === "create" ? mo(m([F64], opaque("FakeClock"))) : undefined;
-    case "SeededRandom": return name === "create" ? mo(m([num("u32")], opaque("SeededRandom"))) : undefined;
-    case "MemoryLog": return name === "create" ? mo(m([], opaque("MemoryLog"))) : undefined;
-    case "FakeFs": return name === "create" ? mo(m([], opaque("FakeFs"))) : undefined;
-    case "TestAlloc": return name === "create" ? mo(m([], opaque("Alloc"))) : undefined;
+      return { ...each(DETMATH_UNARY, () => m(RD, [F64], F64)), ...each(DETMATH_BINARY, () => m(RD, [F64, F64], F64)) };
+    case "Vec": return { create: m(RD, [opaque("Alloc"), USIZE], gen("Vec", tT), { tparams: [T], tcheck: "copy" }) };
+    case "Pool": return { create: m(RD, [opaque("Alloc"), USIZE], gen("Pool", tT), { tparams: [T], tcheck: "copy" }) };
+    case "Arena": return { create: m(RD, [opaque("Alloc"), USIZE], gen("Arena")) };
+    case "Ring": return { create: m(RD, [opaque("Alloc"), USIZE], record([{ name: "tx", type: gen("RingTx", tT), readonly: false }, { name: "rx", type: gen("RingRx", tT), readonly: false }], true), { tparams: [T], tcheck: "ring" }) }; // §15.1 (Q199)
+    case "OwnedCell": return { create: m(RD, [tT], gen("OwnedCell", tT), { tparams: [T] }) };
+    case "Ptr": return { box: m(WR, [opaque("Alloc"), tT], gen("Ptr", tT), { tparams: [T], tcheck: "box" }) }; // §14.4
+    case "CHandle": return { create: m(RD, [gen("Ptr", tT)], gen("CHandle", tT), { tparams: [T], tcheck: "chandle" }) }; // §14.5
+    case "FakeClock": return { create: mo(m(RD, [F64], opaque("FakeClock"))) };
+    case "SeededRandom": return { create: mo(m(RD, [num("u32")], opaque("SeededRandom"))) };
+    case "MemoryLog": return { create: mo(m(RD, [], opaque("MemoryLog"))) };
+    case "FakeFs": return { create: mo(m(RD, [], opaque("FakeFs"))) };
+    case "TestAlloc": return { create: mo(m(RD, [], opaque("Alloc"))) };
   }
-  return undefined;
+  return {};
+}
+export const nsMember = (ns: string, name: string): Member | "variadic" | undefined => pick(nsMembers(ns), name);
+
+/** Every builtin method with its owner (a generic or opaque type, `Ns.` for a namespace, `string`): the table test and the name sets below. */
+export function builtinMethods(): { owner: string; name: string; fx: Fx }[] {
+  const out: { owner: string; name: string; fx: Fx }[] = [];
+  const add = (owner: string, ms: Record<string, Member | "variadic">): void => {
+    for (const [name, x] of Object.entries(ms)) if (x !== "variadic" && x.kind === "method") out.push({ owner, name, fx: x.fx });
+  };
+  for (const g of Object.keys(GEN_ARITY) as GenName[]) add(g, genMembers({ name: g, args: [UNKNOWN, UNKNOWN] }));
+  for (const o of OPAQUE_NAMES) add(o, opaqueMembers(o));
+  for (const ns of NAMESPACES) add(`${ns}.`, nsMembers(ns));
+  add("string", stringMembers());
+  return out;
 }
