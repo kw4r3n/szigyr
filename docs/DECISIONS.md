@@ -613,3 +613,11 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
   - 変えた既存のテスト: `emit.test.ts` の「C backend: Pool<null> and Arena.alloc<null> are CUnsupported」は、C で実行する代わりに `check` が E4002 を出すことを調べる形に変えた（rt のコードで書かれていたため）。conformance の既存ケースの期待は変えていない。
 - Q225 (b): `modules.ts` に `declBindings`（モジュール直下の `const` 宣言が束縛する名前と、分割代入ならその要素）を足し、export の表、宣言名の一覧、値の登録、`syntax.ts` の重複検査、`emit.ts` の値と export の一覧がこれを読む。`ConstSym` に `bind`（分割代入の要素）を足し、`type` はそのフィールドの型にした。型注釈がなければ E2006（宣言ごとに 1 回、分割代入のパターンの先頭）、注釈がレコードでない、またはフィールドがなければ E2002（ローカルの分割代入と同じ）。`checker.ts` は、分割代入では注釈全体の型に対して初期化式を 1 回だけ検査する。JS は元の `const { a, b } = {...}` をそのまま使う。C は `resolveConst` が `bind` を見て、初期化式のオブジェクトリテラルのそのプロパティの値だけを使用箇所ごとに訳す（D104 の定数と同じ。初期化式はリテラルだけの単純なオブジェクトに限られるので、プロパティは必ず見つかる）。設計の判断が要る部分はなかった。`--backend=both` の出力は JS と C で同じことを確かめた。
 - Q223（確認）: SPEC §4 の `{ a: 1, ...s, a: 9 }` は E1000 のままとオーナーが確認した。コードの変更はない。固定するケースがなかったので、reject の `E1000-duplicate-object-key-across-spread` を足した。
+- 検証: `pnpm typecheck` 成功、`pnpm test` 226 件通過、`pnpm verify:conformance` accept=79 reject=581 run=168（PASSING 828 件）、`pnpm conformance` 964 件通過。`pnpm bench` の 1 回の測定は dot_f32 0.96、saxpy_f32 1.08、prefix_i32 1.31、stencil_f64 0.98、particles_aos_f32 1.36 倍（制限 1.5 倍）。
+- 変えた既存のテストの期待: `emit.test.ts` の Pool<null> / Arena.alloc<null>（CUnsupported から E4002 へ）、`builtins.test.ts` の Q230 の例外（なしに）と §12 の名前の一覧（§13 の予約名を足した）。conformance の既存ケースの期待は変えていない。
+
+## D134: パッケージマネージャは pnpm のまま（2026-11-20）
+
+- 調べたこと: bun 1.4.4 でコンパイラを動かせるか。動かない。`typescript/unstable/sync`（D005）が子プロセスの `child.stdout._handle.fd` を読み、bun にはこの内部の項目がない。`bun --bun` で conformance 923 件を流すと、通るのは 1 件だけだった。
+- パッケージマネージャとしてだけ使うと、インストールで減る時間は 50 ミリ秒未満だった。
+- 決定: pnpm のままにする。TypeScript の API が変わったときに、もう一度調べる。

@@ -166,6 +166,7 @@
 - 設計監査の修正 4（オーナーの決定、段階 3 を再開、2026-11-20、D130）: Q216〜Q221 と Q224 を決定として記録し、SPEC の欠けた文言を足した。Q215 (c)（型パラメータの要素の `alloc` を E2002）、Q222 (b)（代入の左辺の `slice` / `view` を E3004）、Q223 (a)（interface のメソッドとオブジェクトリテラルのキーの重複を E1000）を実装した。証拠: `pnpm typecheck` 成功、`pnpm verify:conformance`（accept 79 / reject 546 / run 161、PASSING 786 件）、`pnpm test` 217 件通過、`pnpm conformance` 915 件通過、`pnpm bench` の最悪 5 回中央値は particles_aos_f32 の 1.41 倍（制限 1.5 倍、単発の最大 1.46 倍）。
 - D129 の残りの穴を閉じた（段階 3 を再開、2026-11-20、D131）: 型パラメータのアリーナの `view` が、C の書き込みの後に古い値を返していた。証拠: `pnpm typecheck` 成功、`pnpm verify:conformance`（accept 79 / reject 546 / run 165、PASSING 790 件）、`pnpm test` 217 件通過、`pnpm conformance` 923 件通過、`pnpm bench` の最悪 5 回中央値は particles_aos_f32 の 1.39 倍（制限 1.5 倍、単発の最大 1.43 倍）。
 - 設計監査の修正 5（組み込みの効果の表、段階 3 を再開、2026-11-20、D132）: 組み込みのメソッドの効果（受け手の借用、状態の変更、契約での可否、トラップのコード）、§7.3 の決定性、§12 の名前を `builtins.ts` の 1 つの表にまとめ、`syntax.ts`、`ownership.ts`、`expr.ts`、`determinism.ts`、`traps.ts` がそれを読むようにした。見つかったずれのうち T015 のトラップの一覧の欠けを直し、Q230 と Q231 を足した。SPEC §0.4 と §4 の文言も足した。証拠: `pnpm typecheck` 成功、`pnpm verify:conformance`（accept 79 / reject 546 / run 165、PASSING 790 件）、`pnpm test` 223 件通過、`pnpm conformance` 923 件通過、`pnpm bench` の最悪 5 回中央値は particles_aos_f32 の 1.35 倍（制限 1.5 倍、単発の最大 1.43 倍）。
+- オーナー決定の実装（段階 3 を再開、2026-11-20、D133）: Q225（モジュール直下のレコードの分割代入）、Q226（再 export の連鎖の上限をなくす）、Q227（関数型パラメータを通らない rt の再帰は呼び出し元がなくても E4005）、Q229（バイト配置のない要素型は strict / rt で E4002）、Q230（契約の中の `port` と `spawn` の変更メソッドは E6002）、Q231（§13 の予約名の宣言は E1000）を実装し、Q228、Q230 (2)、Q223 の確認は記録とケースだけ足した。パッケージマネージャは pnpm のまま（D134）。証拠: `pnpm typecheck` 成功、`pnpm test` 226 件通過、`pnpm verify:conformance`（accept 79 / reject 581 / run 168、PASSING 828 件）、`pnpm conformance` 964 件通過、`pnpm bench` の最悪は particles_aos_f32 の 1.36 倍（制限 1.5 倍、1 回）。
 
 段階 3 はこれで完了（2026-11-19）。完了条件の「C の音声ライブラリ経由で音が出る。コールバックは rt 層、パラメータは managed 側からリングバッファで送る」は、段階 3-8 の音声デモとその自動テストで満たした。
 
@@ -177,7 +178,7 @@
 - 検証（54f982a）: `pnpm typecheck` 成功、`pnpm test` 224 件通過、`pnpm verify:conformance`（accept 79 / reject 553 / run 165、PASSING 797 件）、`pnpm conformance` 930 件通過。
 - ベンチ（31ffecf で測定、D132 の 5 回中央値）: dot 1.00、saxpy 1.16、prefix 1.32、stencil 1.00、particles 1.35（制限 1.5 倍）。
 - 検証者の指摘で足したテスト: 受け手を借用するメソッドの E3005 を 7 件（`Pool` の `get` / `has`、`Vec` の `push` / `fill`、`Slice.fill`、`Arena.alloc`、`RingTx.push`）、§7.3 の `NONDET_GEN` / `NONDET_OPAQUE` の単体テスト。どれも表を書き換えると落ちることを確かめた。
-- 未決の問い: Q225〜Q231。どれも挙動は変えていない（オーナーの決定待ち）。
+- 未決の問い: Q225〜Q231 は 2026-11-20 にオーナーが決めて、すべて実装か記録を終えた（D133）。
 
 ## 段階 4: 契約の活用、性質テスト、ミューテーション
 
