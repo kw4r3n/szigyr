@@ -1,6 +1,6 @@
 // P2 checker (D012): declarations, statements, control flow, narrowing. Expressions live in expr.ts.
 import { NodeFlags, SyntaxKind as K, type Node, type ts } from "./parse.ts";
-import { Program, legalUnion, type ClassValueSym, type FnSym, type Layer, type LocalSym, type Module, type ValueSym } from "./modules.ts";
+import { Program, declBindings, legalUnion, type ClassValueSym, type FnSym, type Layer, type LocalSym, type Module, type ValueSym } from "./modules.ts";
 import { PROMISE_CONTAINERS, assignTarget, checkTo, exprTypes, hasPromise, cond, expr, isLitOnly, localOf, promiseOk, type FnArgRef } from "./expr.ts";
 import {
   AUTHORITIES, ERROR, NEVER, NULL, STR, VOID, assignable, hasAuthority, hasPtr, layerOk, ptrTargetOk, field, isBool, isErr, isNull, isTaggedUnion, kindOf, nonNull, same, show, subst, bindTParams, unref, union,
@@ -218,9 +218,10 @@ export class Checker {
         case K.ClassDeclaration: this.classBody(mod.values.get((s as ts.ClassDeclaration).name!.text) as ClassValueSym); break;
         case K.VariableStatement:
           for (const d of (s as ts.VariableStatement).declarationList.declarations) {
-            const sym = mod.values.get((d.name as ts.Identifier).text);
+            const b = declBindings(d)[0];
+            const sym = b && mod.values.get(b.id.text);
             if (sym?.k !== "const" || !d.type) continue;
-            this.moduleConst(sym.type, d.initializer!);
+            this.moduleConst(b!.el ? this.typeOf(d.type) : sym.type, d.initializer!); // Q225 (b): a destructuring checks the whole record once
           }
           break;
         case K.ExpressionStatement: expr(this, (s as ts.ExpressionStatement).expression); break; // test(...) (§9.2)

@@ -751,7 +751,15 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       if (sym) { // §1: a literal, or a record literal of literals; translated at each use (D104)
         const saved = [this.mod, this.sf] as const;
         this.mod = sym.mod; this.sf = sym.mod.sf;
-        try { return this.conv(this.ex(sym.decl.initializer!), this.typeOf(sym.decl.initializer!), sym.type); } finally { [this.mod, this.sf] = saved; }
+        try {
+          if (sym.bind) { // Q225 (b): `const { a }: T = { a: 1 }` is the property `a` of the initializer's record literal
+            const key = ((sym.bind.propertyName ?? sym.bind.name) as ts.Identifier).text;
+            const prop = (sym.decl.initializer as ts.ObjectLiteralExpression).properties.find((p) => p.kind === K.PropertyAssignment && (p.name as ts.Identifier | ts.StringLiteral).text === key) as ts.PropertyAssignment | undefined;
+            if (!prop) throw this.no(id, `the destructured constant '${id.text}'`);
+            return this.conv(this.ex(prop.initializer), this.typeOf(prop.initializer), sym.type);
+          }
+          return this.conv(this.ex(sym.decl.initializer!), this.typeOf(sym.decl.initializer!), sym.type);
+        } finally { [this.mod, this.sf] = saved; }
       }
       throw this.no(id, `the name '${id.text}' here`);
     }

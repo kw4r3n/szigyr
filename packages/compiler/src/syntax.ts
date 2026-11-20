@@ -135,7 +135,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       case K.TypeAliasDeclaration: topName((s as ts.TypeAliasDeclaration).name); typeAlias(s as ts.TypeAliasDeclaration); break;
       case K.VariableStatement:
         mods(s, [K.ExportKeyword]);
-        for (const d of (s as ts.VariableStatement).declarationList.declarations) if (isId(d.name)) topName(d.name);
+        for (const d of (s as ts.VariableStatement).declarationList.declarations) { if (isId(d.name)) topName(d.name); else if (d.name.kind === K.ObjectBindingPattern) for (const el of (d.name as ts.ObjectBindingPattern).elements) if (isId(el.name)) topName(el.name); } // Q225 (b)
         varList((s as ts.VariableStatement).declarationList, "module");
         break;
       case K.ModuleDeclaration: break; // handled above

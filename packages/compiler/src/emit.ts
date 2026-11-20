@@ -6,6 +6,7 @@ import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts
 import { callSigs, exprTypes, isolateCalls } from "./expr.ts";
 import { sliceGroups, type SliceGroupEntry } from "./ownership.ts";
 import { elemDesc } from "./layout.ts";
+import { declBindings } from "./modules.ts";
 import { NUM_NAMES, isInt, isStr, nonNull, resultParts, unref, type FnType, type Type } from "./types.ts";
 import { CLI_NAME, RUNTIME_GLOBAL } from "./names.ts";
 import { DETMATH_PATH, dmBinding } from "./detmath.ts";
@@ -341,7 +342,7 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
       values.add((s as ts.FunctionDeclaration).name!.text);
       if (s.kind === K.FunctionDeclaration) fns.add((s as ts.FunctionDeclaration).name!.text);
     }
-    else if (s.kind === K.VariableStatement) for (const d of (s as ts.VariableStatement).declarationList.declarations) values.add((d.name as ts.Identifier).text);
+    else if (s.kind === K.VariableStatement) for (const d of (s as ts.VariableStatement).declarationList.declarations) for (const b of declBindings(d)) values.add(b.id.text);
     else if (s.kind === K.ImportDeclaration) for (const x of ((s as ts.ImportDeclaration).importClause!.namedBindings as ts.NamedImports).elements) values.add(x.name.text);
   }
   for (const s of sf.statements) {
@@ -363,7 +364,7 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
       continue;
     }
     if ((s as unknown as { modifiers?: ts.NodeArray<Node> }).modifiers?.some((x) => x.kind === K.ExportKeyword)) {
-      if (s.kind === K.VariableStatement) for (const d of (s as ts.VariableStatement).declarationList.declarations) exported.push((d.name as ts.Identifier).text);
+      if (s.kind === K.VariableStatement) for (const d of (s as ts.VariableStatement).declarationList.declarations) for (const b of declBindings(d)) exported.push(b.id.text);
       else if (s.kind === K.FunctionDeclaration || s.kind === K.ClassDeclaration) exported.push((s as ts.FunctionDeclaration).name!.text);
     }
     if (s.kind === K.ExpressionStatement && !tests) {

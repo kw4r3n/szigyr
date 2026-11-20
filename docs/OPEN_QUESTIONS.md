@@ -1426,6 +1426,7 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
   - (a) P1（`syntax.ts`）でモジュール直下の分割代入を E1000 で禁止する。
   - (b) P2（`modules.ts`）でモジュール直下のオブジェクト分割代入の束縛も登録する。
 - 既定案: 未決（設計監査の修正 2 では SPEC が不明確なため挙動を変えず現状のまま残す）。
+- 2026-11-20 オーナー決定: (b)。モジュール直下のレコードの分割代入の束縛は、ふつうのモジュール直下の `const` として登録する。同じモジュールでの使用、`export const { a, b } = ...`、import、再 export、strict / rt の関数からの参照（C バックエンド）が動く。`--backend=both` の出力は同じ。タプルと配列の分割代入は、これまでどおり E1000。SPEC §1 に書いた（D133）。ケースは run の `180-module-destructure-const`、reject の `E1000-module-array-destructuring`、`E2006-module-destructuring-without-type`、`E2002-module-destructuring-unknown-field`、`E2002-module-destructuring-value-type`、`E1000-module-destructuring-duplicate-name`、`E5002-module-destructuring-call`、`E5002-module-destructuring-let`。
 
 ### Q226 `import` してから `export` する再 export の連鎖の上限（設計監査 #27c）
 - 関連: §1、Q009

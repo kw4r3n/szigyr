@@ -106,6 +106,8 @@ reject/E1000-local-redeclares-parameter.ts
 reject/E1000-member-name-constructor-field.ts
 reject/E1000-member-name-proto.ts
 reject/E1000-member-name-then.ts
+reject/E1000-module-array-destructuring.ts
+reject/E1000-module-destructuring-duplicate-name.ts
 reject/E1000-object-literal-proto.ts
 reject/E1000-object-type.ts
 reject/E1000-reserved-bigint-class.ts
@@ -220,6 +222,8 @@ reject/E2002-json-parse-unwrapped.ts
 reject/E2002-map-key-array.ts
 reject/E2002-map-key-mixed-union.ts
 reject/E2002-missing-return-path.ts
+reject/E2002-module-destructuring-unknown-field.ts
+reject/E2002-module-destructuring-value-type.ts
 reject/E2002-narrow-assign-in-condition.ts
 reject/E2002-narrow-assigned-in-and-operand.ts
 reject/E2002-narrow-assigned-in-condition.ts
@@ -330,6 +334,7 @@ reject/E2006-arrow-parameter-without-annotation.ts
 reject/E2006-empty-array-without-context.ts
 reject/E2006-js-callback-plain-parameter.ts
 reject/E2006-module-const-without-annotation.ts
+reject/E2006-module-destructuring-without-type.ts
 reject/E2006-object-literal-without-context.ts
 reject/E2006-ok-without-result-context.ts
 reject/E2006-parameter-without-annotation.ts
@@ -608,6 +613,8 @@ reject/E5001-math-random.ts
 reject/E5001-new-date.ts
 reject/E5002-const-array.ts
 reject/E5002-const-map.ts
+reject/E5002-module-destructuring-call.ts
+reject/E5002-module-destructuring-let.ts
 reject/E5002-module-let.ts
 reject/E6001-ensures-before-requires.ts
 reject/E6001-invariant-not-first.ts
@@ -751,6 +758,7 @@ run/177-arena-generic-view-after-reset.ts
 run/178-reexport-chain-12
 run/179-managed-container-null-element.ts
 run/18-trap-i32-unary-minus.ts
+run/180-module-destructure-const
 run/19-trap-divtrunc-overflow.ts
 run/20-trap-array-index.ts
 run/21-trap-vec-index.ts

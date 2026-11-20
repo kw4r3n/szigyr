@@ -5,7 +5,7 @@ import type { Diagnostic } from "./diagnostics.ts";
 import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { RESERVED, builtinType, isGenName } from "./builtins.ts";
 import {
-  ERROR, GEN_ARITY, NULL, VOID, gen, assignable, bindTParams, collectTParams, DEEP_NEEDS, ELEMENT_CONTAINERS, demand, demandLayout, fn, isTaggedUnion, sendable, hasAuthority, kindOf, layerOk, movesLike, needOk, holdsOwned, ownedDeep, CONTAINERS, newTParam, nonNull, record, result, show, subst, union,
+  ERROR, GEN_ARITY, NULL, VOID, gen, assignable, bindTParams, collectTParams, DEEP_NEEDS, ELEMENT_CONTAINERS, demand, demandLayout, fn, isTaggedUnion, sendable, hasAuthority, field, kindOf, layerOk, movesLike, needOk, holdsOwned, ownedDeep, CONTAINERS, newTParam, nonNull, record, result, show, subst, union,
   type ClassSym, type Field, type FnType, type IfaceSym, type TParam, type Type,
 } from "./types.ts";
 
@@ -14,7 +14,8 @@ export type Layer = "managed" | "strict" | "rt";
 export interface FnSym { k: "fn"; name: string; decl: ts.FunctionDeclaration; mod: Module; layer: Layer; sig: FnType; unsafe: boolean }
 /** A C function from a `declare module "c:..."` block (§14.1): callable, never a value. */
 export interface CFnSym { k: "cfn"; name: string; decl: ts.FunctionDeclaration; mod: Module; spec: string; sig: FnType }
-export interface ConstSym { k: "const"; decl: ts.VariableDeclaration; mod: Module; type: Type }
+/** `bind`: the element of a record destructuring (`const { a, b }: T = ...`, Q225 (b)); `type` is then the field's type. */
+export interface ConstSym { k: "const"; decl: ts.VariableDeclaration; mod: Module; type: Type; bind?: ts.BindingElement }
 export interface ClassValueSym { k: "class"; cls: ClassSym; mod: Module }
 /** `declared`: the annotated type before Ref / Mut are read through (contracts, Q056). */
 export interface LocalSym {
@@ -80,6 +81,13 @@ export function unsafeOf(list: readonly ts.Statement[]): boolean {
 
 const hasMod = (n: Node, k: K): boolean => !!(n as Node & { modifiers?: ts.NodeArray<ts.ModifierLike> }).modifiers?.some((m) => m.kind === k);
 const isId = (n: Node | undefined): n is ts.Identifier => n?.kind === K.Identifier;
+/** Q225 (b): the names a module-level const declaration binds: its identifier, or the names of a record destructuring
+ * (with the element they come from). Tuple / array destructuring binds nothing here (P1 rejects it). */
+export function declBindings(d: ts.VariableDeclaration): { id: ts.Identifier; el?: ts.BindingElement }[] {
+  if (isId(d.name)) return [{ id: d.name }];
+  if (d.name.kind !== K.ObjectBindingPattern) return [];
+  return (d.name as ts.ObjectBindingPattern).elements.flatMap((el) => (isId(el.name) ? [{ id: el.name, el }] : []));
+}
 
 /** Syntactic export table: exported name -> local name (E7001 check in P1, and module linking). */
 export function exportTable(sf: ts.SourceFile): Map<string, string> {
@@ -92,7 +100,7 @@ export function exportTable(sf: ts.SourceFile): Map<string, string> {
     }
     if (!hasMod(s, K.ExportKeyword)) continue;
     if (s.kind === K.VariableStatement) {
-      for (const d of (s as ts.VariableStatement).declarationList.declarations) if (isId(d.name)) out.set(d.name.text, d.name.text);
+      for (const d of (s as ts.VariableStatement).declarationList.declarations) for (const b of declBindings(d)) out.set(b.id.text, b.id.text);
     } else {
       const name = (s as Node & { name?: Node }).name;
       if (isId(name)) out.set(name.text, name.text);
@@ -105,7 +113,7 @@ export function exportTable(sf: ts.SourceFile): Map<string, string> {
 function declaredNames(sf: ts.SourceFile): Set<string> {
   const out = new Set<string>();
   for (const s of sf.statements) {
-    if (s.kind === K.VariableStatement) for (const d of (s as ts.VariableStatement).declarationList.declarations) { if (isId(d.name)) out.add(d.name.text); }
+    if (s.kind === K.VariableStatement) for (const d of (s as ts.VariableStatement).declarationList.declarations) for (const b of declBindings(d)) out.add(b.id.text);
     else if (s.kind === K.ImportDeclaration) {
       const nb = (s as ts.ImportDeclaration).importClause?.namedBindings;
       if (nb?.kind === K.NamedImports) for (const e of (nb as ts.NamedImports).elements) out.add(e.name.text);
@@ -232,7 +240,7 @@ export class Program {
           break;
         }
         case K.VariableStatement:
-          for (const d of (s as ts.VariableStatement).declarationList.declarations) mod.values.set((d.name as ts.Identifier).text, { k: "const", decl: d, mod, type: ERROR });
+          for (const d of (s as ts.VariableStatement).declarationList.declarations) for (const b of declBindings(d)) mod.values.set(b.id.text, { k: "const", decl: d, mod, type: ERROR, bind: b.el });
           break;
       }
     }
@@ -265,8 +273,15 @@ export class Program {
       if (v.k === "fn" && v.mod === mod) { v.sig = this.signature(v.decl, v.decl.name!, env()); for (const p of v.sig.tparams) p.owner = v.layer; }
       else if (v.k === "class" && v.mod === mod) this.classMembers(v.cls, env(v.cls.tparams));
       else if (v.k === "const" && v.mod === mod) {
-        if (!v.decl.type) this.rep.at(mod, "E2006", v.decl.name, "module-level const needs a type annotation");
-        else v.type = this.typeOf(v.decl.type, env());
+        if (!v.decl.type) { if (!v.bind || v.bind === (v.decl.name as ts.ObjectBindingPattern).elements.find((el) => isId(el.name))) this.rep.at(mod, "E2006", v.decl.name, "module-level const needs a type annotation"); } // once per declaration
+        else if (!v.bind) v.type = this.typeOf(v.decl.type, env());
+        else { // Q225 (b): the field of the annotated record
+          const whole = this.typeOf(v.decl.type, env());
+          const key = (v.bind.propertyName ?? v.bind.name) as ts.Identifier;
+          const f = whole.k === "record" ? field(whole, key.text) : undefined;
+          if (f) v.type = f.type;
+          else if (whole.k !== "error") this.rep.at(mod, "E2002", key, whole.k === "record" ? `no field '${key.text}'` : "only records can be destructured");
+        }
       }
     }
   }
