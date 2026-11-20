@@ -1,0 +1,11 @@
+// expect-output: 7 3
+// stage: 3
+// A local Result<null, i32> inside a strict function body is fine; only the boundary rejects null (Q233, D140).
+function f(flag: boolean): i32 {
+  "use owned";
+  const r: Result<null, i32> = flag ? ok(null) : err(3);
+  return r.kind === "ok" ? 7 : r.error;
+}
+export function main(sys: System): void {
+  sys.log.info(`${f(true)} ${f(false)}`);
+}

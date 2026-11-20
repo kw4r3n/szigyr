@@ -147,6 +147,8 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
   const unions = new Map<string, string>();
   const lits: string[] = [];
   const helpers: string[] = [];
+  /** Structs / unions with no JS <-> C converters (a `null` field, Q233): fine as locals, never reaches the boundary (D140). */
+  const noConv = new Set<string>();
   const litId = (s: string): number => { let i = lits.indexOf(s); if (i < 0) { lits.push(s); i = lits.length - 1; } return i; };
 
   function ctype(t: Type, where: string): string {
@@ -240,9 +242,14 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     structs.set(key, name);
     typedefs.push(`typedef struct { ${fs.join(" ")} } ${name};`);
     // JS <-> C conversion of the struct (boundary, D102). Keys are created in C field order (Q186).
-    helpers.push(`static ${name} in_${name}(napi_value o) { ${name} r; ${cfields(t).map((f) => `r.f_${f.name} = ${inConv(f.type, `sts_get(o, "${f.name}")`, where)};`).join(" ")} return r; }`);
-    helpers.push(`static napi_value out_${name}(${name} v) { napi_value o; STS_OK(napi_create_object(sts_env, &o)); ${cfields(t).map((f) => `sts_set(o, "${f.name}", ${outConv(f.type, `v.f_${f.name}`, where)});`).join(" ")} return o; }`);
-    helpers.push(`static void wb_${name}(napi_value o, ${name} *v) { ${cfields(t).map((f) => (isStruct(f.type) && !isCopy(f.type) ? `wb_${ctype(f.type, where)}(sts_get(o, "${f.name}"), &v->f_${f.name});` : `sts_set(o, "${f.name}", ${outConv(f.type, `v->f_${f.name}`, where)});`)).join(" ")} }`);
+    try {
+      if (cfields(t).some((f) => noConv.has(ctype(f.type, where)))) throw new CUnsupported(where, "a nested struct without converters");
+      const hs: string[] = [];
+      hs.push(`static ${name} in_${name}(napi_value o) { ${name} r; ${cfields(t).map((f) => `r.f_${f.name} = ${inConv(f.type, `sts_get(o, "${f.name}")`, where)};`).join(" ")} return r; }`);
+      hs.push(`static napi_value out_${name}(${name} v) { napi_value o; STS_OK(napi_create_object(sts_env, &o)); ${cfields(t).map((f) => `sts_set(o, "${f.name}", ${outConv(f.type, `v.f_${f.name}`, where)});`).join(" ")} return o; }`);
+      hs.push(`static void wb_${name}(napi_value o, ${name} *v) { ${cfields(t).map((f) => (isStruct(f.type) && !isCopy(f.type) ? `wb_${ctype(f.type, where)}(sts_get(o, "${f.name}"), &v->f_${f.name});` : `sts_set(o, "${f.name}", ${outConv(f.type, `v->f_${f.name}`, where)});`)).join(" ")} }`);
+      helpers.push(...hs);
+    } catch (x) { if (!(x instanceof CUnsupported)) throw x; noConv.add(name); }
     return name;
   }
 
@@ -256,6 +263,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
     unions.set(key, name);
     typedefs.push(`typedef union { int32_t kind; ${ms.map((m, i) => `${m} m${i};`).join(" ")} } ${name};`);
     const ks = umembers(t).map((m) => litId(kindOf(m)!));
+    if (ms.some((m) => noConv.has(m))) { noConv.add(name); return name; }
     helpers.push(`static ${name} in_${name}(napi_value o) { ${name} r; int32_t k = sts_lit_in(sts_get(o, "kind")); ${ks.map((k, i) => `if (k == ${k}) { r.m${i} = in_${ms[i]}(o); return r; }`).join(" ")} sts_fail("bad union tag"); }`);
     helpers.push(`static napi_value out_${name}(${name} v) { ${ks.map((k, i) => `if (v.kind == ${k}) return out_${ms[i]}(v.m${i});`).join(" ")} sts_fail("bad union tag"); }`);
     return name;
