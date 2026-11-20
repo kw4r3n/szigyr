@@ -629,7 +629,7 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
           const labels = sw.caseBlock.clauses.map((cl) => {
             if (cl.kind === K.DefaultClause) return undefined;
             const e = (cl as ts.CaseClause).expression;
-            if (e.kind !== K.StringLiteral && e.kind !== K.NumericLiteral && !(e.kind === K.PrefixUnaryExpression && (e as ts.PrefixUnaryExpression).operand.kind === K.NumericLiteral)) throw this.no(e, "a non-literal case label");
+            if (e.kind !== K.StringLiteral && e.kind !== K.TrueKeyword && e.kind !== K.FalseKeyword && e.kind !== K.NumericLiteral && !(e.kind === K.PrefixUnaryExpression && (e as ts.PrefixUnaryExpression).operand.kind === K.NumericLiteral)) throw this.no(e, "a non-literal case label");
             return this.ex(e);
           });
           const float = dt.k === "num" && !isInt(dt);
