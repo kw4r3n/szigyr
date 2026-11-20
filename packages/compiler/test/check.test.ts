@@ -153,11 +153,12 @@ it("slices of two different Struct fields are no T013 site, two slices of one fi
     '  "use rt";',
     "  copy(p.a.slice(0, 1), p.b.slice(0, 1));",
     "  copy(p.a.slice(0, 1), p.a.slice(1, 2));",
+    "  copy(p.a.slice(0, 1), (p.a).slice(1, 2));",
     "}",
     "",
   ].join("\n"));
   const t013 = rtTrapSites(join(dir, "main.ts")).two!.filter((s) => s.code === "T013");
-  expect(t013).toEqual([{ code: "T013", line: 9, col: 29 }]);
+  expect(t013).toEqual([{ code: "T013", line: 9, col: 29 }, { code: "T013", line: 10, col: 31 }]);
 });
 
 it("determinism checks generic class type arguments across parameters (§7.3)", () => {
