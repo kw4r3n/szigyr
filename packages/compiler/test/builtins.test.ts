@@ -20,9 +20,9 @@ it("declares every effect field for every builtin method", () => {
   }
 });
 
-it("lets only the Q230 methods change state inside a contract", () => {
+it("lets no method that changes state be called inside a contract (Q134, Q230 (a))", () => {
   const open = methods.filter((x) => x.fx.mutates && x.fx.contract).map((x) => `${x.owner} ${x.name}`).sort();
-  expect(open).toEqual(["Port close", "Port recv", "Port send", "Spawn isolate"]);
+  expect(open).toEqual([]);
 });
 
 it("gives each method name one contract verdict, so Q134's by-name rule reads the table exactly", () => {

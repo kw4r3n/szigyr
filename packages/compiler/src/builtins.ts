@@ -66,7 +66,7 @@ const fx = (recv: Fx["recv"], mutates: boolean, contract = !mutates, traps: read
 const RD = fx("none", false), WR = fx("none", true), REF = fx("ref", false), MUT = fx("mut", true);
 const NUL = (f: Fx): Fx => ({ ...f, traps: ["T015"] }); // §14.4: a null Ptr / ConstPtr traps at the member name
 const PRD = NUL(RD), PWR = NUL(WR), PARAM = NUL(fx("param", false));
-const Q230 = fx("none", true, true); // changes state, yet a contract may call it (Q230: kept as before)
+const PORT_FX = fx("none", true, false); // changes the port's state or the outside world: a contract cannot call it (Q230 (a))
 
 export type Member =
   | { kind: "prop"; type: Type; readonly: boolean }
@@ -99,7 +99,7 @@ export function opaqueMembers(name: string): Members {
     Ffi: () => ({}), // §14: the Ffi value itself has no members; it is only passed to C functions
     // §15.2: `isolate` never reaches callSig; expr.ts checks the call itself (E2011) because the
     // argument is a function *name*, not a value. This entry only lets member() resolve the name.
-    Spawn: () => ({ isolate: m(Q230, [UNKNOWN], VOID) }),
+    Spawn: () => ({ isolate: m(PORT_FX, [UNKNOWN], VOID) }),
     JsRef: () => ({}),
     Js: () => {
       const J = opaque("JsRef"), jr = result(J, ERROR_RECORD);
@@ -222,7 +222,7 @@ export function genMembers(t: { name: GenName; args: Type[] }): Members {
     }
     case "CHandle": return { get: m(RD, [], gen("Ptr", a)) }; // §14.5
     // §15.2: S is sent, R is received; recv's Promise may be awaited (and, for an owned R, only awaited: §5.6)
-    case "Port": return { send: m(Q230, [a], VOID), recv: m(Q230, [], gen("Promise", nullable(b))), close: m(Q230, [], VOID) };
+    case "Port": return { send: m(PORT_FX, [a], VOID), recv: m(PORT_FX, [], gen("Promise", nullable(b))), close: m(PORT_FX, [], VOID) };
     default: return {}; // Promise: await and Promise.all only (§12); Ref / Mut are unwrapped before lookup
   }
 }

@@ -354,6 +354,7 @@ rt かつ unsafe の関数は、権限なしで C の関数を呼べる（§14.3
 - `ensures((r: R) => boolean)`: `requires` の後に 0 個以上書ける。`r` は戻り値。式の中で参照できるのは `r` と Copy 型の引数だけ。この関数式は、strict / rt のクロージャ禁止の例外とする。
 - `invariant(cond: boolean)`: ループ本体の先頭に書ける。
 - 位置の違反は E6001、参照の違反は E6002。
+- 契約は観測だけをする。契約の式の中の代入と、状態を変えうる組み込みメソッドの呼び出し（`push`、`Pool` の `insert`、`Ptr` の `write` など。`Port` の `send`、`recv`、`close` と `Spawn` の `isolate` を含む）は E6002（Q134、Q230）。確保する名前空間の関数のうち `Ptr.box` は E6002 で、`Vec.create`、`Pool.create`、`Arena.create`、`Ring.create`、`OwnedCell.create`、`CHandle.create` は契約の中で呼べる（Q230）。
 - 契約の式は、その関数と同じ層の制限に従う。
 - v0 では、契約は開発時も出力時も実行時に検査する。違反はトラップ（T004 / T005 / T010）。
 

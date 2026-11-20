@@ -617,8 +617,12 @@ reject/E6002-requires-mut-borrow.ts
 reject/E6002-requires-new-mut-borrow.ts
 reject/E6002-requires-nondeterministic-call.ts
 reject/E6002-requires-pool-insert.ts
+reject/E6002-requires-port-close.ts
+reject/E6002-requires-port-recv.ts
+reject/E6002-requires-port-send.ts
 reject/E6002-requires-ptr-box.ts
 reject/E6002-requires-ring-nondeterministic.ts
+reject/E6002-requires-spawn-isolate.ts
 reject/E6003-test-in-function.ts
 reject/E6003-test-in-test.ts
 reject/E7001-default-import.ts

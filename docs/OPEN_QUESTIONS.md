@@ -1470,6 +1470,9 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
   - (a) `send`、`recv`、`close`、`isolate` を E6002 にする（Q134 の「状態を変えうる」に合わせる）。`create` は呼べるままにするか、`Ptr.box` に合わせて拒否するかも決める。
   - (b) 今のまま、どれも呼べるようにする。
 - 既定案: (b)。挙動を変えない整理の中で見つけたので、挙動は変えない。表ではこの 4 つを `mutates: true`、`contract: true` として残した。`packages/compiler/test/builtins.test.ts` が、状態を変えるのに契約で呼べるメソッドを、この 4 つに固定している。
+- 2026-11-20 オーナー決定（2 つの問いに分けて決めた）:
+  - (1) (a)。`port.send`、`port.recv`、`port.close`、`spawn.isolate` は契約の中で E6002（アンカーはメンバ名）。`builtins.ts` の 4 つの `contract` を false にした。`builtins.test.ts` の、この 4 つを例外として固定していたテストは、例外が空であることを調べる形に変えた。ケースは reject の `E6002-requires-port-send`、`-port-recv`、`-port-close`、`-spawn-isolate`。
+  - (2) (b)。挙動は変えない。`*.create` は契約の中で呼べるまま、`Ptr.box` は E6002 のまま。SPEC §9.1 に 1 文で書いた（D133）。
 
 ### Q231 §13 の予約名（`i64`、`u64`、`bigint`、`undefined`）を宣言できるか（監査の修正 5、D132）
 - 関連: §12、§13、Q010、Q011、D132
