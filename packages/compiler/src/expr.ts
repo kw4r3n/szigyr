@@ -635,7 +635,7 @@ function arrLit(c: Checker, e: ts.ArrayLiteralExpression, want: Type | undefined
 }
 
 /** Arrow functions and function expressions (Q022: parameters annotated, return inferred when not annotated). */
-export function checkArrow(c: Checker, e: ts.ArrowFunction | ts.FunctionExpression, want: FnType | undefined, inferRet: boolean): FnType {
+function checkArrow(c: Checker, e: ts.ArrowFunction | ts.FunctionExpression, want: FnType | undefined, inferRet: boolean): FnType {
   if (c.fx.layer !== "managed" && !ensuresArgs.has(e)) c.at("E4003", e, `a function expression cannot be written in ${c.fx.layer} code`); // §2, Q012
   const tps = tparamShells(e.typeParameters, "managed");
   const outerTps = c.fx.tparams;
@@ -708,7 +708,7 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
       }
       if (c.fx.contract && !isDeterministic(sym.sig, sym.layer === "rt" && sym.unsafe)) c.at("E6002", callee, `a contract can only call deterministic functions ('${sym.name}' is not)`);
       const got = callSig(c, sym.sig, e, callee, want, sym.layer === "managed" ? undefined : sym.layer);
-      if (sym.layer !== "managed") c.fnSites.push({ from: c.fn, callee: sym, refs: callFnArgs.get(e) ?? new Map(), node: callee, mod: c.mod }); // Q189 (b): E4005 per instantiation
+      if (sym.layer !== "managed") c.fnSites.push({ from: c.fn, callee: sym, refs: callFnArgs.get(e) ?? new Map(), node: callee, mod: c.mod, targs: callTArgs.get(e) }); // Q189 (b): E4005 per instantiation
       return got;
     }
     if (sym?.k === "cfn") { // §14.1 / §14.3: unsafe callers only; rt + unsafe drops the Ffi argument

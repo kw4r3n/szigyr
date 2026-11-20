@@ -61,9 +61,6 @@ interface Inst { f: FnSym; m: Map<number, Type>; fns: Map<number, FnSym>; name: 
 /** The parameter indices of `f` whose type is a function type (Q189 (b)). */
 const fnParamIdx = (f: FnSym): number[] => f.sig.params.flatMap((pt, i) => (unref(pt).k === "fn" ? [i] : []));
 
-/** Q240: monomorphization has no natural bound for a function that instantiates itself with a deeper type argument, so the nesting of a type argument (`<` / `{` depth of its text) is capped. */
-const MAX_TYPE_NEST = 32;
-const nest = (s: string): number => { let d = 0, m = 0; for (const c of s) { if (c === "<" || c === "{") m = Math.max(m, ++d); else if (c === ">" || c === "}") d--; } return m; };
 
 export function emitC(prog: Program): EmittedC | undefined {
   // §12 (D117): managed DetMath calls run the JS module directly; C compiles only DetMath functions reached from strict / rt.
@@ -79,7 +76,6 @@ export function emitC(prog: Program): EmittedC | undefined {
   /** The C function for `f` with type arguments `args` and function arguments `fnArgs` (D104 + Q189 (b)). */
   function inst(f: FnSym, args: Type[], fnArgs: Map<number, FnSym>, where: string): Inst {
     if (args.some(hasTParam)) throw new CUnsupported(where, "a generic instantiation that is not concrete");
-    for (const a of args) if (nest(show(a)) > MAX_TYPE_NEST) throw new CUnsupported(where, `a generic instantiation whose type argument nests deeper than ${MAX_TYPE_NEST} brackets (polymorphic recursion, Q240)`);
     const key = `${baseOf(f)}<${args.map(show).join(",")}|${[...fnArgs].map(([j, g]) => `${j}:${baseOf(g)}`).join(",")}>`;
     let i = insts.get(key);
     if (!i) {

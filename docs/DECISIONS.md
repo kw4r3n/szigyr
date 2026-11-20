@@ -707,6 +707,13 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - obj が JS に渡る経路がないことの確認: C の値を JS の値にするのは `outConv`（境界の戻り値）と `unbox`（`sts_box_unref`、JS のスレッド）だけである。借用した端点をそこへ運ぶ書き方は、検査器がすべて拒否する。`return p.borrow()`、`{ rx: p.borrow() }` は E3004（「`borrow` は借用の実引数か受け手にだけ書ける」）。借用のパラメータを返す、Struct に入れる、値渡しのパラメータに渡す、`Ptr.box` に入れる形も E3004。関数型パラメータに managed の関数を渡す形は E4001。`Port` は strict / rt に書けず、managed は `borrow` を書けない（unsafe）。最も直接の形を `reject/E3004-ptr-borrow-ring-returned.ts` で固定した。D123 が obj を戻していたのは、これらの経路がないことを確かめる前の用心で、obj を値として読む経路は当時もなかった（D123 自身が Struct のフィールドの場合をそう書いている）。
 - 確かめ方: 適合テスト `run/204-cfn-boxed-ring-borrow-thread.ts`（C 専用）。`RingRx<i32>` を直に `box` し、`stscb_thread` の C のスレッドで `borrow` して 2 回 pop する。直す前は `0`、`0`、直した後は `42`、`7`。
 
+## D152: 多相再帰は型パラメータのグラフで検査する（Q240 (a)、2026-11-20）
+
+- オーナー承認（2026-11-20）: Q240 は (a)。C バックエンドの入れ子の上限（32）と、その CUnsupported は消した。
+- `checker.ts` の `polyRec`。呼び出しの型引数（`callTArgs`）を `FnSite.targs` に持たせ、strict / rt のジェネリックな関数の呼び出しごとに、呼び出し元の型パラメータの id から呼び出し先の型パラメータの id へ辺を引く（`T` そのものなら増えない辺、ほかは増える辺）。増える辺の先から元へ戻れるなら E4010。
+- 呼び出し元が managed の関数は対象にしない（単相化しない）。
+- 確かめ方: reject の `E4010-polymorphic-recursion-direct`、`E4010-polymorphic-recursion-cycle`、run の `240-polymorphic-recursion-allowed-shapes`（両バックエンド）、`cli.test.ts` の E4010 の件。
+
 ## D156: `Ptr.write` / `offset` / `slice` は引数を評価してから T015 を検査する（監査の修正、2026-11-20）
 
 - `emit-c.ts` の `Ptr` のメンバー。JS の意味は「受け手、引数、操作」の順に評価する（§0）ので、null の `Ptr` に対する操作の T015 は、引数の評価（副作用や別のトラップ）のあとに出る。以前の `write` / `offset` / `slice` は null の検査を引数の評価より前に出していたため、引数が `s[s.length]`（T002）のときに T015 が先に出ていた。`read` / `borrow` / `unbox` は引数がないので順序は変わらない。

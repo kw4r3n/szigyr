@@ -80,7 +80,7 @@ export function directiveOf(list: readonly ts.Statement[]): Layer | undefined {
   return undefined;
 }
 /** Whether a statement list carries the `"use unsafe"` modifier among its leading directives (§14.4). */
-export function unsafeOf(list: readonly ts.Statement[]): boolean {
+function unsafeOf(list: readonly ts.Statement[]): boolean {
   for (const s of list) {
     if (s.kind !== K.ExpressionStatement || (s as ts.ExpressionStatement).expression.kind !== K.StringLiteral) break;
     if (((s as ts.ExpressionStatement).expression as ts.StringLiteral).text === "use unsafe") return true;
@@ -97,7 +97,7 @@ export function declBindings(d: ts.VariableDeclaration): { id: ts.Identifier; el
 }
 
 /** Syntactic export table: exported name -> local name (E7001 check in P1, and module linking). */
-export function exportTable(sf: ts.SourceFile): Map<string, string> {
+function exportTable(sf: ts.SourceFile): Map<string, string> {
   const out = new Map<string, string>();
   for (const s of sf.statements) {
     if (s.kind === K.ExportDeclaration) {

@@ -3,11 +3,11 @@ import { NodeFlags, SyntaxKind as K, hasMod, isId, type Node, type ts } from "./
 import { Program, declBindings, legalUnion, type ClassValueSym, type FnSym, type Layer, type LocalSym, type Module, type ValueSym } from "./modules.ts";
 import { PROMISE_CONTAINERS, assignTarget, checkTo, exprTypes, hasPromise, cond, expr, isLitOnly, localOf, promiseOk, type FnArgRef } from "./expr.ts";
 import {
-  AUTHORITIES, ERROR, NEVER, NULL, STR, VOID, assignable, hasAuthority, hasPtr, layerOk, crossOk, ptrTargetOk, field, isBool, isErr, isNull, isTaggedUnion, kindOf, nonNull, same, show, subst, bindTParams, unref, union, subUnion,
+  AUTHORITIES, ERROR, NEVER, NULL, STR, VOID, assignable, hasAuthority, hasTParam, hasPtr, layerOk, crossOk, ptrTargetOk, field, isBool, isErr, isNull, isTaggedUnion, kindOf, nonNull, same, show, subst, bindTParams, unref, union, subUnion,
   type ClassSym, type FnType, type TParam, type Type,
 } from "./types.ts";
 
-export interface FnCtx {
+interface FnCtx {
   mod: Module;
   layer: Layer;
   /** Declared return type (Promise unwrapped for async); undefined: inferred (arrow without annotation). */
@@ -29,7 +29,7 @@ export interface FnCtx {
   unsafe: boolean;
 }
 
-export class Scope {
+class Scope {
   readonly vars = new Map<string, LocalSym>();
   readonly parent: Scope | undefined;
   constructor(parent?: Scope) { this.parent = parent; }
@@ -39,7 +39,7 @@ export class Scope {
 let localId = 0;
 
 /** A call to a strict / rt function, or through a function-typed parameter (Q189 (b); see Checker.fnSites). */
-export interface FnSite { from: FnSym | undefined; callee: FnSym | number; refs: Map<number, FnArgRef>; node: Node; mod: Module }
+export interface FnSite { from: FnSym | undefined; callee: FnSym | number; refs: Map<number, FnArgRef>; node: Node; mod: Module; targs?: Type[] }
 
 export class Checker {
   scope = new Scope();
@@ -77,6 +77,7 @@ export class Checker {
   run(): void {
     for (const mod of this.prog.mods) this.module(mod);
     this.fnGraph();
+    this.polyRec();
     this.prog.checkInsts();
     // Fail closed: an error type without any diagnostic would accept anything (D050).
     if (this.firstError && this.prog.rep.out.length === 0) { // any diagnostic, signatures included
@@ -250,6 +251,44 @@ export class Checker {
     if (layer === "rt" && hasAuthority(t)) this.at("E4006", node, "rt functions cannot take authorities");
     else if (t.k === "fn") this.at("E4003", node, `a function value cannot be used in ${layer} code`); // §2: function values are E4003
     else if (!layerOk(t)) this.at("E4002", node, `'${show(t)}' cannot be used in ${layer} code`);
+  }
+
+  /** E4010 (Q240 (a)): a strict / rt generic function may not instantiate itself, directly or through a cycle of
+   * generic calls, with a type argument that wraps one of its own type parameters in a larger type (`f<W<T>>`
+   * inside `f<T>`): every round would make a bigger type, so monomorphization (D104) would never stop. Type
+   * parameters are opaque, so a type argument is built from the caller's parameters by constructors only; the
+   * graph over type parameters has an edge for each parameter a type argument mentions, "grow" when it is
+   * not the bare parameter. A grow edge on a cycle is reported at its call. */
+  private polyRec(): void {
+    const edges = new Map<number, { to: number; grow: boolean; site: FnSite }[]>();
+    for (const s of this.fnSites) {
+      const f = s.from, g = s.callee;
+      if (!f || typeof g === "number" || !s.targs || f.layer === "managed") continue;
+      for (const p of f.sig.tparams) {
+        const ids = new Set([p.id]);
+        g.sig.tparams.forEach((q, j) => {
+          const a = s.targs![j];
+          if (!a || !hasTParam(a, ids)) return;
+          const l = edges.get(p.id) ?? edges.set(p.id, []).get(p.id)!;
+          l.push({ to: q.id, grow: !(a.k === "tparam" && a.p.id === p.id), site: s });
+        });
+      }
+    }
+    const reaches = (from: number, to: number): boolean => {
+      const seen = new Set<number>(), todo = [from];
+      for (let x = todo.pop(); x !== undefined; x = todo.pop()) {
+        if (x === to) return true;
+        if (seen.has(x)) continue;
+        seen.add(x);
+        for (const e of edges.get(x) ?? []) todo.push(e.to);
+      }
+      return false;
+    };
+    const reported = new Set<Node>();
+    for (const [from, es] of edges) for (const e of es) if (e.grow && !reported.has(e.site.node) && reaches(e.to, from)) {
+      reported.add(e.site.node);
+      this.prog.rep.at(e.site.mod, "E4010", e.site.node, `polymorphic recursion: '${(e.site.callee as FnSym).name}' is instantiated with a type argument that wraps a type parameter of its own cycle`);
+    }
   }
 
   /** E4005 (Q046, Q189 (b)): recursion among rt instantiations. An instantiation is a strict / rt function
@@ -685,7 +724,7 @@ export class Checker {
     });
     this.restore(saved, m0);
     this.scope = savedScope;
-    const exhaustive = hasDefault || (!!labels && labels.every((l) => l.k === "lit" && seen.has(l.value)));
+    const exhaustive = hasDefault || (!!labels && labels.every((l) => l.k === "lit" && seen.has(l.value))) || (isBool(t) && seen.has("true") && seen.has("false")); // Q254
     if (!exhaustive && t.k !== "error") this.report("E2005", kw, kw + "switch".length, "switch is not exhaustive");
     return !exhaustive || reachEnd || clauses.length === 0 || hasBreak(x.caseBlock, true);
   }
