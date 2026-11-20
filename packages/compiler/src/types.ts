@@ -75,11 +75,15 @@ export const newTParam = (name: string, constraint?: Type): TParam => ({ name, i
 
 /** Flattened union; a single member collapses. Duplicates (by identity) are dropped. */
 export function union(ts: Type[]): Type {
-  const out: Type[] = [];
-  for (const t of ts.flatMap((x) => (x.k === "union" ? x.members : [x]))) if (!out.some((o) => same(o, t))) out.push(t);
+  const out: Type[] = [], lits = new Set<string>(); // string literals dedup by hash: the tags of a big tagged union are read on every `x.kind`
+  for (const t of ts.flatMap((x) => (x.k === "union" ? x.members : [x]))) {
+    if (t.k === "lit") { if (!lits.has(t.value)) { lits.add(t.value); out.push(t); } } else if (!out.some((o) => same(o, t))) out.push(t);
+  }
   return out.length === 1 ? out[0]! : { k: "union", members: out };
 }
-export const nullable = (t: Type): Type => union([t, NULL]);
+/** A sub-list of a union's own members: already flat and duplicate-free, so `union()`'s quadratic dedup is skipped (narrowing a big tagged union). */
+export const subUnion = (ms: Type[]): Type => (ms.length === 1 ? ms[0]! : { k: "union", members: ms });
+export const nullable =(t: Type): Type => union([t, NULL]);
 /** `T | null` -> T; otherwise undefined. */
 export function nonNull(t: Type): Type | undefined {
   if (t.k !== "union" || !t.members.some(isNull)) return undefined;

@@ -48,8 +48,11 @@ export interface Module {
 
 export class Reporter {
   readonly out: Diagnostic[] = [];
+  private readonly seen = new Set<string>();
   report(mod: Module, code: string, start: number, end: number, message: string, data?: Record<string, unknown>, severity: "error" | "warning" = "error"): void {
-    if (this.out.some((d) => d.code === code && d.file === mod.file && d.range.start.line === mod.pf.position(start).line && d.range.start.col === mod.pf.position(start).col)) return; // Q133: one per code and position
+    const key = `${code} ${mod.file} ${start}`;
+    if (this.seen.has(key)) return; // Q133: one per code and position
+    this.seen.add(key);
     this.out.push({ code, severity, message, file: mod.file, range: { start: mod.pf.position(start), end: mod.pf.position(end) }, ...(data ? { data } : {}) });
   }
   /** Wxxxx (Q187): reported by `check`, never blocks `run` / `test`. */
