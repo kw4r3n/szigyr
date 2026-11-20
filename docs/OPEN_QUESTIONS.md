@@ -1512,3 +1512,19 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
   - (a) union を通した代入は、全メンバでフィールドの型が同じで、どのメンバでも `readonly` でないときだけ許す。それ以外は E2002。
   - (b) 今のまま（Q076 の既定案）。
 - 既定案: (a)。読み取りは Q076 のまま。ケースは reject の `E2002-union-common-field-write-differing`、run の `190-union-common-field-write-same-type`。
+
+### Q235 型を決められない配列リテラル（`["a", null]`、`[1, null]`、`[null, null]`）（監査の修正）
+- 関連: §3.2、Q021、Q030
+- 状況: 文脈のない配列リテラルで、要素が `null` とほかのリテラルの混在、または `null` だけのとき、型を決められずコンパイラが TypeError で落ちた。
+- 選択肢:
+  - (a) E2006（文脈のない空の配列リテラルと同じ）。アンカーは配列リテラルの `[`。
+  - (b) 要素ごとの型の union にする（`T | null`）。
+- 既定案: (a)。ケースは reject の `E2006-array-literal-*`（3 つ）。
+
+### Q236 送れる型の検査の穴（Struct のフィールドの型パラメータ、`Handle` の型引数、`Ptr` 系）（監査の修正）
+- 関連: §15.2、Q127、Q200、Q210
+- 状況: `type BadPort<T> = Port<Struct<{ x: T }>, i32>` の `T` に `send` の条件が付かず、`BadPort<Arena>` や `BadPort<CHandle<void>>` が通った。`Handle<ArenaBuf<i32>>` も、`Handle` の型引数を見ないので通った。§15.2 の「送れる型」の一覧に `Ptr`、`ConstPtr`、`CType` はなく、送れない型の一覧にも名前がない。
+- 選択肢:
+  - (a) Struct のフィールドも送れる型の検査に通し（型パラメータには `send` の条件）、`Handle<T>` は `T` が送れない型を含まないときだけ送れる。`Ptr`、`ConstPtr`、`CType` を含む型は、一覧にない型として送れない（E2010）。
+  - (b) 今のまま。
+- 既定案: (a)。`Ptr` 系は一覧が許可リストなので送れない側に倒した。ケースは reject の `E2010-port-generic-struct-arena`、`E2010-port-generic-struct-chandle`、`E2010-port-handle-of-arenabuf`。

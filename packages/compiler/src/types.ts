@@ -477,7 +477,7 @@ export function hasArenaBuf(t: Type): boolean {
  * (their ids are per-isolate), a CHandle, or one of the types §15.2 lists as unsendable. */
 function hasUnsendable(t: Type): boolean {
   switch (t.k) {
-    case "gen": return t.name === "Pool" || t.name === "Arena" || t.name === "ArenaBuf" || t.name === "CHandle" ||
+    case "gen": return t.name === "Pool" || t.name === "Arena" || t.name === "ArenaBuf" || t.name === "CHandle" || t.name === "Ptr" || t.name === "ConstPtr" || t.name === "CType" ||
       t.name === "Array" || t.name === "ReadonlyArray" || t.name === "Map" || t.name === "Set" || t.name === "Promise" ||
       t.name === "Port" || t.name === "OwnedCell" || t.args.some(hasUnsendable);
     case "record": return t.fields.some((f) => hasUnsendable(f.type));
@@ -497,10 +497,13 @@ export function sendable(t: Type): boolean {
     case "num": case "lit": return true;
     case "prim": return t.name === "boolean" || t.name === "null" || t.name === "string";
     case "union": return t.members.every(sendable);
-    case "record": return t.struct ? !hasUnsendable(t) : t.fields.every((f) => f.readonly && sendable(f.type));
+    case "record": { // a Struct's type parameters get the `send` demand like a Vec's (Q236); no short-circuit, so every field is visited
+      if (t.struct) return t.fields.map((f) => sendable(f.type)).every(Boolean) && !hasUnsendable(t);
+      return t.fields.every((f) => f.readonly && sendable(f.type));
+    }
     case "gen":
       if (t.name === "Vec" || t.name === "RingTx" || t.name === "RingRx") { t.args.forEach((a) => void sendable(a)); return !hasUnsendable(t); }
-      return t.name === "Handle";
+      return t.name === "Handle" && !hasUnsendable(t);
     default: return false;
   }
 }
