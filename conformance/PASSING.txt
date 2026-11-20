@@ -108,6 +108,10 @@ reject/E1000-member-name-proto.ts
 reject/E1000-member-name-then.ts
 reject/E1000-object-literal-proto.ts
 reject/E1000-object-type.ts
+reject/E1000-reserved-bigint-class.ts
+reject/E1000-reserved-i64-type.ts
+reject/E1000-reserved-u64-function.ts
+reject/E1000-reserved-undefined-const.ts
 reject/E1000-reserved-word-function-name.ts
 reject/E1000-reserved-word-implements.ts
 reject/E1000-reserved-word-package.ts

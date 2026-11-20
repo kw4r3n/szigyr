@@ -1481,3 +1481,4 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
   - (a) §13 の名前の宣言も E1000 にする（`BUILTIN_NAMES` に足す）。
   - (b) 今のまま、宣言を許す。
 - 既定案: (b)。挙動を変えない整理の中で見つけたので、挙動は変えない。
+- 2026-11-20 オーナー決定: (a)。§13 の予約名の宣言は、§12 の組み込み名と同じく E1000。`builtins.ts` の `SPEC_RESERVED`（`i64`、`u64`、`bigint`、`undefined`、`FixedArray`、`Rc`、`Weak`、`using`、`forAll`、`decreases`）を `BUILTIN_NAMES` に足した。参照は変わらず E2000（`RESERVED`）。SPEC §1 と §13 に書いた（D133）。ケースは reject の `E1000-reserved-i64-type`、`-u64-function`、`-bigint-class`、`-undefined-const`。

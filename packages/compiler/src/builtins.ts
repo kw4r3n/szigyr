@@ -19,8 +19,11 @@ export const GLOBAL_AUTHORITIES = new Set([
 export const NAMESPACES = new Set(["Math", "Number", "JSON", "String", "Promise", "Vec", "Pool", "Arena", "Ring", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "TestAlloc", "DetMath", "Ptr", "CHandle"]);
 /** Builtin functions handled by the checker (§12). */
 export const BUILTIN_FUNCTIONS = new Set([...NUM_NAMES, "wrapAdd", "wrapSub", "wrapMul", "divTrunc", "rem", "ok", "err", "panic", "cast", "requires", "ensures", "invariant", "test", "cfn"]);
-/** §12 global names; declaring any of them is E1000 (Q010). The tables here plus the names only the resolver and §7.1 know. */
+/** §13: the identifier-like names it reserves (types, functions, `using`). Declaring one is E1000 like a builtin name (Q231 (a)). */
+export const SPEC_RESERVED = ["i64", "u64", "bigint", "undefined", "FixedArray", "Rc", "Weak", "using", "forAll", "decreases"];
+/** §12 global names, §13 reserved names; declaring any of them is E1000 (Q010, Q231). The tables here plus the names only the resolver and §7.1 know. */
 export const BUILTIN_NAMES = new Set<string>([
+  ...SPEC_RESERVED,
   "boolean", "string", "number", "null", "void", "unknown", "never", "Result", "Struct", "RingPair", "JsError", "CastError", "IoError", "Net",
   ...Object.keys(GEN_ARITY), ...OPAQUE_NAMES, ...NAMESPACES, ...BUILTIN_FUNCTIONS,
 ]);
