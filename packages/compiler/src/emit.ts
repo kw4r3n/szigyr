@@ -109,8 +109,8 @@ export function emitFile(pf: ParsedFile, file: string, tests: boolean, native?: 
     switch (n.kind) {
       case K.TypeAliasDeclaration: case K.InterfaceDeclaration: case K.ModuleDeclaration: return ""; // ModuleDeclaration: `declare module "c:..."` (§14.1) declares C functions and has no runtime form
       case K.NumericLiteral: return numName(n) === "f32" ? `${RT}.f32(${splice(n)})` : splice(n); // Q015
-      case K.AwaitExpression: // §15.4 (2): in a C backend program, a recorded foreign trap surfaces before the next task
-        return native ? `${RT}.task(await ${gen((n as ts.AwaitExpression).expression)})` : splice(n);
+      case K.AwaitExpression: // §15.4 (2), D145: a recorded foreign trap (a C thread's or an isolate's) surfaces before the next task, on both backends
+        return `${RT}.task(await ${gen((n as ts.AwaitExpression).expression)})`;
       case K.PrefixUnaryExpression: return prefix(n as ts.PrefixUnaryExpression);
       case K.BinaryExpression: return binary(n as ts.BinaryExpression);
       case K.ElementAccessExpression: {

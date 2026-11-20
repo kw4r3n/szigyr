@@ -115,6 +115,33 @@ export async function main(sys: System): Promise<void> {
     expect(r.stdout).toBe("idx\ng5\ng7\ng3\n6 17 1.5\ng2147483647\n");
     expect(r.trap).toMatchObject({ code: "T001", line: 23, col: 9 });
   });
+
+  it("an isolate trap surfaces at the next await of any promise, on both backends (§15.4 (2))", async () => {
+    const main = project({
+      "main.ts": `import { later } from "npm:laterpkg";
+function boom(port: Port<i32, i32>): void {
+  panic("boom");
+}
+export async function main(sys: System): Promise<void> {
+  const p = sys.spawn.isolate(boom);
+  const t = sys.js.call(later, []);
+  if (t.kind === "ok") {
+    const r = await sys.js.await(t.value);
+  }
+  sys.log.info("after");
+}
+`,
+      "node_modules/laterpkg/package.json": JSON.stringify({ name: "laterpkg", type: "module", main: "index.js" }),
+      // generous: the isolate only has to start and trap within this time
+      "node_modules/laterpkg/index.js": "export const later = () => new Promise((r) => setTimeout(r, 3000));\n",
+    });
+    for (const backend of ["js", "c"] as const) {
+      const r = await run(main, { backend });
+      expect(r.diagnostics).toEqual([]);
+      expect([backend, r.stdout]).toEqual([backend, ""]);
+      expect(r.trap).toMatchObject({ code: "T006", line: 3, col: 3 });
+    }
+  }, 120000);
 });
 
 describe("Q035: JS exceptions and stack exhaustion are T006 at the callee name", () => {
