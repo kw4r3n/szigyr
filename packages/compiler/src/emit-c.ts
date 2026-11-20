@@ -1186,10 +1186,10 @@ export function emitC(prog: Program): EmittedC | undefined {
           case "borrow": { // reached as a borrowed argument (userCall); the value the parameter receives
             chk();
             if (isStruct(pt)) return `(${ctype(pt, this.where)} *)${pv}`;
+            // D147: the descriptor as boxed; its obj stays the keep-alive ref, which a borrow never reads (push / pop use base and cap), and a C thread has no env to resolve it
             if (isGen(pt, "RingTx") || isGen(pt, "RingRx")) {
               const r = `t${this.tmp++}`;
               this.emit(`sts_ring ${r} = *(sts_ring *)${pv};`);
-              this.emit(`${r}.obj = sts_box_peek(${r}.obj);`);
               return this.t(t, r, e);
             }
             if (isGen(pt, "CHandle")) return this.t(t, `*(void **)${pv}`, e);

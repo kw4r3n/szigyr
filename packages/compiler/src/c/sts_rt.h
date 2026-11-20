@@ -366,11 +366,6 @@ static napi_value sts_box_ref(napi_value obj) {
   if (napi_create_reference(sts_env, obj, 1, &r) != napi_ok) sts_fail("box: cannot keep the value alive");
   return (napi_value)(uintptr_t)(void *)r;
 }
-static napi_value sts_box_peek(napi_value fake) {
-  napi_value v;
-  if (napi_get_reference_value(sts_env, (napi_ref)(uintptr_t)(const void *)fake, &v) != napi_ok) sts_fail("borrow: the boxed value is gone");
-  return v;
-}
 static napi_value sts_box_unref(napi_value fake) {
   napi_ref r = (napi_ref)(uintptr_t)(const void *)fake;
   napi_value v;
