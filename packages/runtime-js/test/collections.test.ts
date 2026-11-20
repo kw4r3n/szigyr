@@ -118,3 +118,24 @@ describe("normalization", () => {
     expect(code(() => charCodeAt("A", 1, pos))).toBe("T002");
   });
 });
+
+describe("Vec.pack / Vec.unpack (§15.2)", () => {
+  const rec = JSON.stringify({ t: "rec", z: 8, a: 4, f: [{ n: "x", o: 0, l: { t: "num", n: "i32", z: 4, a: 4 } }, { n: "b", o: 4, l: { t: "bool", z: 1, a: 1 } }] }) as `{${string}`;
+  it("round-trips numeric and packed elements", () => {
+    const v = Vec.create<number>(null, 4, "i32");
+    v.push(3); v.push(-5);
+    const u = Vec.unpack<number>(v.pack());
+    expect([u.length, u.get(0), u.get(1)]).toEqual([2, 3, -5]);
+    const r = Vec.create<{ x: number; b: boolean }>(null, 1, rec);
+    r.push({ x: 9, b: true });
+    expect(Vec.unpack<{ x: number; b: boolean }>(r.pack()).get(0)).toEqual({ x: 9, b: true });
+  });
+  it("an empty Vec received from an isolate still grows on push", () => {
+    const v = Vec.unpack<number>(Vec.create<number>(null, 0, "i32").pack());
+    v.push(7); v.push(8);
+    expect([v.length, v.get(0), v.get(1)]).toEqual([2, 7, 8]);
+    const r = Vec.unpack<{ x: number; b: boolean }>(Vec.create<{ x: number; b: boolean }>(null, 0, rec).pack());
+    r.push({ x: 1, b: false });
+    expect(r.get(0)).toEqual({ x: 1, b: false });
+  });
+});

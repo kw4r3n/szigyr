@@ -171,13 +171,13 @@ export class Vec<T = unknown> {
   push(x: T): void {
     const c = this.cod;
     if (c) {
-      if ((this.len + 1) * c.z > this.buf.length) { const bigger = new Uint8Array(this.len * 2 * c.z); bigger.set(this.buf as Uint8Array); this.buf = bigger as Buf<T>; }
+      if ((this.len + 1) * c.z > this.buf.length) { const bigger = new Uint8Array(Math.max(this.len * 2, 4) * c.z); bigger.set(this.buf as Uint8Array); this.buf = bigger as Buf<T>; }
       this.len++;
       this.set(this.len - 1, x);
       return;
     }
     if (this.elem !== "other" && this.len === this.buf.length) {
-      const bigger = new TYPED[this.elem as NumType](this.len * 2);
+      const bigger = new TYPED[this.elem as NumType](Math.max(this.len * 2, 4)); // an unpacked empty Vec has a 0-length buffer (§15.2)
       bigger.set(this.buf as Float64Array);
       this.buf = bigger as Buf<T>;
     }
