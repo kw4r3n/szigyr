@@ -24,6 +24,8 @@ const RANGE: Record<string, [string, string]> = {
   u8: ["0LL", "255LL"], u16: ["0LL", "65535LL"], u32: ["0LL", "4294967295LL"], usize: ["0LL", "4294967295LL"],
 };
 const CNUM: Record<NumName, string> = { f64: "double", f32: "float", i8: "int8_t", i16: "int16_t", i32: "int32_t", u8: "uint8_t", u16: "uint16_t", u32: "uint32_t", usize: "uint32_t" };
+// Q271: `<math.h>` macros; the finite ones are the JS values.
+const NUMBER_CONSTS: Record<string, string> = { POSITIVE_INFINITY: "INFINITY", NEGATIVE_INFINITY: "(-INFINITY)", NaN: "NAN", EPSILON: "2.220446049250313e-16", MAX_SAFE_INTEGER: "9007199254740991.0" };
 const numText = (n: ts.NumericLiteral): number => Number(n.text.replace(/_/g, ""));
 const isGen = (t: Type, n: string): boolean => t.k === "gen" && t.name === n;
 /** Structs, and the all-readonly Copy records strict / rt accepts as Copy Structs (Q043). */
@@ -909,6 +911,9 @@ export function emitC(prog: Program): EmittedC | undefined {
       const name = p.name.text;
       if (p.expression.kind === K.Identifier && !this.lookup((p.expression as ts.Identifier).text) && (p.expression as ts.Identifier).text === "Math") {
         if (name === "PI") return "3.141592653589793"; if (name === "E") return "2.718281828459045";
+      }
+      if (p.expression.kind === K.Identifier && !this.lookup((p.expression as ts.Identifier).text) && (p.expression as ts.Identifier).text === "Number") {
+        const c = NUMBER_CONSTS[name]; if (c) return c;
       }
       const rt = this.typeOf(p.expression);
       if ((isGen(rt, "Vec") || isGen(rt, "Slice")) && name === "length") { const s = this.seq(p.expression); return this.t({ k: "num", name: "usize" }, s.len, p); }

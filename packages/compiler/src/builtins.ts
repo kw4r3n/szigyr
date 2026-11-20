@@ -254,7 +254,7 @@ export function nsMembers(ns: string): Record<string, Member | "variadic"> {
       };
     case "Number": return mapValues({
       isFinite: m(RD, [F64], BOOL), isNaN: m(RD, [F64], BOOL), isInteger: m(RD, [F64], BOOL), parseFloat: m(RD, [STR], F64),
-      MAX_SAFE_INTEGER: prop(F64), EPSILON: prop(F64),
+      MAX_SAFE_INTEGER: prop(F64), EPSILON: prop(F64), POSITIVE_INFINITY: prop(F64), NEGATIVE_INFINITY: prop(F64), NaN: prop(F64),
     }, mo);
     case "JSON": return {
       parse: mo(m(RD, [STR], result(UNKNOWN, ERROR_RECORD))), // Q035

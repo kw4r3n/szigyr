@@ -510,7 +510,7 @@ rt かつ unsafe の関数は、権限なしで C の関数を呼べる（§14.3
   - 実装は標準ライブラリの strict のソース（コンパイラに同梱した 1 モジュール。関数はすべて `"use rt"`）で、プログラムが `DetMath.<名前>` を使うと、コンパイラはそのモジュールを、利用者から見えない名前で import したものとしてプログラムに加える。利用者はこのモジュールを import できず、上の 10 個以外の名前は見えない。
   - 特別な値（NaN、±0、±Infinity の場合の結果）は、同じ名前の ECMAScript の `Math.*` に従う。NaN のビットの中身は決めない。
   - rt の関数なので、呼び出しはトラップの一覧に何も足さない。managed からの呼び出しは JS に変換した版を直接呼ぶ（結果は C 版と同じ）ので、層の境界をまたがず、W8001 の対象にしない。JS と C でビット単位に一致する。
-- **`Number`**: `isFinite`、`isNaN`、`isInteger`、`parseFloat`、`MAX_SAFE_INTEGER`、`EPSILON`。
+- **`Number`**: `isFinite`、`isNaN`、`isInteger`、`parseFloat`、`MAX_SAFE_INTEGER`、`EPSILON`、`POSITIVE_INFINITY`、`NEGATIVE_INFINITY`、`NaN`（定数はどれも `f64` の値。Q271）。
 - **`JSON`**: `parse`（戻り値は `Result<unknown, JsError>`。構文エラーは `err` で、`error.code` は `"SyntaxError"`）、`stringify`。JS の例外を投げるほかの組み込みとスタックの枯渇は T006（Q035）。
 - **`string` のメンバ**: `length`、`slice`、`indexOf`、`includes`、`startsWith`、`endsWith`、`split`、`trim`、`toUpperCase`、`toLowerCase`、`padStart`、`padEnd`、`replaceAll`（文字列の引数のみ）、`charCodeAt`、`codePointAt`。`String.fromCodePoint`。
 - **`Array` のメンバ**: `length`、`push`、`pop`、`slice`、`map`、`filter`、`reduce`（初期値必須）、`forEach`、`find`、`findIndex`、`some`、`every`、`includes`、`indexOf`、`join`、`concat`、`reverse`、`sort`（比較関数必須）、`fill`。
