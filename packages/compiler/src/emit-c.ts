@@ -948,7 +948,14 @@ export function emitC(prog: Program, display: (path: string) => string): Emitted
       const r = `t${this.tmp++}`;
       this.emit(`${name} ${r};`);
       for (const pr of o.properties) {
-        if (pr.kind === K.SpreadAssignment) { this.emit(`${r} = ${this.ex((pr as ts.SpreadAssignment).expression)};`); continue; }
+        if (pr.kind === K.SpreadAssignment) {
+          const se = (pr as ts.SpreadAssignment).expression, st = unref(this.typeOf(se)), sv = this.ex(se);
+          if (!isStruct(st) || ctype(st, this.where) === name) { this.emit(`${r} = ${sv};`); continue; }
+          const s = `t${this.tmp++}`; // D140: another C struct type (fewer fields, other readonly): copy field by field
+          this.emit(`${ctype(st, this.where)} ${s} = ${sv};`);
+          for (const sf of st.fields) { const f = t.fields.find((x) => x.name === sf.name); if (f) this.emit(`${r}.f_${f.name} = ${this.conv(`${s}.f_${f.name}`, sf.type, f.type)};`); }
+          continue;
+        }
         if (pr.kind === K.ShorthandPropertyAssignment) { const n = (pr as ts.ShorthandPropertyAssignment).name as ts.Identifier; const f = t.fields.find((x) => x.name === n.text)!; this.emit(`${r}.f_${n.text} = ${this.conv(this.ident(n), this.typeOf(n), f.type)};`); continue; }
         if (pr.kind !== K.PropertyAssignment) throw this.no(pr, "this object literal member");
         const pa = pr as ts.PropertyAssignment, f = t.fields.find((x) => x.name === (pa.name as ts.Identifier).text)!;
