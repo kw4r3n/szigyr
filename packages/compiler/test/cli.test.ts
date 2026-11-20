@@ -409,6 +409,17 @@ it("the native cache drops entries unused for 7 days once it holds more than 500
   expect(Date.now() - statSync(join(dir, built)).mtimeMs).toBeLessThan(3600e3);
 });
 
+it("a module imported under two names (a symlink) loads once, in check and in run (Q253)", () => {
+  const d = mkdtempSync(join(tmpdir(), "sts-q253-"));
+  writeFileSync(join(d, "a.ts"), "export class C { x: f64 = 1; }\nexport function mk(): C { return new C(); }\nexport function use(c: C): f64 { return c.x; }\n");
+  symlinkSync("a.ts", join(d, "link.ts"));
+  const main = join(d, "main.ts");
+  writeFileSync(main, `import { mk } from "./a.ts";\nimport { use } from "./link.ts";\nexport function main(sys: System): void { sys.log.info(\`\${use(mk())}\`); }\n`);
+  expect(sts("check", main)).toEqual({ code: 0, out: "", err: "" });
+  expect(sts("run", main)).toMatchObject({ code: 0, out: "1\n" });
+  expect(sts("run", join(d, "link.ts")).err).toContain("no exported function 'main'"); // the entry may itself be the link
+});
+
 // Q252: user input mistakes are CLI errors (exit 2) without a stack; internal errors exit 70.
 const tmpFile = (src: string): string => { const f = join(mkdtempSync(join(tmpdir(), "sts-q252-")), "a.ts"); writeFileSync(f, src); return f; };
 

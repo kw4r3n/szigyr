@@ -645,3 +645,8 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - `native.ts`。キャッシュに当たったら、そのエントリの更新時刻を現在にする（`utimesSync`）。つまり古さは「最後に使われた時」。ビルドした後で、ディレクトリのエントリが 500 を超えていれば、7 日使われていないもの（途中で止まったビルドの `*.tmp*` を含む）を消す。今ビルドしたものは消さない。複数のプロセスと Worker が同じディレクトリを使うので（D111）、消す時の競合（ENOENT など）は無視する。
 - `<hash>.c` はどこからも読まれず、デバッグ用と書いた記録もなかったので、書くのをやめた（ビルド用の一時ファイルはビルドの後に消す）。古い `<hash>.c` は上の規則で消える。
 - テストは `XDG_CACHE_HOME` を一時ディレクトリにして確かめる。実際の `~/.cache/sts-native` は、この変更では消していない。
+
+## D151: モジュールのパスは `canonPath` で実パスにそろえる（Q253）（2026-11-20）
+
+- `modules.ts` の `canonPath(...p)` は `resolve` したあとで `realpathSync` する。存在しないパスは `resolve` の結果のまま（E7001 の経路を変えない）。`loadProgram` の入口と import の解決、`Program` の import 名の検査と `checkInsts`、`emit.ts` の import の鍵、`index.ts` の入口の検索（`deterministicFunctions`、`rtTrapSites`、`load`、`checkMain`）が同じ関数を使う。
+- 同梱の DetMath の `DETMATH_PATH` は `import.meta.url` から作る絶対パスで、そのままにした（`syntax.ts` の比較と `files.has(DETMATH_PATH)` は変えていない）。適合テストはすべて通る。
