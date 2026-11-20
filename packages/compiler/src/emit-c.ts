@@ -1169,19 +1169,23 @@ export function emitC(prog: Program): EmittedC | undefined {
           case "cast": return this.t(t, `(${ctype(t, this.where)})${pv}`, e);
           case "read": chk(); return this.t(t, `ld_${packOf(pt, this.where)}((const uint8_t *)${pv})`, e);
           case "write": {
+            const xt = `t${this.tmp++}`; // D156: the argument is evaluated (into a temp) before the null check: receiver, arguments, then the operation
+            this.emit(`${ctype(pt, this.where)} ${xt} = ${this.t(pt, this.conv(this.ex(e.arguments[0]!), this.typeOf(e.arguments[0]!), pt), e)};`);
             chk();
-            const x = this.t(pt, this.conv(this.ex(e.arguments[0]!), this.typeOf(e.arguments[0]!), pt), e);
+            const x = xt;
             this.emit(`st_${packOf(pt, this.where)}((uint8_t *)${pv}, ${x});`);
             return stmt ? undefined : "0";
           }
           case "offset": {
+            const n = `t${this.tmp++}`; // D156
+            this.emit(`size_t ${n} = (size_t)(${this.ex(e.arguments[0]!)});`);
             chk();
-            const n = this.ex(e.arguments[0]!);
             return this.t(t, `(${ctype(t, this.where)})((uint8_t *)${pv} + (size_t)(${n}) * ${packSize(pt, this.where)})`, e);
           }
           case "slice": {
+            const n = `t${this.tmp++}`; // D156
+            this.emit(`size_t ${n} = (size_t)(${this.ex(e.arguments[0]!)});`);
             chk();
-            const n = this.ex(e.arguments[0]!);
             return this.t(t, `(sts_slice){ (uint8_t *)${pv}, (size_t)(${n}) }`, e);
           }
           case "borrow": { // reached as a borrowed argument (userCall); the value the parameter receives
@@ -1275,7 +1279,8 @@ export function emitC(prog: Program): EmittedC | undefined {
         fnArgs.set(j, g);
       }
       const callee = inst(fn, fn.sig.tparams.length ? targs : [], fnArgs, this.where);
-      const args = e.arguments.map((a, i) => {
+      const args = e.arguments.map((a0, i) => {
+        let a = a0; while (a.kind === K.ParenthesizedExpression) a = (a as ts.ParenthesizedExpression).expression; // D157: `f((p.borrow()))` is the same borrowed argument
         const pt = callee.params[i]!, inner = unref(pt), mode = borrowMode(pt);
         if (inner.k === "fn") return ""; // Q189 (b): no runtime value (the slot keeps argument indices aligned)
         if (a.kind === K.CallExpression && (a as ts.CallExpression).expression.kind === K.PropertyAccessExpression) {
@@ -1400,6 +1405,7 @@ const THROW = `static napi_value sts_throw(void) {
 }
 static napi_value sts_init(napi_env env, napi_callback_info info) {
   size_t argc = 2; napi_value a[2]; napi_get_cb_info(env, info, &argc, a, 0, 0);
+  if (sts_host) napi_delete_reference(env, sts_host); // D159: a reload on this thread reuses the same exports (native.ts loaded), so the env is the one that made the old reference
   napi_create_reference(env, a[0], 1, &sts_host);
   if (argc < 2) sts_ftrap_reset(); // D146: init(host, true) is an isolate binding its thread's host; only main's load resets the program's flag and record
   return 0;
