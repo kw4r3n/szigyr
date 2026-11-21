@@ -1,0 +1,2 @@
+import { f, P } from "./m9.szigyr";
+export { f, P };

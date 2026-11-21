@@ -1,5 +1,5 @@
 {
-  "name": "sts-workspace",
+  "name": "szigyr-workspace",
   "private": true,
   "type": "module",
   "engines": { "node": ">=24" },

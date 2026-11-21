@@ -1,0 +1,48 @@
+// Portable audio demo (ROADMAP stage 5, SPEC §15.5): safe `Audio` capability + `Clock.sleep` + `Ring` + `DetMath`.
+// Compiles and runs across `--backend=js`, `--backend=c`, `--backend=wasm`, and in browsers (Wasm + AudioWorklet).
+// Runs identically under `szigyr run examples/audio-portable/main.szigyr [--backend=js|c|wasm]`.
+type Param = Struct<{ readonly freq: f64; readonly gain: f64 }>;
+
+type AudioState = Struct<{
+  rx: RingRx<Param>;
+  phase: f64;
+  freq: f64;
+  gain: f64;
+}>;
+
+function render(st: Mut<AudioState>, out: Mut<Slice<f32>>, frames: usize): void {
+  "use rt";
+  let p = st.rx.pop();
+  while (p !== null) {
+    st.freq = p.freq;
+    st.gain = p.gain;
+    p = st.rx.pop();
+  }
+  for (let i: usize = 0; i < frames; i += 1) {
+    const v = f32(st.gain * DetMath.sin(6.283185307179586 * st.phase));
+    out[i * 2] = v;
+    out[i * 2 + 1] = v;
+    st.phase = st.phase + st.freq / 48000;
+    if (st.phase >= 1) {
+      st.phase = st.phase - 1;
+    }
+  }
+}
+
+export async function main(sys: System): Promise<void> {
+  const { tx, rx } = Ring.create<Param>(sys.alloc, 64);
+  tx.push({ freq: 440, gain: 0.5 });
+  const state: AudioState = { rx, phase: 0, freq: 440, gain: 0.5 };
+  const opened = await sys.audio.open({ sampleRate: 48000, channels: 2 }, state, render);
+  if (opened.kind === "err") {
+    sys.log.error(opened.error.message);
+    return;
+  }
+  const stream = opened.value;
+  await sys.clock.sleep(300);
+  tx.push({ freq: 660, gain: 0.5 });
+  await sys.clock.sleep(300);
+  tx.push({ freq: 880, gain: 0.5 });
+  await sys.clock.sleep(300);
+  await stream.close();
+}

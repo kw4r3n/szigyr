@@ -1,7 +1,0 @@
-// expect: E2002 @ 6:9
-// stage: 1
-function same2<T>(t: Test, a: { readonly v: T }, b: { readonly v: T }): void { t.eq<{ readonly v: T }>(a, b); }
-test("a", (t: Test) => {
-  const f = (): void => {};
-  same2<() => void>(t, { v: f }, { v: f });
-});

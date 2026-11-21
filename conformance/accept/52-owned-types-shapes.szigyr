@@ -1,0 +1,81 @@
+// expect: ok
+// stage: 2
+// open-question: Q043
+// open-question: Q086
+// open-question: Q181
+type V2 = Struct<{ readonly x: f32; readonly y: f32 }>;
+type Pair<T extends Copy & Native> = Struct<{ readonly a: T; readonly b: T }>;
+type Buf = Struct<{ data: Vec<f32>; n: u32 }>;
+type Holder = Struct<{ inner: Buf; p: V2 }>;
+type Line = Struct<{ readonly from: V2; readonly to: V2 }>;
+
+function sumPair(p: Pair<i32>): i32 {
+  "use rt";
+  return p.a + p.b;
+}
+
+function touch(h: Mut<Holder>): void {
+  "use owned";
+  h.inner.n = 1;
+  h.inner.data.push(2);
+  h.p = { x: 1, y: 1 };
+}
+
+function firstPoint(h: Ref<Holder>): f32 {
+  "use rt";
+  const p = h.p;
+  const { x, y } = p;
+  return x + y + h.inner.data[0];
+}
+
+function flip(l: Line): Line {
+  "use rt";
+  const moved: V2 = { ...l.from, x: 0 };
+  return { from: l.to, to: moved };
+}
+
+function points(v: Mut<Vec<V2>>): f32 {
+  "use rt";
+  v[0] = { x: 1, y: 2 };
+  v.fill({ x: 0, y: 0 });
+  return v[0].x;
+}
+
+function half(x: i32): Result<i32, i32> {
+  "use rt";
+  return rem(x, 2) === 0 ? ok(divTrunc(x, 2)) : err(x);
+}
+
+function maybe(a: Alloc): Vec<i32 | null> {
+  "use owned";
+  const v = Vec.create<i32 | null>(a, 1);
+  v.push(null);
+  return v;
+}
+
+function mk<T extends Copy & Native>(a: Alloc, x: T): Vec<T> {
+  "use owned";
+  const v = Vec.create<T>(a, 1);
+  v.push(x);
+  return v;
+}
+
+function partOf(s: Mut<Slice<f32>>): void {
+  "use rt";
+  s.slice(0, 1).fill(1);
+}
+
+function cellOfNumber(): f64 {
+  const c = OwnedCell.create<Struct<{ x: f64 }>>({ x: 1 });
+  return c.take().x;
+}
+
+export function main(sys: System): void {
+  const h: Holder = { inner: { data: Vec.create<f32>(sys.alloc, 1), n: 0 }, p: { x: 0, y: 0 } };
+  touch(h);
+  const s = firstPoint(h);
+  const v = mk<f32>(sys.alloc, 1);
+  partOf(v);
+  partOf(v.slice(0, 1));
+  sys.log.info(`${s} ${sumPair({ a: 1, b: 2 })} ${cellOfNumber()} ${v.length}`);
+}

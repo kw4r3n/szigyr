@@ -1710,3 +1710,73 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
   - (a) パラメータの型に（直接または複合型・クラス・関数型の中で）`Test` を含む関数は `sts mutate` の変異対象から除外する。
   - (b) §7.3 どおり変異対象に含め続ける。
 - 既定案: (a)。
+
+---
+
+## V. 段階 5 の判断（2026-11-21 にオーナーが決めた）
+
+### Q279 段階 5 の範囲と、次タスクへの切り分け
+- 決定（2026-11-21、オーナー）: (a)。
+- 関連: ROADMAP 段階 5、§7.1、§10、§15.2
+- 状況: ロードマップの段階 5 の見出しは「ブラウザとモバイル」で、「同じ C 出力を Wasm に向ける」「ホストごとに実装が違う機能（音声出力、描画）を、権限として抽象化する」とあり、完了条件は「段階 3 の音声デモがブラウザで動く」。一方、対象プロジェクト群（`microdaw`、`skin-retouch`、`prompt-desk`、`rrawrlet`、`idev-gui`、`rhifill`、`kusamushiri` 等）を確認したところ、ネイティブモバイル（iOS / Android）の実用件はなく、実質的なターゲットは Linux デスクトップとブラウザである。また `2D 描画＋入力` と `Net` / `Proc` / `Fs` 拡充を同時に段階 5 へ入れると肥大化する。
+- 選択肢:
+  - (a) 段階 5 は ① Wasm バックエンド（`--backend=wasm`）、② `Audio` 権限＋`Clock.sleep`（Node/SDL3＋ブラウザ/AudioWorklet＋テスト用 `FakeAudio`）、③ ブラウザ版 `Spawn`（Web Worker＋Wasm）、④ `sts build --target=browser`（単体アプリ出力＋HTML/CSS UI から呼べる ESM ライブラリ出力）に集中し、完了条件を満たして閉じる。ネイティブモバイル殻は保留へ移し、`2D 描画＋入力` 権限（SDL3＋HTML Canvas 2D）とツール系権限（`Net`、`Proc`、`Fs` 拡充）は段階 5 の設計で妨げない形を保ったまま次の独立タスクに分離する。
+  - (b) 最小の 2D 描画＋入力権限まで段階 5 に含める。
+- 既定案: (a)。
+
+### Q280 Wasm のコンパイル方式・ランタイム・トラップ処理・CLI
+- 決定（2026-11-21、オーナー）: (a)。
+- 関連: §10.1、§10.3、§14.7、Q279
+- 状況: 同じ C 出力を Wasm に向ける際、Emscripten / WASI shim 依存や `setjmp`/`longjmp` を持ち込むとビルド環境が重くなりブラウザ配布物も肥大する。
+- 選択肢:
+  - (a) strict / rt の C 変換器（`emit-c.ts`）の計算本体を共有し、Wasm 用ランタイムを libc / WASI 非依存の freestanding C11（`sts_wasm_rt.h`）で書く。コンパイラは `clang --target=wasm32 -nostdlib` + `wasm-ld`（環境変数 `STS_WASM_CC` で `zig cc -target wasm32-freestanding` 等へ切替可）を使う。トラップは `setjmp`/`longjmp` を使わず、`env.sts_trap` への JS import 呼び出しから JS の `Trap` 例外を投げて境界まで巻き戻し、`finally` で書き戻しと一時確保の解放を行う。CLI には `--backend=wasm`（Node の `WebAssembly` 上で実行）と `sts build --target=browser` を用意する。C 専用のプログラム（§14.7）は `--backend=wasm` および `--target=browser` でも E4009 で止める。
+  - (b) `wasm32-wasi` とブラウザ向け WASI shim を使う。
+  - (c) Emscripten（`emcc`）を必須にする。
+- 既定案: (a)。
+
+### Q281 JS ↔ Wasm 間のメモリ境界モデル
+- 決定（2026-11-21、オーナー）: (a)。
+- 関連: §10.2、§10.3、§15.1、Q190、Q280
+- 状況: Node-API と違い Wasm は自分の線形メモリ外の JS `ArrayBuffer` を直接読めない。一方で単一 `SharedArrayBuffer` 共有ヒープ化は GC 解放管理や COOP/COEP 必須化を全プログラムに強いる。
+- 選択肢:
+  - (a) 通常の managed ↔ Wasm 呼び出しでは、境界で `ArrayBuffer` 単位に重複排除したコピーイン／書き戻しを行い、`Slice` の別名・`Arena.view` の重なり検査（T013）・互いに重ならない `Mut` スライス書き戻しをネイティブ C と一致させる。`AudioWorklet` の音声コールバックは Worklet 専用の Wasm インスタンス上で Wasm 関数を直接呼び（音声スレッド内はゼロコピー・GC なし）、`RingTx` / `RingRx` は共有メモリ（COOP/COEP 下の `SharedArrayBuffer`＋`Atomics`、非 COI ページでは `MessagePort` フォールバック）で橋渡しする。
+  - (b) 最初からすべての `Vec` / `Pool` / `Arena` を単一の共有 Wasm 線形メモリに置く。
+- 既定案: (a)。将来共有ヒープが必要になった場合も利用側の STS ソースは変わらない。
+
+### Q282 `Clock.sleep(ms: f64): Promise<void>`
+- 決定（2026-11-21、オーナー）: (a)。
+- 関連: §7.1、§12、Q284
+- 状況: 段階 3 の音声デモは時間待ちに `SDL_Delay` を使っているが、ブラウザではメインスレッドを止められない。また現在の `Clock` には `nowMs()` しかない。
+- 選択肢:
+  - (a) `Clock` に `sleep(ms: f64): Promise<void>` を追加する（managed 専用、契約内禁止）。実時間ホスト（Node / ブラウザ）では非負有限値（負・NaN は 0 扱い、非有限は拒否または即時扱い等、`setTimeout` と同じ非ブロック待機）で待機し、`FakeClock` では `sleep(ms)` は `ms > 0`（有限）なら決定的に時刻を `advance(ms)` して即座に解決する Promise を返す。
+  - (b) 新しい権限や待機用組み込み関数を別に増やす。
+- 既定案: (a)。
+
+### Q283 `Audio` 権限（`System.audio`、`AudioConfig`、`AudioStream`、`FakeAudio`）
+- 決定（2026-11-21、オーナー）: (a)。
+- 関連: §7.1、§12、§14.6、§15.1、§15.4、Q209、Q279
+- 状況: ホスト依存の `c:sdl3` を使わずに音声出力を権限として抽象化し、同じソースが Node、ブラウザ、`sts test` で動くようにする必要がある。将来 `microdaw` 級アプリでは状態に事前確保済み `Vec` 等を入れたくなる余地も残す必要がある。
+- 選択肢:
+  - (a) `System` に `readonly audio: Audio` を追加し、`Audio` は `open<S>(config: AudioConfig, state: S, render: (st: Mut<S>, out: Mut<Slice<f32>>, frames: usize) => void): Promise<Result<AudioStream, IoError>>` を持つ（`AudioConfig = { readonly sampleRate: u32; readonly channels: u32 }`）。`state: S` は `open` に所有権を移動し、段階 5 では Copy 型・`RingTx<T>`・`RingRx<T>`・それらをフィールドに持つ `Struct` に限る（将来 `Vec<T>` 等へ拡張可能な検査規則にする）。`render` はモジュール直下（import 可）の非ジェネリックな safe `"use rt"` 関数名のみ（`cfn` / `spawn.isolate` と同様、違反と `S` / 引数の不正は専用コード `E2013`）。`AudioStream` は managed 値（`readonly sampleRate: u32`、`readonly channels: u32`、`close(): Promise<void>`、冪等・`main` 終了時に自動停止）とし、コールバック内のトラップは §14.6 / §15.4 と同様に旗を立てて以降は無音としホストへ伝える。
+  - (b) 押し込み型（リングを返すだけ）にする。
+  - (c) `AudioStream` を所有型にする。
+- 既定案: (a)。
+
+### Q284 Node 側の `Audio` ホスト実装と音声デモの配置
+- 決定（2026-11-21、オーナー）: (a)。
+- 関連: Q283、examples/audio/main.ts、ROADMAP 段階 3・段階 5
+- 状況: 既存の `examples/audio/main.ts` は段階 3（`c:sdl3` FFI 直接利用）のデモ兼回帰テストである。`Audio` 権限を導入した際、これとは別に移植可能な safe デモをどう位置づけ、Node の全 3 バックエンドでどう動かすかを決める必要がある。
+- 選択肢:
+  - (a) `examples/audio/main.ts` は段階 3（FFI 版）の回帰テストとしてそのまま残し、新たに safe な移植可能デモ（`examples/audio-portable/main.ts`）を追加する。Node ホストの `Audio` 実装は SDL3 共有ライブラリを動的に開く（実行時シンボル解決。未導入環境では `err({ code: "ENOENT", ... })` の `IoError` かテストスキップとし、言語処理系自体への SDL3 必須依存を作らない）。`--backend=c` では実 C スレッドからコールバックを直接呼び、`--backend=js|wasm` では取得スレッドから JS / Wasm の `render` を呼ぶ。また `sts test` 用に決定的・同期駆動できる `FakeAudio` を標準ライブラリに用意する。
+  - (b) Node 側の実 `Audio` は実装せず `FakeAudio` とブラウザのみにする。
+  - (c) `examples/audio/main.ts` を置き換える。
+- 既定案: (a)。
+
+### Q285 ブラウザ版 `Spawn`、`sts build --target=browser`、検証基準
+- 決定（2026-11-21、オーナー）: (a)。
+- 関連: §15.2、Q279、Q280、Q281
+- 状況: `skin-retouch/web` や `prompt-desk` のように HTML/CSS UI から重い Wasm 計算やバックグラウンド Worker を使えることと、段階 5 完了条件「音声デモがブラウザで動く」を自動テストで検証することが求められる。
+- 選択肢:
+  - (a) `isolate.ts` の `Channel` 抽象を利用してブラウザ Web Worker + Wasm アダプタを実装し、`Spawn` がブラウザでも同じ意味論で動くようにする。CLI に `sts build --target=browser [-o <dir>] [--mode=app|lib] <file>` を設け、静的サイトとしてそのまま配信できる ESM バンドル・ランタイム・`.wasm`・（`app` モードでは起動用 HTML と COOP/COEP 案内または起動ボタン）を出力し、HTML/CSS 側から export 関数を直接呼べる構成（`lib` モード）にも両対応する。検証は ① 既存の非 C 専用実行適合テストの全件 `--backend=wasm`（JS / C / Wasm 3 バックエンド一致）、② Node SDL3 disk ドライバでの移植可能デモ検証、③ Playwright 実 Chromium（AudioWorklet + Wasm の PCM 出力から 440 / 660 / 880 Hz 確認）をすべて自動テスト化する。
+  - (b) ブラウザ検証は手動のみにし、ブラウザ版 `Spawn` とライブラリ出力は段階 5 の外に出す。
+- 既定案: (a)。

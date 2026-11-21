@@ -1,0 +1,2 @@
+import { STEP, inc } from "./b.szigyr";
+export { STEP, inc };

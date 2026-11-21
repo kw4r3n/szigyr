@@ -34,7 +34,34 @@ export function trapSites(pf: ParsedFile): Record<string, TrapSite[]> {
     const sites: TrapSite[] = [];
     const add = (code: string, n: Node): void => { sites.push({ code, ...pf.position(n.getStart(sf)) }); };
     const walk = (n: Node): void => {
-      if (n.kind === K.BinaryExpression) {
+      if (n.kind === K.Identifier) {
+        const name = (n as ts.Identifier).text;
+        const p = n.parent;
+        const isPropKey = p?.kind === K.PropertyAccessExpression && (p as ts.PropertyAccessExpression).name === n;
+        const isPropAssign = p?.kind === K.PropertyAssignment && (p as ts.PropertyAssignment).name === n;
+        const isCallee = p?.kind === K.CallExpression && (p as ts.CallExpression).expression === n;
+        const isDeclName = (p?.kind === K.VariableDeclaration && (p as ts.VariableDeclaration).name === n) ||
+          (p?.kind === K.BindingElement && (p as ts.BindingElement).name === n);
+        if (!isPropKey && !isPropAssign && !isCallee && !isDeclName && cImports.has(name) && !localOf.has(n)) {
+          const t = exprTypes.get(n);
+          if (t?.k === "num" && t.name === "usize") add("T003", n);
+        }
+      } else if (n.kind === K.PropertyAccessExpression) {
+        const pa = n as ts.PropertyAccessExpression;
+        const rt = exprTypes.get(pa.expression);
+        const ft = exprTypes.get(pa);
+        const isPlainLhs = pa.parent?.kind === K.BinaryExpression &&
+          (pa.parent as ts.BinaryExpression).operatorToken.kind === K.EqualsToken &&
+          (pa.parent as ts.BinaryExpression).left === pa;
+        if (!isPlainLhs && rt?.k === "cstruct" && ft?.k === "num" && ft.name === "usize") add("T003", pa.name);
+      } else if (n.kind === K.ObjectBindingPattern) {
+        if (exprTypes.get(n)?.k === "cstruct") {
+          for (const el of (n as ts.ObjectBindingPattern).elements) {
+            const ft = el.name ? exprTypes.get(el.name) : undefined;
+            if (el.name && ft?.k === "num" && ft.name === "usize") add("T003", (el.propertyName ?? el.name) as Node);
+          }
+        }
+      } else if (n.kind === K.BinaryExpression) {
         const b = n as ts.BinaryExpression, k = b.operatorToken.kind;
         if (INT_OPS.has(k) && int(b)) add("T001", b.operatorToken); // the operation's own type: assignment targets have none recorded
         if (SHIFTS.has(k)) add("T009", b.operatorToken);

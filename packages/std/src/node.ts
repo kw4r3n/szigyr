@@ -1,15 +1,21 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { cast, err, isTrap, ok, type Result } from "../../runtime-js/src/index.ts";
-import type { Alloc, Clock, Fs, IoError, Js, JsError, JsRef, Log, Random, System } from "./types.ts";
+import { ALLOC, type Alloc, type Audio, type AudioCallbackSpec, type AudioConfig, type AudioStream, type Clock, type Fs, type IoError, type Js, type JsError, type JsRef, type Log, type Random, type System } from "./types.ts";
 
-export const ALLOC: Alloc = { kind: "alloc" };
+export { ALLOC };
 
 /** Q059: info -> stdout, warn / error -> stderr, each message + "\n", no prefix. */
 export function createLog(stdout: (s: string) => void, stderr: (s: string) => void): Log {
   return { info: (m) => stdout(m + "\n"), warn: (m) => stderr(m + "\n"), error: (m) => stderr(m + "\n") };
 }
 
-export const nodeClock: Clock = { nowMs: () => Date.now() };
+export const nodeClock: Clock = {
+  nowMs: () => Date.now(),
+  sleep: (ms) => {
+    const d = Number.isFinite(ms) && ms > 0 ? Math.min(ms, 2147483647) : 0;
+    return new Promise((r) => setTimeout(r, d));
+  },
+};
 export const nodeRandom: Random = {
   nextF64: () => Math.random(),
   nextU32: () => Math.floor(Math.random() * 2 ** 32),
@@ -40,9 +46,20 @@ export const nodeJs: Js = {
   callback: (f, desc) => (...a: unknown[]): void => { f(cast(a[0], desc)); },
 };
 
+let registeredAudio: Audio = {
+  async open(_c: AudioConfig, _s: unknown, _cb: AudioCallbackSpec): Promise<Result<AudioStream, IoError>> {
+    return err({ code: "ENOSYS", message: "audio host not configured" });
+  },
+};
+/** Compiler / CLI wires SDL3 audio implementation here so `std` stays Node-API-free. */
+export function setNodeAudio(audio: Audio): void { registeredAudio = audio; }
+export const nodeAudio: Audio = {
+  open: (config, state, cb) => registeredAudio.open(config, state, cb),
+};
+
 export function createSystem(
   stdout: (s: string) => void = (s) => void process.stdout.write(s),
   stderr: (s: string) => void = (s) => void process.stderr.write(s),
 ): System {
-  return { alloc: ALLOC, fs: nodeFs, clock: nodeClock, random: nodeRandom, log: createLog(stdout, stderr), js: nodeJs };
+  return { alloc: ALLOC, fs: nodeFs, clock: nodeClock, random: nodeRandom, log: createLog(stdout, stderr), js: nodeJs, audio: nodeAudio };
 }

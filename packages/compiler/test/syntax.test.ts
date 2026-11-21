@@ -12,7 +12,7 @@ import { loadCases } from "./harness.ts";
 
 const root = fileURLToPath(new URL("../../../conformance", import.meta.url));
 const files = (d: string): string[] => readdirSync(d, { withFileTypes: true }).flatMap((e) =>
-  e.isDirectory() ? files(join(d, e.name)) : e.name.endsWith(".ts") ? [join(d, e.name)] : []);
+  e.isDirectory() ? files(join(d, e.name)) : e.name.endsWith(".szigyr") ? [join(d, e.name)] : []);
 
 it("P1 is silent outside P1 reject cases and reports exactly the expected diagnostic in them", () => {
   const paths = files(root);
@@ -39,10 +39,10 @@ it("a parser error is E1000 at the error and stops the walk (Q070)", () => {
 
 it("check follows relative imports and reports a missing file at the specifier (Q009)", () => {
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-`));
-  writeFileSync(join(dir, "main.ts"), 'import { a } from "./a.ts";\nimport { b } from "./b.ts";\n');
-  writeFileSync(join(dir, "a.ts"), "export function a(): void {\n  var x: i32 = 1;\n}\n");
-  const got = check(join(dir, "main.ts")).map((d) => `${d.code} ${d.file.split("/").pop()} ${d.range.start.line}:${d.range.start.col}`);
-  expect(got.sort()).toEqual(["E1001 a.ts 2:3", "E7001 main.ts 2:19"]);
+  writeFileSync(join(dir, "main.szigyr"), 'import { a } from "./a.szigyr";\nimport { b } from "./b.szigyr";\n');
+  writeFileSync(join(dir, "a.szigyr"), "export function a(): void {\n  var x: i32 = 1;\n}\n");
+  const got = check(join(dir, "main.szigyr")).map((d) => `${d.code} ${d.file.split("/").pop()} ${d.range.start.line}:${d.range.start.col}`);
+  expect(got.sort()).toEqual(["E1001 a.szigyr 2:3", "E7001 main.szigyr 2:19"]);
 });
 
 // Forms the conformance corpus does not pin: default-deny branches and defaults from open questions.
@@ -66,11 +66,11 @@ const forms: [string, string, string[]][] = [
   ["module-level const with a call (Q054)", "const X: Point = { x: 1, y: f() };", ["E5002@1:18"]],
   ["readonly behind an alias is left to P2 (Q072)", "type P = { x: i32 };\nconst O: P = { x: 1 };", []],
   ["static field without readonly (Q054)", "class A { static X: i32 = 1; }", ["E5002@1:27"]],
-  ["specifier without .ts (Q009)", "import { a } from \"./a\";", ["E7001@1:19"]],
-  ["import type (Q009)", "import type { a } from \"./a.ts\";", ["E7001@1:1"]],
-  ["import { default as g } (Q009)", "import { default as g } from \"./a.ts\";", ["E7001@1:1"]],
+  ["specifier without .szigyr (Q009)", "import { a } from \"./a\";", ["E7001@1:19"]],
+  ["import type (Q009)", "import type { a } from \"./a.szigyr\";", ["E7001@1:1"]],
+  ["import { default as g } (Q009)", "import { default as g } from \"./a.szigyr\";", ["E7001@1:1"]],
   ["export { f as default } (Q009)", "function f(): void {}\nexport { f as default };", ["E1003@2:1"]],
-  ["named import and export with aliases", "import { a as b } from \"./a.ts\";\nexport { b, b as c };", []],
+  ["named import and export with aliases", "import { a as b } from \"./a.szigyr\";\nexport { b, b as c };", []],
   ["optional call", "function f(g: () => void): void { g?.(); }", ["E1000@1:35"]],
   ["empty statement", "function f(): void { ; }", ["E1000@1:22"]],
   ["public method", "class A { public m(): void {} }", ["E1000@1:11"]],

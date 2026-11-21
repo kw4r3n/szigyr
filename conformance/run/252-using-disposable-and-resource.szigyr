@@ -1,0 +1,200 @@
+// expect-output: disp:m3
+// expect-output: disp:m2
+// expect-output: disp:msw
+// expect-output: after-sw
+// expect-output: disp:mw
+// expect-output: disp:mw
+// expect-output: disp:me2
+// expect-output: disp:me1
+// expect-output: disp:m1
+// expect-output: adisp:a2
+// expect-output: adisp:a1
+// expect-output: mtaken:1
+// expect-output: mres:1
+// expect-output: mut-ok
+// expect-output: ssw
+// expect-output: strict-after-sw
+// expect-output: swl
+// expect-output: swl
+// expect-output: se2
+// expect-output: se1
+// expect-output: strict-early:42:5
+// expect-output: vec:2
+// expect-output: hit
+// expect-output: s2
+// expect-output: s1
+// expect-output: rt:7:11:33:-1
+// stage: 2
+
+class Trace implements Disposable {
+  readonly tag: string;
+  readonly log: Log;
+  constructor(tag: string, log: Log) { this.tag = tag; this.log = log; }
+  dispose(): void { this.log.info(`disp:${this.tag}`); }
+}
+
+async function tick(): Promise<void> {}
+
+class AsyncTrace implements AsyncDisposable {
+  readonly tag: string;
+  readonly log: Log;
+  constructor(tag: string, log: Log) { this.tag = tag; this.log = log; }
+  async disposeAsync(): Promise<void> {
+    await tick();
+    this.log.info(`adisp:${this.tag}`);
+  }
+}
+
+function earlyReturnManaged(log: Log): void {
+  using e1 = new Trace("me1", log);
+  if (e1.tag === "me1") {
+    using e2 = new Trace("me2", log);
+    return;
+  }
+}
+
+function testManagedUsing(log: Log): void {
+  using a = new Trace("m1", log);
+  {
+    using b = new Trace("m2", log);
+    using c = new Trace("m3", log);
+  }
+  switch (1) {
+    case 1:
+      {
+        using s = new Trace("msw", log);
+        break;
+      }
+    default:
+      break;
+  }
+  log.info("after-sw");
+  let i: i32 = 0;
+  while (i < 3) {
+    i += 1;
+    using w = new Trace("mw", log);
+    if (i === 1) continue;
+    if (i === 2) break;
+  }
+  earlyReturnManaged(log);
+}
+
+async function testAsyncUsing(log: Log): Promise<void> {
+  await using a1 = new AsyncTrace("a1", log);
+  {
+    await using a2 = new AsyncTrace("a2", log);
+  }
+}
+
+function testManagedResource(alloc: Alloc, log: Log): void {
+  const v1 = Vec.create<i32>(alloc, 2);
+  using r1 = Resource.ownWith(v1, log, (l: Log, v: Vec<i32>): void => { l.info(`mres:${v.length}`); });
+  r1.borrow().push(7);
+  const v2 = Vec.create<i32>(alloc, 2);
+  using r2 = Resource.own(v2, (_v: Vec<i32>): void => { log.info("never-m"); });
+  r2.borrow().push(9);
+  const taken = r2.take();
+  log.info(`mtaken:${taken.length}`);
+}
+
+type Msg = "s1" | "s2" | "ssw" | "swl" | "se1" | "se2" | "st" | "hit" | "mut-ok" | "mut-bad" | "strict-after-sw" | "strict-early:42:5" | "vec:2" | "unreachable";
+type Box = Struct<{ id: Msg; n: i32 }>;
+
+function logMsg(log: Log, m: Msg): void {
+  "use owned";
+  log.info(m);
+}
+
+function cleanBox(log: Log, b: Box): void {
+  "use owned";
+  if (b.n === 100) logMsg(log, "hit");
+  logMsg(log, b.id);
+}
+
+function bumpBox(b: Mut<Box>): void {
+  "use owned";
+  b.n += 1;
+}
+
+function cleanVec(log: Log, v: Vec<i32>): void {
+  "use owned";
+  if (v.length === 2) logMsg(log, "vec:2");
+}
+
+function earlyStrict(log: Log): i32 {
+  "use owned";
+  using es1: Resource<Box> = Resource.ownWith({ id: "se1", n: 1 }, log, cleanBox);
+  {
+    using es2 = Resource.ownWith<Box, Log>({ id: "se2", n: 2 }, log, cleanBox);
+    if (es2.borrow().n === 2) return 42;
+  }
+  return es1.borrow().n;
+}
+
+function testStrict(log: Log, alloc: Alloc): void {
+  "use owned";
+  using s1: Resource<Box> = Resource.ownWith({ id: "s1", n: 1 }, log, cleanBox);
+  using s2 = Resource.ownWith<Box, Log>({ id: "s2", n: 10 }, log, cleanBox);
+  bumpBox(s2.borrow());
+  s2.borrow().n += 89;
+  if (s2.borrow().n === 100) logMsg(log, "mut-ok");
+  else logMsg(log, "mut-bad");
+  switch (0) {
+    case 0: {
+      using sw = Resource.ownWith<Box, Log>({ id: "ssw", n: 1 }, log, cleanBox);
+      if (sw.borrow().n === 0) logMsg(log, "unreachable");
+      break;
+    }
+    default:
+      break;
+  }
+  logMsg(log, "strict-after-sw");
+  let k: i32 = 0;
+  while (k < 3) {
+    k += 1;
+    using wl = Resource.ownWith<Box, Log>({ id: "swl", n: k }, log, cleanBox);
+    if (k === 1) continue;
+    if (k === 2) break;
+  }
+  const er = earlyStrict(log);
+  using st = Resource.ownWith<Box, Log>({ id: "st", n: 5 }, log, cleanBox);
+  const mv = st.take();
+  if (er === 42 && mv.n === 5) logMsg(log, "strict-early:42:5");
+  const v = Vec.create<i32>(alloc, 4);
+  using rv = Resource.ownWith(v, log, cleanVec);
+  rv.borrow().push(10);
+  rv.borrow().push(20);
+}
+
+type RtBox = Struct<{ d: i32 }>;
+
+function cleanRtBox(_b: RtBox): void {
+  "use rt";
+}
+
+function cleanRing(tag: i32, tx: RingTx<i32>): void {
+  "use rt";
+  tx.push(tag);
+}
+
+function rtRun(tx1: RingTx<i32>, tx2: RingTx<i32>): i32 {
+  "use rt";
+  using b = Resource.own<RtBox>({ d: 2 }, cleanRtBox);
+  b.borrow().d += 5;
+  using r1 = Resource.ownWith<RingTx<i32>, i32>(tx1, 11, cleanRing);
+  using r2 = Resource.ownWith<RingTx<i32>, i32>(tx2, 22, cleanRing);
+  const t2 = r2.take();
+  t2.push(33);
+  return b.borrow().d;
+}
+
+export async function main(sys: System): Promise<void> {
+  testManagedUsing(sys.log);
+  await testAsyncUsing(sys.log);
+  testManagedResource(sys.alloc, sys.log);
+  testStrict(sys.log, sys.alloc);
+  const { tx: tx1, rx: rx1 } = Ring.create<i32>(sys.alloc, 4);
+  const { tx: tx2, rx: rx2 } = Ring.create<i32>(sys.alloc, 4);
+  const rd = rtRun(tx1, tx2);
+  sys.log.info(`rt:${rd}:${rx1.pop() ?? -1}:${rx2.pop() ?? -1}:${rx2.pop() ?? -1}`);
+}

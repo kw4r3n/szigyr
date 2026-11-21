@@ -1,1 +1,1 @@
-{"name": "@sts/compiler", "version": "0.0.0", "private": true, "type": "module", "main": "src/index.ts", "bin": {"sts": "src/cli.ts"}}
+{"name": "@szigyr/compiler", "version": "0.0.0", "private": true, "type": "module", "main": "src/index.ts", "bin": {"szigyr": "src/cli.ts"}}

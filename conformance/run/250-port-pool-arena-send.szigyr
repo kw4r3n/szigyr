@@ -1,0 +1,56 @@
+// expect-output: true:42:true:10:84:true:true
+// stage: 3
+type Msg = Struct<{ p: Pool<i32>; h: Handle<i32>; foreignH: Handle<i32>; ar: Arena }>;
+type Reply = Struct<{ p: Pool<i32>; h: Handle<i32>; ar: Arena; workerH: Handle<i32>; ok: boolean; v0: i32 }>;
+
+function headI32(s: Ref<Slice<i32>>): i32 {
+  "use rt";
+  return s[0];
+}
+
+function checkInWorker(p: Mut<Pool<i32>>, h: Handle<i32>, foreignH: Handle<i32>, ar: Mut<Arena>): { readonly ok: boolean; readonly v0: i32 } {
+  "use owned";
+  const hasH = p.has(h);
+  const hasForeign = p.has(foreignH);
+  const got = p.get(h);
+  p.set(h, 84);
+  const ab = ar.alloc<i32>(2, 10);
+  if (ab === null) return { ok: false, v0: -1 };
+  return { ok: hasH && !hasForeign && got === 42, v0: headI32(ar.view(ab)) };
+}
+
+async function worker(port: Port<Reply, Msg>): Promise<void> {
+  const m = await port.recv();
+  if (m === null) return;
+  const wp = Pool.create<i32>(TestAlloc.create(), 2);
+  const wh = wp.insert(7);
+  if (wh === null) return;
+  const { p, h, foreignH, ar } = m;
+  const wHasForeign = wp.has(h);
+  const pHasWorker = p.has(wh);
+  const r = checkInWorker(p, h, foreignH, ar);
+  port.send({ p, h, ar, workerH: wh, ok: r.ok && !wHasForeign && !pHasWorker, v0: r.v0 });
+}
+
+function readMain(p: Ref<Pool<i32>>, h: Handle<i32>, otherP: Ref<Pool<i32>>, wh: Handle<i32>, ar: Mut<Arena>): { readonly val: i32; readonly distinctMain: boolean; readonly distinctWorker: boolean } {
+  "use owned";
+  const ab = ar.alloc<i32>(1, 55);
+  const arenaWorks = ab !== null && headI32(ar.view(ab)) === 55;
+  return { val: p.get(h), distinctMain: !otherP.has(h), distinctWorker: !p.has(wh) && arenaWorks };
+}
+
+export async function main(sys: System): Promise<void> {
+  const p1 = Pool.create<i32>(sys.alloc, 4);
+  const p2 = Pool.create<i32>(sys.alloc, 4);
+  const h1 = p1.insert(42);
+  const h2 = p2.insert(99);
+  if (h1 === null || h2 === null) return;
+  const ar = Arena.create(sys.alloc, 128);
+  const ch = sys.spawn.isolate(worker);
+  ch.send({ p: p1, h: h1, foreignH: h2, ar });
+  const rep = await ch.recv();
+  if (rep === null) return;
+  const { p, h, ar: ar2, workerH, ok: wOk, v0 } = rep;
+  const fin = readMain(p, h, p2, workerH, ar2);
+  sys.log.info(`${wOk}:${v0 === 10 ? 42 : -1}:${v0 === 10}:${v0}:${fin.val}:${fin.distinctMain}:${fin.distinctWorker}`);
+}

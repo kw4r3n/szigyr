@@ -1,4 +1,4 @@
-// One command: `pnpm bench`. Runs bench/kernels.ts under the C and JS backends and bench/hand.c built with the C backend's flags,
+// One command: `pnpm bench`. Runs bench/kernels.szigyr under the C and JS backends and bench/hand.c built with the C backend's flags,
 // checks that the checksums agree, and prints a Markdown table (ms per call; ratio = STS-C / hand C).
 import { execFileSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
@@ -13,7 +13,7 @@ const parse = (out: string): Row => new Map(out.trim().split("\n").map((l) => { 
 const fmtSum = (s: string): string => String(Number(s));
 
 async function sts(backend: "js" | "c"): Promise<Row> {
-  const r = await run(join(here, "kernels.ts"), { backend });
+  const r = await run(join(here, "kernels.szigyr"), { backend });
   if (r.diagnostics.length || r.trap) throw new Error(`STS-${backend}: ${JSON.stringify(r.diagnostics.length ? r.diagnostics : r.trap)}`);
   return parse(r.stdout);
 }

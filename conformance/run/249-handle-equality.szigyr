@@ -1,0 +1,61 @@
+// expect-output: true:true:false:true:true:true:true:false
+// expect-output: true:true:false:true:true
+// stage: 3
+function checkStrict(alloc: Alloc): {
+  readonly sameH: boolean;
+  readonly diffSlot: boolean;
+  readonly staleEq: boolean;
+  readonly staleNeq: boolean;
+  readonly crossPoolNeq: boolean;
+  readonly optEq: boolean;
+  readonly optNullNeq: boolean;
+  readonly nullEq: boolean;
+} {
+  "use owned";
+  const p1 = Pool.create<i32>(alloc, 4);
+  const p2 = Pool.create<i32>(alloc, 4);
+  const h1opt = p1.insert(10);
+  const h2opt = p1.insert(20);
+  const q1opt = p2.insert(30);
+  if (h1opt === null || h2opt === null || q1opt === null) {
+    return { sameH: false, diffSlot: false, staleEq: false, staleNeq: false, crossPoolNeq: false, optEq: false, optNullNeq: false, nullEq: false };
+  }
+  const h1: Handle<i32> = h1opt;
+  const h2: Handle<i32> = h2opt;
+  const q1: Handle<i32> = q1opt;
+  const copy1: Handle<i32> = h1;
+  const sameH = h1 === copy1;
+  const diffSlot = h1 !== h2;
+  p1.remove(h1);
+  const h3opt = p1.insert(99);
+  if (h3opt === null) {
+    return { sameH: false, diffSlot: false, staleEq: false, staleNeq: false, crossPoolNeq: false, optEq: false, optNullNeq: false, nullEq: false };
+  }
+  const staleEq = h1 === h3opt;
+  const staleNeq = h1 !== h3opt;
+  const crossPoolNeq = h1 !== q1;
+  const m1: Handle<i32> | null = copy1;
+  const mNull: Handle<i32> | null = null;
+  const optEq = m1 === copy1;
+  const optNullNeq = m1 !== mNull;
+  const nullEq = m1 === mNull;
+  return { sameH, diffSlot, staleEq, staleNeq, crossPoolNeq, optEq, optNullNeq, nullEq };
+}
+
+export function main(sys: System): void {
+  const s = checkStrict(sys.alloc);
+  sys.log.info(`${s.sameH}:${s.diffSlot}:${s.staleEq}:${s.staleNeq}:${s.crossPoolNeq}:${s.optEq}:${s.optNullNeq}:${s.nullEq}`);
+  const p1 = Pool.create<i32>(sys.alloc, 4);
+  const p2 = Pool.create<i32>(sys.alloc, 4);
+  const a = p1.insert(1);
+  const b = p1.insert(2);
+  const c = p2.insert(3);
+  if (a !== null && b !== null && c !== null) {
+    const a2: Handle<i32> = a;
+    p1.remove(a);
+    const d = p1.insert(4);
+    if (d !== null) {
+      sys.log.info(`${a === a2}:${a !== b}:${a === d}:${a !== d}:${a !== c}`);
+    }
+  }
+}

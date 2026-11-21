@@ -8,13 +8,13 @@ import { main as cliMain } from "../src/cli.ts";
 function project(files: Record<string, string>): string {
   const dir = mkdtempSync(join(tmpdir(), "sts-forall-"));
   for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
-  return join(dir, "main.ts");
+  return join(dir, "main.szigyr");
 }
 
 describe("forAll property testing (§16.1)", () => {
   it("runs 100 valid trials and shrinks counterexamples for inline arrows and named fns", async () => {
     const main = project({
-      "main.ts": `
+      "main.szigyr": `
 function absVal(x: i32): i32 {
   "use owned";
   requires(x > -2147483648);
@@ -61,7 +61,7 @@ test("fail t.eq shrinks", (t: Test) => {
 
   it("fails after 1000 precondition rejections", async () => {
     const main = project({
-      "main.ts": `
+      "main.szigyr": `
 test("too many rejections", (t: Test) => {
   forAll((x: i32): void => {
     requires(false);
@@ -78,7 +78,7 @@ test("too many rejections", (t: Test) => {
 
   it("skips ONLY f's own leading requires T004; recursive and callee T004 fail as counterexamples on both JS and C", async () => {
     const main = project({
-      "lib.ts": `
+      "lib.szigyr": `
 export function calleeWithReq(x: i32): i32 {
   "use owned";
   requires(x > 0);
@@ -92,8 +92,8 @@ export function recWithReq(x: i32): i32 {
   return x;
 }
 `,
-      "main.ts": `
-import { calleeWithReq, recWithReq } from "./lib.ts";
+      "main.szigyr": `
+import { calleeWithReq, recWithReq } from "./lib.szigyr";
 
 function callsCallee(x: i32): i32 {
   "use owned";
@@ -138,7 +138,7 @@ test("callee T004 inside requires is counterexample", (t: Test) => {
 
   it("freshly allocates Mut<Vec> / Mut<Slice> / Mut<Struct> per trial and agrees under --backend=both", async () => {
     const main = project({
-      "main.ts": `
+      "main.szigyr": `
 type Box = Struct<{ x: i32; buf: Vec<i32> }>;
 
 function pushAndSet(v: Mut<Vec<i32>>, s: Mut<Slice<i32>>, b: Mut<Box>): void {
@@ -172,7 +172,7 @@ test("mut params do not persist or alias", (t: Test) => {
 
   it("ensures violation in named fn fails and shrinks under --backend=both", async () => {
     const main = project({
-      "main.ts": `
+      "main.szigyr": `
 function badInc(x: i32): i32 {
   "use rt";
   requires(x >= 0 && x < 100);
@@ -195,7 +195,7 @@ test("ensures fails", (t: Test) => {
 
   it("shrinking respects leading requires and handles Vec<Struct>, Result, Map, Set, and recursive fn-expr", async () => {
     const main = project({
-      "main.ts": `
+      "main.szigyr": `
 type Pair = Struct<{ readonly a: i32; readonly b: boolean }>;
 
 function sumPairs(v: Ref<Slice<Pair>>): i32 {
@@ -247,7 +247,7 @@ test("composite types and Vec<Struct> agree on JS and C", (t: Test) => {
 
   it("supports generic strict/rt calls inside named fn requires on --backend=c and formats -0 counterexamples", async () => {
     const main = project({
-      "main.ts": `
+      "main.szigyr": `
 function isPos<T>(x: i32): boolean {
   "use rt";
   return x > 0;

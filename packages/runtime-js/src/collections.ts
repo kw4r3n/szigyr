@@ -13,7 +13,7 @@ const TYPED: Record<NumType, TypedCtor> = {
 export type ElemKind = NumType | "other" | `{${string}`;
 
 type Lay =
-  | { t: "num"; n: NumType; z: number } | { t: "bool"; z: number } | { t: "lit"; v: string[]; z: number }
+  | { t: "num"; n: NumType; z: number } | { t: "bool"; z: number } | { t: "null"; z: number } | { t: "lit"; v: string[]; z: number }
   | { t: "rec"; f: { n: string; o: number; l: Lay }[]; z: number } | { t: "uni"; m: Lay[]; z: number } | { t: "opt"; o: number; l: Lay; z: number }
   | { t: "hdl"; z: number } | { t: "abuf"; z: number };
 interface Codec { readonly z: number; rd(d: DataView, p: number): unknown; wr(d: DataView, p: number, x: unknown): void }
@@ -29,6 +29,7 @@ function codec(l: Lay): Codec {
   switch (l.t) {
     case "num": { const [rd, wr] = NUM_RW[l.n]; return { z: l.z, rd, wr: wr as Codec["wr"] }; }
     case "bool": return { z: 1, rd: (d, p) => d.getUint8(p) !== 0, wr: (d, p, x) => d.setUint8(p, x ? 1 : 0) };
+    case "null": return { z: 1, rd: () => null, wr: (d, p) => { d.setUint8(p, 0); } };
     case "lit": { const v = l.v; return { z: 4, rd: (d, p) => v[d.getUint32(p, LE)], wr: (d, p, x) => d.setUint32(p, v.indexOf(x as string), LE) }; }
     case "rec": {
       const fs = l.f.map((f) => ({ n: f.n, o: f.o, c: codec(f.l) }));
@@ -239,8 +240,41 @@ export function setAt<T>(a: T[] | Vec<T> | Slice<T>, i: number, x: T, pos?: Pos)
 
 /** A Pool handle (Q188 (a)): pool id, generation, slot index. A plain object; STS code cannot see the fields. */
 export interface PoolHandle { pool: number; gen: number; idx: number }
-/** Pool and Arena ids come from one host counter, starting at 1 (Q188). */
-let nextHostId = 1;
+/** Value equality for Handle<T> / Handle<T> | null (SPEC-v1 §3.4). */
+export const handleEq = (a: PoolHandle | null, b: PoolHandle | null): boolean =>
+  a === b || (a !== null && b !== null && a.pool === b.pool && a.gen === b.gen && a.idx === b.idx);
+
+/** Process-unique Pool and Arena ids via shared Atomics counter when available, else unique prefix per worker. */
+let idSab: SharedArrayBuffer | null = typeof SharedArrayBuffer !== "undefined" ? new SharedArrayBuffer(4) : null;
+let idView: Int32Array | null = idSab ? new Int32Array(idSab) : null;
+if (idView) Atomics.store(idView, 0, 1);
+let idPrefix = 0;
+let nextLocalId = 1;
+export const getHostIdSab = (): SharedArrayBuffer | null => idSab;
+export function initHostIds(sab: SharedArrayBuffer | null | undefined, prefix = 0): void {
+  if (sab) { idSab = sab; idView = new Int32Array(sab); }
+  else { idSab = null; idView = null; }
+  idPrefix = prefix;
+}
+function allocHostId(): number {
+  if (idView) {
+    let id = Atomics.add(idView, 0, 1) >>> 0;
+    if (id === 0) id = Atomics.add(idView, 0, 1) >>> 0;
+    return id;
+  }
+  const seq = nextLocalId++ & 0xfffff;
+  return (((idPrefix & 0xfff) << 20) | (seq || 1)) >>> 0;
+}
+function copyBuf(v: ArrayBufferView): ArrayBuffer {
+  const out = new ArrayBuffer(v.byteLength);
+  new Uint8Array(out).set(new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
+  return out;
+}
+
+export interface PoolWire {
+  id: number; cap: number; elem: ElemKind; len: number; freeHead: number; nextFresh: number;
+  gens: ArrayBuffer; occ: ArrayBuffer; nextFree: ArrayBuffer; buf?: ArrayBuffer; items?: unknown[];
+}
 
 /**
  * Fixed-capacity pool (Q188 (a)). Storage mirrors Vec (a TypedArray, a packed Uint8Array, or a plain
@@ -259,10 +293,29 @@ export class Pool<T = unknown> {
   private freeHead = -1;
   private nextFresh = 0;
   private readonly cap: number;
-  private constructor(buf: Buf<T>, elem: ElemKind, cap: number, cod?: Codec) {
+  private constructor(buf: Buf<T>, elem: ElemKind, cap: number, cod?: Codec, id?: number) {
     this.buf = buf; this.elem = elem; this.cap = cap; this.cod = cod;
-    this.id = nextHostId++;
+    this.id = id ?? allocHostId();
     this.gens = new Uint32Array(cap); this.occ = new Uint8Array(cap); this.nextFree = new Int32Array(cap);
+  }
+  pack(): PoolWire {
+    return {
+      id: this.id, cap: this.cap, elem: this.elem, len: this.len, freeHead: this.freeHead, nextFresh: this.nextFresh,
+      gens: copyBuf(this.gens), occ: copyBuf(this.occ), nextFree: copyBuf(this.nextFree),
+      ...(this.elem === "other" ? { items: (this.buf as T[]).slice() } : { buf: copyBuf(this.buf as ArrayBufferView) }),
+    };
+  }
+  static unpack<T>(w: PoolWire): Pool<T> {
+    let buf: Buf<T>; let cod: Codec | undefined;
+    if (w.elem === "other") buf = w.items!.slice() as T[];
+    else if (w.elem.startsWith("{")) { cod = codecOf(w.elem); buf = new Uint8Array(w.buf!) as Buf<T>; }
+    else buf = new (TYPED[w.elem as NumType] as unknown as new (b: ArrayBuffer) => Buf<T>)(w.buf!);
+    const p = new Pool<T>(buf, w.elem, w.cap, cod, w.id);
+    p.gens = new Uint32Array(w.gens);
+    p.occ = new Uint8Array(w.occ);
+    p.nextFree = new Int32Array(w.nextFree);
+    p.len = w.len; p.freeHead = w.freeHead; p.nextFresh = w.nextFresh;
+    return p;
   }
   /** `alloc` is accepted for the signature only. The capacity is fixed: the pool never grows. */
   static create<T>(_alloc: unknown, capacity: number, elem: ElemKind = "other"): Pool<T> {
@@ -341,13 +394,31 @@ const typedView = (elem: string, buf: Uint8Array, off: number, n: number): Typed
  * bytes through the element type recorded at `alloc` (or by `noteC`), so it never goes stale (D131).
  * The fields `buf` / `used` / `gen` / `id` are read and written back by the C backend, like Pool's.
  */
+export interface ArenaWire {
+  id: number; buf: ArrayBuffer; used: number; gen: number;
+  recs: [number, { elem: ElemKind; arr: unknown[] | null }][];
+}
+
 export class Arena {
   readonly id: number;
   private buf: Uint8Array;
   private used = 0;
   private gen = 0;
   private recs = new Map<number, { elem: ElemKind; arr: unknown[] | null }>();
-  private constructor(bytes: number) { this.id = nextHostId++; this.buf = new Uint8Array(bytes); }
+  private constructor(bytes: number, id?: number) { this.id = id ?? allocHostId(); this.buf = new Uint8Array(bytes); }
+  pack(): ArenaWire {
+    return {
+      id: this.id, buf: copyBuf(this.buf), used: this.used, gen: this.gen,
+      recs: [...this.recs.entries()].map(([k, r]) => [k, { elem: r.elem, arr: r.arr ? r.arr.slice() : null }]),
+    };
+  }
+  static unpack(w: ArenaWire): Arena {
+    const a = new Arena(0, w.id);
+    a.buf = new Uint8Array(w.buf);
+    a.used = w.used; a.gen = w.gen;
+    a.recs = new Map(w.recs.map(([k, r]) => [k, { elem: r.elem, arr: r.arr ? r.arr.slice() : null }]));
+    return a;
+  }
   /** `alloc` is accepted for the signature only: the region is one ArrayBuffer of `bytes` bytes. */
   static create(_alloc: unknown, bytes: number): Arena { return new Arena(bytes); }
   get remaining(): number { return this.buf.length - this.used; }
@@ -397,18 +468,22 @@ export class Arena {
  * plain queue until the C boundary adopts a concrete representation, like Vec (D105).
  */
 const RING_ELEMS = 8; // bytes 0..3: head, 4..7: tail
+const isSab = (b: ArrayBufferLike): boolean => typeof SharedArrayBuffer !== "undefined" && b instanceof SharedArrayBuffer;
 export interface RingShared<T> {
-  sab: SharedArrayBuffer | null;
+  sab: ArrayBufferLike | null;
+  atomic: boolean;
   cap: number;
   elem: ElemKind;
   cod: Codec | undefined;
-  view: TypedView | undefined; // numeric elements, over the SAB
+  view: TypedView | undefined; // numeric elements, over the buffer
   dv: DataView | undefined;
-  pos: Uint32Array | undefined; // [head, tail] over the SAB
+  pos: Uint32Array | undefined; // [head, tail] over the buffer
   queue: T[]; // "other" mode only
+  onPush?: (bytes: Uint8Array) => void;
 }
-function ringAttach<T>(s: RingShared<T>, sab: SharedArrayBuffer, elem: ElemKind): void {
+function ringAttach<T>(s: RingShared<T>, sab: ArrayBufferLike, elem: ElemKind): void {
   s.sab = sab;
+  s.atomic = isSab(sab);
   s.elem = elem;
   s.cod = elem.startsWith("{") ? codecOf(elem) : undefined;
   s.dv = new DataView(sab);
@@ -423,17 +498,33 @@ function ringRead<T>(s: RingShared<T>, slot: number): T {
   if (s.cod) return s.cod.rd(s.dv!, RING_ELEMS + slot * s.cod.z) as T;
   return s.view![slot] as T;
 }
-function ringAlloc<T>(cap: number, elem: ElemKind): SharedArrayBuffer {
+function ringAlloc<T>(cap: number, elem: ElemKind): ArrayBufferLike {
   const z = elem.startsWith("{") ? codecOf(elem).z : NUM_SIZE[elem]!;
-  return new SharedArrayBuffer(RING_ELEMS + cap * z);
+  const bytes = RING_ELEMS + cap * z;
+  return typeof SharedArrayBuffer !== "undefined" ? new SharedArrayBuffer(bytes) : new ArrayBuffer(bytes);
 }
 /** A ring made where its element type was a type parameter switches to the representation of `elem` (C boundary, D105); the queued values move in. */
 function ringAdopt<T>(s: RingShared<T>, elem: ElemKind): void {
   if (s.sab || elem === "other") return;
   ringAttach(s, ringAlloc(s.cap, elem), elem);
   for (let i = 0; i < s.queue.length; i++) ringWrite(s, i, s.queue[i]!);
-  Atomics.store(s.pos!, 1, s.queue.length);
+  if (s.atomic) Atomics.store(s.pos!, 1, s.queue.length);
+  else s.pos![1] = s.queue.length;
   s.queue = [];
+}
+
+/** Appends one pre-encoded element (for MessagePort fallback when SharedArrayBuffer is unavailable). */
+export function ringPushRaw(s: RingShared<unknown>, bytes: Uint8Array): boolean {
+  if (!s.sab || !s.pos) return false;
+  const tail = s.atomic ? Atomics.load(s.pos, 1) : s.pos[1]!;
+  const head = s.atomic ? Atomics.load(s.pos, 0) : s.pos[0]!;
+  if (((tail - head) >>> 0) >= s.cap) return false;
+  const z = bytes.byteLength;
+  const off = RING_ELEMS + (tail & (s.cap - 1)) * z;
+  new Uint8Array(s.sab, off, z).set(bytes);
+  if (s.atomic) Atomics.store(s.pos, 1, (tail + 1) >>> 0);
+  else s.pos[1] = (tail + 1) >>> 0;
+  return true;
 }
 
 export class RingTx<T = unknown> {
@@ -442,7 +533,7 @@ export class RingTx<T = unknown> {
   /** The shared state itself, for the isolate transport (§15.2). */
   get shared(): RingShared<T> { return this.s; }
   /** The buffer the C backend works on (sts_ring_in); null until a type-parameter element adopts one. */
-  get sab(): SharedArrayBuffer | null { return this.s.sab; }
+  get sab(): ArrayBufferLike | null { return this.s.sab; }
   /** The capacity the C backend reads (sts_ring_in). */
   get cap(): number { return this.s.cap; }
   /** C boundary: switch a type-parameter element to its concrete representation (like Vec.adopt). */
@@ -454,11 +545,19 @@ export class RingTx<T = unknown> {
       s.queue.push(x);
       return true;
     }
-    const tail = Atomics.load(s.pos!, 1);
-    const head = Atomics.load(s.pos!, 0);
+    const tail = s.atomic ? Atomics.load(s.pos!, 1) : s.pos![1]!;
+    const head = s.atomic ? Atomics.load(s.pos!, 0) : s.pos![0]!;
     if (((tail - head) >>> 0) >= s.cap) return false; // full, as far as this side can see (15.1)
-    ringWrite(s, tail & (s.cap - 1), x);
-    Atomics.store(s.pos!, 1, (tail + 1) >>> 0); // release: the element write above is visible first
+    const slot = tail & (s.cap - 1);
+    ringWrite(s, slot, x);
+    if (s.atomic) Atomics.store(s.pos!, 1, (tail + 1) >>> 0); // release: the element write above is visible first
+    else {
+      s.pos![1] = (tail + 1) >>> 0;
+      if (s.onPush) {
+        const z = s.cod ? s.cod.z : NUM_SIZE[s.elem as NumType]!;
+        s.onPush(new Uint8Array(s.sab, RING_ELEMS + slot * z, z).slice());
+      }
+    }
     return true;
   }
 }
@@ -469,7 +568,7 @@ export class RingRx<T = unknown> {
   /** The shared state itself, for the isolate transport (§15.2). */
   get shared(): RingShared<T> { return this.s; }
   /** The buffer the C backend works on (sts_ring_in); null until a type-parameter element adopts one. */
-  get sab(): SharedArrayBuffer | null { return this.s.sab; }
+  get sab(): ArrayBufferLike | null { return this.s.sab; }
   /** The capacity the C backend reads (sts_ring_in). */
   get cap(): number { return this.s.cap; }
   /** C boundary: switch a type-parameter element to its concrete representation (like Vec.adopt). */
@@ -477,11 +576,12 @@ export class RingRx<T = unknown> {
   pop(): T | null {
     const s = this.s;
     if (!s.sab) return s.queue.length ? s.queue.shift()! : null;
-    const head = Atomics.load(s.pos!, 0);
-    const tail = Atomics.load(s.pos!, 1);
+    const head = s.atomic ? Atomics.load(s.pos!, 0) : s.pos![0]!;
+    const tail = s.atomic ? Atomics.load(s.pos!, 1) : s.pos![1]!;
     if (head === tail) return null; // empty, as far as this side can see (15.1)
     const x = ringRead(s, head & (s.cap - 1));
-    Atomics.store(s.pos!, 0, (head + 1) >>> 0); // release: the slot is free for the writer
+    if (s.atomic) Atomics.store(s.pos!, 0, (head + 1) >>> 0); // release: the slot is free for the writer
+    else s.pos![0] = (head + 1) >>> 0;
     return x;
   }
 }
@@ -491,13 +591,13 @@ export class Ring {
   static create<T>(_alloc: unknown, capacity: number, elem: ElemKind = "other", pos?: Pos): { tx: RingTx<T>; rx: RingRx<T> } {
     if (!Number.isInteger(capacity) || capacity <= 0 || capacity > 2 ** 31 || (capacity & (capacity - 1)) !== 0)
       trap("T014", `invalid ring capacity ${capacity}`, pos);
-    const s: RingShared<T> = { sab: null, cap: capacity, elem, cod: undefined, view: undefined, dv: undefined, pos: undefined, queue: [] };
+    const s: RingShared<T> = { sab: null, atomic: false, cap: capacity, elem, cod: undefined, view: undefined, dv: undefined, pos: undefined, queue: [] };
     if (elem !== "other") ringAttach(s, ringAlloc(capacity, elem), elem);
     return { tx: new RingTx<T>(s), rx: new RingRx<T>(s) };
   }
   /** Endpoints over an existing buffer (the two-Worker test; the isolate transport is 15.2's). */
-  static fromShared<T>(sab: SharedArrayBuffer, capacity: number, elem: ElemKind): { tx: RingTx<T>; rx: RingRx<T> } {
-    const s: RingShared<T> = { sab: null, cap: capacity, elem, cod: undefined, view: undefined, dv: undefined, pos: undefined, queue: [] };
+  static fromShared<T>(sab: ArrayBufferLike, capacity: number, elem: ElemKind): { tx: RingTx<T>; rx: RingRx<T> } {
+    const s: RingShared<T> = { sab: null, atomic: false, cap: capacity, elem, cod: undefined, view: undefined, dv: undefined, pos: undefined, queue: [] };
     ringAttach(s, sab, elem);
     return { tx: new RingTx<T>(s), rx: new RingRx<T>(s) };
   }
@@ -505,12 +605,12 @@ export class Ring {
 
 /** §15.2: the wire form of a ring's shared state. With a buffer, the far side's endpoints attach to
  * the same SharedArrayBuffer; in queue mode ("other" elements, no buffer yet) the buffered items move. */
-export interface RingWire { sab: SharedArrayBuffer | null; cap: number; elem: ElemKind; queue: unknown[] }
+export interface RingWire { sab: ArrayBufferLike | null; cap: number; elem: ElemKind; queue: unknown[] }
 export function ringPack<T>(s: RingShared<T>): RingWire {
   return { sab: s.sab, cap: s.cap, elem: s.elem, queue: s.sab ? [] : (s.queue.splice(0) as unknown[]) };
 }
 export function ringUnpack(w: RingWire): RingShared<unknown> {
-  const s: RingShared<unknown> = { sab: null, cap: w.cap, elem: w.elem, cod: undefined, view: undefined, dv: undefined, pos: undefined, queue: w.queue.slice() };
+  const s: RingShared<unknown> = { sab: null, atomic: false, cap: w.cap, elem: w.elem, cod: undefined, view: undefined, dv: undefined, pos: undefined, queue: w.queue.slice() };
   if (w.sab) ringAttach(s, w.sab, w.elem);
   return s;
 }

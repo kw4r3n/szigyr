@@ -1,0 +1,6 @@
+// expect: E7002 @ 6:10
+// stage: 3
+declare module "c:sdl3:SDL3/SDL.h" {
+  function SDL_toupper(ffi: Ffi, x: i32): i32;
+}
+import { g } from "c:sdl3:SDL3/SDL.h";

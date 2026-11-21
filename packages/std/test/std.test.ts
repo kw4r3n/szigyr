@@ -1,17 +1,49 @@
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { Trap, panic, requires, type Pos } from "../../runtime-js/src/index.ts";
-import { FakeClock, SeededRandom, MemoryLog, FakeFs, TestAlloc, createSystem, nodeFs, nodeJs, runMain } from "../src/index.ts";
+import { FakeAudio, FakeClock, SeededRandom, MemoryLog, FakeFs, TestAlloc, createSystem, nodeFs, nodeJs, runMain } from "../src/index.ts";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 describe("fakes", () => {
-  it("FakeClock", () => {
+  it("FakeClock advance and sleep", async () => {
     const c = FakeClock.create(0);
     expect(c.nowMs()).toBe(0);
     c.advance(1500);
     expect(c.nowMs()).toBe(1500);
+    await c.sleep(250);
+    expect(c.nowMs()).toBe(1750);
+    await c.sleep(-10);
+    await c.sleep(Number.NaN);
+    await c.sleep(Number.POSITIVE_INFINITY);
+    expect(c.nowMs()).toBe(1750);
+  });
+  it("FakeAudio open, renderFrames, close, and EINVAL", async () => {
+    const a = FakeAudio.create();
+    const bad = await a.open({ sampleRate: 0, channels: 2 }, null, { fn: () => {}, id: 0 });
+    expect(bad).toEqual({ kind: "err", error: { code: "EINVAL", message: expect.any(String) } });
+    const state = { v: 1 };
+    const r = await a.open({ sampleRate: 48000, channels: 2 }, state, {
+      id: 0,
+      fn(st, out, frames) {
+        const s = st as { v: number };
+        for (let i = 0; i < frames; i++) {
+          out.set(i * 2, s.v * 0.25);
+          out.set(i * 2 + 1, -s.v * 0.25);
+        }
+        s.v += 1;
+      },
+    });
+    expect(r.kind).toBe("ok");
+    if (r.kind !== "ok") return;
+    expect(r.value.isOpen()).toBe(true);
+    expect(a.renderFrames(2)).toEqual([0.25, -0.25, 0.25, -0.25]);
+    expect(a.renderFrames(1)).toEqual([0.5, -0.5]);
+    await r.value.close();
+    await r.value.close();
+    expect(r.value.isOpen()).toBe(false);
+    expect(a.renderFrames(4)).toEqual([]);
   });
   it("SeededRandom is deterministic, in range, seed-dependent", () => {
     const a = SeededRandom.create(42), b = SeededRandom.create(42), c = SeededRandom.create(43);
@@ -85,10 +117,10 @@ describe("node authorities", () => {
     cb(bad);
     expect(cbSeen).toEqual([{ kind: "err", error: { code: "cast", message: "boom-cb" } }]);
   });
-  it("System has the six members; Log routes to the writers (Q059)", () => {
+  it("System has the seven members; Log routes to the writers (Q059)", () => {
     const out: string[] = [], errs: string[] = [];
     const sys = createSystem((s) => out.push(s), (s) => errs.push(s));
-    expect(Object.keys(sys).sort()).toEqual(["alloc", "clock", "fs", "js", "log", "random"]);
+    expect(Object.keys(sys).sort()).toEqual(["alloc", "audio", "clock", "fs", "js", "log", "random"]);
     sys.log.info("a"); sys.log.warn("b"); sys.log.error("c");
     expect([out, errs]).toEqual([["a\n"], ["b\n", "c\n"]]);
     const r = sys.random.nextF64();

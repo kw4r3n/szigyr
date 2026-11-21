@@ -1,0 +1,68 @@
+// expect-output: 125
+// expect-output: false
+// expect-output: true
+// expect-output: 0
+// expect-output: 48000
+// expect-output: 2
+// expect-output: true
+// expect-output: 16
+// expect-output: true
+// expect-output: false
+// expect-output: done
+// stage: 5
+type Tone = Struct<{ rx: RingRx<f64>; phase: f64; freq: f64 }>;
+
+function tone(st: Mut<Tone>, out: Mut<Slice<f32>>, frames: usize): void {
+  "use rt";
+  let f = st.rx.pop();
+  while (f !== null) {
+    st.freq = f;
+    f = st.rx.pop();
+  }
+  for (let i: usize = 0; i < frames; i += 1) {
+    const s = f32(0.5 * DetMath.sin(6.283185307179586 * st.phase));
+    out[i * 2] = s;
+    out[i * 2 + 1] = f32(0 - f64(s));
+    st.phase = st.phase + st.freq / 48000;
+  }
+}
+
+export async function main(sys: System): Promise<void> {
+  const fc = FakeClock.create(100);
+  await fc.sleep(25);
+  await fc.sleep(-5);
+  await fc.sleep(Number.NaN);
+  await fc.sleep(Number.POSITIVE_INFINITY);
+  sys.log.info(`${fc.nowMs()}`);
+
+  const { tx, rx } = Ring.create<f64>(sys.alloc, 16);
+  tx.push(440);
+  const fa = FakeAudio.create();
+  const s1: Tone = { rx, phase: 0, freq: 440 };
+  const bad = await fa.open({ sampleRate: 0, channels: 2 }, s1, tone);
+  sys.log.info(`${bad.kind === "ok"}`);
+
+  const { tx: tx2, rx: rx2 } = Ring.create<f64>(sys.alloc, 16);
+  tx2.push(440);
+  const s2: Tone = { rx: rx2, phase: 0, freq: 440 };
+  const okRes = await fa.open({ sampleRate: 48000, channels: 2 }, s2, tone);
+  if (okRes.kind === "ok") {
+    const st = okRes.value;
+    const pcm = fa.renderFrames(8);
+    const left0 = f64(pcm[0]);
+    const left1 = f64(pcm[2]);
+    const right1 = f64(pcm[3]);
+    sys.log.info(`${pcm.length === 16 && left0 === 0}`);
+    sys.log.info(`${left0}`);
+    sys.log.info(`${st.sampleRate}`);
+    sys.log.info(`${st.channels}`);
+    sys.log.info(`${st.isOpen()}`);
+    sys.log.info(`${pcm.length}`);
+    sys.log.info(`${Math.abs(left1 + right1) < 1e-6 && left1 > 0}`);
+    await st.close();
+    await st.close();
+    sys.log.info(`${st.isOpen()}`);
+  }
+  await sys.clock.sleep(1);
+  sys.log.info("done");
+}

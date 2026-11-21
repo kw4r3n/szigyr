@@ -7,18 +7,24 @@ import { createRequire } from "node:module";
 import { dirname, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { analyze, CliError, type Analysis } from "./index.ts";
+import { CACHE_DIR } from "./names.ts";
 import type { Diagnostic, Range } from "./diagnostics.ts";
 import { emitFile, EXPORTS, IMP, MUT_FNS, RT, SOURCE_URL, type EmitMutate, type MutantSpec } from "./emit.ts";
 import { SyntaxKind as K, isId, type Node, type Parser, type ts } from "./parse.ts";
 import { callFns, localOf } from "./expr.ts";
 import { genDescOf, isGeneratable } from "./gendesc.ts";
 import { canonPath, type ConstSym, type FnSym, type Module, type Program as Decls, type TypeSym } from "./modules.ts";
-import { isDeterministic } from "./determinism.ts";
-import type { Type } from "./types.ts";
+import { isDeterministic, isMutatable } from "./determinism.ts";
+import type { ClassSym, Type } from "./types.ts";
 import * as rt from "../../runtime-js/src/index.ts";
-import { FakeClock, FakeFs, MemoryLog, SeededRandom, TestAlloc } from "../../std/src/index.ts";
+import { FakeAudio, FakeClock, FakeFs, MemoryLog, SeededRandom, TestAlloc } from "../../std/src/index.ts";
 
-const MUTATE_VERSION = "2";
+const MUTATE_VERSION = "4";
+
+export interface SkippedTarget {
+  readonly fn: string;
+  readonly reason: "unsafe" | "test-helper" | "not-mutatable";
+}
 
 export interface Witness {
   readonly args: unknown[];
@@ -39,10 +45,12 @@ export interface MutantReport {
 }
 
 export interface MutateSummary {
+  readonly targets: number;
   readonly killed: number;
   readonly survived: number;
   readonly timeout: number;
   readonly cached: number;
+  readonly skipped: readonly SkippedTarget[];
 }
 
 export interface BaselineFailure {
@@ -79,7 +87,7 @@ class StepLimitReached extends Error { constructor() { super("step limit reached
 class OwnRequiresTrap extends rt.Trap { constructor(pos?: rt.Pos) { super("T004", "requires violated", pos); } }
 
 /** Mutated target functions exclude test helpers whose parameter types contain `Test` (Q278). */
-function hasTestType(t: Type, seen = new Set<unknown>()): boolean {
+export function hasTestType(t: Type, seen = new Set<unknown>()): boolean {
   switch (t.k) {
     case "opaque": return t.name === "Test";
     case "record": return t.fields.some((f) => hasTestType(f.type, seen));
@@ -108,7 +116,7 @@ const displayPath = (p: string): string => relative(process.cwd(), p) || p;
 
 /** Main entry for `sts mutate` on a single file (called inside `exclusive` from `index.ts`). */
 export async function mutateFile(entryFile: string, opts: MutateOptions = {}): Promise<MutateResult> {
-  const emptySummary: MutateSummary = { killed: 0, survived: 0, timeout: 0, cached: 0 };
+  const emptySummary: MutateSummary = { targets: 0, killed: 0, survived: 0, timeout: 0, cached: 0, skipped: [] };
   const a = opts.analysis ?? analyze(entryFile, opts.parser);
   if (a.diagnostics.length) return { diagnostics: a.diagnostics, baselineFailure: null, mutants: [], summary: emptySummary };
 
@@ -117,14 +125,29 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
   const entryMod = decls.mods.find((m) => m.pf.path === entryPath)!;
   const entryDisplay = displayPath(entryPath);
 
-  // Q275, Q278: target functions are top-level `function` declarations in this file that are safe, §7.3 deterministic, and do not take `Test`.
-  const targets: { fnId: number; sym: FnSym }[] = [];
+  // SPEC-v1 §7: target functions and class methods are safe, do not take Test, and pass isMutatable.
+  interface MutTarget { readonly fnId: number; readonly name: string; readonly decl: Node; readonly pure: boolean; readonly fnSym?: FnSym; readonly clsSym?: ClassSym }
+  const targets: MutTarget[] = [];
+  const skipped: SkippedTarget[] = [];
   for (const f of decls.fns) {
-    if (f.mod === entryMod && !f.unsafe && isDeterministic(f.sig, false) && !f.sig.params.some((p) => hasTestType(p))) {
-      targets.push({ fnId: targets.length, sym: f });
+    if (f.mod !== entryMod) continue;
+    if (f.unsafe) { skipped.push({ fn: f.name, reason: "unsafe" }); continue; }
+    if (f.sig.params.some((p) => hasTestType(p))) { skipped.push({ fn: f.name, reason: "test-helper" }); continue; }
+    if (!isMutatable(f.sig, false)) { skipped.push({ fn: f.name, reason: "not-mutatable" }); continue; }
+    targets.push({ fnId: targets.length, name: f.name, decl: f.decl, pure: isDeterministic(f.sig, false), fnSym: f });
+  }
+  for (const [clsName, sym] of entryMod.types) {
+    if (sym.k !== "class" || sym.mod !== entryMod) continue;
+    const clsType: Type = { k: "class", cls: sym.cls, args: sym.cls.tparams.map((p) => ({ k: "tparam", p })) };
+    for (const [mName, m] of sym.cls.methods) {
+      const qName = `${clsName}.${mName}`;
+      const extra = m.static ? [] : [clsType];
+      if (m.sig.params.some((p) => hasTestType(p)) || extra.some((e) => hasTestType(e))) { skipped.push({ fn: qName, reason: "test-helper" }); continue; }
+      if (!isMutatable(m.sig, false, extra)) { skipped.push({ fn: qName, reason: "not-mutatable" }); continue; }
+      targets.push({ fnId: targets.length, name: qName, decl: m.node, pure: false, clsSym: sym.cls });
     }
   }
-  const targetByDecl = new Map<Node, number>(targets.map((t) => [t.sym.decl, t.fnId]));
+  const targetByDecl = new Map(targets.map((t) => [t.decl, { id: t.fnId, name: t.name }]));
   const unsafeDecls = new Set<Node>(decls.fns.filter((f) => f.unsafe).map((f) => f.decl));
 
   // Emit ONE JS build containing all mutants, reachability hooks, step fuel, and C-only stubs (#8).
@@ -136,7 +159,7 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
       targets: isEntry ? targetByDecl : new Map(),
       unsafeDecls,
       mutants: allMutants,
-      exportFns: isEntry ? targets.map((t) => t.sym.name) : [],
+      exportFns: isEntry ? targets.filter((t) => t.fnSym && t.pure).map((t) => t.name) : [],
     };
     emitted.set(pf.path, emitFile(pf, displayPath(pf.path), isEntry, undefined, undefined, mut));
   }
@@ -182,7 +205,7 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
 
   const mutRt = {
     ...rt,
-    FakeClock, SeededRandom, MemoryLog, FakeFs, TestAlloc,
+    FakeAudio, FakeClock, SeededRandom, MemoryLog, FakeFs, TestAlloc,
     get m(): number { return mutState.m; },
     test(name: string, fn: TestFn): void { registeredTests.push({ name, fn }); },
     hit(fnId: number): void { if (mutState.recording) mutState.reached.add(fnId); },
@@ -224,6 +247,11 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
         case "===": return l === r;
         default: return l !== r;
       }
+    },
+    mCmpHandle(id: number, orig: string, l: rt.PoolHandle | null, r: rt.PoolHandle | null): boolean {
+      const o = mutState.m === id ? (orig === "===" ? "!==" : "===") : orig;
+      const eq = rt.handleEq(l, r);
+      return o === "===" ? eq : !eq;
     },
     mLogic(id: number, orig: string, fa: () => boolean, fb: () => boolean): boolean {
       const o = mutState.m === id ? (orig === "&&" ? "||" : "&&") : orig;
@@ -319,7 +347,7 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
 
   // Cache load (Q277).
   const useCache = opts.cache !== false;
-  const cacheFile = opts.cacheFile ?? resolve(".sts-cache", "mutate.json");
+  const cacheFile = opts.cacheFile ?? resolve(CACHE_DIR, "mutate.json");
   const cacheStore: CacheStore = useCache ? readCache(cacheFile) : {};
   let cacheDirty = false;
 
@@ -331,14 +359,22 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
     list.push(m);
   }
 
+  const sourceLines = entryMod.sf.text.split("\n");
+  const isEquivalentLine = (line: number): boolean => {
+    const cur = sourceLines[line - 1] ?? "";
+    if (/\/\/\s*szigyr-equivalent:\s*\S/.test(cur)) return true;
+    const prev = line >= 2 ? (sourceLines[line - 2] ?? "") : "";
+    return /^\s*\/\/\s*szigyr-equivalent:\s*\S/.test(prev);
+  };
+
   const reports: MutantReport[] = [];
   for (const target of targets) {
-    const fnMutants = mutantsByFn.get(target.fnId) ?? [];
+    const fnMutants = (mutantsByFn.get(target.fnId) ?? []).filter((m) => !isEquivalentLine(m.range.start.line));
     if (!fnMutants.length) continue;
 
     const reaching = activeTests.filter((t) => t.reached.has(target.fnId));
-    const cacheId = `${entryPath}::${target.sym.name}`;
-    const key = computeCacheKey(decls, entryMod, target.sym, reaching);
+    const cacheId = `${entryPath}::${target.name}`;
+    const key = computeCacheKey(decls, entryMod, target, reaching);
     const hit = useCache ? cacheStore[cacheId] : undefined;
 
     if (hit && hit.key === key && hit.results.length === fnMutants.length && hit.results.every((r, i) => r.op === fnMutants[i]!.op)) {
@@ -356,7 +392,7 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
     }
 
     const fnResults: CacheEntry["results"] = [];
-    const fnImpl = fnTable[target.sym.name];
+    const fnImpl = target.fnSym ? fnTable[target.name] : undefined;
     for (const spec of fnMutants) {
       let status: "killed" | "survived" | "timeout" = "survived";
       for (const t of reaching) {
@@ -369,7 +405,7 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
       }
       let witness: Witness | null | undefined;
       if (status === "survived") {
-        witness = fnImpl ? await findWitness(target.sym, target.fnId, fnImpl, spec.id, mutState) : null;
+        witness = target.pure && target.fnSym && fnImpl ? await findWitness(target.fnSym, target.fnId, fnImpl, spec.id, mutState) : null;
       }
       const deadCode = status === "survived" && spec.isDeleteStmt ? true : undefined;
       fnResults.push({ op: spec.op, status, ...(deadCode ? { deadCode } : {}), ...(status === "survived" ? { witness: witness ?? null } : {}) });
@@ -396,7 +432,7 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
     else survived++;
     if (r.cached) cached++;
   }
-  return { diagnostics: [], baselineFailure: null, mutants: reports, summary: { killed, survived, timeout, cached } };
+  return { diagnostics: [], baselineFailure: null, mutants: reports, summary: { targets: targets.length, killed, survived, timeout, cached, skipped } };
 }
 
 // ---- Diff cache (Q277)
@@ -415,7 +451,7 @@ function writeCache(file: string, store: CacheStore): void {
 }
 
 /** Q277: hash of (target fn + transitive refs across signatures/bodies/types/consts/classes, reaching tests + helpers, version). */
-function computeCacheKey(decls: Decls, entryMod: Module, target: FnSym, reaching: readonly { name: string; source: string; node: Node }[]): string {
+function computeCacheKey(decls: Decls, entryMod: Module, target: { readonly fnSym?: FnSym; readonly clsSym?: ClassSym }, reaching: readonly { name: string; source: string; node: Node }[]): string {
   const seen = new Set<string>();
   const parts: [string, string][] = [];
   const visitFn = (f: FnSym): void => {
@@ -439,7 +475,7 @@ function computeCacheKey(decls: Decls, entryMod: Module, target: FnSym, reaching
       seen.add(id);
       parts.push([id, sym.cls.decl.getText(sym.mod.sf)]);
       walkDeps(sym.mod, sym.cls.decl);
-    } else {
+    } else if (sym.k === "iface") {
       const id = `iface:${sym.mod.pf.path}:${sym.iface.name}`;
       if (seen.has(id)) return;
       seen.add(id);
@@ -483,7 +519,8 @@ function computeCacheKey(decls: Decls, entryMod: Module, target: FnSym, reaching
     };
     visit(root);
   };
-  visitFn(target);
+  if (target.fnSym) visitFn(target.fnSym);
+  else if (target.clsSym) visitType({ k: "class", cls: target.clsSym, mod: entryMod });
   for (const t of reaching) walkDeps(entryMod, t.node);
   parts.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
   const tests = reaching.map((t) => [t.name, t.source] as [string, string]).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));

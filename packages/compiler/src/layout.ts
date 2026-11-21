@@ -1,10 +1,11 @@
 // Byte layout of non-numeric Vec / Slice elements (SPEC §10.2, D105), shared by the JS translator and the C backend.
 // The runtime receives the computed layout as JSON and never recomputes offsets.
-import { isBool, isCopy, isTaggedUnion, kindOf, nonNull, type NumName, type Type } from "./types.ts";
+import { isBool, isCopy, isNull, isTaggedUnion, kindOf, nonNull, type NumName, type Type } from "./types.ts";
 
 export type Lay =
   | { t: "num"; n: NumName; z: number; a: number }
   | { t: "bool"; z: 1; a: 1 }
+  | { t: "null"; z: 1; a: 1 }
   | { t: "lit"; v: string[]; z: 4; a: 4 }
   | { t: "rec"; f: { n: string; o: number; l: Lay }[]; z: number; a: number }
   | { t: "uni"; m: Lay[]; z: number; a: number }
@@ -20,6 +21,7 @@ const byUnits = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 export function layout(t: Type, kinds?: string[]): Lay | undefined {
   if (t.k === "num") return { t: "num", n: t.name, z: NUM_SIZE[t.name], a: NUM_SIZE[t.name] };
   if (isBool(t)) return { t: "bool", z: 1, a: 1 };
+  if (isNull(t)) return { t: "null", z: 1, a: 1 };
   if (t.k === "lit") return { t: "lit", v: [t.value], z: 4, a: 4 };
   if (t.k === "gen" && t.name === "Handle") return { t: "hdl", z: 12, a: 4 }; // Q188 (a): pool id, generation, index
   if (t.k === "gen" && t.name === "ArenaBuf") return { t: "abuf", z: 16, a: 4 }; // Q188 (b): arena id, generation, head byte position, length

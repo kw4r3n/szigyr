@@ -10,7 +10,7 @@ import { DETMATH_PATH } from "../src/detmath.ts";
 function run(files: Record<string, string>): string[] {
   const dir = mkdtempSync(join(tmpdir(), "szigyr-detmath-"));
   for (const [n, src] of Object.entries(files)) writeFileSync(join(dir, n), src);
-  return check(join(dir, "main.ts")).map((d) => `${d.code} ${d.range.start.line}:${d.range.start.col}`).sort();
+  return check(join(dir, "main.szigyr")).map((d) => `${d.code} ${d.range.start.line}:${d.range.start.col}`).sort();
 }
 
 it("the bundled DetMath module checks clean on its own", () => {
@@ -27,46 +27,46 @@ it("every function of the bundled module is rt with an empty trap list (Q191)", 
 
 it("DetMath members are callable from every layer and are deterministic", () => {
   const dir = mkdtempSync(join(tmpdir(), "szigyr-detmath-"));
-  writeFileSync(join(dir, "main.ts"), [
+  writeFileSync(join(dir, "main.szigyr"), [
     'function r(x: f64): f64 { "use rt"; return DetMath.pow(x, 2) + DetMath.atan2(x, 1); }',
     'function s(x: f64): f64 { "use owned"; return DetMath.log10(x) + DetMath.tanh(x); }',
     "export function m(x: f64): f64 { return r(x) + s(x) + DetMath.sin(x); }",
     "",
   ].join("\n"));
-  expect(check(join(dir, "main.ts"))).toEqual([]);
-  expect(deterministicFunctions(join(dir, "main.ts"))).toEqual({ r: true, s: true, m: true });
+  expect(check(join(dir, "main.szigyr"))).toEqual([]);
+  expect(deterministicFunctions(join(dir, "main.szigyr"))).toEqual({ r: true, s: true, m: true });
 });
 
 it("an unknown DetMath member is E2001 at the member name", () => {
-  expect(run({ "main.ts": "export function f(): f64 {\n  return DetMath.sqrt(4);\n}\n" })).toEqual(["E2001 2:18"]);
+  expect(run({ "main.szigyr": "export function f(): f64 {\n  return DetMath.sqrt(4);\n}\n" })).toEqual(["E2001 2:18"]);
 });
 
 it("DetMath takes f64 only: an f32 argument is an error", () => {
-  expect(run({ "main.ts": 'function f(x: f32): f64 {\n  "use rt";\n  return DetMath.sin(x);\n}\n' })).toEqual(["E2002 3:22"]);
+  expect(run({ "main.szigyr": 'function f(x: f32): f64 {\n  "use rt";\n  return DetMath.sin(x);\n}\n' })).toEqual(["E2002 3:22"]);
 });
 
 it("importing the bundled DetMath module is E7001 at the specifier", () => {
   const dir = mkdtempSync(join(tmpdir(), "szigyr-detmath-"));
   let spec = relative(dir, DETMATH_PATH);
   if (!spec.startsWith(".")) spec = `./${spec}`;
-  writeFileSync(join(dir, "main.ts"), `import { sin } from "${spec}";\nexport function f(x: f64): f64 { return sin(x); }\n`);
-  const got = check(join(dir, "main.ts")).map((d) => `${d.code} ${d.range.start.line}:${d.range.start.col}`);
+  writeFileSync(join(dir, "main.szigyr"), `import { sin } from "${spec}";\nexport function f(x: f64): f64 { return sin(x); }\n`);
+  const got = check(join(dir, "main.szigyr")).map((d) => `${d.code} ${d.range.start.line}:${d.range.start.col}`);
   expect(got).toEqual(["E7001 1:21"]);
 });
 
 it("importing the bundled DetMath module through a symlink is E7001 too (Q253)", () => {
   const dir = mkdtempSync(join(tmpdir(), "szigyr-detmath-"));
-  symlinkSync(DETMATH_PATH, join(dir, "link.ts"));
-  writeFileSync(join(dir, "main.ts"), `import { sin } from "./link.ts";\nexport function f(x: f64): f64 { return sin(x); }\n`);
-  const got = check(join(dir, "main.ts")).map((d) => `${d.code} ${d.range.start.line}:${d.range.start.col}`);
+  symlinkSync(DETMATH_PATH, join(dir, "link.szigyr"));
+  writeFileSync(join(dir, "main.szigyr"), `import { sin } from "./link.szigyr";\nexport function f(x: f64): f64 { return sin(x); }\n`);
+  const got = check(join(dir, "main.szigyr")).map((d) => `${d.code} ${d.range.start.line}:${d.range.start.col}`);
   expect(got).toEqual(["E7001 1:21"]);
 });
 
 it("managed DetMath calls run the JS version directly under --backend=c (§12, D117)", () => {
   const dir = mkdtempSync(join(tmpdir(), "szigyr-detmath-c-"));
-  const managedOnly = join(dir, "managed.ts");
+  const managedOnly = join(dir, "managed.szigyr");
   writeFileSync(managedOnly, 'export function main(sys: System): void {\n  sys.log.info(`${DetMath.sin(1)}`);\n}\n');
-  const mixed = join(dir, "mixed.ts");
+  const mixed = join(dir, "mixed.szigyr");
   writeFileSync(mixed, [
     'function s(x: f64): f64 { "use owned"; return DetMath.sin(x); }',
     "export function main(sys: System): void {",

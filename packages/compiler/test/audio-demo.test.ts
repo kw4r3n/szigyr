@@ -23,7 +23,7 @@ function hasSdl3(): boolean {
 }
 
 const RATE = 48000;
-const entry = join(import.meta.dirname, "../../../examples/audio/main.ts");
+const entry = join(import.meta.dirname, "../../../examples/audio/main.szigyr");
 
 // Dominant frequency of one channel over a frame range, by zero crossings.
 function estimateFreq(left: Float32Array, from: number, to: number): number {

@@ -11,17 +11,19 @@ try { cases = loadCases("conformance"); } catch (e) { problems.push(`header: ${e
 const count = (k) => cases.filter((c) => c.kind === k).length;
 console.log(`accept=${count("accept")} reject=${count("reject")} run=${count("run")}`);
 
-// (b) every E code in the SPEC §11 table appears in some reject header
+// (b) every E code in SPEC §13 appears in some reject header
 const spec = readFileSync("docs/SPEC.md", "utf8");
-const sec = spec.slice(spec.indexOf("## 11."), spec.indexOf("## 12."));
-const codes = [...sec.matchAll(/^\s*\| (E\d{4}) \|/gm)].map((m) => m[1]);
+const sec13 = spec.slice(spec.indexOf("## 13."));
+const errLine = sec13.split("\n").find((l) => l.startsWith("- **Errors**:")) ?? "";
+const codes = [...new Set([...errLine.matchAll(/\b(E\d{4})\b/g)].map((m) => m[1]))];
+if (!codes.length) problems.push("no error codes found in docs/SPEC.md §13");
 const used = new Set(cases.filter((c) => c.kind === "reject").map((c) => c.at.code));
 const missing = codes.filter((c) => !used.has(c));
 if (missing.length) problems.push(`no reject case for: ${missing.join(" ")}`);
 
-// all .ts files under conformance/
+// all .szigyr files under conformance/
 const files = (d) => readdirSync(d, { withFileTypes: true }).flatMap((e) =>
-  e.isDirectory() ? files(join(d, e.name)) : e.name.endsWith(".ts") ? [join(d, e.name)] : []);
+  e.isDirectory() ? files(join(d, e.name)) : e.name.endsWith(".szigyr") ? [join(d, e.name)] : []);
 const paths = files("conformance");
 const parsed = parseSources(Object.fromEntries(paths.map((f) => [f, readFileSync(f, "utf8")])));
 const get = (f) => parsed.get(resolve(f));

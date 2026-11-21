@@ -206,12 +206,16 @@
 - 検査: `pnpm typecheck` 通過、`pnpm verify:conformance` 通過（`accept=82 reject=649 run=198`、`PASSING.txt` 929 件）、`pnpm vitest run --maxWorkers=4` 26 ファイル 287 件通過（`arbitrary.test.ts` 5 件、`forall.test.ts` 6 件、`mutate.test.ts` 17 件を含む）、`pnpm vitest run --config vitest.conformance.config.ts --maxWorkers=4` 1093 件通過。
 - ベンチ（`pnpm bench`、手書き C 比・制限 1.5 倍）: `dot_f32` 1.06（0.740 / 0.697 ms）、`saxpy_f32` 1.22（0.340 / 0.279 ms）、`prefix_i32` 1.29（0.560 / 0.436 ms）、`stencil_f64` 1.04（1.100 / 1.057 ms）、`particles_aos_f32` 1.38（1.040 / 0.755 ms）。すべて 1.5 倍以内。
 
-## 段階 5: ブラウザとモバイル
+## 段階 5: ブラウザと Wasm
 
-- 同じ C 出力を Wasm に向ける。
-- ホストごとに実装が違う機能（音声出力、描画）を、権限として抽象化する。
+（Q279〜Q285、2026-11-21 オーナー決定）
 
-完了条件: 段階 3 の音声デモがブラウザで動く。
+- [x] 同じ strict / rt の C 出力を freestanding Wasm（`clang --target=wasm32 -nostdlib`）へ向け、`--backend=wasm` で既存の非 C 専用適合テストが JS / C / Wasm の 3 バックエンドで一致する。
+- [x] 時間待ちの `Clock.sleep(ms)`（と `FakeClock` の決定的前進）および `Audio` 権限（`System.audio`、`AudioConfig`、`AudioStream`、`FakeAudio`、Node SDL3 実装）を実装する。
+- [x] ブラウザ向けランタイム（`Wasm` + `AudioWorklet` + Web Worker 版 `Spawn`）と `sts build --target=browser`（単体アプリ出力・HTML/CSS UI 向け ESM ライブラリ出力）を実装する。
+- [x] 移植可能な音声デモ（`Audio` 権限＋`Clock.sleep`＋`Ring`＋rt コールバック）が Node と実ブラウザ（Playwright Chromium）の両方で期待どおりの音声を出力する。
+
+完了条件: 音声デモがブラウザ（AudioWorklet + Wasm）と Node で動き、非 C 専用の全実行適合テストが `--backend=wasm` でも一致する。
 
 ## 段階 6: 静的証明
 
@@ -222,5 +226,8 @@
 
 ## 保留
 
+- **2D 描画＋入力権限**（段階 5 の次の独立タスク、Q279）: `microdaw`（自前描画 UI）と `skin-retouch`（ピクセル転送＋操作）を見据えた最小の 2D 描画・テキスト・ポインタ／キー入力の権限抽象（Node/SDL3＋HTML Canvas 2D）。
+- **ツール系権限の拡充**（段階 5 の後の独立タスク、Q279）: `Net`（HTTP クライアント／ローカルサーバ）、`Proc`（外部コマンド起動と標準入出力）、`Fs` 拡充（バイナリ読み書き・ディレクトリ走査・atomic 置換）。`prompt-desk`、`rrawrlet`、`idev-gui`、`booth-shop` 等のローカルツール向け。
+- **ネイティブモバイル殻（iOS / Android）**（Q279）: モバイル専用ターゲットの必要が出たときに着手する（ブラウザ版 Wasm 成果物自体はモバイルブラウザでも動く）。
 - **managed 層のネイティブ化**: 単体の実行ファイルが必要になったら着手する。そのときに managed 層のメモリ管理方式（第一候補は参照カウント＋循環回収）も決める。
 - **本物の権限を使う統合テストと、権限の記録・再生**（Q272）: 偽の権限では足りない場面が出てから対象権限と記録形式を決める。

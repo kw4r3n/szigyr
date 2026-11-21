@@ -1,0 +1,15 @@
+// expect: ok
+// stage: 2
+// open-question: Q027
+// open-question: Q039
+// open-question: Q040
+import { energy, boosted } from "./dsp.szigyr";
+
+export function main(sys: System): void {
+  sys.log.info(`${energy(sys.alloc, 8)}`);
+}
+
+test("layers across files", (t: Test) => {
+  t.eq(energy(TestAlloc.create(), 4), 1);
+  t.eq(boosted(TestAlloc.create(), 4, 2), 16);
+});

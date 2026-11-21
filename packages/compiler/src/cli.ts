@@ -3,40 +3,116 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
-import { analyze, check, CLI_NAME, CliError, createParser, mutate, run, runTestFile, type Backend, type Diagnostic, type RunResult } from "./index.ts";
+import { analyze, buildBrowser, buildNode, check, CLI_NAME, CliError, createParser, explainCode, mutate, queryFile, run, runTestFile, type Backend, type BrowserBuildMode, type Diagnostic, type NodeBuildBackend, type NodeBuildMode, type RunResult } from "./index.ts";
 import { CUnsupported } from "./emit-c.ts";
 import { CBuildError } from "./native.ts";
 
-const USAGE = `usage: ${CLI_NAME} <check|run|test|mutate> [--json] [--no-cache] [--backend=js|c|both] <file...>`;
+const USAGE = `usage: ${CLI_NAME} <check|run|test|mutate|query|explain|build> [--json] [--no-cache] [--backend=js|c|both|wasm] [--target=node|browser] [--mode=app|lib] [-o <dir>] <file...|code>`;
 
 export async function main(argv: string[], out: (s: string) => void, err: (s: string) => void): Promise<number> {
+  const rawJson = argv.includes("--json");
   let args;
   try {
-    args = parseArgs({ args: argv, allowPositionals: true, options: { json: { type: "boolean" }, "no-cache": { type: "boolean" }, backend: { type: "string", default: "js" } } });
-  } catch (e) { err(`${(e as Error).message}\n${USAGE}\n`); return 2; }
+    args = parseArgs({
+      args: argv, allowPositionals: true,
+      options: {
+        json: { type: "boolean" },
+        "no-cache": { type: "boolean" },
+        backend: { type: "string" },
+        target: { type: "string" },
+        mode: { type: "string", default: "app" },
+        "out-dir": { type: "string", short: "o", default: "dist" },
+      },
+    });
+  } catch (e) {
+    err(rawJson ? `${JSON.stringify({ kind: "error", code: "CLI_USAGE", message: (e as Error).message, usage: USAGE })}\n` : `${(e as Error).message}\n${USAGE}\n`);
+    return 2;
+  }
   const [cmd, ...files] = args.positionals;
   const json = !!args.values.json;
   const noCache = !!args.values["no-cache"];
-  const backend = args.values.backend as string;
+  const rawBackend = args.values.backend as string | undefined;
+  const target = args.values.target as string | undefined;
+  const backend = rawBackend ?? (cmd === "build" && target === "node" ? "c" : "js");
+  const mode = args.values.mode as string;
+  const outDir = args.values["out-dir"] as string;
   const backends: Backend[] = backend === "both" ? ["js", "c"] : [backend as Backend];
   const line = (o: unknown): string => `${JSON.stringify(o)}\n`;
-  const diags = (ds: Diagnostic[]): string => ds.map((d) => json ? line(d) : `${d.file}:${d.range.start.line}:${d.range.start.col}: ${d.severity} ${d.code}: ${d.message}\n`).join("");
+  const diags = (ds: readonly Diagnostic[]): string => ds.map((d) => json ? line(d) : `${d.file}:${d.range.start.line}:${d.range.start.col}: ${d.severity} ${d.code}: ${d.message}\n`).join("");
   const parser = createParser(); // D161: one tsgo process for every file of this command (spawned on first use)
   try {
-    if (cmd !== "check" && cmd !== "run" && cmd !== "test" && cmd !== "mutate") throw new CliError(cmd ? `unknown command '${cmd}'\n${USAGE}` : USAGE);
-    if (!files.length || (cmd === "run" && files.length > 1)) throw new CliError(`${cmd}: ${cmd === "run" ? "exactly one" : "at least one"} file required\n${USAGE}`);
-    if (!["js", "c", "both"].includes(backend)) throw new CliError(`unknown backend '${backend}'\n${USAGE}`);
-    if (cmd === "mutate" && backend !== "js") throw new CliError(`mutate: JS backend only (--backend=${backend} is not supported)\n${USAGE}`);
+    if (cmd !== "check" && cmd !== "run" && cmd !== "test" && cmd !== "mutate" && cmd !== "query" && cmd !== "explain" && cmd !== "build") {
+      throw new CliError(cmd ? `unknown command '${cmd}'\n${USAGE}` : USAGE);
+    }
+    if (cmd === "explain") {
+      if (files.length !== 1) throw new CliError(`explain: exactly one code required\n${USAGE}`);
+    } else if (!files.length || ((cmd === "run" || cmd === "build") && files.length > 1)) {
+      throw new CliError(`${cmd}: ${cmd === "run" || cmd === "build" ? "exactly one" : "at least one"} file required\n${USAGE}`);
+    }
+    if (!["js", "c", "both", "wasm"].includes(backend)) throw new CliError(`unknown backend '${backend}'\n${USAGE}`);
+    if ((cmd === "mutate" || cmd === "query" || cmd === "explain") && backend !== "js") throw new CliError(`${cmd}: JS backend only (--backend=${backend} is not supported)\n${USAGE}`);
     if (noCache && cmd !== "mutate") throw new CliError(`${cmd}: --no-cache is only supported for mutate\n${USAGE}`);
+    if (cmd === "build") {
+      if (target !== "browser" && target !== "node") throw new CliError(`build: missing or unknown --target '${target ?? ""}' (expected --target=node or --target=browser)\n${USAGE}`);
+      if (mode !== "app" && mode !== "lib") throw new CliError(`build: unknown --mode '${mode}' (expected app or lib)\n${USAGE}`);
+      if (target === "browser" && rawBackend !== undefined) throw new CliError(`build: --backend is not supported with --target=browser\n${USAGE}`);
+      if (target === "node" && !["c", "js", "wasm"].includes(backend)) throw new CliError(`build: --backend=${backend} is not supported with --target=node (expected c, js, or wasm)\n${USAGE}`);
+    }
+    if (cmd === "explain") {
+      const entry = explainCode(files[0]!);
+      if (!entry) throw new CliError(`unknown diagnostic or trap code '${files[0]}'`);
+      out(json
+        ? line({ kind: "explain", ...entry })
+        : `${entry.code} [${entry.phase}]: ${entry.title}\n${entry.description}\nfix: ${entry.remediation}\n`);
+      return 0;
+    }
     for (const f of files) { if (!existsSync(f)) throw new CliError(`no such file: ${f}`); if (!statSync(f).isFile()) throw new CliError(`not a file: ${f}`); }
 
+    if (cmd === "build") {
+      const r = target === "browser"
+        ? buildBrowser(files[0]!, { outDir, mode: mode as BrowserBuildMode, parser })
+        : buildNode(files[0]!, { outDir, mode: mode as NodeBuildMode, backend: backend as NodeBuildBackend, parser });
+      if (r.diagnostics.length) { err(diags(r.diagnostics)); return 1; }
+      out(json
+        ? line({ kind: "build", target, mode, ...(target === "node" ? { backend } : {}), outDir: r.outDir, files: r.files })
+        : `${r.outDir} (${r.files.length} files)\n`);
+      return 0;
+    }
+
+    if (cmd === "query") {
+      let bad = false;
+      for (const f of files) {
+        const r = queryFile(f, parser);
+        if (r.diagnostics.length) {
+          out(diags(r.diagnostics));
+          if (r.diagnostics.some((d) => d.severity === "error")) bad = true;
+        }
+        for (const sym of r.symbols) {
+          if (json) {
+            const { kind: symbolKind, ...rest } = sym;
+            out(line({ kind: "symbol", file: r.file, symbolKind, ...rest }));
+          } else {
+            const tags = [
+              sym.layer ? `${sym.layer}${sym.unsafe ? ",unsafe" : ""}` : "",
+              sym.pure !== undefined ? `pure=${sym.pure}` : "",
+              sym.mutatable !== undefined ? `mutatable=${sym.mutatable}` : "",
+              sym.caps?.length ? `caps=${sym.caps.join(",")}` : "",
+              sym.rtTrapSites?.length ? `traps=${sym.rtTrapSites.map((t) => `${t.code}@${t.line}:${t.col}`).join(",")}` : "",
+            ].filter(Boolean).join(" ");
+            out(`${sym.exported ? "export " : ""}${sym.kind} ${sym.name}: ${sym.type}${tags ? ` [${tags}]` : ""}\n`);
+          }
+        }
+      }
+      return bad ? 1 : 0;
+    }
     if (cmd === "check") {
       const ds = files.flatMap((f) => check(f, parser));
       out(diags(ds));
       return ds.some((d) => d.severity === "error") ? 1 : 0;
     }
     if (cmd === "mutate") {
-      let killed = 0, survived = 0, timeout = 0, cached = 0;
+      let targets = 0, killed = 0, survived = 0, timeout = 0, cached = 0;
+      const skipped: { fn: string; reason: string }[] = [];
       for (const f of files) {
         const r = await mutate(f, { cache: !noCache, parser });
         if (r.diagnostics.length) { out(diags(r.diagnostics)); return 1; }
@@ -47,10 +123,12 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
             : `FAIL baseline ${bf.name}: ${bf.failure}${bf.pos ? ` (${bf.pos.file}:${bf.pos.line}:${bf.pos.col})` : ""}\n`);
           return 1;
         }
+        targets += r.summary.targets;
         killed += r.summary.killed;
         survived += r.summary.survived;
         timeout += r.summary.timeout;
         cached += r.summary.cached;
+        skipped.push(...r.summary.skipped);
         for (const m of r.mutants) {
           if (json) {
             out(line({
@@ -70,7 +148,9 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
           }
         }
       }
-      out(json ? line({ kind: "summary", killed, survived, timeout, cached }) : `${killed} killed, ${timeout} timeout, ${survived} survived (${cached} cached)\n`);
+      out(json
+        ? line({ kind: "summary", targets, killed, survived, timeout, cached, skipped })
+        : `${killed} killed, ${timeout} timeout, ${survived} survived (${cached} cached; ${targets} targets, ${skipped.length} skipped)\n`);
       return 0;
     }
     if (cmd === "run") {
@@ -119,17 +199,26 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
         }
         if (t.ok) passed++; else failed++;
         const pos = t.pos ? { file: t.pos.file, line: t.pos.line, col: t.pos.col } : undefined;
-        out(json ? line({ kind: "test", file: f, name: t.name, ok: t.ok, ...(t.failure ? { failure: t.failure } : {}), ...(t.trap ? { trap: t.trap.code } : {}), ...(pos ? { pos } : {}) })
+        out(json ? line({ kind: "test", file: f, name: t.name, ok: t.ok, ...(t.failure ? { failure: t.failure } : {}), ...(t.trap ? { trap: t.trap.code } : {}), ...(pos ? { pos } : {}), ...(t.detail ? { detail: t.detail } : {}) })
           : `${t.ok ? "ok" : "FAIL"} ${t.name}${t.ok ? "" : `: ${t.failure ?? ""}${pos ? ` (${pos.file}:${pos.line}:${pos.col})` : ""}`}\n`);
       }
     }
     out(json ? line({ kind: "summary", passed, failed }) : `${passed} passed, ${failed} failed\n`);
     return failed || bad ? 1 : 0;
   } catch (e) {
-    if (e instanceof CUnsupported || e instanceof CBuildError) { err(`${CLI_NAME}: ${e.message}\n`); return 2; }
-    if (e instanceof RangeError && /call stack/.test(e.message)) { err(`${CLI_NAME}: source nests too deeply\n`); return 2; } // Q252
-    if (!(e instanceof CliError) && !(e instanceof Error && /(?:no exported function|invalid) 'main'/.test(e.message))) { err(`${(e as Error).stack ?? e}\n`); return 70; } // internal errors keep their stack (Q252)
-    err(`${CLI_NAME}: ${e.message}\n`);
+    if (e instanceof CUnsupported || e instanceof CBuildError) {
+      err(rawJson ? line({ kind: "error", code: "CLI_ERROR", message: e.message }) : `${CLI_NAME}: ${e.message}\n`);
+      return 2;
+    }
+    if (e instanceof RangeError && /call stack/.test(e.message)) {
+      err(rawJson ? line({ kind: "error", code: "CLI_STACK", message: "source nests too deeply" }) : `${CLI_NAME}: source nests too deeply\n`);
+      return 2; // Q252
+    }
+    if (!(e instanceof CliError) && !(e instanceof Error && /(?:no exported function|invalid) 'main'/.test(e.message))) {
+      err(rawJson ? line({ kind: "error", code: "INTERNAL", message: (e as Error).message ?? String(e), ...((e as Error).stack ? { stack: (e as Error).stack } : {}) }) : `${(e as Error).stack ?? e}\n`);
+      return 70; // internal errors keep their stack (Q252)
+    }
+    err(rawJson ? line({ kind: "error", code: "CLI_ERROR", message: (e as Error).message }) : `${CLI_NAME}: ${(e as Error).message}\n`);
     return 2;
   } finally {
     parser.close();

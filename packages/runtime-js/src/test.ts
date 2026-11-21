@@ -11,9 +11,19 @@ export interface TestResult {
   readonly trap?: { readonly code: TrapCode; readonly pos?: Pos };
   /** Position of the failed assertion, when the translator passed one. */
   readonly pos?: Pos;
+  /** Structured failure data (expected/actual, index, counterexample). */
+  readonly detail?: Record<string, unknown>;
 }
 
-export class TestFailure extends Error { readonly pos?: Pos; constructor(msg: string, pos?: Pos) { super(msg); this.pos = pos; } }
+export class TestFailure extends Error {
+  readonly pos?: Pos;
+  readonly detail?: Record<string, unknown>;
+  constructor(msg: string, pos?: Pos, detail?: Record<string, unknown>) {
+    super(msg);
+    this.pos = pos;
+    this.detail = detail;
+  }
+}
 
 /** SameValueZero for numbers; structural for arrays, plain objects, Map, Set (Q058). */
 export function deepEq(a: unknown, b: unknown): boolean {
@@ -32,11 +42,17 @@ export function deepEq(a: unknown, b: unknown): boolean {
 /** `pos` is the trailing argument of every method: where the call is in the source. */
 export class Test {
   ok(cond: boolean, pos?: Pos): void { if (!cond) throw new TestFailure("t.ok: condition is false", pos); }
-  eq<T>(a: T, b: T, pos?: Pos): void { if (!deepEq(a, b)) throw new TestFailure(`t.eq: ${show(a)} !== ${show(b)}`, pos); }
+  eq<T>(a: T, b: T, pos?: Pos): void {
+    if (!deepEq(a, b)) throw new TestFailure(`t.eq: ${show(a)} !== ${show(b)}`, pos, { kind: "eq", actual: safeDetailVal(a), expected: safeDetailVal(b) });
+  }
   eqSlice<T>(a: Slice<T>, b: Slice<T>, pos?: Pos): void {
-    if (a.length !== b.length) throw new TestFailure(`t.eqSlice: length ${a.length} !== ${b.length}`, pos);
-    for (let i = 0; i < a.length; i++)
-      if (!deepEq(a.get(i), b.get(i))) throw new TestFailure(`t.eqSlice: [${i}] ${show(a.get(i))} !== ${show(b.get(i))}`, pos);
+    if (a.length !== b.length)
+      throw new TestFailure(`t.eqSlice: length ${a.length} !== ${b.length}`, pos, { kind: "eqSlice", actualLength: a.length, expectedLength: b.length });
+    for (let i = 0; i < a.length; i++) {
+      const av = a.get(i), bv = b.get(i);
+      if (!deepEq(av, bv))
+        throw new TestFailure(`t.eqSlice: [${i}] ${show(av)} !== ${show(bv)}`, pos, { kind: "eqSlice", index: i, actualLength: a.length, expectedLength: b.length, actual: safeDetailVal(av), expected: safeDetailVal(bv) });
+    }
   }
   /** Fails unless `f` traps with exactly `code`. Other exceptions propagate. */
   traps(code: string, f: () => void, pos?: Pos): void {
@@ -44,12 +60,28 @@ export class Test {
       const e = asTrap(x);
       if (!e) throw x;
       if (e.code === code) return;
-      throw new TestFailure(`t.traps: expected ${code}, got ${e.code}`, pos);
+      throw new TestFailure(`t.traps: expected ${code}, got ${e.code}`, pos, { kind: "traps", expectedCode: code, actualCode: e.code });
     }
-    throw new TestFailure(`t.traps: expected ${code}, no trap`, pos);
+    throw new TestFailure(`t.traps: expected ${code}, no trap`, pos, { kind: "traps", expectedCode: code, actualCode: null });
   }
 }
 const show = (x: unknown): string => { try { return JSON.stringify(x) ?? String(x); } catch { return String(x); } };
+function safeDetailVal(v: unknown, seen = new Set<unknown>()): unknown {
+  if (v === null || typeof v === "boolean" || typeof v === "string") return v;
+  if (typeof v === "number") return Number.isFinite(v) ? v : String(v);
+  if (typeof v === "bigint" || typeof v === "symbol" || typeof v === "function") return String(v);
+  if (typeof v !== "object") return undefined;
+  if (seen.has(v)) return "[Circular]";
+  seen.add(v);
+  try {
+    if (Array.isArray(v)) return v.map((x) => safeDetailVal(x, seen));
+    if (v instanceof Map) return [...v.entries()].map(([k, val]) => [safeDetailVal(k, seen), safeDetailVal(val, seen)]);
+    if (v instanceof Set) return [...v.values()].map((x) => safeDetailVal(x, seen));
+    const out: Record<string, unknown> = {};
+    for (const [k, val] of Object.entries(v)) out[k] = safeDetailVal(val, seen);
+    return out;
+  } catch { return String(v); } finally { seen.delete(v); }
+}
 
 const preMap = new WeakMap<(...args: never[]) => unknown, (...args: unknown[]) => boolean>();
 /** Registers a function's own leading `requires` precondition checker for `forAll`. */
@@ -86,7 +118,7 @@ export function forAll(
     const raw = generateRaw(descs, rng, Math.min(30, 1 + Math.floor(passed / 3)));
     const res = runTrial(raw);
     if (res.kind === "skip") {
-      if (++rejected >= 1000) throw new TestFailure(`forAll: gave up after ${rejected} precondition rejections (${passed} passed)`, pos);
+      if (++rejected >= 1000) throw new TestFailure(`forAll: gave up after ${rejected} precondition rejections (${passed} passed)`, pos, { kind: "forAll", passed, rejected });
       continue;
     }
     if (res.kind === "fail") {
@@ -96,7 +128,17 @@ export function forAll(
         if (r.kind === "fail") { lastFail = r; return true; }
         return false;
       });
-      throw new TestFailure(`forAll: counterexample ${JSON.stringify(formatArgs(descs, shrunk))} (${lastFail.trap ? lastFail.trap.code : lastFail.reason})`, pos);
+      const counterexample = formatArgs(descs, shrunk);
+      throw new TestFailure(
+        `forAll: counterexample ${JSON.stringify(counterexample)} (${lastFail.trap ? lastFail.trap.code : lastFail.reason})`,
+        pos,
+        {
+          kind: "forAll",
+          counterexample: safeDetailVal(counterexample),
+          reason: lastFail.trap ? lastFail.trap.code : lastFail.reason,
+          ...(lastFail.trap ? { trap: { code: lastFail.trap.code, ...(lastFail.trap.pos ? { pos: lastFail.trap.pos } : {}) } } : {}),
+        },
+      );
     }
     passed++;
   }
@@ -115,7 +157,7 @@ export async function runTests(): Promise<TestResult[]> {
     try { const rejected = await capturing(() => fn(new Test())); if (rejected.length) throw rejected[0]; out.push({ name, ok: true }); }
     catch (x) {
       const e = asTrap(x);
-      if (x instanceof TestFailure) out.push({ name, ok: false, failure: x.message, pos: x.pos });
+      if (x instanceof TestFailure) out.push({ name, ok: false, failure: x.message, pos: x.pos, ...(x.detail ? { detail: x.detail } : {}) });
       else if (e) out.push({ name, ok: false, failure: e.message, trap: { code: e.code, pos: e.pos }, pos: e.pos });
       else throw x; // internal error: do not hide it
     }

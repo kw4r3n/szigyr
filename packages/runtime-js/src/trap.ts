@@ -49,18 +49,29 @@ export function asTrap(e: unknown): Trap | undefined {
 // Q140: a Promise nobody awaits can reject after its caller finished. Node reports that as `unhandledRejection` once the microtask queue drains.
 const sinks: unknown[][] = [];
 const onRejection = (e: unknown): void => { sinks.at(-1)?.push(e); };
+const onBrowserRejection = (ev: Event): void => {
+  ev.preventDefault?.();
+  onRejection((ev as unknown as { reason: unknown }).reason);
+};
+const hasProcess = typeof process !== "undefined" && typeof process.on === "function";
 /** Runs `f` and, after it settles, lets pending rejections surface; returns those that nobody handled (the innermost caller collects them). */
 export async function capturing(f: () => unknown): Promise<unknown[]> {
   const sink: unknown[] = [];
-  if (!sinks.length) process.on("unhandledRejection", onRejection);
+  if (!sinks.length) {
+    if (hasProcess) process.on("unhandledRejection", onRejection);
+    else (globalThis as { addEventListener?: typeof addEventListener }).addEventListener?.("unhandledrejection", onBrowserRejection);
+  }
   sinks.push(sink);
   try {
     await f();
-    await new Promise<void>((r) => setImmediate(r));
+    await new Promise<void>((r) => (typeof setImmediate === "function" ? setImmediate(r) : setTimeout(r, 0)));
     return sink;
   } finally {
     sinks.pop();
-    if (!sinks.length) process.off("unhandledRejection", onRejection);
+    if (!sinks.length) {
+      if (hasProcess) process.off("unhandledRejection", onRejection);
+      else (globalThis as { removeEventListener?: typeof removeEventListener }).removeEventListener?.("unhandledrejection", onBrowserRejection);
+    }
   }
 }
 /** A builtin that may throw a JS exception (Q035): the exception is a panic (T006) at the builtin's name. */

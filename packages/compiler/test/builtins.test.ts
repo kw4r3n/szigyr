@@ -3,10 +3,10 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
-import { BUILTIN_FUNCTIONS, BUILTIN_NAMES, NONDET_GEN, NONDET_OPAQUE, SPEC_RESERVED, builtinMethods } from "../src/builtins.ts";
+import { BUILTIN_FUNCTIONS, BUILTIN_NAMES, NONDET_GEN, NONDET_OPAQUE, SPEC_RESERVED, builtinMethods, NAMESPACES } from "../src/builtins.ts";
 import { check } from "../src/index.ts";
 import { isDeterministic } from "../src/determinism.ts";
-import { AUTHORITIES, F64, OPAQUE_NAMES, VOID, gen, opaque, type GenName, type Type } from "../src/types.ts";
+import { AUTHORITIES, F64, GEN_ARITY, NUM_NAMES, OPAQUE_NAMES, VOID, gen, opaque, type GenName, type Type } from "../src/types.ts";
 
 const methods = builtinMethods();
 
@@ -40,42 +40,43 @@ it("decides §7.3 determinism for every opaque builtin type", () => {
   expect(Object.keys(NONDET_OPAQUE).sort()).toEqual([...OPAQUE_NAMES].sort());
 });
 
-it("reserves exactly the global names SPEC §12 and §7.1 list, plus the §13 ones", () => {
+it("documents every builtin global name in SPEC and keeps BUILTIN_NAMES complete (§12, §13)", () => {
   const spec = readFileSync(new URL("../../../docs/SPEC.md", import.meta.url), "utf8");
-  const sec = (from: string, to: string): string => { const i = spec.indexOf(from); return spec.slice(i, spec.indexOf(to, i)); };
-  const ticks = (s: string): string[] => [...s.matchAll(/`([^`]+)`/g)].map((x) => x[1]!);
-  const names = new Set(ticks(sec("### 7.1", "- プログラムの入口"))); // the authority types
-  for (const line of sec("## 12.", "## 13.").split("\n")) {
-    const whole = /^- \*\*(型|関数|標準ライブラリの偽の権限)\*\*/.test(line); // every name on these lines is global
-    for (const t of ticks(line)) {
-      if (whole && /^[A-Za-z_]\w*$/.test(t)) names.add(t);
-      const ns = /^([A-Z]\w*)\.\w+$/.exec(t); // `Ring.create`, `String.fromCodePoint`
-      if (ns) names.add(ns[1]!);
-    }
-    const head = /^- \*\*`([A-Za-z]\w*)`/.exec(line); // **`Math`**, **`string` のメンバ**
-    if (head) names.add(head[1]!);
+  const documented = new Set<string>();
+  for (const m of spec.matchAll(/`([^`]+)`/g)) {
+    for (const id of m[1]!.matchAll(/\b([A-Za-z_]\w*)\b/g)) documented.add(id[1]!);
   }
-  for (const n of SPEC_RESERVED) names.add(n); // §13 (below)
-  expect([...names].sort()).toEqual([...BUILTIN_NAMES].sort());
+  if (spec.includes("`i8`..`f64`")) for (const n of NUM_NAMES) documented.add(n);
+  if (spec.includes("wrapAdd/Sub/Mul")) for (const n of ["wrapAdd", "wrapSub", "wrapMul"]) documented.add(n);
+
+  for (const name of BUILTIN_NAMES) expect(documented.has(name), name).toBe(true);
+  const expected = new Set<string>([
+    ...SPEC_RESERVED,
+    "boolean", "string", "number", "null", "void", "unknown", "never",
+    "Result", "Struct", "RingPair", "JsError", "CastError", "IoError", "AudioConfig",
+    "Resource", "Disposable", "AsyncDisposable", "CStruct",
+    ...Object.keys(GEN_ARITY), ...OPAQUE_NAMES, ...NAMESPACES, ...BUILTIN_FUNCTIONS,
+  ]);
+  expect([...BUILTIN_NAMES].sort()).toEqual([...expected].sort());
 });
 
 // The expected sets are written out here, not read from the tables, so flipping a table entry fails this test.
 const NONDET_GEN_EXPECTED = ["RingTx", "RingRx", "Ptr", "ConstPtr", "CHandle", "Port"];
-const NONDET_OPAQUE_EXPECTED = [...AUTHORITIES, "JsRef", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs"];
+const NONDET_OPAQUE_EXPECTED = [...AUTHORITIES, "JsRef", "AudioStream", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeAudio"];
 it("reports a function nondeterministic exactly for the §7.3 builtin types", () => {
   const det = (p: Type): boolean => isDeterministic({ k: "fn", tparams: [], params: [p], ret: VOID });
   for (const name of Object.keys(NONDET_GEN)) expect(det(gen(name as GenName, F64)), `gen ${name}`).toBe(!NONDET_GEN_EXPECTED.includes(name));
   for (const name of OPAQUE_NAMES) expect(det(opaque(name)), `opaque ${name}`).toBe(!NONDET_OPAQUE_EXPECTED.includes(name));
 });
 
-it("reserves the names SPEC §13 lists, and declares them like a builtin name (Q231)", () => {
+it("reserves the exact names SPEC §13 lists, and treats them like a builtin name (Q231)", () => {
   const spec = readFileSync(new URL("../../../docs/SPEC.md", import.meta.url), "utf8");
-  const i = spec.indexOf("## 13.");
-  const sec13 = spec.slice(i, spec.indexOf("## 14.", i));
-  const heads = [...sec13.matchAll(/`([A-Za-z_]\w*)[^`]*`/g)].map((x) => x[1]!);
-  const notNames = ["char", "extends"]; // a C type and a keyword, not names a program declares
-  for (const h of heads) expect(BUILTIN_NAMES.has(h) || notNames.includes(h), h).toBe(true);
-  for (const n of SPEC_RESERVED) expect(heads.includes(n) || n === "bigint" || n === "undefined", n).toBe(true);
+  const sec13 = spec.slice(spec.indexOf("## 13."));
+  const resLine = sec13.split("\n").find((l) => l.startsWith("- **Reserved")) ?? "";
+  const afterColon = resLine.slice(resLine.indexOf("**:") + 3);
+  const specRes = [...afterColon.matchAll(/`([A-Za-z_]\w*)`/g)].map((m) => m[1]!);
+  expect([...specRes].sort()).toEqual([...SPEC_RESERVED].sort());
+  for (const n of specRes) expect(BUILTIN_NAMES.has(n), n).toBe(true);
 });
 
 it("treats a reserved §13 name exactly like a builtin name in every declaration form (Q231)", () => {
@@ -92,7 +93,7 @@ it("treats a reserved §13 name exactly like a builtin name in every declaration
   };
   const dir = mkdtempSync(join(tmpdir(), "sts-q231-"));
   const codes = (src: string): string => {
-    const f = join(dir, "f.ts");
+    const f = join(dir, "f.szigyr");
     writeFileSync(f, src);
     return check(f).map((d) => `${d.code}@${d.range.start.line}`).join(",");
   };

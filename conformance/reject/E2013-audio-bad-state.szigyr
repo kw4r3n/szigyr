@@ -1,0 +1,12 @@
+// expect: E2013 @ 10:72
+// stage: 5
+function render(st: ArenaBuf<f32>, out: Mut<Slice<f32>>, frames: usize): void {
+  "use rt";
+}
+export async function main(sys: System): Promise<void> {
+  const a = Arena.create(sys.alloc, 64);
+  const b = a.alloc<f32>(4, 0);
+  if (b !== null) {
+    const r = await sys.audio.open({ sampleRate: 48000, channels: 2 }, b, render);
+  }
+}

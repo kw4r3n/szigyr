@@ -1,0 +1,48 @@
+// expect-output: true 2 48000 true true
+// stage: 3
+// backend: c
+declare module "c:sdl3:SDL3/SDL.h" {
+  const SDL_AUDIO_F32: u32;
+  type SDL_AudioSpec = CStruct<{ format: u32; channels: i32; freq: i32 }>;
+  function SDL_malloc(ffi: Ffi, size: usize): Ptr<void>;
+  function SDL_free(ffi: Ffi, mem: Ptr<void>): void;
+}
+import { SDL_AUDIO_F32, SDL_AudioSpec, SDL_malloc, SDL_free } from "c:sdl3:SDL3/SDL.h";
+
+function freeMem(ffi: Ffi, p: Ptr<void>): void {
+  "use owned";
+  "use unsafe";
+  SDL_free(ffi, p);
+}
+
+export function makeSpec(ffi: Ffi): CHandle<SDL_AudioSpec> {
+  "use owned";
+  "use unsafe";
+  using g = Resource.ownWith(SDL_malloc(ffi, Ptr.sizeOf<SDL_AudioSpec>()), ffi, freeMem);
+  if (g.get().isNull()) panic("oom");
+  g.get().cast<SDL_AudioSpec>().write({ format: SDL_AUDIO_F32, channels: 2, freq: 48000 });
+  return CHandle.create(g.take().cast<SDL_AudioSpec>());
+}
+
+type Info = Struct<{ okFmt: boolean; ch: i32; freq: i32; okNil: boolean; okSz: boolean }>;
+
+function inspectAndFree(ffi: Ffi, h: CHandle<SDL_AudioSpec>): Info {
+  "use owned";
+  "use unsafe";
+  using mem = Resource.ownWith(h.get().cast<void>(), ffi, freeMem);
+  const spec = h.get().read();
+  const nil: Ptr<SDL_AudioSpec> = Ptr.null();
+  return {
+    okFmt: spec.format === SDL_AUDIO_F32,
+    ch: spec.channels,
+    freq: spec.freq,
+    okNil: nil.isNull() && Ptr.null<void>().isNull(),
+    okSz: Ptr.sizeOf<SDL_AudioSpec>() >= 12 && Ptr.sizeOf<CType<"SDL_AudioSpec">>() === Ptr.sizeOf<SDL_AudioSpec>(),
+  };
+}
+
+export function main(sys: System): void {
+  const h: CHandle<SDL_AudioSpec> = makeSpec(sys.ffi);
+  const info = inspectAndFree(sys.ffi, h);
+  sys.log.info(`${info.okFmt} ${info.ch} ${info.freq} ${info.okNil} ${info.okSz}`);
+}

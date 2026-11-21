@@ -10,7 +10,7 @@ const offset = (src: string, p: { line: number; col: number }): number => src.sp
 /** Checks `src`, applies the first fix of the first diagnostic, and returns both the diagnostic and the rewritten source. */
 function fixOnce(src: string): { d: Diagnostic; fixed: string; after: Diagnostic[] } {
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-`));
-  const f = join(dir, "main.ts");
+  const f = join(dir, "main.szigyr");
   writeFileSync(f, src);
   const d = check(f)[0]!;
   const edits = [...d.fixes![0]!.edits].sort((a, b) => offset(src, b.range.start) - offset(src, a.range.start));
@@ -43,6 +43,37 @@ for (const [code, src, has, _] of cases) {
 
 it("a postfix ++ whose value is used gets no fix (the rewrite would change the value)", () => {
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-`));
-  writeFileSync(join(dir, "main.ts"), "export function f(): i32 {\n  let i: i32 = 0;\n  return i++;\n}\n");
-  expect(check(join(dir, "main.ts"))[0]!.fixes).toBeUndefined();
+  writeFileSync(join(dir, "main.szigyr"), "export function f(): i32 {\n  let i: i32 = 0;\n  return i++;\n}\n");
+  expect(check(join(dir, "main.szigyr"))[0]!.fixes).toBeUndefined();
+});
+
+it("attaches structured data and fixes for E2002/E2003/E2004/E2005/E2007/E4001/E7001", () => {
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-`));
+  writeFileSync(join(dir, "dep.szigyr"), "export function g(): i32 { return 1; }\n");
+  writeFileSync(join(dir, "main.szigyr"), `import { g } from "./dep.ts";
+type Color = "red" | "green" | "blue";
+function helper(): i32 { return g(); }
+export function f(a: i32, b: i32, c: f64, col: Color): i32 {
+  "use rt";
+  const badType: i32 = true;
+  const mixed = a + c;
+  if (a) { return 0; }
+  switch (col) {
+    case "red": break;
+  }
+  const div = a / b;
+  return helper();
+}
+`);
+  const ds = check(join(dir, "main.szigyr"));
+  const byCode = (code: string) => ds.find((d) => d.code === code);
+  expect(byCode("E7001")?.fixes?.[0]?.edits[0]?.newText).toBe('"./dep.szigyr"');
+  expect(byCode("E2002")?.data).toEqual({ expected: "i32", actual: "boolean" });
+  expect(byCode("E2003")?.data).toEqual({ left: "i32", right: "f64" });
+  expect(byCode("E2004")?.data).toEqual({ actual: "i32" });
+  expect(byCode("E2005")?.data).toEqual({ missing: ["green", "blue"] });
+  const e2007 = byCode("E2007");
+  expect(e2007?.data).toEqual({ type: "i32" });
+  expect(e2007?.fixes?.[0]).toMatchObject({ title: "use divTrunc", edits: [{ newText: "divTrunc(a, b)" }] });
+  expect(byCode("E4001")?.data).toEqual({ callerLayer: "rt", calleeLayer: "managed" });
 });

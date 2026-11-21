@@ -1,0 +1,144 @@
+// expect-output: delay:0:462:false
+// expect-output: pool:250:500:750:false
+// expect-output: arena:1:2:false
+// expect-output: vec:500:1000:false
+// stage: 5
+
+type Delay = Struct<{ buf: Vec<f32>; idx: usize; rx: RingRx<f32>; gain: f32 }>;
+
+function renderDelay(st: Mut<Delay>, out: Mut<Slice<f32>>, frames: usize): void {
+  "use rt";
+  let g = st.rx.pop();
+  while (g !== null) {
+    st.gain = g;
+    g = st.rx.pop();
+  }
+  for (let i: usize = 0; i < frames; i += 1) {
+    const d = st.buf[st.idx];
+    st.buf[st.idx] = f32(DetMath.tanh(f64(d * f32(0.5) + st.gain)));
+    st.idx = (st.idx + 1) === st.buf.length ? 0 : st.idx + 1;
+    out[i] = d;
+  }
+}
+
+type PoolSt = Struct<{ pool: Pool<f32>; h: Handle<f32>; genStep: i32 }>;
+
+function renderPool(st: Mut<PoolSt>, out: Mut<Slice<f32>>, frames: usize): void {
+  "use rt";
+  if (frames > 0) {
+    const v = st.pool.get(st.h);
+    out[0] = v;
+    if (st.genStep === 0) {
+      st.pool.set(st.h, f32(v + f32(0.25)));
+      st.genStep = 1;
+    } else if (st.genStep === 1) {
+      const _removed = st.pool.remove(st.h);
+      const nh = st.pool.insert(f32(0.75));
+      if (nh !== null) st.h = nh;
+      st.genStep = 2;
+    }
+  }
+}
+
+type ArenaSt = Struct<{ arena: Arena; step: i32 }>;
+
+function firstSample(s: Ref<Slice<f32>>): f32 {
+  "use rt";
+  return s.length > 0 ? s[0] : f32(0.0);
+}
+
+function renderArena(st: Mut<ArenaSt>, out: Mut<Slice<f32>>, frames: usize): void {
+  "use rt";
+  st.step += 1;
+  st.arena.reset();
+  const b = st.arena.alloc<f32>(2, f32(st.step));
+  if (b !== null && frames > 0) {
+    out[0] = firstSample(st.arena.view<f32>(b));
+  }
+}
+
+function renderVec(st: Mut<Vec<f32>>, out: Mut<Slice<f32>>, frames: usize): void {
+  "use rt";
+  if (frames > 0) {
+    out[0] = st[0];
+    st[0] = f32(st[0] + f32(0.5));
+  }
+}
+
+export async function main(sys: System): Promise<void> {
+  const fa = FakeAudio.create();
+
+  // 1. Delay line with moved Vec + RingRx + await using
+  const { tx, rx } = Ring.create<f32>(sys.alloc, 8);
+  tx.push(f32(0.5));
+  const dSt: Delay = { buf: Vec.create<f32>(sys.alloc, 4), idx: 0, rx, gain: f32(0.0) };
+  for (let i: i32 = 0; i < 4; i += 1) dSt.buf.push(f32(0.0));
+  const rDelay = await fa.open({ sampleRate: 48000, channels: 1 }, dSt, renderDelay);
+  if (rDelay.kind === "ok") {
+    const sRef = rDelay.value;
+    let p1: i32 = 0;
+    let p2: i32 = 0;
+    {
+      await using _s = sRef;
+      const b1 = fa.renderFrames(4);
+      const b2 = fa.renderFrames(4);
+      p1 = i32(Math.round(f64(b1[0]) * 1000));
+      p2 = i32(Math.round(f64(b2[0]) * 1000));
+    }
+    sys.log.info(`delay:${p1}:${p2}:${sRef.isOpen()}`);
+  }
+
+  // 2. Moved Pool<f32>
+  const pool = Pool.create<f32>(sys.alloc, 4);
+  const h0 = pool.insert(f32(0.25));
+  if (h0 !== null) {
+    const pSt: PoolSt = { pool, h: h0, genStep: 0 };
+    const rPool = await fa.open({ sampleRate: 48000, channels: 1 }, pSt, renderPool);
+    if (rPool.kind === "ok") {
+      const sRef = rPool.value;
+      let a: i32 = 0;
+      let b: i32 = 0;
+      let c: i32 = 0;
+      {
+        await using _s = sRef;
+        a = i32(Math.round(f64(fa.renderFrames(1)[0]) * 1000));
+        b = i32(Math.round(f64(fa.renderFrames(1)[0]) * 1000));
+        c = i32(Math.round(f64(fa.renderFrames(1)[0]) * 1000));
+      }
+      sys.log.info(`pool:${a}:${b}:${c}:${sRef.isOpen()}`);
+    }
+  }
+
+  // 3. Moved Arena (with pre-open alloc note + reset/alloc/view inside rt callback)
+  const arena = Arena.create(sys.alloc, 128);
+  const _pre = arena.alloc<f32>(4, f32(9.0));
+  const aSt: ArenaSt = { arena, step: 0 };
+  const rArena = await fa.open({ sampleRate: 48000, channels: 1 }, aSt, renderArena);
+  if (rArena.kind === "ok") {
+    const sRef = rArena.value;
+    let a1: i32 = 0;
+    let a2: i32 = 0;
+    {
+      await using _s = sRef;
+      a1 = i32(Math.round(f64(fa.renderFrames(1)[0])));
+      a2 = i32(Math.round(f64(fa.renderFrames(1)[0])));
+    }
+    sys.log.info(`arena:${a1}:${a2}:${sRef.isOpen()}`);
+  }
+
+  // 4. Direct top-level Vec<f32> moved as state
+  const direct = Vec.create<f32>(sys.alloc, 2);
+  direct.push(f32(0.5));
+  const rVec = await fa.open({ sampleRate: 48000, channels: 1 }, direct, renderVec);
+  if (rVec.kind === "ok") {
+    const sRef = rVec.value;
+    let v1: i32 = 0;
+    let v2: i32 = 0;
+    {
+      await using _s = sRef;
+      v1 = i32(Math.round(f64(fa.renderFrames(1)[0]) * 1000));
+      v2 = i32(Math.round(f64(fa.renderFrames(1)[0]) * 1000));
+    }
+    sys.log.info(`vec:${v1}:${v2}:${sRef.isOpen()}`);
+  }
+}

@@ -14,7 +14,8 @@ it("cases in conformance/PASSING.txt still pass", async () => {
   for (const n of names) {
     const c = cases.get(n);
     if (!c) { fails.push(`${n}: no such case`); continue; }
-    if (missingCPackages(c, pkgExists).length && !(c.at?.code === "E2009" && atCSpecifier(c))) continue; // §14.2: needs a C library this environment lacks
+    const needsLib = c.backend === "c" || c.kind === "accept" || (c.at?.code === "E2009" && !atCSpecifier(c));
+    if (needsLib && missingCPackages(c, pkgExists).length) continue; // §14.2: needs a C library this environment lacks
     for (const f of await runCase(c, compiler)) fails.push(`${n}: ${f}`);
   }
   expect(names.length).toBeGreaterThan(0);

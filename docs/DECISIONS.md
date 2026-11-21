@@ -819,3 +819,31 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
   - `computeCacheKey`（`MUTATE_VERSION = "2"`）で `f.decl` 全体（シグネチャを含む）・`TypeReference` が参照する型エイリアス / class / interface・到達テスト内の推移的ヘルパ（`walkDeps`）・宣言名の非値位置除外を反映し、`const` 鍵も位置ではなく宣言名にした。
   - `Q278` に従い、パラメータ型に `Test` を含む関数（`hasTestType`）を `sts mutate` の変異対象から除外した（SPEC §16.2・OPEN_QUESTIONS.md 更新）。
 - **確かめ方**: `arbitrary.test.ts`、`forall.test.ts`、`mutate.test.ts`（計 33 件、うち新規 5 件・21 件構成へ拡充）、`pnpm typecheck`、`pnpm verify:conformance`（`accept=82 reject=649 run=198`）、`pnpm vitest run --maxWorkers=2`（26 ファイル 292/292）、`vitest.conformance.config.ts`（1,093/1,093）、`conformance/run` 194 ファイル変異ファズチェック（`totalMutants=997, ghostDuplicates=0, crashes=0`）、`pnpm bench`（全 5 カーネル STS-C / 手書き C ≦ 1.38x）を実行して確認。
+
+
+## D171: 段階 5 マイルストーン 1・2（Wasm バックエンド、`Clock.sleep`、`Audio` 権限・Node SDL3 実装）（2026-11-21）
+
+- **freestanding C11 Wasm バックエンド（マイルストーン 1、Q280・Q281）**:
+  - `emit-c.ts` に `target: "wasm"`（`WasmMeta`）を追加し、libc / WASI 非依存の freestanding C11 ランタイム `packages/compiler/src/c/sts_wasm_rt.h`（16 バイト整列・双方向合体 `sts_malloc`/`sts_free`、`--stack-first -z stack-size=1048576` 下の shadow stack 境界監視 `< 65536`、`--export=__stack_pointer`）で `clang --target=wasm32 -nostdlib` + `wasm-ld`（`packages/compiler/src/wasm.ts`、`~/.cache/sts-wasm` キャッシュ）によりコンパイルする。
+  - `packages/runtime-js/src/wasm-bridge.ts`（Node 依存ゼロの共通ブリッジ）で、`env.sts_trap` 例外巻き戻し時の `__stack_pointer` / `sts_depth` / `sts_run_wb` 書き戻し、`ArrayBuffer` 単位の重複排除コピーイン／書き戻し（`T013` / 互いに重ならないスライス保存）、`Atomics` による共有リング橋渡し、および Worker isolate での Wasm 実行（`isolate.ts`）を実現。C 専用プログラム（§14.7）は `--backend=wasm` でも `E4009` で止める。
+- **`Clock.sleep` と `FakeClock.sleep`（マイルストーン 2、Q282）**:
+  - `Clock` に managed 専用・契約内禁止の `sleep(ms: f64): Promise<void>` を追加。Node 実時計は `setTimeout` の非ブロック待機（負値・`NaN`・非有限は `0`ms 扱い、有限正値は `2147483647`ms 上限クランプ）、`FakeClock.sleep(ms)` は有限正値のときのみ決定的に時刻を進めて即解決する Promise を返す。
+- **`Audio` 権限、`FakeAudio`、`E2013`、Node SDL3 実装（マイルストーン 2、Q283・Q284）**:
+  - `System.audio`、`AudioConfig = { readonly sampleRate: u32; readonly channels: u32 }`、`AudioStream`（`sampleRate`、`channels`、`close()`、`isOpen()`、冪等・`main` 終了時自動停止）、`FakeAudio`（`renderFrames`）、エラーコード `E2013`（SPEC §7.1・§11・§12・§15.5、DIAGNOSTICS.md）を追加。
+  - `audio.open` は `state: S` を所有権移動し、段階 5 では Copy な rt 安全型・`RingTx<T>` / `RingRx<T>`・それらをフィールドに持つ `Struct` / レコード / union に限る（`Vec`/`Pool`/`Arena`/`Handle`/`ArenaBuf`/`Ptr`/`ConstPtr`/`CHandle`/`Port`/`OwnedCell`/`string`/権限等は `E2013`）。`render` はモジュール直下・非ジェネリック・safe `"use rt"` 関数名のみを受理し、`Mut<S>`（所有型）または `S`（Copy 型）の第 1 引数・`Mut<Slice<f32>>`・`usize`・戻り値 `void` を検査する。
+  - C / Wasm 両方で `sts_audio_init_*`/`render_*`/`free_*`（`wasm-bridge.ts` の永続ピン留めリングスロット付き・ホットパスゼロ確保）およびネイティブ `<dlfcn.h>` 動的 SDL3 ローダ（`emit-c.ts` の実 C オーディオコールバック＋`audio-sdl.ts` の JS/Wasm プッシュ駆動、サブシステム終了時 `WasInit(0) == 0` で `SDL_Quit()` し複数テスト間の `SDL_AUDIO_DISK_OUTPUT_FILE` 切替に対応）を実装し、`examples/audio-portable/main.ts` を追加。
+  - Vitest conformance ハーネス `runCase` 先頭に `setImmediate` 譲歩を入れ、83＋652 件連続同期検査での birpc 60 秒 `onTaskUpdate` タイムアウトを解消。
+- **確かめ方**: `pnpm typecheck` 通過、`pnpm verify:conformance` 通過（`accept=83 reject=652 run=199`、`PASSING.txt` 934 件）、`pnpm vitest run --maxWorkers=1 --reporter=basic`（28 ファイル 307/307、`wasm.test.ts` 4 件・`audio-portable.test.ts` 10 件（`FakeAudio` 3 バックエンド一致・`E2013`/`E3001`/`E4001`/`E6002`/`sts mutate`・SDL3 disk ドライバ 440/660/880 Hz ＋コールバックトラップ c/wasm/js＋自動クローズ）・`std.test.ts` 16 件・`audio-demo.test.ts` 1 件を含む）、`vitest.conformance.config.ts`（1,263/1,263、全実行適合テスト `--backend=wasm` 一致を含む）、`pnpm bench`（`dot_f32` 0.99x、`saxpy_f32` 1.24x、`prefix_i32` 1.28x、`stencil_f64` 1.01x、`particles_aos_f32` 1.30x、すべて ≦ 1.5x）を実行して確認。
+
+## D172: 段階 5 マイルストーン 3（ブラウザランタイム分離、`Spawn`、`AudioWorklet` + Wasm、`sts build --target=browser`、Chromium Playwright 検証）（2026-11-21）
+
+- **ブラウザランタイム・標準ライブラリ分離**:
+  - `packages/runtime-js/src/` を `node:*` 非依存の共通・ブラウザ実装へ分離（`port.ts` に `Envelope`/`Channel`/`Port`/`IsolateProgram` を抽出し、`isolate.ts` の Node Worker 経路を維持しつつ `isolate-browser.ts` で Web Worker による `Spawn` と起動完了前メッセージのキュー再送、`browser.ts` でブラウザ向けバレルを提供）。
+  - `trap.ts` にブラウザ向け `unhandledrejection` / `setTimeout` フォールバック、`collections.ts` と `wasm-bridge.ts` に COI（`SharedArrayBuffer` + `Atomics`）と非 COI（`ArrayBuffer` + `MessagePort` `Ring` 同期）の両対応および `AudioWorkletGlobalScope` 向け純 JS `TextDecoder` フォールバックを追加。
+  - `packages/std/src/browser.ts`（`node:*` 非依存）を新設し、`Fake*`・`createBrowserLog`・`browserClock`（`sleep` 含む）・`browserRandom`・`browserFs`・`browserJs`・`createBrowserAudio`（`AudioWorklet` + Wasm 実行とコールバック内トラップ伝搬）・`stopBrowserAudioStreams`・`createBrowserSystem`・`runMainBrowser` を実装。
+- **ブラウザビルドターゲットと CLI**:
+  - `packages/compiler/src/emit.ts` に `keyOf` 相対モジュールキー引数と `FakeAudio` ランタイム対応を追加し、`packages/compiler/src/build-browser.ts`・`index.ts`・`cli.ts` で `sts build --target=browser [--mode=app|lib] [-o|--out-dir <dir>] <file>` を実装。
+  - 出力バンドルを CSP 安全な静的 ES モジュール構成（`rt/*.js`・`program.wasm`・`program.js`・`sts-worker.js`・`sts-worklet.js`・`app.js`、および `--mode=app` の `index.html`）とし、C 専用プログラム（§14.7）は `E4009` で拒否する。
+- **仕様・ロードマップ更新と検証**:
+  - `docs/SPEC.md`（§10.3・§15.5）および `docs/ROADMAP.md`（段階 5 全項目を `[x]` に更新）を反映し、`packages/compiler/test/browser.test.ts` でビルドオプション／`E4009` 検査および実 Chromium（Playwright）での `AudioWorklet` + Wasm 波形出力（COI SAB・非 COI `MessagePort` 両経路）・オーディオコールバック内 `T002` トラップ＋行番号表示・Web Worker `Spawn` + Wasm `Vec` + `T006` トラップ伝搬・`--mode=lib` 直接呼び出しを検証。
+- **確かめ方**: `pnpm typecheck` 通過、`pnpm verify:conformance` 通過（`accept=83 reject=652 run=199`、`PASSING.txt` 934 件）、`rtk bypass pnpm vitest run --maxWorkers=1 --reporter=basic` 通過（29 ファイル 314/314、`browser.test.ts` 7/7 の実 Chromium Playwright テストを含む）、`rtk bypass pnpm vitest run --config vitest.conformance.config.ts --maxWorkers=2 --reporter=basic` 通過（1 ファイル 1,263/1,263）、`pnpm bench`（`dot_f32` 1.01x、`saxpy_f32` 1.20x、`prefix_i32` 1.31x、`stencil_f64` 1.09x、`particles_aos_f32` 1.25x、すべて ≦ 1.5x）を実行して確認。

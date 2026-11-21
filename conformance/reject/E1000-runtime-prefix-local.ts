@@ -1,7 +1,0 @@
-// expect: E1000 @ 5:9
-// stage: 1
-// open-question: Q123
-function f(): i32 {
-  const __sts_rt_P: i32 = 1;
-  return 0;
-}

@@ -1,6 +1,5 @@
-import { err, ok } from "../../runtime-js/src/index.ts";
-import type { Alloc, Clock, Fs, Log, Random } from "./types.ts";
-import { ALLOC } from "./node.ts";
+import { Slice, err, ok } from "../../runtime-js/src/index.ts";
+import { ALLOC, type Alloc, type Audio, type AudioCallbackSpec, type AudioConfig, type AudioStream, type Clock, type Fs, type Log, type Random } from "./types.ts";
 
 export class FakeClock implements Clock {
   private ms: number;
@@ -8,6 +7,7 @@ export class FakeClock implements Clock {
   static create(startMs: number): FakeClock { return new FakeClock(startMs); }
   nowMs(): number { return this.ms; }
   advance(ms: number): void { this.ms += ms; }
+  async sleep(ms: number): Promise<void> { if (Number.isFinite(ms) && ms > 0) this.ms += ms; }
 }
 
 /** mulberry32 (D020). Output is a function of the seed only. */
@@ -48,4 +48,55 @@ export class FakeFs implements Fs {
 
 export class TestAlloc {
   static create(): Alloc { return ALLOC; }
+}
+
+interface FakeStreamState {
+  readonly channels: number;
+  readonly isOpen: () => boolean;
+  readonly close: () => Promise<void>;
+  readonly render: (out: Float32Array, frames: number) => void;
+}
+
+export class FakeAudio implements Audio {
+  private active: FakeStreamState | undefined;
+  static create(): FakeAudio { return new FakeAudio(); }
+
+  async open(config: AudioConfig, state: unknown, cb: AudioCallbackSpec) {
+    if (!Number.isInteger(config.sampleRate) || config.sampleRate <= 0 || config.sampleRate > 0x7fffffff || !Number.isInteger(config.channels) || config.channels < 1 || config.channels > 32) {
+      return err({ code: "EINVAL", message: `invalid audio config: sampleRate=${config.sampleRate}, channels=${config.channels}` });
+    }
+    if (this.active?.isOpen()) await this.active.close();
+    const { sampleRate, channels } = config;
+    let closed = false;
+    const cInit = cb.native?.[`sts_audio_fake_init_${cb.id}`] as ((s: unknown) => unknown) | undefined;
+    const cRender = cb.native?.[`sts_audio_fake_render_${cb.id}`] as ((ctx: unknown, out: Float32Array, frames: number) => void) | undefined;
+    const cFree = cb.native?.[`sts_audio_fake_free_${cb.id}`] as ((ctx: unknown) => void) | undefined;
+    const wasmMod = !cInit ? (cb.native?.[`sts_audio_${cb.id}`] as { init(s: unknown): number; render(b: number, out: Float32Array, f: number): void; free(b: number): void } | undefined) : undefined;
+    let cCtx: unknown;
+    let wasmBox = 0;
+    if (cInit) cCtx = cInit(state);
+    else if (wasmMod) wasmBox = wasmMod.init(state);
+
+    const close = async (): Promise<void> => {
+      if (closed) return;
+      closed = true;
+      if (cCtx !== undefined) { const x = cCtx; cCtx = undefined; cFree?.(x); }
+      if (wasmBox) { const b = wasmBox; wasmBox = 0; wasmMod?.free(b); }
+    };
+    const render = (out: Float32Array, frames: number): void => {
+      if (cRender) cRender(cCtx, out, frames);
+      else if (wasmMod) wasmMod.render(wasmBox, out, frames);
+      else cb.fn(state, new Slice<number>(out, 0, out.length), frames);
+    };
+    this.active = { channels, isOpen: () => !closed, close, render };
+    const stream: AudioStream = { sampleRate, channels, close, disposeAsync: close, isOpen: () => !closed };
+    return ok(stream);
+  }
+
+  renderFrames(frames: number): number[] {
+    if (!this.active || !this.active.isOpen() || !Number.isInteger(frames) || frames <= 0) return [];
+    const out = new Float32Array(frames * this.active.channels);
+    this.active.render(out, frames);
+    return Array.from(out);
+  }
 }

@@ -10,8 +10,8 @@ export interface Compiler {
   check(entryFile: string): Diagnostic[];
   run(entryFile: string): Promise<RunResult>;
   /** Which backend `run` uses; undefined is the JS backend. A `// backend: c` case means
-   * different things to the two backends (§14.7), so runCase has to know. */
-  backend?: "js" | "c";
+   * different things to JS/Wasm vs C (§14.7, §10.3), so runCase has to know. */
+  backend?: "js" | "c" | "wasm";
 }
 
 export interface CaseSpec {
@@ -96,7 +96,7 @@ export function parseCase(entry: string, name = entry): CaseSpec {
   return spec as CaseSpec;
 }
 
-/** Load all cases under root/{accept,reject,run}. A case is `x.ts` or a directory `x/` with `main.ts`. */
+/** Load all cases under root/{accept,reject,run}. A case is `x.szigyr` or a directory `x/` with `main.szigyr`. */
 export function loadCases(root: string): CaseSpec[] {
   const cases: CaseSpec[] = [];
   for (const kind of KINDS) {
@@ -107,8 +107,8 @@ export function loadCases(root: string): CaseSpec[] {
       if (n.startsWith(".")) continue;
       const p = join(dir, n);
       let spec: CaseSpec;
-      if (statSync(p).isDirectory()) spec = parseCase(join(p, "main.ts"), `${kind}/${n}`);
-      else if (n.endsWith(".ts")) spec = parseCase(p, `${kind}/${n}`);
+      if (statSync(p).isDirectory()) spec = parseCase(join(p, "main.szigyr"), `${kind}/${n}`);
+      else if (n.endsWith(".szigyr")) spec = parseCase(p, `${kind}/${n}`);
       else continue;
       if (spec.kind !== kind) throw new Error(`${spec.entry}: header is a '${spec.kind}' case but the file is under ${kind}/`);
       cases.push(spec);
@@ -117,10 +117,10 @@ export function loadCases(root: string): CaseSpec[] {
   return cases;
 }
 
-/** STS_STAGE: unset keeps all stages; anything but a positive integer throws, so a typo cannot select 0 cases and go green. */
+/** SZIGYR_STAGE: unset keeps all stages; anything but a positive integer throws, so a typo cannot select 0 cases and go green. */
 export function parseStage(v: string | undefined): number | undefined {
   if (v === undefined) return undefined;
-  if (!/^[1-9]\d*$/.test(v)) throw new Error(`STS_STAGE must be a positive integer, got '${v}'`);
+  if (!/^[1-9]\d*$/.test(v)) throw new Error(`SZIGYR_STAGE must be a positive integer, got '${v}'`);
   return Number(v);
 }
 
@@ -141,6 +141,8 @@ export function filterByStage(cases: CaseSpec[], maxStage?: number): CaseSpec[] 
 /** Run one case; returns failure messages (empty = pass). Never throws. */
 export async function runCase(spec: CaseSpec, compiler: Compiler): Promise<string[]> {
   try {
+    // Yield a macrotask so Vitest worker RPC replies drain across long synchronous check() runs.
+    await new Promise<void>((r) => setImmediate(r));
     if (spec.kind === "accept") {
       const ds = compiler.check(spec.entry);
       const fails = ds.filter((d) => d.severity === "error").map((d) => `unexpected ${d.code} @ ${d.range.start.line}:${d.range.start.col}`);
@@ -153,7 +155,8 @@ export async function runCase(spec: CaseSpec, compiler: Compiler): Promise<strin
       // §14.7: E4009 is reported by `run` / `test` before executing, never by `check`,
       // so an E4009 case is verified through run's diagnostics.
       const all = spec.at!.code === "E4009" ? (await compiler.run(spec.entry)).diagnostics : compiler.check(spec.entry);
-      const d = [...all].sort(
+      const relevant = spec.at!.code === "E2009" ? all : all.filter((d) => d.code !== "E2009");
+      const d = [...relevant].sort(
         (a, b) => a.range.start.line - b.range.start.line || a.range.start.col - b.range.start.col || (a.code < b.code ? -1 : a.code > b.code ? 1 : 0),
       )[0];
       const want = spec.at!;
@@ -162,7 +165,7 @@ export async function runCase(spec: CaseSpec, compiler: Compiler): Promise<strin
       if (d.code === want.code && s.line === want.line && s.col === want.col) return [];
       return [`expected ${want.code} @ ${want.line}:${want.col}, got ${d.code} @ ${s.line}:${s.col}`];
     }
-    if (spec.backend === "c" && (compiler.backend ?? "js") === "js") {
+    if (spec.backend === "c" && (compiler.backend ?? "js") !== "c") {
       // §14.7: on the JS backend a C-only case executes nothing and stops with E4009.
       const r = await compiler.run(spec.entry);
       const fails: string[] = [];
@@ -196,9 +199,9 @@ export async function runCase(spec: CaseSpec, compiler: Compiler): Promise<strin
 
 /** The files that make up a case: its entry file, plus the other sources of a directory case. */
 export function caseFiles(spec: CaseSpec): string[] {
-  if (basename(spec.entry) !== "main.ts") return [spec.entry];
+  if (basename(spec.entry) !== "main.szigyr") return [spec.entry];
   const dir = dirname(spec.entry);
-  return readdirSync(dir).filter((n) => n.endsWith(".ts")).sort().map((n) => join(dir, n));
+  return readdirSync(dir).filter((n) => n.endsWith(".szigyr")).sort().map((n) => join(dir, n));
 }
 
 /** The pkg-config packages named by the `c:` specifiers (§14.1) a case's sources declare or

@@ -1,0 +1,65 @@
+// expect-output: true
+// expect-output: true
+// expect-output: 0:7
+// expect-output: true:true:2:true:true:true:true
+// stage: 3
+function checkNullEq(): boolean {
+  "use rt";
+  const a: null = null;
+  const b: null = null;
+  return a === b && !(a !== b);
+}
+
+function unitRes(okFlag: boolean): Result<null, i32> {
+  "use rt";
+  if (okFlag) return ok(null);
+  return err(7);
+}
+
+function nullId<T>(x: T): T {
+  "use owned";
+  return x;
+}
+
+function thirdNull(s: Ref<Slice<null>>): boolean {
+  "use rt";
+  return s[2] === null;
+}
+
+function nullContainers(alloc: Alloc): { readonly len: usize; readonly poolOk: boolean; readonly arenaOk: boolean; readonly ringOk: boolean; readonly resOk: boolean } {
+  "use owned";
+  const v = Vec.create<null>(alloc, 2);
+  v.push(null);
+  v.push(null);
+  const vLen = v.length;
+  const vPopOk = v.pop() === null && v.length === 1;
+  const p = Pool.create<null>(alloc, 2);
+  const h = p.insert(null);
+  const poolOk = h !== null && p.has(h) && p.get(h) === null && p.remove(h) === null;
+  const ar = Arena.create(alloc, 32);
+  const ab = ar.alloc<null>(3, null);
+  const arenaOk = ab !== null && thirdNull(ar.view(ab));
+  const pair = Ring.create<null>(alloc, 4);
+  const pushed = pair.tx.push(null);
+  const popped = pair.rx.pop();
+  const ringOk = pushed && popped === null;
+  const vr = Vec.create<Result<null, i32>>(alloc, 2);
+  vr.push(ok(null));
+  vr.push(err(9));
+  const r0 = vr[0];
+  const r1 = vr[1];
+  const resOk = vPopOk && r0.kind === "ok" && r0.value === null && r1.kind === "err" && r1.error === 9;
+  return { len: vLen, poolOk, arenaOk, ringOk, resOk };
+}
+
+export function main(sys: System): void {
+  sys.log.info(`${checkNullEq()}`);
+  const rOk = unitRes(true);
+  const rErr = unitRes(false);
+  sys.log.info(`${rOk.kind === "ok" && rOk.value === null}`);
+  const errCode = rErr.kind === "err" ? rErr.error : -1;
+  sys.log.info(`0:${errCode}`);
+  const gNull: null = nullId<null>(null);
+  const out = nullContainers(sys.alloc);
+  sys.log.info(`${gNull === null}:${out.poolOk}:${out.len}:${out.arenaOk}:${out.ringOk}:${out.resOk}:${rOk.kind === "ok"}`);
+}

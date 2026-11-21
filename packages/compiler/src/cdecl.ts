@@ -53,6 +53,8 @@ export function cTypeOf(t: Type): string {
  * `const` qualifies the pointee of a `ConstPtr` (a function has no qualifier). */
 function cDecl(t: Type, d: string): string {
   if (t.k === "fn") return cDecl({ k: "gen", name: "Ptr", args: [t] }, d); // not a legal value position; keeps the mapping total
+  if (t.k === "cstruct") return d ? `${t.name} ${d}` : t.name;
+  if (t.k === "gen" && t.name === "CType") { const x = (t.args[0] as { value: string }).value; return d ? `${x} ${d}` : x; }
   if (t.k === "gen" && (t.name === "Ptr" || t.name === "ConstPtr")) {
     const p = t.args[0]!, c = t.name === "ConstPtr" ? "const " : "";
     if (p.k === "fn") return cDecl(p.ret, `(*${d})(${p.params.map((x) => cDecl(x, "")).join(", ") || "void"})`);
@@ -64,12 +66,13 @@ function cDecl(t: Type, d: string): string {
 }
 
 /** The C type a Ptr / ConstPtr points at (§14.2): the table again for numbers and boolean,
- * `void` for void, the literal name for CType, the full type for a nested pointer or a function
+ * `void` for void, the literal name for CType, the struct name for CStruct, the full type for a nested pointer or a function
  * pointer, and `void` for any other STS type. */
 export function cPointeeOf(t: Type): string {
   switch (t.k) {
     case "num": return CINT[t.name];
     case "prim": return t.name === "boolean" ? "bool" : "void";
+    case "cstruct": return t.name;
     case "gen": {
       if (t.name === "CType") { const a = t.args[0]; return a?.k === "lit" ? a.value : "void"; }
       if (t.name === "Ptr" || t.name === "ConstPtr") return cTypeOf(t);

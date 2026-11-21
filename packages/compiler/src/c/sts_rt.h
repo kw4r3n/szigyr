@@ -10,6 +10,9 @@
 #include <setjmp.h>
 #include <stdatomic.h>
 
+typedef napi_value sts_val;
+static double sts_fmod(double a, double b) { return fmod(a, b); }
+
 typedef struct { napi_value obj; void *data; uint32_t len, cap, esize; napi_typedarray_type tt; } sts_vec;
 typedef struct { void *data; uint32_t len; } sts_slice;
 typedef struct { uint32_t pool, gen, idx; } sts_handle; // a Pool handle: three u32s, 12 bytes (Q188 (a))
@@ -59,7 +62,36 @@ static void sts_ftrap_reset(sts_prog_t *g) {
   pthread_mutex_unlock(&g->mu);
 }
 
-__attribute__((cold)) _Noreturn static void sts_trap(int code, int pos) { if (code >= 1) sts_claim_trap(code, pos); sts_trap_code = code; sts_trap_pos = pos; longjmp(sts_jb, 1); }
+typedef struct { void (*fn)(void *); void *data; } sts_defer;
+static _Thread_local sts_defer *sts_defers;
+static _Thread_local size_t sts_ndefers, sts_capdefers, sts_defer_base;
+static _Thread_local int sts_unwinding;
+_Noreturn static void sts_fail(const char *msg);
+static size_t sts_defer_push(void (*fn)(void *), void *data) {
+  if (sts_ndefers == sts_capdefers) {
+    size_t c_ = sts_capdefers ? sts_capdefers * 2 : 16;
+    void *p_ = realloc(sts_defers, c_ * sizeof *sts_defers);
+    if (!p_) sts_fail("out of memory");
+    sts_defers = p_; sts_capdefers = c_;
+  }
+  size_t m = sts_ndefers++;
+  sts_defers[m] = (sts_defer){ fn, data };
+  return m;
+}
+static void sts_defer_pop_run(size_t mark) {
+  while (sts_ndefers > mark) {
+    sts_defer d = sts_defers[--sts_ndefers];
+    if (d.fn) d.fn(d.data);
+  }
+}
+static void sts_defer_unwind(void) {
+  if (sts_unwinding) return;
+  sts_unwinding = 1;
+  sts_defer_pop_run(sts_defer_base);
+  sts_unwinding = 0;
+}
+
+__attribute__((cold)) _Noreturn static void sts_trap(int code, int pos) { if (code >= 1) sts_claim_trap(code, pos); sts_trap_code = code; sts_trap_pos = pos; sts_defer_unwind(); sts_unwinding = 0; longjmp(sts_jb, 1); }
 _Noreturn static void sts_fail(const char *msg) { sts_err = msg; sts_trap(0, 0); }
 #define STS_OK(call) do { if ((call) != napi_ok) sts_fail(#call); } while (0)
 /** Q182: calls trap T006 once the stack is within a margin of this thread's real limit, so a large frame cannot overflow it. */
@@ -94,6 +126,7 @@ static sts_vec *sts_vec_new(void) {
 }
 static napi_value sts_get(napi_value o, const char *k) { napi_value r; STS_OK(napi_get_named_property(sts_env, o, k, &r)); return r; }
 static void sts_set(napi_value o, const char *k, napi_value v) { STS_OK(napi_set_named_property(sts_env, o, k, v)); }
+static napi_value sts_mkobj(void) { napi_value o; STS_OK(napi_create_object(sts_env, &o)); return o; }
 static uint32_t sts_tbytes(napi_typedarray_type tt) {
   switch (tt) { case napi_int8_array: case napi_uint8_array: return 1; case napi_int16_array: case napi_uint16_array: return 2; case napi_float64_array: return 8; default: return 4; }
 }
@@ -143,6 +176,16 @@ static void sts_vec_sync(void) {
   for (size_t i = 0; i < sts_nvecs; i++) { napi_value n; if (napi_create_uint32(sts_env, sts_vecs[i]->len, &n) == napi_ok) napi_set_named_property(sts_env, sts_vecs[i]->obj, "len", n); free(sts_vecs[i]); }
   sts_nvecs = 0;
 }
+static sts_vec *sts_vec_detach(sts_vec *v) {
+  sts_vec *d = calloc(1, sizeof *d); if (!d) sts_fail("out of memory");
+  d->obj = 0; d->len = v->len; d->cap = v->len; d->esize = v->esize; d->tt = v->tt;
+  size_t n = (size_t)v->len * v->esize;
+  d->data = malloc(n > 0 ? n : 1);
+  if (!d->data) { free(d); sts_fail("out of memory"); }
+  if (n > 0) memcpy(d->data, v->data, n);
+  return d;
+}
+static void sts_vec_free_detached(sts_vec *v) { if (v) { free(v->data); free(v); } }
 // Pool handles live until the boundary call returns, like Vec handles; the list is reset per entry.
 typedef struct { napi_value obj; void *data; uint32_t len, cap, esize; uint32_t *gens; uint8_t *occ; int32_t *nextFree; int64_t freeHead, nextFresh; uint32_t id; } sts_pool;
 static _Thread_local sts_pool **sts_pools; static _Thread_local size_t sts_npools, sts_cappools;
@@ -187,6 +230,25 @@ static void sts_pool_sync(void) {
   }
   sts_npools = 0;
 }
+static void sts_pool_free_detached(sts_pool *p) { if (p) { free(p->data); free(p->gens); free(p->occ); free(p->nextFree); free(p); } }
+static sts_pool *sts_pool_detach(sts_pool *p) {
+  sts_pool *d = calloc(1, sizeof *d); if (!d) sts_fail("out of memory");
+  d->obj = 0; d->len = p->len; d->cap = p->cap; d->esize = p->esize;
+  d->freeHead = p->freeHead; d->nextFresh = p->nextFresh; d->id = p->id;
+  if (p->cap > 0) {
+    size_t db = (size_t)p->cap * p->esize;
+    d->data = malloc(db > 0 ? db : 1);
+    d->gens = malloc((size_t)p->cap * sizeof(uint32_t));
+    d->occ = malloc((size_t)p->cap);
+    d->nextFree = malloc((size_t)p->cap * sizeof(int32_t));
+    if (!d->data || !d->gens || !d->occ || !d->nextFree) { sts_pool_free_detached(d); sts_fail("out of memory"); }
+    if (db > 0) memcpy(d->data, p->data, db);
+    memcpy(d->gens, p->gens, (size_t)p->cap * sizeof(uint32_t));
+    memcpy(d->occ, p->occ, (size_t)p->cap);
+    memcpy(d->nextFree, p->nextFree, (size_t)p->cap * sizeof(int32_t));
+  }
+  return d;
+}
 static bool sts_pool_valid(sts_pool *p, sts_handle h) { return h.pool == p->id && h.idx < p->cap && p->occ[h.idx] && p->gens[h.idx] == h.gen; }
 static sts_handle sts_hdl_in(napi_value o) { sts_handle h; h.pool = (uint32_t)sts_pnum(o, "pool"); h.gen = (uint32_t)sts_pnum(o, "gen"); h.idx = (uint32_t)sts_pnum(o, "idx"); return h; }
 static napi_value sts_hdl_out(sts_handle h) {
@@ -196,6 +258,7 @@ static napi_value sts_hdl_out(sts_handle h) {
   STS_OK(napi_create_uint32(sts_env, h.idx, &v)); sts_set(o, "idx", v);
   return o;
 }
+static inline bool sts_hdl_eq(sts_handle a, sts_handle b) { return a.pool == b.pool && a.gen == b.gen && a.idx == b.idx; }
 typedef struct { uint32_t arena, gen, off, len; } sts_abuf; // an ArenaBuf: four u32s, 16 bytes (Q188 (b))
 static sts_abuf sts_abuf_in(napi_value o) { sts_abuf b; b.arena = (uint32_t)sts_pnum(o, "arena"); b.gen = (uint32_t)sts_pnum(o, "gen"); b.off = (uint32_t)sts_pnum(o, "off"); b.len = (uint32_t)sts_pnum(o, "length"); return b; }
 static napi_value sts_abuf_out(sts_abuf b) {
@@ -231,6 +294,7 @@ static sts_arena *sts_arena_create(napi_value alloc, uint32_t bytes, int pos) {
 /** A buf allocated in C: its offset and element kind go to the JS object at the boundary exit,
  * so a type-parameter `view` in managed code can read its bytes (D116). */
 static void sts_arena_note(sts_arena *a, uint32_t off, const char *desc) {
+  if (!a->obj) return;
   if (a->nrec && a->roff[a->nrec - 1] == off) { a->rdesc[a->nrec - 1] = desc; return; } // Q246: a zero-length alloc leaves `used` in place; JS keeps the last note per offset anyway
   if (a->nrec == a->caprec) {
     size_t c = a->caprec ? a->caprec * 2 : 8;
@@ -240,6 +304,7 @@ static void sts_arena_note(sts_arena *a, uint32_t off, const char *desc) {
   }
   a->roff[a->nrec] = off; a->rdesc[a->nrec++] = desc;
 }
+#define sts_arena_reset_notes(a) ((a)->nrec = 0)
 /** Boundary exit: `used` and `gen` changed in C go back to the JS object, with the notes above. The bytes are shared. */
 static void sts_arena_sync(void) {
   for (size_t i = 0; i < sts_narenas; i++) {
@@ -253,6 +318,15 @@ static void sts_arena_sync(void) {
     free(a->roff); free(a->rdesc); free(a);
   }
   sts_narenas = 0;
+}
+static void sts_arena_free_detached(sts_arena *a) { if (a) { free(a->data); free(a->roff); free(a->rdesc); free(a); } }
+static sts_arena *sts_arena_detach(sts_arena *a) {
+  sts_arena *d = calloc(1, sizeof *d); if (!d) sts_fail("out of memory");
+  d->obj = 0; d->cap = a->cap; d->used = a->used; d->gen = a->gen; d->id = a->id;
+  d->data = malloc(a->cap > 0 ? a->cap : 1);
+  if (!d->data) { free(d); sts_fail("out of memory"); }
+  if (a->cap > 0) memcpy(d->data, a->data, a->cap);
+  return d;
 }
 /** Q188 (b): a buf of another arena, or one taken before `reset`, traps T012 at the member name `view`. */
 static sts_slice sts_arena_view(sts_arena *a, sts_abuf b, int pos) {

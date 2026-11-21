@@ -1,18 +1,21 @@
-// §7.3 / Q062: a function is deterministic when no parameter type contains, transitively, an authority,
-// a function type, an interface, `unknown` or `JsRef`. Used for E6002 (Q056) and the public query.
+// §7.3 / SPEC-v1 §7: Pure (`isDeterministic`) vs `Mutatable` classification.
 import { bindTParams, subst, type FnType, type Type } from "./types.ts";
 import { NONDET_GEN, NONDET_OPAQUE } from "./builtins.ts";
 
-export function isDeterministic(sig: FnType, rtUnsafe = false): boolean {
+const UNMUTATABLE_OPAQUE = new Set(["System", "Ffi", "Spawn", "Js", "JsRef", "Test"]);
+const UNMUTATABLE_GEN = new Set(["Ptr", "ConstPtr", "CHandle", "Port"]);
+
+function hasForbidden(roots: readonly Type[], badLeaf: (t: Type) => boolean, rejectConstraints: boolean): boolean {
   const seen = new Set<unknown>();
   const bad = (t: Type): boolean => {
+    if (badLeaf(t)) return true;
     switch (t.k) {
-      case "opaque": return NONDET_OPAQUE[t.name] === true;
-      case "fn": case "iface": return true;
-      case "prim": return t.name === "unknown";
+      case "cstruct": return true;
       case "record": return t.fields.some((f) => bad(f.type));
       case "union": return t.members.some(bad);
-      case "gen": return NONDET_GEN[t.name] || t.args.some(bad); // §7.3
+      case "gen": return t.args.some(bad);
+      case "fn": return t.params.some(bad) || bad(t.ret);
+      case "resource": return bad(t.inner);
       case "class": {
         if (t.args.some(bad)) return true;
         if (seen.has(t.cls)) return false;
@@ -22,9 +25,37 @@ export function isDeterministic(sig: FnType, rtUnsafe = false): boolean {
         seen.delete(t.cls); // guard only the current recursion path
         return r;
       }
-      case "tparam": return !!t.p.constraint; // constrained by an interface (§3.2)
+      case "iface": {
+        if (t.args.some(bad)) return true;
+        if (seen.has(t.iface)) return false;
+        seen.add(t.iface);
+        const m = bindTParams(t.iface.tparams, t.args);
+        const r = [...t.iface.methods.values()].some((mt) => bad(subst(mt, m)));
+        seen.delete(t.iface);
+        return r;
+      }
+      case "tparam": return t.p.constraint ? (rejectConstraints || bad(t.p.constraint)) : false;
       default: return false;
     }
   };
-  return !rtUnsafe && !sig.params.some(bad); // §7.3: rt + unsafe is never deterministic
+  return roots.some(bad);
+}
+
+const badDetLeaf = (t: Type): boolean =>
+  (t.k === "opaque" && NONDET_OPAQUE[t.name] === true) ||
+  t.k === "fn" || t.k === "iface" || t.k === "resource" ||
+  (t.k === "prim" && t.name === "unknown") ||
+  (t.k === "gen" && !!NONDET_GEN[t.name]);
+
+const badMutLeaf = (t: Type): boolean =>
+  (t.k === "opaque" && UNMUTATABLE_OPAQUE.has(t.name)) ||
+  (t.k === "gen" && UNMUTATABLE_GEN.has(t.name));
+
+export function isDeterministic(sig: FnType, rtUnsafe = false, extraTypes: readonly Type[] = []): boolean {
+  return !rtUnsafe && !hasForbidden([...sig.params, ...extraTypes], badDetLeaf, true); // §7.3: rt + unsafe is never deterministic
+}
+
+/** SPEC-v1 §7: safe functions and class methods excluding System/Ffi/Spawn/Js/JsRef/Test/Ptr/ConstPtr/CHandle/Port. */
+export function isMutatable(sig: FnType, unsafe = false, extraTypes: readonly Type[] = []): boolean {
+  return !unsafe && !hasForbidden([...sig.params, ...extraTypes], badMutLeaf, false);
 }

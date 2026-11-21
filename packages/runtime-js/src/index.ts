@@ -5,3 +5,4 @@ export * from "./result.ts";
 export * from "./test.ts";
 export * from "./isolate.ts";
 export * from "./arbitrary.ts";
+export * from "./wasm-bridge.ts";

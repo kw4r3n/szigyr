@@ -9,5 +9,5 @@ conformance/fixtures/stscb/.build/
 # agent worktrees
 .claude/
 
-# sts mutate cache
-.sts-cache/
+# szigyr mutate cache
+.szigyr-cache/

@@ -9,11 +9,12 @@ import { ensureStscb } from "./stscb.ts";
 ensureStscb();
 
 const root = fileURLToPath(new URL("../../../conformance", import.meta.url));
-const stage = parseStage(process.env.STS_STAGE);
+const stage = parseStage(process.env.SZIGYR_STAGE ?? process.env.STS_STAGE);
 const cases = filterByStage(loadCases(root), stage);
 
-/** D101: stage 2+ run cases also run with strict / rt compiled to C. A missing C toolchain fails these cases (no skip). */
+/** D101 / Q280: stage 2+ run cases also run with strict / rt compiled to C and Wasm. */
 const cBackend = { ...compiler, backend: "c" as const, run: (f: string) => compiler.run(f, { backend: "c" }) };
+const wasmBackend = { ...compiler, backend: "wasm" as const, run: (f: string) => compiler.run(f, { backend: "wasm" }) };
 
 /** §14.7: a `// backend: c` case needs the pkg-config packages its `c:` specifiers name.
  * Where one is unavailable the case is skipped (and counted below), never failed. */
@@ -30,7 +31,7 @@ describe("conformance", () => {
     if (missing.length) {
       skipped.push(`${c.name} (pkg-config: ${missing.join(", ")})`);
       it.skip(c.name, () => {});
-      if (c.kind === "run" && c.stage >= 2) it.skip(`${c.name} [c]`, () => {});
+      if (c.kind === "run" && c.stage >= 2) { it.skip(`${c.name} [c]`, () => {}); it.skip(`${c.name} [wasm]`, () => {}); }
       continue;
     }
     it(c.name, async () => {
@@ -40,6 +41,9 @@ describe("conformance", () => {
       it(`${c.name} [c]`, async () => {
         if (C_PENDING.has(c.name)) expect((await runCase(c, cBackend)).join()).toMatch(/^threw CUnsupported: C backend: .* not supported/);
         else expect(await runCase(c, cBackend)).toEqual([]);
+      });
+      it(`${c.name} [wasm]`, async () => {
+        expect(await runCase(c, wasmBackend)).toEqual([]);
       });
     }
   }

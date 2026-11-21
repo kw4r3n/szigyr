@@ -1,0 +1,7 @@
+// expect: E2013 @ 6:75
+// stage: 5
+function render(st: f64, out: Mut<Slice<f32>>, frames: usize): void {
+}
+export async function main(sys: System): Promise<void> {
+  const r = await sys.audio.open({ sampleRate: 48000, channels: 2 }, 1.0, render);
+}

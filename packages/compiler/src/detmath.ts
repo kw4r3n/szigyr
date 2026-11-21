@@ -4,7 +4,7 @@ import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { RUNTIME_GLOBAL } from "./names.ts";
 
-export const DETMATH_PATH = realpathSync(fileURLToPath(new URL("../../std/detmath.ts", import.meta.url))); // canonical, like every module path (Q253)
+export const DETMATH_PATH = realpathSync(fileURLToPath(new URL("../../std/detmath.szigyr", import.meta.url))); // canonical, like every module path (Q253)
 
 /** The ten public DetMath functions (§12): unary (f64) => f64, then the two binary ones. */
 export const DETMATH_UNARY = ["sin", "cos", "tan", "atan", "exp", "log", "log10", "tanh"];

@@ -1,0 +1,72 @@
+// expect-output: ok:7
+// expect-output: vec:2:1.5:10:20
+// expect-output: ring:42:9
+// expect-output: key:2:true codec:{"x":3,"y":4}
+// stage: 2
+type Pair<T extends Copy & Native> = Struct<{ readonly a: T; readonly b: T }>;
+type Pt = Struct<{ readonly x: i32; readonly y: i32 }>;
+
+function dupCopy<T extends Copy>(x: T): { readonly a: T; readonly b: T } {
+  return { a: x, b: x };
+}
+
+function makeVec<T extends Copy & Native>(alloc: Alloc, x: T): Vec<T> {
+  "use owned";
+  const v = Vec.create<T>(alloc, 2);
+  v.push(x);
+  v.push(x);
+  return v;
+}
+
+function headRt<T extends Copy & Native>(s: Ref<Slice<T>>): T {
+  "use rt";
+  return s[0];
+}
+
+function swapPair<T extends Copy & Native>(p: Pair<T>): Pair<T> {
+  "use rt";
+  return { a: p.b, b: p.a };
+}
+
+function makeRing<T extends Copy & Native & Send>(alloc: Alloc, x: T): T | null {
+  "use owned";
+  const { tx, rx } = Ring.create<T>(alloc, 2);
+  tx.push(x);
+  return rx.pop();
+}
+
+function takeCell<T extends Owned>(x: T): T {
+  const c = OwnedCell.create<T>(x);
+  return c.take();
+}
+
+function checkKey<K extends Key>(a: K, b: K): string {
+  const m = new Map<K, i32>();
+  m.set(a, 1);
+  m.set(b, 2);
+  const c = dupCopy<K>(a);
+  return `${m.size}:${m.has(c.a)}`;
+}
+
+function encodeCodec<T extends Codec>(x: T): string {
+  return JSON.stringify<T>(x);
+}
+
+export function main(sys: System): void {
+  const ds = dupCopy<string>("ok");
+  const dn = dupCopy<i32>(7);
+  sys.log.info(`${ds.a}:${dn.b}`);
+
+  const v = makeVec<f32>(sys.alloc, 1.5);
+  const swapped = swapPair<i32>({ a: 20, b: 10 });
+  sys.log.info(`vec:${v.length}:${headRt(v)}:${swapped.a}:${swapped.b}`);
+
+  const r = makeRing<i32>(sys.alloc, 42);
+  const v0 = Vec.create<i32>(sys.alloc, 1);
+  v0.push(9);
+  const v1 = takeCell(v0);
+  sys.log.info(`ring:${r === null ? -1 : r}:${v1[0]}`);
+
+  const pt: Pt = { x: 3, y: 4 };
+  sys.log.info(`key:${checkKey<string>("a", "b")} codec:${encodeCodec<Pt>(pt)}`);
+}

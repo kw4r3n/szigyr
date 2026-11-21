@@ -3,7 +3,7 @@ import { NodeFlags, SyntaxKind as K, isId, type Node, type ts } from "./parse.ts
 import type { LocalSym, Module, Program } from "./modules.ts";
 import { assignTarget, callSigs, exprTypes, localOf } from "./expr.ts";
 import { genFx } from "./builtins.ts";
-import { movesLike, ownedDeep, show, unref, type Type } from "./types.ts";
+import { movesLike, ownedDeep, show, tparamHasCap, unref, type Type } from "./types.ts";
 
 /** Moved locals (by id) and the expression that moved each; null on a path that cannot be reached. */
 type State = Map<number, Node> | null;
@@ -45,7 +45,7 @@ export function checkOwnership(prog: Program): void {
   const seen = new Set<string>();
   for (const { mod, node, p, arg } of prog.insts) { // Q068 (b): managed generics never take owned types (D090)
     const key = `${mod.file}:${node.pos}:${p.id}`;
-    if (p.owner !== "managed" || !movesLike(arg) || seen.has(key)) continue;
+    if (p.owner !== "managed" || (p.allowOwned && (tparamHasCap(p, "Owned") || tparamHasCap(p, "Native"))) || !movesLike(arg) || seen.has(key)) continue;
     seen.add(key);
     prog.rep.at(mod, "E3007", node, `'${p.name}' of a managed generic cannot be instantiated with the owned type '${show(arg)}'`);
   }
@@ -85,7 +85,13 @@ class ModuleCheck {
       } else if (name === "Slice") {
         const q = r.parent as ts.TypeReferenceNode;
         const outer = q.kind === K.TypeReference && isId(q.typeName) ? q.typeName.text : undefined;
-        if (outer !== "Ref" && outer !== "Mut" && outer !== "Ptr" && outer !== "ConstPtr") this.at("E3004", r, "'Slice' can only appear as 'Ref<Slice<T>>' or 'Mut<Slice<T>>' (§3.2, Q173)");
+        if (outer !== "Ref" && outer !== "Mut" && outer !== "Ptr" && outer !== "ConstPtr" && outer !== "Resource") this.at("E3004", r, "'Slice' can only appear as 'Ref<Slice<T>>' or 'Mut<Slice<T>>' (§3.2, Q173)");
+      } else if (name === "Resource") {
+        const vd = r.parent as ts.VariableDeclaration;
+        const vdl = vd?.parent as ts.VariableDeclarationList;
+        const ok = vd?.kind === K.VariableDeclaration && vd.type === r && vdl?.kind === K.VariableDeclarationList &&
+          (vdl.flags & NodeFlags.Using) && (vdl.flags & NodeFlags.AwaitUsing) !== NodeFlags.AwaitUsing;
+        if (!ok) this.at("E3004", r, "'Resource' can only be the type of a 'using' declaration");
       }
     }
     n.forEachChild((c) => this.typePositions(c));
@@ -216,8 +222,8 @@ class Flow {
         this.state = f.breaks.reduce(join, x.caseBlock.clauses.length ? fall : s0);
         return;
       }
-      case K.BreakStatement: this.target(false).breaks.push(this.state); this.state = null; return;
-      case K.ContinueStatement: this.target(true).continues.push(this.state); this.state = null; return;
+      case K.BreakStatement: this.target(false)?.breaks.push(this.state); this.state = null; return;
+      case K.ContinueStatement: this.target(true)?.continues.push(this.state); this.state = null; return;
       case K.ReturnStatement: {
         const r = (s as ts.ReturnStatement).expression;
         if (r) this.ex(r, "move");
@@ -233,9 +239,9 @@ class Flow {
     this.frames.push(f);
     return f;
   }
-  private target(loop: boolean): Frame {
+  private target(loop: boolean): Frame | undefined {
     for (let i = this.frames.length - 1; i >= 0; i--) if (!loop || this.frames[i]!.loop) return this.frames[i]!;
-    throw new Error("P3: break / continue outside a loop"); // P1 rejects it (Q124)
+    return undefined;
   }
 
   /**
@@ -257,7 +263,7 @@ class Flow {
   private vars(list: ts.VariableDeclarationList): void {
     for (const d of list.declarations) {
       // destructuring moves the whole value (§5.3, Q052); taking only Copy fields out of a borrow just reads it
-      const copyOut = !isId(d.name) && d.initializer && isId(strip(d.initializer)) && borrowMode(localOf.get(strip(d.initializer) as ts.Identifier)?.declared)
+      const copyOut = d.name.kind === K.ObjectBindingPattern && !!d.initializer && isId(strip(d.initializer)) && borrowMode(localOf.get(strip(d.initializer) as ts.Identifier)?.declared)
         && (d.name as ts.ObjectBindingPattern).elements.every((el) => isId(el.name) && !movesLike(localOf.get(el.name)?.type ?? { k: "error" }));
       if (d.initializer) this.ex(d.initializer, copyOut ? "read" : "move");
       this.declared(d.name);
@@ -265,7 +271,7 @@ class Flow {
   }
   private declared(n: ts.BindingName): void {
     if (isId(n)) { const s = localOf.get(n); if (s) { this.declDepth.set(s.id, this.loopDepth); this.state?.delete(s.id); } return; }
-    for (const el of (n as ts.ObjectBindingPattern).elements) this.declared(el.name as ts.BindingName);
+    if (n.kind === K.ObjectBindingPattern) for (const el of (n as ts.ObjectBindingPattern).elements) this.declared(el.name as ts.BindingName);
   }
 
   // ---- expressions
@@ -279,13 +285,15 @@ class Flow {
       case K.Identifier: this.ident(e as ts.Identifier, ctx); return;
       case K.PropertyAccessExpression: {
         const p = e as ts.PropertyAccessExpression;
-        this.ex(p.expression, "read");
+        if (this.resBorrowCall(strip(p.expression))) this.place(p.expression);
+        else this.ex(p.expression, "read");
         if (ctx !== "read" && movesLike(unref(exprTypes.get(p) ?? { k: "error" }))) this.m.at("E3003", p, `cannot move the field '${p.name.text}' out of its struct; destructure the whole value`);
         return;
       }
       case K.ElementAccessExpression: {
         const x = e as ts.ElementAccessExpression;
-        this.ex(x.expression, "read");
+        if (this.resBorrowCall(strip(x.expression))) this.place(x.expression);
+        else this.ex(x.expression, "read");
         const opt = !!(x.flags & NodeFlags.OptionalChain), optState = opt ? copy(this.state) : undefined;
         const mark = this.active.length;
         const r = this.placeOf(x.expression);
@@ -479,6 +487,8 @@ class Flow {
         return root && { ...root, slice: true, ptrSlice: true, sliceName: bc.name as ts.Identifier };
       }
     }
+    const rb = this.resBorrowCall(e);
+    if (rb) return this.placeOf(rb.expression, sliceName);
     return undefined;
   }
   /** The root of a Ptr place (§14.4): a local or parameter, or that under `.offset(...)` / `.cast()` calls. */
@@ -505,6 +515,15 @@ class Flow {
   private sliceCall(e: ts.Expression): ts.PropertyAccessExpression | undefined { return this.paramCall(e, false); }
   /** `p.borrow()` on a `Ptr` / `ConstPtr` (§14.4). */
   private borrowCall(e: ts.Expression): ts.PropertyAccessExpression | undefined { return this.paramCall(e, true); }
+  /** `r.borrow()` / `r.take()` on a `Resource<T>` binding (SPEC-v1 §5). */
+  private resCall(e: ts.Expression, name: "borrow" | "take"): ts.PropertyAccessExpression | undefined {
+    if (e.kind !== K.CallExpression) return undefined;
+    const p = (e as ts.CallExpression).expression;
+    if (p.kind !== K.PropertyAccessExpression || (p as ts.PropertyAccessExpression).name.text !== name) return undefined;
+    return exprTypes.get((p as ts.PropertyAccessExpression).expression)?.k === "resource" ? p as ts.PropertyAccessExpression : undefined;
+  }
+  private resBorrowCall(e: ts.Expression): ts.PropertyAccessExpression | undefined { return this.resCall(e, "borrow"); }
+  private resTakeCall(e: ts.Expression): ts.PropertyAccessExpression | undefined { return this.resCall(e, "take"); }
   /** Walks a place in evaluation order: the root is used, `slice` bounds are read. */
   private place(e0: ts.Expression, allowBorrow = false): void {
     const e = strip(e0);
@@ -516,6 +535,8 @@ class Flow {
       const bc = this.borrowCall(e);
       if (bc) { this.place(bc.expression); return; }
     }
+    const rb = this.resBorrowCall(e);
+    if (rb) { this.place(rb.expression); return; }
     this.ex(e, "read");
   }
   /**
@@ -561,8 +582,15 @@ class Flow {
       const p = callee as ts.PropertyAccessExpression;
       const g = genName(exprTypes.get(p.expression));
       const fx = e.kind === K.CallExpression ? genFx(exprTypes.get(p.expression), p.name.text) : undefined; // D132
-      if (fx?.recv === "param") this.m.at("E3004", p.name, `'${p.name.text}' can only be a borrowed argument or a receiver`); // Q013, §14.4; view: Q188 (b)
-      if (fx?.recv === "param" && (g === "Ptr" || g === "ConstPtr")) {
+      if (this.resBorrowCall(e)) {
+        this.m.at("E3004", p.name, "'borrow' can only be a borrowed argument or a receiver");
+        this.ex(p.expression, "read");
+      } else if (this.resTakeCall(e)) {
+        this.ex(p.expression, "move");
+      } else if (fx?.recv === "param") this.m.at("E3004", p.name, `'${p.name.text}' can only be a borrowed argument or a receiver`); // Q013, §14.4; view: Q188 (b)
+      if (this.resBorrowCall(e) || this.resTakeCall(e)) {
+        // handled above
+      } else if (fx?.recv === "param" && (g === "Ptr" || g === "ConstPtr")) {
         this.ex(p.expression, "read"); // a pointer is Copy: the place is its pointee
       } else if (g === "Ptr" && e.kind === K.CallExpression && p.name.text === "unbox") {
         const root = this.ptrRoot(p.expression); // §14.4: the receiver form, and Mut use of the root
@@ -586,11 +614,15 @@ class Flow {
       if (mode) { const u = this.borrow(a, mode, undefined, i); if (u) uses.push(u); return; }
       const x = strip(a);
       let unboxRoot: LocalSym | undefined;
-      if (x.kind === K.CallExpression) { // §14.4: `p.unbox()` as a whole argument counts as a Mut use of `p`
+      if (x.kind === K.CallExpression) { // §14.4 / §5: `p.unbox()` or `r.take()` as an argument counts as a Mut/move use of `p`/`r`
         const cp = (x as ts.CallExpression).expression;
         if (cp.kind === K.PropertyAccessExpression && (cp as ts.PropertyAccessExpression).name.text === "unbox" && genName(exprTypes.get((cp as ts.PropertyAccessExpression).expression)) === "Ptr") {
           const root = this.ptrRoot((cp as ts.PropertyAccessExpression).expression);
           if (root) { uses.push({ sym: root.sym, mode: "mut", node: x, path: root.path, slice: false, arg: i }); unboxRoot = root.sym; }
+        } else if (this.resTakeCall(x)) {
+          const rexpr = strip(this.resTakeCall(x)!.expression);
+          const sym = isId(rexpr) ? localOf.get(rexpr) : undefined;
+          if (sym) { uses.push({ sym, mode: "move", node: x, path: [], slice: false, arg: i }); unboxRoot = sym; }
         }
       }
       if (isId(x) && !store) {

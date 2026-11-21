@@ -2,14 +2,14 @@
 // Splices the source text: every node prints as its own text with its children replaced by their emission,
 // type syntax deleted, and the §10 rewrites applied to the nodes that need them. Types come from P2 (exprTypes).
 import { dirname } from "node:path";
-import { SyntaxKind as K, isId, type Node, type ParsedFile, type ts } from "./parse.ts";
+import { NodeFlags, SyntaxKind as K, isId, type Node, type ParsedFile, type ts } from "./parse.ts";
 import type { Range } from "./diagnostics.ts";
-import { assignTarget, callSigs, exprTypes, forAllMeta, isolateCalls, localOf } from "./expr.ts";
+import { assignTarget, audioOpenCalls, callSigs, exprTypes, forAllMeta, isolateCalls, localOf, resourceCalls } from "./expr.ts";
 import { sliceGroups, type SliceGroupEntry } from "./ownership.ts";
 import { elemDesc } from "./layout.ts";
 import { emitGenDesc, genDescOf } from "./gendesc.ts";
 import { canonPath, declBindings } from "./modules.ts";
-import { NUM_NAMES, field, isInt, isStr, literalFits, movesLike, nonNull, resultParts, same, unref, type FnType, type NumName, type Type } from "./types.ts";
+import { NUM_NAMES, bindTParams, field, isInt, isStr, literalFits, movesLike, nonNull, resultParts, same, subst, unref, type FnType, type NumName, type Type } from "./types.ts";
 import { CLI_NAME, RUNTIME_GLOBAL } from "./names.ts";
 import { DETMATH_PATH, dmBinding } from "./detmath.ts";
 import type { Pos } from "../../runtime-js/src/index.ts";
@@ -26,7 +26,7 @@ const P = `${RUNTIME_GLOBAL}_P`, AP = `${RUNTIME_GLOBAL}_ap`, ENS = `${RUNTIME_G
 // Synthetic parameters: user code inside the right side / ensures predicates must not see them.
 const O = `${RUNTIME_GLOBAL}_o`, KEY = `${RUNTIME_GLOBAL}_k`, V = `${RUNTIME_GLOBAL}_v`, R = `${RUNTIME_GLOBAL}_r`;
 /** Builtin namespaces that are runtime values (the rest are JS globals). */
-const RT_NAMESPACES = ["Vec", "Pool", "Arena", "Ring", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "TestAlloc"];
+const RT_NAMESPACES = ["Vec", "Pool", "Arena", "Ring", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeAudio", "TestAlloc"];
 const DROP_MODS = new Set<K>([K.ExportKeyword, K.ReadonlyKeyword, K.PrivateKeyword, K.PublicKeyword, K.ProtectedKeyword, K.DeclareKeyword, K.AbstractKeyword, K.OverrideKeyword]);
 const COMPOUND: Partial<Record<K, string>> = {
   [K.PlusEqualsToken]: "+", [K.MinusEqualsToken]: "-", [K.AsteriskEqualsToken]: "*",
@@ -72,7 +72,7 @@ export interface MutantSpec {
 }
 
 export interface EmitMutate {
-  targets: Map<Node, number>;
+  targets: Map<Node, { id: number; name: string }>;
   unsafeDecls: Set<Node>;
   mutants: MutantSpec[];
   exportFns: string[];
@@ -99,6 +99,7 @@ export function emitFile(
   native?: Map<Node, string>,
   extraExports?: Set<string>,
   mut?: EmitMutate,
+  keyOf: (absPath: string) => string = (p) => p,
 ): Emitted {
   const sf = pf.sourceFile, text = sf.text;
   const poss: string[] = [];
@@ -170,7 +171,11 @@ export function emitFile(
         if (ot && pt) {
           const uo = unref(ot);
           const f = uo.k === "record" ? field(uo, p.name.text) : undefined;
-          if (f && !same(unref(pt), unref(f.type))) props.add(p.name.text);
+          const ft = f ? f.type : uo.k === "class" ? (() => {
+            const cf = uo.cls.fields.get(p.name.text);
+            return cf ? subst(cf.type, bindTParams(uo.cls.tparams, uo.args)) : undefined;
+          })() : undefined;
+          if (ft && !same(unref(pt), unref(ft))) props.add(p.name.text);
         }
       }
       n.forEachChild(visit);
@@ -259,9 +264,23 @@ export function emitFile(
   function loopBody(stmt: ts.Statement): string {
     if (stmt.kind === K.Block) {
       const b = stmt as ts.Block;
-      return `{\n${RT}.step();\n${b.statements.map(gen).join("\n")}\n}`;
+      return `{\n${RT}.step();\n${emitStmtsWithUsing(b.statements, (s) => gen(s))}\n}`;
     }
     return `{ ${RT}.step(); ${gen(stmt)} }`;
+  }
+
+  function withMutTarget(targetNode: Node, bodyNode: ts.Block | undefined, emitFn: () => string): string {
+    const mt = mut?.targets.get(targetNode);
+    if (!mt) return emitFn();
+    const prevFnId = curFnId, prevFnName = curFnName, prevSyms = narrowedSyms, prevProps = narrowedProps;
+    curFnId = mt.id;
+    curFnName = mt.name;
+    const nw = bodyNode ? scanNarrowing(bodyNode) : { syms: new Set<number>(), props: new Set<string>() };
+    narrowedSyms = nw.syms;
+    narrowedProps = nw.props;
+    try { return emitFn(); } finally {
+      curFnId = prevFnId; curFnName = prevFnName; narrowedSyms = prevSyms; narrowedProps = prevProps;
+    }
   }
 
   function gen(n: Node): string {
@@ -347,6 +366,16 @@ export function emitFile(
         }
         break;
       }
+      case K.CaseClause: {
+        const cc = n as ts.CaseClause;
+        if (!cc.statements.some(isUsingStmt)) return splice(n);
+        return `case ${gen(cc.expression)}: {\n${emitStmtsWithUsing(cc.statements, (s) => gen(s))}\n}`;
+      }
+      case K.DefaultClause: {
+        const dc = n as ts.DefaultClause;
+        if (!dc.statements.some(isUsingStmt)) return splice(n);
+        return `default: {\n${emitStmtsWithUsing(dc.statements, (s) => gen(s))}\n}`;
+      }
       case K.Block: return block(n as ts.Block);
       case K.FunctionDeclaration: {
         const f = n as ts.FunctionDeclaration;
@@ -360,17 +389,11 @@ export function emitFile(
           const ps = f.parameters.map((p) => p.name.getText(sf));
           return `function ${f.name!.text}(${ps.join(", ")}) { return ${RT}.native.${key}(${ps.join(", ")}); }${tail}`;
         }
-        const tid = mut?.targets.get(n);
-        if (tid === undefined) return splice(n) + tail;
-        const prevFnId = curFnId, prevFnName = curFnName, prevSyms = narrowedSyms, prevProps = narrowedProps;
-        curFnId = tid;
-        curFnName = f.name!.text;
-        const nw = f.body ? scanNarrowing(f.body) : { syms: new Set<number>(), props: new Set<string>() };
-        narrowedSyms = nw.syms;
-        narrowedProps = nw.props;
-        try { return splice(n) + tail; } finally {
-          curFnId = prevFnId; curFnName = prevFnName; narrowedSyms = prevSyms; narrowedProps = prevProps;
-        }
+        return withMutTarget(n, f.body, () => splice(n) + tail);
+      }
+      case K.MethodDeclaration: {
+        const md = n as ts.MethodDeclaration;
+        return withMutTarget(n, md.body, () => splice(n));
       }
     }
     return splice(n);
@@ -406,6 +429,8 @@ export function emitFile(
       if (isId(lhs)) {
         const sym = localOf.get(lhs);
         if (sym && (movesLike(sym.type) || (nonNull(sym.type) !== undefined && narrowedSyms.has(sym.id)))) return orig;
+      } else if (lhs.kind === K.PropertyAccessExpression && narrowedProps.has((lhs as ts.PropertyAccessExpression).name.text)) {
+        return orig;
       }
     }
     const id = addMutant("delete-stmt", s, true);
@@ -489,6 +514,23 @@ export function emitFile(
       return `${RT}.mArith(${id}, ${JSON.stringify(t)}, ${JSON.stringify(o)}, ${JSON.stringify(mutO)}, ${gen(left)}, ${gen(b.right)}, ${anchor()})`;
     }
     if (t && ["+", "-", "*", "/", "%", "**", "<<", ">>", ">>>", "&", "|", "^"].includes(o)) return op(t, o, gen(left), gen(b.right), anchor());
+    if ((o === "===" || o === "!==") && unwrapParens(left).kind !== K.NullKeyword && unwrapParens(b.right).kind !== K.NullKeyword) {
+      const isHdl = (n: Node): boolean => {
+        const pt = typeOf(n);
+        if (!pt) return false;
+        const u = nonNull(unref(pt)) ?? unref(pt);
+        return u.k === "gen" && u.name === "Handle";
+      };
+      if (isHdl(left) || isHdl(b.right)) {
+        if (canMutate() && !(hasActiveNarrowing(b) && inConditionContext(b))) {
+          const mutO = CMP_MUT[o]!;
+          const id = addMutant(`${o} -> ${mutO}`, b.operatorToken);
+          return `${RT}.mCmpHandle(${id}, ${JSON.stringify(o)}, ${gen(left)}, ${gen(b.right)})`;
+        }
+        const call = `${RT}.handleEq(${gen(left)}, ${gen(b.right)})`;
+        return o === "===" ? call : `!${call}`;
+      }
+    }
     if (CMP_MUT[o] && canMutate()) {
       const skipNarrow = (o === "===" || o === "!==") && hasActiveNarrowing(b) && inConditionContext(b);
       if (!skipNarrow) {
@@ -535,7 +577,14 @@ export function emitFile(
   function call(e: ts.CallExpression): string {
     const callee = e.expression;
     const iso = isolateCalls.get(e); // §15.2: the receiver is evaluated, then the runtime starts the isolate
-    if (iso) return `(${gen((callee as ts.PropertyAccessExpression).expression)}, ${RT}.spawnIsolate(${JSON.stringify(iso.path)}, ${JSON.stringify(iso.name)}))`;
+    if (iso) return `(${gen((callee as ts.PropertyAccessExpression).expression)}, ${RT}.spawnIsolate(${JSON.stringify(keyOf(iso.path))}, ${JSON.stringify(iso.name)}))`;
+    const ao = audioOpenCalls.get(e); // §15.5: pass callback JS fn reference + native callback id
+    if (ao) {
+      const p = callee as ts.PropertyAccessExpression;
+      const spec = `{ fn: ${gen(e.arguments[2]!)}, id: ${ao.id}, native: ${RT}.native }`;
+      if (p.questionDotToken) return optional(gen(p.expression), false, (o) => `${o}.open(${gen(e.arguments[0]!)}, ${gen(e.arguments[1]!)}, ${spec})`);
+      return `${gen(p.expression)}.open(${gen(e.arguments[0]!)}, ${gen(e.arguments[1]!)}, ${spec})`;
+    }
     if (mut && callee.kind === K.Identifier) {
       const name = (callee as ts.Identifier).text;
       if (name === "requires" || name === "invariant") {
@@ -593,8 +642,16 @@ export function emitFile(
       const el = txf?.k === "gen" ? txf.args[0] : undefined;
       return withArgs([q(elemDesc(el)), at(p.name)]); // T014 at the member name (15.1)
     }
+    if (recv.kind === K.Identifier && (recv as ts.Identifier).text === "Resource" && !typeOf(recv)) {
+      if (m === "own") return `({ v: ${args[0]}, f: ${args[1]}, a: true })`;
+      if (m === "ownWith") return `({ v: ${args[0]}, c: ${args[1]}, f: ${args[2]}, a: true })`;
+    }
     const r0 = typeOf(recv);
     const r = r0 && (nonNull(r0) ?? r0);
+    if (r?.k === "resource") {
+      if (m === "borrow" || m === "get") return `${gen(recv)}.v`;
+      if (m === "take") return `(${O} => (${O}.a = false, ${O}.v))(${gen(recv)})`;
+    }
     const ns = recv.kind === K.Identifier && !r0 ? (recv as ts.Identifier).text : undefined;
     if (ns === "DetMath") { dmUsed.add(m); return `${dmBinding(m)}(${args.join(", ")})`; } // §12 (Q191): the bundled module, imported below under a hidden name
     if (ns === "JSON" && m === "parse") return `${RT}.jsonParse(${args[0]}, ${at(p.name)})`; // Q035: a syntax error is an `err`, other exceptions are T006
@@ -626,7 +683,47 @@ export function emitFile(
     return nn(withArgs([]));
   }
 
-  /** Function bodies: contracts (§10.8) and optional mutation instrumentation (§16.2). */
+  const isUsingStmt = (s: ts.Statement): boolean =>
+    s.kind === K.VariableStatement && !!((s as ts.VariableStatement).declarationList.flags & NodeFlags.Using);
+
+  function wrapUsingDecls(decls: readonly ts.VariableDeclaration[], idx: number, isAwaitUsing: boolean, rest: string): string {
+    if (idx >= decls.length) return rest;
+    const d = decls[idx]!;
+    const name = (d.name as ts.Identifier).text;
+    const init = gen(d.initializer!);
+    const inner = wrapUsingDecls(decls, idx + 1, isAwaitUsing, rest);
+    const dt = typeOf(d.name);
+    let cleanup: string;
+    if (dt?.k === "resource") {
+      const meta = resourceCalls.get(assignTarget(d.initializer!) as ts.CallExpression);
+      cleanup = meta?.kind === "ownWith"
+        ? `if (${name}.a) { ${name}.a = false; ${name}.f(${name}.c, ${name}.v); }`
+        : `if (${name}.a) { ${name}.a = false; ${name}.f(${name}.v); }`;
+    } else if (isAwaitUsing) {
+      cleanup = `${RT}.task(await ${name}.disposeAsync());`;
+    } else {
+      cleanup = `${name}.dispose();`;
+    }
+    return `const ${name} = ${init};\ntry {\n${inner}\n} finally {\n${cleanup}\n}`;
+  }
+
+  function emitStmtsWithUsing(ss: readonly ts.Statement[], emitOne: (s: ts.Statement, idx: number) => string, offset = 0): string {
+    const out: string[] = [];
+    for (let k = 0; k < ss.length; k++) {
+      const s = ss[k]!;
+      if (isUsingStmt(s)) {
+        const dl = (s as ts.VariableStatement).declarationList;
+        const isAwaitUsing = (dl.flags & NodeFlags.AwaitUsing) === NodeFlags.AwaitUsing;
+        const rest = emitStmtsWithUsing(ss.slice(k + 1), emitOne, offset + k + 1);
+        out.push(wrapUsingDecls(dl.declarations, 0, isAwaitUsing, rest));
+        break;
+      }
+      out.push(emitOne(s, offset + k));
+    }
+    return out.join("\n");
+  }
+
+  /** Function bodies: contracts (§10.8), `using` LIFO cleanup (§5), and optional mutation instrumentation (§16.2). */
   function block(b: ts.Block): string {
     const fnLike = b.parent && [K.FunctionDeclaration, K.MethodDeclaration, K.ArrowFunction, K.FunctionExpression, K.Constructor].includes(b.parent.kind);
     const isCallNamed = (s: ts.Statement, nm: string): ts.CallExpression | undefined => {
@@ -636,8 +733,10 @@ export function emitFile(
         ? (e as ts.CallExpression) : undefined;
     };
     const ss = b.statements;
-    const isTargetBody = !!mut && b.parent?.kind === K.FunctionDeclaration && mut.targets.has(b.parent);
-    const targetFnId = isTargetBody ? mut!.targets.get(b.parent!)! : -1;
+    const hasUsing = ss.some(isUsingStmt);
+    const targetEntry = mut && b.parent && (b.parent.kind === K.FunctionDeclaration || b.parent.kind === K.MethodDeclaration) ? mut.targets.get(b.parent) : undefined;
+    const isTargetBody = !!targetEntry;
+    const targetFnId = targetEntry ? targetEntry.id : -1;
     let reqEnd = 0;
     if (isTargetBody) {
       while (reqEnd < ss.length && ss[reqEnd]!.kind === K.ExpressionStatement && (ss[reqEnd] as ts.ExpressionStatement).expression.kind === K.StringLiteral) reqEnd++;
@@ -654,10 +753,10 @@ export function emitFile(
       return gen(s);
     };
     const last = fnLike ? ss.map((s) => !!isCallNamed(s, "ensures")).lastIndexOf(true) : -1;
-    if (last < 0 && !mut) return splice(b);
+    if (last < 0 && !mut && !hasUsing) return splice(b);
     let inner: string;
     if (last < 0) {
-      inner = ss.map((s, i) => emitStmt(s, i)).join("\n");
+      inner = emitStmtsWithUsing(ss, emitStmt);
     } else {
       const head: string[] = [], checks: string[] = [];
       for (let i = 0; i <= last; i++) {
@@ -671,13 +770,13 @@ export function emitFile(
         }
       }
       const isAsync = !!(b.parent as AnyNode as { modifiers?: ts.NodeArray<Node> }).modifiers?.some((x) => x.kind === K.AsyncKeyword);
-      const rest = ss.slice(last + 1).map((s, i) => emitStmt(s, last + 1 + i)).join("\n");
+      const rest = emitStmtsWithUsing(ss.slice(last + 1), emitStmt, last + 1);
       const run = isAsync ? `await (async () => {\n${rest}\n})()` : `(() => {\n${rest}\n})()`;
       inner = `${head.join("\n")}\nconst ${ENS} = (${R}) => { ${checks.join(" ")} return ${R}; };\nreturn ${ENS}(${run});`;
       if (!mut) return `{\n${inner}\n}`;
     }
-    if (isTargetBody) return `{\n${RT}.hit(${targetFnId}); ${RT}.step(); ${RT}.enter(${targetFnId});\ntry {\n${inner}\n} finally { ${RT}.leave(${targetFnId}); }\n}`;
-    if (fnLike && inContract === 0) return `{\n${RT}.step();\n${inner}\n}`;
+    if (mut && isTargetBody) return `{\n${RT}.hit(${targetFnId}); ${RT}.step(); ${RT}.enter(${targetFnId});\ntry {\n${inner}\n} finally { ${RT}.leave(${targetFnId}); }\n}`;
+    if (mut && fnLike && inContract === 0) return `{\n${RT}.step();\n${inner}\n}`;
     return `{\n${inner}\n}`;
   }
 
@@ -698,12 +797,26 @@ export function emitFile(
       const spec = (d.moduleSpecifier as ts.StringLiteral).text;
       if (spec.startsWith("c:")) {
         if (mut) {
-          const stubs = (d.importClause!.namedBindings as ts.NamedImports).elements.map((x) => `${x.name.text} = () => ${RT}.cOnly()`);
+          const decls = sf.statements.filter((st): st is ts.ModuleDeclaration => {
+            if (st.kind !== K.ModuleDeclaration) return false;
+            const md = st as ts.ModuleDeclaration;
+            return md.name.kind === K.StringLiteral && (md.name as ts.StringLiteral).text === spec && md.body?.kind === K.ModuleBlock;
+          });
+          const constNames = new Set<string>(), typeNames = new Set<string>();
+          for (const md of decls) for (const st of (md.body as ts.ModuleBlock).statements) {
+            if (st.kind === K.VariableStatement) for (const vd of (st as ts.VariableStatement).declarationList.declarations) if (isId(vd.name)) constNames.add(vd.name.text);
+            if (st.kind === K.TypeAliasDeclaration) typeNames.add((st as ts.TypeAliasDeclaration).name.text);
+          }
+          const stubs = (d.importClause!.namedBindings as ts.NamedImports).elements.flatMap((x) => {
+            const orig = (x.propertyName ?? x.name).text;
+            if (typeNames.has(orig)) return [];
+            return [constNames.has(orig) ? `${x.name.text} = 0` : `${x.name.text} = () => ${RT}.cOnly()`];
+          });
           if (stubs.length) body.push(`const ${stubs.join(", ")};`);
         }
-        continue; // §14: C functions have no JS value; in mutate mode they become COnlyReached stubs (Q275)
+        continue; // §14: C declarations have no JS value; in mutate mode functions become COnlyReached stubs (Q275)
       }
-      const key = spec.startsWith("npm:") ? spec : canonPath(dirname(pf.path), spec);
+      const key = spec.startsWith("npm:") ? spec : keyOf(canonPath(dirname(pf.path), spec));
       imports.push(key);
       const els = (d.importClause!.namedBindings as ts.NamedImports).elements.map((x) => (x.propertyName ? `${x.propertyName.text}: ${x.name.text}` : x.name.text));
       body.push(`const { ${els.join(", ")} } = ${IMP}(${JSON.stringify(key)});`);
@@ -727,9 +840,10 @@ export function emitFile(
     body.push(gen(s));
   }
   if (dmUsed.size) { // §12 (Q191): import the bundled DetMath module under names users cannot write
-    imports.push(DETMATH_PATH);
+    const dmKey = keyOf(DETMATH_PATH);
+    imports.push(dmKey);
     const els = [...dmUsed].sort().map((n) => `${n}: ${dmBinding(n)}`);
-    body.unshift(`const { ${els.join(", ")} } = ${IMP}(${JSON.stringify(DETMATH_PATH)});`);
+    body.unshift(`const { ${els.join(", ")} } = ${IMP}(${JSON.stringify(dmKey)});`);
   }
   // §15.2: isolate entry functions are readable by the isolate loader whether or not they are
   // declared `export` (who may *import* a name stays a static question for P1 / P2).
@@ -744,7 +858,7 @@ export function emitFile(
     `Object.assign(${EXPORTS}, { ${exported.filter((x) => fns.has(x.split(": ").at(-1)!)).join(", ")} });`,
     ...(needAp ? [`const ${AP} = (f, ...a) => f(...a);`] : []),
   ];
-  const js = `${prelude.join("\n")}\n${body.join("\n")}\nreturn Object.assign(${EXPORTS}, { ${finalExports.join(", ")} });\n//# sourceURL=${SOURCE_URL}${pf.path}`;
+  const js = `${prelude.join("\n")}\n${body.join("\n")}\nreturn Object.assign(${EXPORTS}, { ${finalExports.join(", ")} });\n//# sourceURL=${SOURCE_URL}${keyOf(pf.path)}`;
   // new Function puts the body after a 2-line header, so body line 1 is line 3 of the frames.
   const calls = new Map<string, Pos>();
   let line = 3, ls = 0;

@@ -1,28 +1,37 @@
 import { readFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
-import type { Diagnostic, RunResult } from "./diagnostics.ts";
+import type { Diagnostic, Range, RunResult } from "./diagnostics.ts";
 import { createParser, SyntaxKind, type Node, type ParsedFile, type Parser, type ts } from "./parse.ts";
 import { DETMATH_PATH } from "./detmath.ts";
 import { checkSyntax } from "./syntax.ts";
-import { Program as Decls, Reporter, canonPath, checkImportNames, type Module } from "./modules.ts";
+import { Program as Decls, Reporter, canonPath, checkImportNames, type Layer, type Module } from "./modules.ts";
 import { Checker } from "./checker.ts";
 import { checkOwnership } from "./ownership.ts";
 import { checkHeaders } from "./headercheck.ts";
 import { trapSites, type TrapSite } from "./traps.ts";
-import { isDeterministic } from "./determinism.ts";
+import { isDeterministic, isMutatable } from "./determinism.ts";
 import { emitFile, EXPORTS, IMP, RT, SOURCE_URL } from "./emit.ts";
 import { loopBoundaryWarnings } from "./boundary.ts";
 import { emitC } from "./emit-c.ts";
 import { loadNative, nativePathOf, nativeProgOf } from "./native.ts";
-import { mutateFile, type MutateOptions, type MutateResult } from "./mutate.ts";
+import { loadWasm } from "./wasm.ts";
+import { explainCode, type ExplainEntry } from "./explain.ts";
+import { hasTestType, mutateFile, type MutateOptions, type MutateResult } from "./mutate.ts";
+import { hasCap, show, type Capability, type Type } from "./types.ts";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import * as rt from "../../runtime-js/src/index.ts";
-import { FakeClock, FakeFs, MemoryLog, SeededRandom, TestAlloc, runMain } from "../../std/src/index.ts";
+import { FakeAudio, FakeClock, FakeFs, MemoryLog, SeededRandom, TestAlloc, runMain, setNodeAudio } from "../../std/src/index.ts";
+import { createNodeAudio, stopAudioStreams } from "./audio-sdl.ts";
+
+setNodeAudio(createNodeAudio());
+export { buildBrowser, type BrowserBuildMode, type BrowserBuildOptions, type BrowserBuildResult } from "./build-browser.ts";
+export { buildNode, type NodeBuildBackend, type NodeBuildMode, type NodeBuildOptions, type NodeBuildResult } from "./build-node.ts";
 export * from "./diagnostics.ts";
 export * from "./names.ts";
+export { explainCode, type ExplainEntry };
 export { createParser, type Parser } from "./parse.ts";
-export type { BaselineFailure, MutantReport, MutateOptions, MutateResult, MutateSummary, Witness } from "./mutate.ts";
+export type { BaselineFailure, MutantReport, MutateOptions, MutateResult, MutateSummary, SkippedTarget, Witness } from "./mutate.ts";
 
 /** A user input mistake the CLI reports without a stack, exit 2 (Q252). */
 export class CliError extends Error {}
@@ -34,8 +43,8 @@ interface Program {
   missing: Diagnostic[];
 }
 
-/** D161: the relative `.ts` specifiers a source text names, found without parsing (a candidate may sit in a comment or a string; the AST rounds below decide what is imported). */
-const SPEC = /\b(?:from|import)\s*["'](\.\.?\/[^"'\n]*\.ts)["']/g;
+/** D161: the relative `.szigyr` specifiers a source text names, found without parsing (a candidate may sit in a comment or a string; the AST rounds below decide what is imported). */
+const SPEC = /\b(?:from|import)\s*["'](\.\.?\/[^"'\n]*\.szigyr)["']/g;
 
 /** One tsgo process (the caller's `shared` one, kept open for the next file, or its own). */
 function loadProgram(entryFile: string, shared?: Parser): Program {
@@ -73,7 +82,7 @@ function loadProgram(entryFile: string, shared?: Parser): Program {
           const spec = (s as ts.ImportDeclaration).moduleSpecifier;
           if (spec.kind !== SyntaxKind.StringLiteral) continue;
           const t = (spec as ts.StringLiteral).text;
-          if (!/^\.\.?\//.test(t) || !t.endsWith(".ts")) continue; // npm: and malformed specifiers are not loaded
+          if (!/^\.\.?\//.test(t) || !t.endsWith(".szigyr")) continue; // npm: and malformed specifiers are not loaded
           const p = canonPath(dirname(pf.path), t);
           if (!files.has(p) && !wanted.has(p)) wanted.set(p, { from: pf, spec: spec as ts.StringLiteral });
         }
@@ -114,7 +123,7 @@ function loadProgram(entryFile: string, shared?: Parser): Program {
 
 const displayPath = (p: string): string => relative(process.cwd(), p) || p;
 
-/** Phases run in order P1 -> P2 -> P3 and stop at the first phase with an error (Q003). */
+/** All-phase check: P1 -> P2 -> P3 -> P4 (see analyze). */
 export function check(entryFile: string, parser?: Parser): Diagnostic[] {
   const a = analyze(entryFile, parser);
   return [...a.diagnostics, ...(a.warnings ?? [])];
@@ -122,21 +131,39 @@ export function check(entryFile: string, parser?: Parser): Diagnostic[] {
 
 export interface Analysis { files: ParsedFile[]; diagnostics: Diagnostic[]; warnings?: Diagnostic[]; decls?: Decls; unsafeOps?: { mod: Module; node: Node }[] }
 
-/** P1 + P2 + P3 over the program; on success the expression types are in `exprTypes` for the emitter. */
+/** All-phase recovery: P1 -> P2 -> P3 -> P4 (unless parser syntax errors make the AST unreliable). */
 export function analyze(entryFile: string, parser?: Parser): Analysis {
   const prog = loadProgram(entryFile, parser);
   const p1 = [...prog.missing, ...prog.files.flatMap((f) => checkSyntax(f, displayPath(f.path)))];
-  if (!p1.length) p1.push(...checkImportNames(prog.files, displayPath));
-  if (p1.length) return { files: prog.files, diagnostics: p1 };
+  const hasParseErrors = prog.files.some((f) => f.syntaxErrors.length > 0);
+  if (!hasParseErrors) p1.push(...checkImportNames(prog.files, displayPath));
+  if (hasParseErrors) return { files: prog.files, diagnostics: p1 };
   const rep = new Reporter();
   const decls = new Decls(prog.files, displayPath, rep);
   const chk = new Checker(decls);
-  chk.run();
-  if (!rep.out.length) checkOwnership(decls);
-  if (rep.out.length) return { files: prog.files, diagnostics: rep.out, decls, unsafeOps: chk.unsafeOps };
+  chk.run(p1.length > 0);
+  const p2End = rep.out.length;
+  checkOwnership(decls);
+  const p2 = rep.out.slice(0, p2End);
+  const p3 = rep.out.slice(p2End);
   const hdrs = new Reporter();
-  checkHeaders(decls, hdrs); // P4 (§14.2): the header check runs only on a program clean through P3
-  if (hdrs.out.length) return { files: prog.files, diagnostics: hdrs.out, decls, unsafeOps: chk.unsafeOps };
+  checkHeaders(decls, hdrs); // P4 (§14.2)
+  const merged: Diagnostic[] = [];
+  const earlierAnchors = new Set<string>();
+  const seenExact = new Set<string>();
+  for (const phase of [p1, p2, p3, hdrs.out]) {
+    const phaseAnchors: string[] = [];
+    for (const d of phase) {
+      const anchor = `${d.file}\0${d.range.start.line}\0${d.range.start.col}`;
+      const exact = `${d.code}\0${anchor}`;
+      if (earlierAnchors.has(anchor) || seenExact.has(exact)) continue;
+      seenExact.add(exact);
+      phaseAnchors.push(anchor);
+      merged.push(d);
+    }
+    for (const a of phaseAnchors) earlierAnchors.add(a);
+  }
+  if (merged.length) return { files: prog.files, diagnostics: merged, decls, unsafeOps: chk.unsafeOps };
   const warns = new Reporter();
   loopBoundaryWarnings(decls, warns);
   return { files: prog.files, diagnostics: [], warnings: warns.out, decls, unsafeOps: chk.unsafeOps };
@@ -146,7 +173,7 @@ export function analyze(entryFile: string, parser?: Parser): Analysis {
  * unsafe operation (§14.4). The E4009 anchor is the first `c:` specifier or unsafe operation
  * found in the program's files in path order (an operation's anchor is its E4008 anchor).
  * Only `run` / `test` report this, before executing; `check` never does. */
-function cOnlyDiagnostic(files: ParsedFile[], ops: { mod: Module; node: Node }[]): Diagnostic | undefined {
+export function cOnlyDiagnostic(files: ParsedFile[], ops: { mod: Module; node: Node }[]): Diagnostic | undefined {
   let best: { pf: ParsedFile; node: Node } | undefined;
   const offer = (pf: ParsedFile, node: Node): void => {
     if (!best || pf.path < best.pf.path || (pf.path === best.pf.path && node.getStart(pf.sourceFile) < best.node.getStart(best.pf.sourceFile))) best = { pf, node };
@@ -188,21 +215,22 @@ export function rtTrapSites(entryFile: string): Record<string, TrapSite[]> {
   return trapSites(a.files.find((f) => f.path === canonPath(entryFile))!);
 }
 
-/** Which backend runs strict / rt functions (D101). Managed code always runs on the JS engine. */
-export type Backend = "js" | "c";
+/** Which backend runs strict / rt functions (D101, Q280). Managed code always runs on the JS engine. */
+export type Backend = "js" | "c" | "wasm";
 /** `analysis`: the result of `analyze` for this entry file, reused instead of analysing again (D162: `--backend=both` runs both backends over one analysis). */
 export interface RunOptions { backend?: Backend; analysis?: Analysis }
 
 /** Q265: the cause an isolate's abnormal end recorded (no position, not a Trap); the foreign-trap check below rethrows it as main's own trap. */
 let isolateCause: string | undefined;
 
-/** Emits every file and evaluates them as module factories in memory (D031). Returns the entry's exports and, for a C backend program, its native module. */
+/** Emits every file and evaluates them as module factories in memory (D031). Returns the entry's exports and, for C / Wasm backends, its native bridge. */
 async function load(files: ParsedFile[], entryFile: string, tests: boolean, decls?: Decls, backend: Backend = "js"): Promise<{ ex: Record<string, unknown>; native: Record<string, (...a: unknown[]) => unknown> | undefined }> {
   const entry = canonPath(entryFile);
   isolateCause = undefined;
   rt.takeIsolateTrap(); // D144: a record a previous program in this process left behind is not this program's
-  const c = backend === "c" && decls ? emitC(decls) : undefined;
-  const native = c ? loadNative(c.c, rt.NATIVE_HOST, c.pkgs) : undefined;
+  const c = backend !== "js" && decls ? emitC(decls, backend === "wasm" ? "wasm" : "native") : undefined;
+  const wasm = backend === "wasm" && c ? await loadWasm(c.c, c.meta!, rt.NATIVE_HOST) : undefined;
+  const native = wasm ? wasm.exports : c ? loadNative(c.c, rt.NATIVE_HOST, c.pkgs) : undefined;
   // §15.4 (2): a foreign trap (a C thread's, or an isolate's) is polled at every task boundary
   // (emit wraps each await in rt.task; Port.recv checks too). The first one recorded wins.
   rt.setForeignTrapCheck(() => {
@@ -241,8 +269,10 @@ async function load(files: ParsedFile[], entryFile: string, tests: boolean, decl
     files: [...emitted].map(([path, e]) => [path, { js: e.js, imports: e.imports, calls: [...e.calls] }] as [string, { js: string; imports: string[]; calls: [string, rt.Pos][] }]),
     runtimeUrl: new URL("../../runtime-js/src/index.ts", import.meta.url).href,
     stdUrl: new URL("../../std/src/index.ts", import.meta.url).href,
-    nativePath: native ? (nativePathOf(native) ?? null) : null,
-    nativeProg: native ? (nativeProgOf(native) ?? null) : null,
+    nativePath: backend === "c" && native ? (nativePathOf(native) ?? null) : null,
+    nativeProg: backend === "c" && native ? (nativeProgOf(native) ?? null) : null,
+    wasmBytes: wasm ? wasm.bytes : null,
+    wasmMeta: wasm ? c!.meta! : null,
     rtName: RT, impName: IMP, exportsName: EXPORTS,
     framePattern: frame.source,
   });
@@ -261,7 +291,7 @@ async function load(files: ParsedFile[], entryFile: string, tests: boolean, decl
 }
 
 /** The runtime object generated code receives: runtime-js plus the std fakes. */
-const RUNTIME = { ...rt, FakeClock, SeededRandom, MemoryLog, FakeFs, TestAlloc };
+const RUNTIME = { ...rt, FakeAudio, FakeClock, SeededRandom, MemoryLog, FakeFs, TestAlloc };
 
 /** D060: the stack locator, the test registry and the unhandled-rejection sink are per process, so runs in one process are queued. */
 let queue: Promise<unknown> = Promise.resolve();
@@ -280,7 +310,7 @@ async function loadChecked(files: ParsedFile[], entryFile: string, tests: boolea
 }
 
 /** Q061: `sts run` entry must be an exported managed `function main(sys: System): void | Promise<void>`. */
-function checkMain(decls: Decls, entryFile: string): void {
+export function checkMain(decls: Decls, entryFile: string): void {
   const mod = decls.mods.find((m) => m.pf.path === canonPath(entryFile));
   const local = mod?.exports.get("main");
   const sym = local !== undefined ? decls.lookupValue(mod!, local) : undefined;
@@ -318,7 +348,7 @@ async function runNow(entryFile: string, backend?: Backend, analysis?: Analysis)
     finish();
     return p as void;
   });
-  await rt.stopIsolates(); // Q207: main ending stops isolates still running; undelivered messages are discarded
+  await Promise.all([rt.stopIsolates(), stopAudioStreams()]); // Q207, §15.5: main ending stops isolates and open audio streams
   // §15.4 (3): an isolate record may have landed after main trapped (stopIsolates lets messages land), so it does not beat main's own.
   const t = rt.takeIsolateTrap();
   const c = Array.isArray(v) ? { code: `T${String(v[0]).padStart(3, "0")}`, file: v[1] as string, line: v[2] as number, col: v[3] as number } : null;
@@ -338,8 +368,126 @@ async function runTestFileNow(entryFile: string, backend?: Backend, analysis?: A
   if (e4009) return { diagnostics: [e4009], results: [] };
   rt.clearTests();
   await loadChecked(a.files, entryFile, true, a.decls, backend);
-  try { return { diagnostics: [], results: await rt.runTests() }; } finally { rt.clearTests(); }
+  try { return { diagnostics: [], results: await rt.runTests() }; } finally { await stopAudioStreams(); rt.clearTests(); }
 }
 
 /** `sts mutate`: JS-only mutation testing with diff cache and witness search (SPEC §16.2, Q275–Q277). */
 export const mutate = (entryFile: string, opts: MutateOptions = {}): Promise<MutateResult> => exclusive(() => mutateFile(entryFile, opts));
+
+export interface QuerySymbol {
+  readonly name: string;
+  readonly kind: "function" | "cfn" | "const" | "type" | "class" | "method" | "interface";
+  readonly exported: boolean;
+  readonly type: string;
+  readonly layer?: Layer;
+  readonly unsafe?: boolean;
+  readonly pure?: boolean;
+  readonly mutatable?: boolean;
+  readonly caps?: readonly string[];
+  readonly rtTrapSites?: readonly TrapSite[];
+  readonly range: Range;
+}
+
+export interface QueryResult {
+  readonly file: string;
+  readonly diagnostics: readonly Diagnostic[];
+  readonly symbols: readonly QuerySymbol[];
+}
+
+const ALL_CAPS: readonly Capability[] = ["Native", "Copy", "Owned", "Send", "Key", "Codec"];
+function capsOf(t: Type): string[] {
+  if (t.k === "error") return [];
+  return ALL_CAPS.filter((c) => hasCap(t, c));
+}
+
+/** Static symbol/type/capability/layer/rt-trap query over the entry file. */
+export function queryFile(entryFile: string, parser?: Parser): QueryResult {
+  const a = analyze(entryFile, parser);
+  const entryPath = canonPath(entryFile);
+  const file = displayPath(entryPath);
+  const decls = a.decls;
+  const entryMod = decls?.mods.find((m) => m.pf.path === entryPath);
+  if (!decls || !entryMod) return { file, diagnostics: a.diagnostics, symbols: [] };
+  const traps = a.diagnostics.length === 0 ? trapSites(entryMod.pf) : undefined;
+  const exportedSet = new Set(entryMod.exports.values());
+  const rangeOf = (n: Node): Range => ({ start: entryMod.pf.position(n.getStart(entryMod.sf)), end: entryMod.pf.position(n.end) });
+  const symbols: QuerySymbol[] = [];
+  for (const f of decls.fns) {
+    if (f.mod !== entryMod) continue;
+    symbols.push({
+      name: f.name,
+      kind: "function",
+      exported: exportedSet.has(f.name),
+      type: show(f.sig),
+      layer: f.layer,
+      unsafe: f.unsafe,
+      pure: isDeterministic(f.sig, f.layer === "rt" && f.unsafe),
+      mutatable: isMutatable(f.sig, f.unsafe),
+      ...(f.layer === "rt" && traps ? { rtTrapSites: traps[f.name] ?? [] } : {}),
+      range: rangeOf(f.decl),
+    });
+  }
+  for (const [name, sym] of entryMod.values) {
+    if (sym.k === "cfn" && sym.mod === entryMod) {
+      symbols.push({
+        name,
+        kind: "cfn",
+        exported: exportedSet.has(name),
+        type: show(sym.sig),
+        unsafe: true,
+        pure: false,
+        mutatable: false,
+        range: rangeOf(sym.decl),
+      });
+    } else if (sym.k === "cconst" && sym.mod === entryMod) {
+      symbols.push({
+        name,
+        kind: "const",
+        exported: exportedSet.has(name),
+        type: show(sym.type),
+        caps: capsOf(sym.type),
+        unsafe: true,
+        range: rangeOf(sym.decl),
+      });
+    } else if (sym.k === "const" && sym.mod === entryMod) {
+      symbols.push({
+        name,
+        kind: "const",
+        exported: exportedSet.has(name),
+        type: show(sym.type),
+        caps: capsOf(sym.type),
+        range: rangeOf(sym.bind ?? sym.decl),
+      });
+    }
+  }
+  for (const [name, sym] of entryMod.types) {
+    if (sym.k === "error" || sym.mod !== entryMod) continue;
+    if (sym.k === "cstruct") {
+      symbols.push({ name, kind: "type", exported: exportedSet.has(name), type: show(sym.type), caps: [], unsafe: true, range: rangeOf(sym.decl) });
+    } else if (sym.k === "alias") {
+      const t = decls.aliasBody(sym);
+      symbols.push({ name, kind: "type", exported: exportedSet.has(name), type: show(t), caps: capsOf(t), range: rangeOf(sym.decl) });
+    } else if (sym.k === "class") {
+      const ct: Type = { k: "class", cls: sym.cls, args: sym.cls.tparams.map((p) => ({ k: "tparam", p })) };
+      symbols.push({ name, kind: "class", exported: exportedSet.has(name), type: show(ct), caps: capsOf(ct), range: rangeOf(sym.cls.decl) });
+      for (const [mName, m] of sym.cls.methods) {
+        const extra = m.static ? [] : [ct];
+        symbols.push({
+          name: `${name}.${mName}`,
+          kind: "method",
+          exported: exportedSet.has(name) && !m.private,
+          type: show(m.sig),
+          layer: "managed",
+          unsafe: false,
+          pure: isDeterministic(m.sig, false, extra),
+          mutatable: isMutatable(m.sig, false, extra),
+          range: rangeOf(m.node),
+        });
+      }
+    } else {
+      symbols.push({ name, kind: "interface", exported: exportedSet.has(name), type: sym.iface.name, caps: [], range: rangeOf(sym.decl) });
+    }
+  }
+  symbols.sort((x, y) => x.range.start.line - y.range.start.line || x.range.start.col - y.range.start.col);
+  return { file, diagnostics: a.diagnostics, symbols };
+}

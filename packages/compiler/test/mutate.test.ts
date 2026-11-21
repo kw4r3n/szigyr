@@ -22,7 +22,7 @@ function tmpFile(name: string, src: string): { dir: string; file: string; cacheF
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-mut-`));
   const file = join(dir, name);
   writeFileSync(file, src);
-  return { dir, file, cacheFile: join(dir, ".sts-cache", "mutate.json") };
+  return { dir, file, cacheFile: join(dir, ".szigyr-cache", "mutate.json") };
 }
 
 describe("mutate: 6 operators and contract exclusion", () => {
@@ -56,7 +56,7 @@ test("weak", (t: Test) => {
   t.eq(ops(1, 2, true, "hi"), "big");
 });
 `;
-    const { file, cacheFile } = tmpFile("ops.ts", src);
+    const { file, cacheFile } = tmpFile("ops.szigyr", src);
     const res = await mutate(file, { cache: false, cacheFile });
     expect(res.diagnostics).toEqual([]);
     expect(res.baselineFailure).toBeNull();
@@ -115,7 +115,7 @@ test("basic", (t: Test) => {
   t.eq(loopAndSwitch(2, false), -1);
 });
 `;
-    const { file, cacheFile } = tmpFile("inv.ts", src);
+    const { file, cacheFile } = tmpFile("inv.szigyr", src);
     const res = await mutate(file, { cache: false, cacheFile });
     expect(res.diagnostics).toEqual([]);
     expect(res.baselineFailure).toBeNull();
@@ -175,7 +175,7 @@ test("sound", (t: Test) => {
   t.eq(moveReinit(v), 1);
 });
 `;
-    const { file, cacheFile } = tmpFile("sound.ts", src);
+    const { file, cacheFile } = tmpFile("sound.szigyr", src);
     const res = await mutate(file, { cache: false, cacheFile });
     expect(res.diagnostics).toEqual([]);
     expect(res.baselineFailure).toBeNull();
@@ -185,7 +185,7 @@ test("sound", (t: Test) => {
 });
 
 describe("mutate: target selection & C-only mixed files (Q275)", () => {
-  it("selects only safe deterministic top-level functions and skips non-deterministic ones silently", async () => {
+  it("selects Pure + Mutatable fns and class methods (Alloc/Log/callbacks) and skips System/Port/Ffi as not-mutatable", async () => {
     const src = `function pureAdd(a: i32, b: i32): i32 {
   return a + b;
 }
@@ -196,25 +196,46 @@ function withLog(log: Log, x: i32): i32 {
 function withAlloc(a: Alloc): usize {
   "use owned";
   const v = Vec.create<i32>(a, 2);
+  v.push(1);
   return v.length;
 }
 function withCb(f: (x: i32) => i32, x: i32): i32 {
   return f(x + 1);
 }
+class Acc {
+  v: i32;
+  constructor(v: i32) { this.v = v; }
+  add(x: i32): i32 {
+    this.v = this.v + x;
+    return this.v;
+  }
+}
+function withSys(sys: System): void {
+  sys.log.info("skip");
+}
+function withPort(p: Port<i32, i32>): void {
+  p.close();
+}
 test("all", (t: Test) => {
   t.eq(pureAdd(2, 3), 5);
   const log = MemoryLog.create();
   t.eq(withLog(log, 4), 5);
-  t.eq(withAlloc(TestAlloc.create()), 0);
+  t.eq(withAlloc(TestAlloc.create()), 1);
   t.eq(withCb((x: i32) => x, 1), 2);
+  const acc = new Acc(10);
+  t.eq(acc.add(5), 15);
 });
 `;
-    const { file, cacheFile } = tmpFile("select.ts", src);
+    const { file, cacheFile } = tmpFile("select.szigyr", src);
     const res = await mutate(file, { cache: false, cacheFile });
     expect(res.diagnostics).toEqual([]);
     expect(res.baselineFailure).toBeNull();
     const fns = new Set(res.mutants.map((m) => m.fn));
-    expect([...fns]).toEqual(["pureAdd"]);
+    expect(fns).toEqual(new Set(["pureAdd", "withLog", "withAlloc", "withCb", "Acc.add"]));
+    expect(res.summary.skipped).toEqual([
+      { fn: "withSys", reason: "not-mutatable" },
+      { fn: "withPort", reason: "not-mutatable" },
+    ]);
   });
 
   it("handles C-only declarations and unsafe functions without E4009, skipping C-only tests", async () => {
@@ -244,7 +265,7 @@ test("pure safe test", (t: Test) => {
   t.eq(safeCalc(3, 4), 7);
 });
 `;
-    const { file, cacheFile } = tmpFile("mixed.ts", src);
+    const { file, cacheFile } = tmpFile("mixed.szigyr", src);
     const res = await mutate(file, { cache: false, cacheFile });
     expect(res.diagnostics).toEqual([]);
     expect(res.baselineFailure).toBeNull();
@@ -270,7 +291,7 @@ test("countUp", (t: Test) => {
   t.eq(countUp(5), 5);
 });
 `;
-    const { file, cacheFile } = tmpFile("loop.ts", src);
+    const { file, cacheFile } = tmpFile("loop.szigyr", src);
     const res = await mutate(file, { cache: false, cacheFile });
     expect(res.diagnostics).toEqual([]);
     expect(res.baselineFailure).toBeNull();
@@ -294,7 +315,7 @@ test("only positive", (t: Test) => {
   t.eq(clampNonNeg(5), 5);
 });
 `;
-    const { file, cacheFile } = tmpFile("witness.ts", src);
+    const { file, cacheFile } = tmpFile("witness.szigyr", src);
     const res = await mutate(file, { cache: false, cacheFile });
     expect(res.diagnostics).toEqual([]);
     const ifFalse = res.mutants.find((m) => m.op === "if -> false");
@@ -324,7 +345,7 @@ test("only apply=false", (t: Test) => {
   t.eq(a.total, 0);
 });
 `;
-    const { file, cacheFile } = tmpFile("mut-witness.ts", src);
+    const { file, cacheFile } = tmpFile("mut-witness.szigyr", src);
     const res = await mutate(file, { cache: false, cacheFile });
     expect(res.diagnostics).toEqual([]);
     const ifFalse = res.mutants.find((m) => m.op === "if -> false");
@@ -361,7 +382,7 @@ test("only x=2 and go=false", (t: Test) => {
   t.eq(recDown(1, false), 0);
 });
 `;
-    const { file, cacheFile } = tmpFile("req-witness.ts", src);
+    const { file, cacheFile } = tmpFile("req-witness.szigyr", src);
     const res = await mutate(file, { cache: false, cacheFile });
     expect(res.diagnostics).toEqual([]);
     // In `caller`, test only calls caller(2) where `x === 1` is false, so `if (x === 1) -> false` survives!
@@ -419,7 +440,7 @@ test("weak", (t: Test) => {
   t.eq(c.length, 0);
 });
 `;
-    const { file, cacheFile } = tmpFile("adv-witness.ts", src);
+    const { file, cacheFile } = tmpFile("adv-witness.szigyr", src);
     const res = await mutate(file, { cache: false, cacheFile });
     expect(res.diagnostics).toEqual([]);
 
@@ -459,7 +480,7 @@ test("none", (t: Test) => {
   t.ok(true);
 });
 `;
-    const { file, cacheFile } = tmpFile("gen-zero.ts", src);
+    const { file, cacheFile } = tmpFile("gen-zero.szigyr", src);
     const res = await mutate(file, { cache: false, cacheFile });
     expect(res.diagnostics).toEqual([]);
     expect(res.mutants.length).toBeGreaterThan(0);
@@ -484,7 +505,7 @@ test("none", (t: Test) => {
   t.ok(true);
 });
 `;
-    const { file, cacheFile } = tmpFile("null-witness.ts", src);
+    const { file, cacheFile } = tmpFile("null-witness.szigyr", src);
     const res = await mutate(file, { cache: false, cacheFile });
     expect(res.diagnostics).toEqual([]);
     const ng = res.mutants.find((m) => m.fn === "nonGen" && m.op === "+ -> -");
@@ -502,14 +523,14 @@ test("none", (t: Test) => {
 describe("mutate: diff cache (Q277)", () => {
   it("caches per-function results, invalidates on callee change or new reaching test, and honors --no-cache", async () => {
     const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-cache-`));
-    const helperFile = join(dir, "helper.ts");
-    const mainFile = join(dir, "main.ts");
-    const cacheFile = join(dir, ".sts-cache", "mutate.json");
+    const helperFile = join(dir, "helper.szigyr");
+    const mainFile = join(dir, "main.szigyr");
+    const cacheFile = join(dir, ".szigyr-cache", "mutate.json");
 
     writeFileSync(helperFile, `export function bump(x: i32): i32 {\n  return x + 1;\n}\n`);
     writeFileSync(
       mainFile,
-      `import { bump } from "./helper.ts";
+      `import { bump } from "./helper.szigyr";
 function f(x: i32): i32 {
   return bump(x) + 2;
 }
@@ -545,7 +566,7 @@ test("g", (t: Test) => {
     writeFileSync(helperFile, `export function bump(x: i32): i32 {\n  return x + 10;\n}\n`);
     writeFileSync(
       mainFile,
-      `import { bump } from "./helper.ts";
+      `import { bump } from "./helper.szigyr";
 function f(x: i32): i32 {
   return bump(x) + 2;
 }
@@ -567,7 +588,7 @@ test("g", (t: Test) => {
     // 5. Adding a new test reaching g invalidates ONLY g (f stays cached)!
     writeFileSync(
       mainFile,
-      `import { bump } from "./helper.ts";
+      `import { bump } from "./helper.szigyr";
 function f(x: i32): i32 {
   return bump(x) + 2;
 }
@@ -594,7 +615,7 @@ test("g zero", (t: Test) => {
       mainFile,
       `// shifted line 1
 // shifted line 2
-import { bump } from "./helper.ts";
+import { bump } from "./helper.szigyr";
 function f(x: i32): i32 {
   return bump(x) + 2;
 }
@@ -622,8 +643,8 @@ test("g zero", (t: Test) => {
 describe("mutate: CLI (sts mutate)", () => {
   it("supports multiple files and human-readable text mode", () => {
     const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-multi-`));
-    const a = join(dir, "a.ts");
-    const b = join(dir, "b.ts");
+    const a = join(dir, "a.szigyr");
+    const b = join(dir, "b.szigyr");
     writeFileSync(a, 'function add(x: i32, y: i32): i32 { return x + y; }\ntest("add", (t: Test) => { t.eq(add(2, 3), 5); });\n');
     writeFileSync(b, 'function neg(x: i32): i32 { return x - 1; }\ntest("neg", (t: Test) => { t.eq(neg(5), 4); });\n');
     const rJson = sts(dir, "mutate", "--json", "--no-cache", a, b);
@@ -638,7 +659,7 @@ describe("mutate: CLI (sts mutate)", () => {
     expect(rText.code).toBe(0);
     expect(rText.out).toMatch(/killed.*timeout.*survived/);
   });
-  it("exits 0 with JSON lines and summary even when mutants survive, and caches in .sts-cache/mutate.json", () => {
+  it("exits 0 with JSON lines and summary even when mutants survive, and caches in .szigyr-cache/mutate.json", () => {
     const src = `function abs(x: i32): i32 {
   if (x < 0) return -x;
   return x;
@@ -647,15 +668,15 @@ test("pos", (t: Test) => {
   t.eq(abs(3), 3);
 });
 `;
-    const { dir, file } = tmpFile("abs.ts", src);
+    const { dir, file } = tmpFile("abs.szigyr", src);
     const r1 = sts(dir, "mutate", "--json", file);
     expect(r1.code).toBe(0);
     const ls1 = jsonLines(r1.out);
     const summary1 = ls1.at(-1);
     expect(summary1).toMatchObject({ kind: "summary", cached: 0 });
     expect(summary1.survived).toBeGreaterThan(0);
-    expect(existsSync(join(dir, ".sts-cache", "mutate.json"))).toBe(true);
-    const saved = JSON.parse(readFileSync(join(dir, ".sts-cache", "mutate.json"), "utf8"));
+    expect(existsSync(join(dir, ".szigyr-cache", "mutate.json"))).toBe(true);
+    const saved = JSON.parse(readFileSync(join(dir, ".szigyr-cache", "mutate.json"), "utf8"));
     expect(Object.keys(saved).length).toBeGreaterThan(0);
 
     // Second run is cached
@@ -671,13 +692,13 @@ test("pos", (t: Test) => {
   });
 
   it("exits 1 on compile errors and on baseline m=0 test failure, and 2 on CLI errors", () => {
-    const { dir, file: badType } = tmpFile("bad.ts", "function f(x: i32): f64 { return x; }\n");
+    const { dir, file: badType } = tmpFile("bad.szigyr", "function f(x: i32): f64 { return x; }\n");
     const rCompile = sts(dir, "mutate", "--json", badType);
     expect(rCompile.code).toBe(1);
     expect(jsonLines(rCompile.out)[0]).toMatchObject({ code: "E2002" });
 
     const { dir: dir2, file: badTest } = tmpFile(
-      "fail.ts",
+      "fail.szigyr",
       'function add(a: i32, b: i32): i32 { return a + b; }\ntest("broken", (t: Test) => { t.eq(add(1, 2), 99); });\n'
     );
     const rFail = sts(dir2, "mutate", "--json", badTest);
@@ -685,7 +706,7 @@ test("pos", (t: Test) => {
 
     // CLI errors -> exit 2
     expect(sts(dir, "mutate").code).toBe(2);
-    expect(sts(dir, "mutate", "/no/such/file.ts").code).toBe(2);
+    expect(sts(dir, "mutate", "/no/such/file.szigyr").code).toBe(2);
     expect(sts(dir, "mutate", "--backend=c", badType).code).toBe(2);
   });
 
@@ -710,7 +731,7 @@ test("forAll kills mutants in named and inline property tests", (t: Test) => {
   });
 });
 `;
-    const { file, cacheFile } = tmpFile("forall-mut.ts", src);
+    const { file, cacheFile } = tmpFile("forall-mut.szigyr", src);
     const res = await mutate(file, { cache: false, cacheFile });
     expect(res.diagnostics).toEqual([]);
     expect(res.baselineFailure).toBeNull();
@@ -742,7 +763,7 @@ test("strong", (t: Test) => {
   t.eq(f64Compound(10), 11);
 });
 `;
-    const { file, cacheFile } = tmpFile("no-ghost.ts", src);
+    const { file, cacheFile } = tmpFile("no-ghost.szigyr", src);
     const res = await mutate(file, { cache: false, cacheFile });
     expect(res.diagnostics).toEqual([]);
     expect(res.baselineFailure).toBeNull();
@@ -797,7 +818,7 @@ test("sound", (t: Test) => {
   assertHelper(t, parenSwitch(0), 30);
 });
 `;
-    const { file, cacheFile } = tmpFile("sound-loops.ts", src);
+    const { file, cacheFile } = tmpFile("sound-loops.szigyr", src);
     const res = await mutate(file, { cache: false, cacheFile });
     expect(res.diagnostics).toEqual([]);
     expect(res.baselineFailure).toBeNull();
@@ -825,7 +846,7 @@ test("weak", async (t: Test) => {
   bumpFirst([], false);
 });
 `;
-    const { file, cacheFile } = tmpFile("async-roarr.ts", src);
+    const { file, cacheFile } = tmpFile("async-roarr.szigyr", src);
     const res = await mutate(file, { cache: false, cacheFile });
     expect(res.diagnostics).toEqual([]);
     const asyncM = res.mutants.find((m) => m.fn === "clampAsync" && m.op === "if -> false");
@@ -838,15 +859,15 @@ test("weak", async (t: Test) => {
 
   it("invalidates diff cache on imported type alias change, imported class method change, and test helper change", async () => {
     const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-cache2-`));
-    const cacheFile = join(dir, ".sts-cache", "mutate.json");
-    const typesFile = join(dir, "types.ts");
-    const clsFile = join(dir, "cls.ts");
-    const mainFile = join(dir, "main.ts");
+    const cacheFile = join(dir, ".szigyr-cache", "mutate.json");
+    const typesFile = join(dir, "types.szigyr");
+    const clsFile = join(dir, "cls.szigyr");
+    const mainFile = join(dir, "main.szigyr");
 
     writeFileSync(typesFile, `export type N = i32;\n`);
     writeFileSync(clsFile, `export class Box { readonly v: i32; constructor(v: i32) { this.v = v; } scale(): i32 { return this.v; } }\n`);
-    const mainSrc = (helperArgs: string) => `import { N } from "./types.ts";
-import { Box } from "./cls.ts";
+    const mainSrc = (helperArgs: string) => `import { N } from "./types.szigyr";
+import { Box } from "./cls.szigyr";
 function helper(t: Test): void {
   t.eq(add(${helperArgs}), 1);
 }
@@ -887,5 +908,43 @@ test("box", (t: Test) => { const b = new Box(0); t.ok(useBox(b, 5) >= 5); });
     const r4 = await mutate(mainFile, { cache: true, cacheFile });
     expect(r4.mutants.filter((m) => m.fn === "add").every((m) => !m.cached)).toBe(true);
     expect(r4.mutants.filter((m) => m.fn === "useBox").every((m) => m.cached)).toBe(true);
+  });
+
+  it("reports targets, skipped reasons, and suppresses // szigyr-equivalent: lines", async () => {
+    const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-skip-equiv-`));
+    const f = join(dir, "main.szigyr");
+    writeFileSync(f, `function helper(t: Test): void {
+  t.eq(calc(2), 4);
+}
+function unsafeFn(): i32 {
+  "use owned";
+  "use unsafe";
+  return 1;
+}
+function ffiFn(ffi: Ffi): void {}
+function clockFn(c: Clock, x: i32): f64 {
+  return c.nowMs() + f64(x + 1);
+}
+function calc(x: i32): i32 {
+  if (x >= 0) { // szigyr-equivalent: boundary x === 0 gives same 0
+    return x + x;
+  }
+  return 0;
+}
+test("calc", (t: Test) => {
+  helper(t);
+  const fc = FakeClock.create(10);
+  t.eq(clockFn(fc, 2), 13);
+});
+`);
+    const r = await mutate(f, { cache: false });
+    expect(r.summary.targets).toBe(2);
+    expect(r.summary.skipped).toEqual([
+      { fn: "helper", reason: "test-helper" },
+      { fn: "unsafeFn", reason: "unsafe" },
+      { fn: "ffiFn", reason: "not-mutatable" },
+    ]);
+    expect(r.mutants.some((m) => m.fn === "clockFn")).toBe(true);
+    expect(r.mutants.every((m) => m.range.start.line !== 14)).toBe(true);
   });
 });

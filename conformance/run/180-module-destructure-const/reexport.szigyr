@@ -1,0 +1,2 @@
+import { width, height } from "./consts.szigyr";
+export { width, height as h };

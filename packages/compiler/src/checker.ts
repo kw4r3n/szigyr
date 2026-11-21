@@ -1,10 +1,10 @@
 // P2 checker (D012): declarations, statements, control flow, narrowing. Expressions live in expr.ts.
 import { NodeFlags, SyntaxKind as K, hasMod, isId, type Node, type ts } from "./parse.ts";
-import { Program, declBindings, legalUnion, type ClassValueSym, type FnSym, type Layer, type LocalSym, type Module, type ValueSym } from "./modules.ts";
-import { PROMISE_CONTAINERS, assignTarget, checkTo, exprTypes, hasPromise, cond, expr, isLitOnly, localOf, promiseOk, type FnArgRef } from "./expr.ts";
+import { Program, declBindings, legalUnion, type CStructSym, type ClassValueSym, type FnSym, type Layer, type LocalSym, type Module, type ValueSym } from "./modules.ts";
+import { PROMISE_CONTAINERS, assignTarget, checkTo, exprTypes, hasPromise, cond, expr, isLitOnly, localOf, promiseOk, usingInitExprs, type FnArgRef } from "./expr.ts";
 import {
-  AUTHORITIES, ERROR, NEVER, NULL, STR, VOID, assignable, hasAuthority, hasTParam, hasPtr, layerOk, crossOk, ptrTargetOk, field, isBool, isErr, isNull, isTaggedUnion, kindOf, nonNull, same, show, subst, bindTParams, unref, union, subUnion,
-  type ClassSym, type FnType, type TParam, type Type,
+  ASYNC_DISPOSABLE, AUTHORITIES, DISPOSABLE, ERROR, NEVER, NULL, STR, VOID, assignable, hasAuthority, hasTParam, hasPtr, layerOk, crossOk, ptrTargetOk, field, isBool, isErr, isNull, isTaggedUnion, kindOf, nonNull, same, show, subst, bindTParams, unref, union, subUnion,
+  type Capability, type ClassSym, type FnType, type TParam, type Type,
   hasLoneSurrogate,
 } from "./types.ts";
 
@@ -69,19 +69,20 @@ export class Checker {
 
   get mod(): Module { return this.fx.mod; }
   at(code: string, n: Node, message: string, data?: Record<string, unknown>): void { this.prog.rep.at(this.fx.mod, code, n, message, data); }
-  report(code: string, start: number, end: number, message: string): void { this.prog.rep.report(this.fx.mod, code, start, end, message); }
+  report(code: string, start: number, end: number, message: string, data?: Record<string, unknown>): void { this.prog.rep.report(this.fx.mod, code, start, end, message, data); }
 
   /** Q121: the `this.f` targets of the constructor's initializing statements (readonly fields may be assigned there only). */
   ctorInits = new Set<Node>();
   /** The first expression typed as the error type (D009: only after a diagnostic). */
   firstError: { node: Node; mod: Module } | undefined;
-  run(): void {
+  run(hasPriorErrors = false): void {
     for (const mod of this.prog.mods) this.module(mod);
     this.fnGraph();
     this.polyRec();
     this.prog.checkInsts();
     // Fail closed: an error type without any diagnostic would accept anything (D050).
-    if (this.firstError && this.prog.rep.out.length === 0) { // any diagnostic, signatures included
+    // When P1 already produced errors, skip the internal fallback (those errors explain cascades).
+    if (this.firstError && !hasPriorErrors && this.prog.rep.out.length === 0) { // any diagnostic, signatures included
       this.prog.rep.at(this.firstError.mod, "E2002", this.firstError.node, "internal: expression has no type");
     }
   }
@@ -617,7 +618,7 @@ export class Checker {
       case K.BreakStatement: case K.ContinueStatement: return false;
       case K.ReturnStatement: this.returnStmt(s as ts.ReturnStatement); return false;
     }
-    throw new Error(`P2: unhandled statement kind ${s.kind}`); // P1 rejects every other kind
+    return false; // P1 reports bad statement syntax; avoid false missing-return cascade
   }
 
   /** An expression whose value is dropped. Q125: a dropped Promise would lose its trap, so it is an error. */
@@ -726,7 +727,12 @@ export class Checker {
     this.restore(saved, m0);
     this.scope = savedScope;
     const exhaustive = hasDefault || (!!labels && labels.every((l) => l.k === "lit" && seen.has(l.value))) || (isBool(t) && seen.has("true") && seen.has("false")); // Q254
-    if (!exhaustive && t.k !== "error") this.report("E2005", kw, kw + "switch".length, "switch is not exhaustive");
+    if (!exhaustive && t.k !== "error") {
+      const missing = labels
+        ? labels.flatMap((l) => (l.k === "lit" && !seen.has(l.value) ? [l.value] : []))
+        : isBool(t) ? ["true", "false"].filter((v) => !seen.has(v)) : undefined;
+      this.report("E2005", kw, kw + "switch".length, "switch is not exhaustive", missing?.length ? { missing } : undefined);
+    }
     return !exhaustive || reachEnd || clauses.length === 0 || hasBreak(x.caseBlock, true);
   }
   private blockNoScope(list: readonly ts.Statement[]): boolean {
@@ -736,14 +742,24 @@ export class Checker {
   }
 
   varList(list: ts.VariableDeclarationList): void {
-    const mutableDecl = !!(list.flags & NodeFlags.Let);
+    const isUsing = !!(list.flags & NodeFlags.Using);
+    const isAwaitUsing = (list.flags & NodeFlags.AwaitUsing) === NodeFlags.AwaitUsing;
+    const mutableDecl = !isUsing && !(list.flags & NodeFlags.Const);
     for (const d of list.declarations) {
-      const init = d.initializer!;
+      const init = d.initializer;
+      if (isUsing && !isAwaitUsing && init) usingInitExprs.add(assignTarget(init));
       let t: Type;
-      if (d.type) {
+      if (!init) {
+        t = d.type ? this.typeOf(d.type) : ERROR;
+      } else if (d.type) {
         const declared = this.typeOf(d.type);
         this.walkTypePos(d.type, "local", { unsafe: this.fx.unsafe, cdecl: false });
-        if (this.fx.layer !== "managed") this.layerType(declared, d.type, this.fx.layer);
+        if (this.fx.layer !== "managed") {
+          if (isUsing && !isAwaitUsing && declared.k === "resource") {
+            const ta = d.type.kind === K.TypeReference ? (d.type as ts.TypeReferenceNode).typeArguments?.[0] : undefined;
+            if (ta) this.layerType(declared.inner, ta, this.fx.layer);
+          } else this.layerType(declared, d.type, this.fx.layer);
+        }
         checkTo(this, init, unref(declared));
         t = unref(declared);
       } else if ((init.kind === K.ObjectLiteralExpression || (init.kind === K.ArrayLiteralExpression && !(init as ts.ArrayLiteralExpression).elements.length)) && isId(d.name)) {
@@ -757,25 +773,37 @@ export class Checker {
         if (t.k === "lit" || (t.k === "union" && t.members.every((m) => m.k === "lit") && mutableDecl)) t = mutableDecl ? STR : t;
         if (t.k === "iter") { this.at("E2002", init, "keys() / values() can only be iterated"); t = ERROR; }
       }
+      if (isAwaitUsing) {
+        if (this.fx.layer !== "managed") this.at("E4002", d.name, `'await using' is only allowed in managed code`);
+        else if (!isErr(t) && !assignable(t, ASYNC_DISPOSABLE)) this.at("E2002", d.name, `'${show(t)}' does not implement 'AsyncDisposable'`);
+      } else if (isUsing) {
+        if (t.k === "resource") { /* ok in managed and strict / rt */ }
+        else if (assignable(t, DISPOSABLE)) {
+          if (this.fx.layer !== "managed") this.at("E4002", d.name, `'Disposable' values cannot be used in ${this.fx.layer} code; use 'Resource.own' or 'Resource.ownWith'`);
+        } else if (!isErr(t)) {
+          this.at("E2002", d.name, `'${show(t)}' must implement 'Disposable' or be a 'Resource<T>'`);
+        }
+      }
       exprTypes.set(d.name, t); // the declared type, for the C backend (D102)
       if (isId(d.name)) {
         const sym = this.declare(d.name, t, { mutable: mutableDecl });
-        if (!d.type && t.k === "num" && isLitOnly(init)) this.litLets.set(sym.id, d.name);
-      } else this.destructure(d.name as ts.ObjectBindingPattern, t);
+        if (init && !d.type && t.k === "num" && isLitOnly(init)) this.litLets.set(sym.id, d.name);
+      } else if (d.name.kind === K.ObjectBindingPattern) this.destructure(d.name as ts.ObjectBindingPattern, t);
     }
   }
 
   private destructure(p: ts.ObjectBindingPattern, t0: Type): void {
     const t = unref(t0);
     for (const el of p.elements) {
-      const prop = (el.propertyName ?? el.name) as ts.Identifier;
+      if (!isId(el.name)) continue;
+      const prop = el.propertyName && isId(el.propertyName) ? el.propertyName : el.name;
       let ft: Type = ERROR;
-      if (t.k === "record") {
+      if (t.k === "record" || t.k === "cstruct") {
         const f = field(t, prop.text);
         if (f) ft = f.type; else this.at("E2002", prop, `no field '${prop.text}'`);
       } else if (t.k !== "error") this.at("E2002", prop, "only records can be destructured");
-      exprTypes.set(el.name!, ft);
-      this.declare(el.name as ts.Identifier, ft);
+      exprTypes.set(el.name, ft);
+      this.declare(el.name, ft);
     }
   }
 
@@ -826,13 +854,31 @@ export class Checker {
         case K.ModuleDeclaration: {
           const d = s as ts.ModuleDeclaration;
           if (d.name.kind !== K.StringLiteral || d.body?.kind !== K.ModuleBlock) break;
-          const table = mod.cdecls.get((d.name as ts.StringLiteral).text);
+          const spec = (d.name as ts.StringLiteral).text;
+          const table = mod.cdecls.get(spec);
+          const ctable = mod.cconsts.get(spec);
+          const stable = mod.cstructs.get(spec);
           this.fx.tparams = new Map();
           for (const st of (d.body as ts.ModuleBlock).statements) {
-            if (st.kind !== K.FunctionDeclaration) continue;
-            const f = st as ts.FunctionDeclaration;
-            const cs = f.name ? table?.get(f.name.text) : undefined;
-            if (cs) this.walkCDecl(f, cs.sig);
+            if (st.kind === K.FunctionDeclaration) {
+              const f = st as ts.FunctionDeclaration;
+              const cs = f.name ? table?.get(f.name.text) : undefined;
+              if (cs) this.walkCDecl(f, cs.sig);
+            } else if (st.kind === K.VariableStatement) {
+              const dl = (st as ts.VariableStatement).declarationList;
+              if (!(dl.flags & NodeFlags.Const)) continue;
+              for (const vd of dl.declarations) {
+                if (!isId(vd.name)) continue;
+                const cc = ctable?.get(vd.name.text);
+                if (!vd.type) this.at("E2006", vd.name, "a C constant needs a type annotation");
+                else if (cc && cc.type.k !== "error" && cc.type.k !== "num" && !isBool(cc.type)) {
+                  this.at("E4007", vd.type, `'${show(cc.type)}' is not a valid C const type`);
+                }
+              }
+            } else if (st.kind === K.TypeAliasDeclaration) {
+              const ta = st as ts.TypeAliasDeclaration;
+              this.walkCStruct(ta, stable?.get(ta.name.text));
+            }
           }
           break;
         }
@@ -917,8 +963,47 @@ export class Checker {
     }
   }
 
+  private walkCStruct(ta: ts.TypeAliasDeclaration, cs: CStructSym | undefined): void {
+    const tr = ta.type.kind === K.TypeReference ? (ta.type as ts.TypeReferenceNode) : undefined;
+    const arg0 = tr && isId(tr.typeName) && tr.typeName.text === "CStruct" && tr.typeArguments?.length === 1 ? tr.typeArguments[0] : undefined;
+    if (!arg0 || arg0.kind !== K.TypeLiteral) {
+      this.at("E4007", ta.type, "a type in a 'c:' module must be 'CStruct<{ ... }>'");
+      return;
+    }
+    const lit = arg0 as ts.TypeLiteralNode;
+    if (!lit.members.length) {
+      this.at("E4007", lit, "'CStruct' must have at least one field");
+      return;
+    }
+    const cstruct = cs?.type.k === "cstruct" ? cs.type : undefined;
+    for (const m of lit.members) {
+      if (m.kind !== K.PropertySignature) { this.at("E4007", m, "invalid 'CStruct' member"); continue; }
+      const p = m as ts.PropertySignatureDeclaration;
+      if (!p.type) { this.at("E2006", p.name, "property needs a type annotation"); continue; }
+      this.walkTypePos(p.type, "cstructfield", { unsafe: true, cdecl: true });
+      if (cstruct && isId(p.name)) {
+        const ft = field(cstruct, p.name.text)?.type;
+        if (ft) this.checkCStructField(p.type, ft);
+      }
+    }
+  }
+  private checkCStructField(node: ts.TypeNode, t: Type): void {
+    if (t.k === "error" || t.k === "num" || isBool(t) || t.k === "cstruct") return;
+    if (t.k === "gen" && t.name === "CType") return;
+    if (t.k === "gen" && (t.name === "Ptr" || t.name === "ConstPtr")) {
+      const argNode = (node as ts.TypeReferenceNode).typeArguments?.[0];
+      if (t.name === "ConstPtr" && t.args[0]!.k === "fn") {
+        this.at("E4007", argNode ?? node, "a function type can only sit behind Ptr");
+        return;
+      }
+      if (argNode) this.checkPointee(argNode, t.args[0]!);
+      return;
+    }
+    this.at("E4007", node, `'${show(t)}' is not a valid CStruct field type`);
+  }
+
   /** One written type node in position `place`. `ptrarg`: the argument of Ptr / ConstPtr; `chandlearg`: of CHandle. */
-  walkTypePos(node: ts.TypeNode, place: "sig" | "local" | "alias" | "field" | "typearg" | "ptrarg" | "chandlearg", ctx: { unsafe: boolean; cdecl: boolean }): void {
+  walkTypePos(node: ts.TypeNode, place: "sig" | "local" | "alias" | "field" | "cstructfield" | "typearg" | "ptrarg" | "chandlearg", ctx: { unsafe: boolean; cdecl: boolean }): void {
     switch (node.kind) {
       case K.TypeReference: {
         const r = node as ts.TypeReferenceNode;
@@ -928,7 +1013,7 @@ export class Checker {
           // §14.4.1: writing Ptr / ConstPtr in a position where it may appear at all is an
           // unsafe operation, in whichever context it is written (a C declaration's types
           // belong to the `c:` specifier instead, so cdecl is excluded).
-          if (!ctx.cdecl && place !== "field" && place !== "typearg" && place !== "alias" && place !== "chandlearg") this.noteUnsafeOp(r.typeName);
+          if (!ctx.cdecl && place !== "field" && place !== "cstructfield" && place !== "typearg" && place !== "alias" && place !== "chandlearg") this.noteUnsafeOp(r.typeName);
           if (place === "field" || place === "typearg" || place === "alias" || place === "chandlearg") {
             this.at("E4008", r.typeName, `'${name}' cannot be written in this position`);
           } else if (!ctx.cdecl && !ctx.unsafe) {
@@ -945,7 +1030,7 @@ export class Checker {
           return;
         }
         if (name === "CType") {
-          if (place !== "ptrarg" && place !== "chandlearg") this.at("E4007", r, "'CType' can only be a type argument of Ptr, ConstPtr or CHandle");
+          if (place !== "ptrarg" && place !== "chandlearg" && place !== "cstructfield") this.at("E4007", r, "'CType' can only be a type argument of Ptr, ConstPtr, CHandle or a CStruct field");
           const lit = arg?.kind === K.LiteralType ? (arg as ts.LiteralTypeNode).literal : undefined;
           const v = lit?.kind === K.StringLiteral ? (lit as ts.StringLiteral).text : undefined;
           if (arg && (v === undefined || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(v) || v === "bool" || C_RESERVED.has(v))) {
@@ -959,6 +1044,20 @@ export class Checker {
             if (t.k === "fn" || hasPtr(t)) this.at("E4008", findPtrRef(arg) ?? arg, "'CHandle' cannot wrap a function type or a type holding Ptr / ConstPtr");
             else if (t.k !== "error" && !ptrTargetOk(t)) this.at("E4007", arg, `'${show(t)}' cannot sit inside CHandle`);
             this.walkTypePos(arg, "chandlearg", ctx);
+          }
+          return;
+        }
+        if (name === "Resource" && arg) {
+          this.walkTypePos(arg, place === "local" ? "local" : "typearg", ctx);
+          return;
+        }
+        const resolved = this.prog.lookupType(this.fx.mod, name);
+        if (resolved?.k === "cstruct") {
+          if (!ctx.cdecl && place !== "field" && place !== "cstructfield" && place !== "typearg" && place !== "alias" && place !== "chandlearg") this.noteUnsafeOp(r.typeName);
+          if (place === "field" || place === "typearg" || place === "alias") {
+            this.at("E4008", r.typeName, `'${name}' cannot be written in this position`);
+          } else if (!ctx.cdecl && !ctx.unsafe && place !== "chandlearg" && place !== "cstructfield") {
+            this.at("E4008", r.typeName, `'${name}' can only be written in a function with 'use unsafe'`);
           }
           return;
         }
@@ -1039,14 +1138,16 @@ function hasBreak(n: Node, isSwitch = false): boolean {
   return found;
 }
 
-/** Type parameters correspond by position (Q132); their constraints must match too. */
+/** Type parameters correspond by position (Q132); their interface constraints and capability bounds must match too. */
 function sameSig(a: FnType, b0: FnType): boolean {
   if (a.tparams.length !== b0.tparams.length) return false;
   const m = new Map(b0.tparams.map((p, i) => [p.id, { k: "tparam", p: a.tparams[i]! } as Type]));
   const b = subst(b0, m) as FnType;
+  const capsEq = (x?: Set<Capability>, y?: Set<Capability>): boolean =>
+    (x?.size ?? 0) === (y?.size ?? 0) && [...x ?? []].every((c) => y?.has(c));
   const cons = a.tparams.every((p, i) => {
     const q = b0.tparams[i]!.constraint;
-    return p.constraint && q ? same(p.constraint, subst(q, m)) : !p.constraint && !q;
+    return (p.constraint && q ? same(p.constraint, subst(q, m)) : !p.constraint && !q) && capsEq(p.caps, b0.tparams[i]!.caps);
   });
   return cons && a.params.length === b.params.length && a.params.every((p, i) => same(p, b.params[i]!)) && same(a.ret, b.ret);
 }

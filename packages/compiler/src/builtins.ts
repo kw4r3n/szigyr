@@ -1,6 +1,6 @@
 // §12 allowlist for P2 (D010): builtin type names, global values, namespace and member tables (signatures from Q032, Q033, Q038).
 import {
-  BOOL, ERROR_RECORD, F64, NULL, STR, UNKNOWN, USIZE, VOID, fn, gen, newTParam, nullable, num, opaque, result, record, ro, unref,
+  AUDIO_CONFIG_RECORD, ASYNC_DISPOSABLE, BOOL, DISPOSABLE, ERROR_RECORD, F64, NULL, STR, UNKNOWN, USIZE, VOID, fn, gen, newTParam, nullable, num, opaque, result, record, ro, unref,
   type FnType, type GenName, type NumName, type Type, AUTHORITIES, NUM_NAMES, GEN_ARITY, OPAQUE_NAMES,
 } from "./types.ts";
 import { DETMATH_BINARY, DETMATH_UNARY } from "./detmath.ts";
@@ -16,15 +16,17 @@ export const GLOBAL_AUTHORITIES = new Set([
 ]);
 
 /** Namespace objects (Q034). */
-export const NAMESPACES = new Set(["Math", "Number", "JSON", "String", "Promise", "Vec", "Pool", "Arena", "Ring", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "TestAlloc", "DetMath", "Ptr", "CHandle"]);
+export const NAMESPACES = new Set(["Math", "Number", "JSON", "String", "Promise", "Vec", "Pool", "Arena", "Ring", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeAudio", "TestAlloc", "DetMath", "Ptr", "CHandle"]);
 /** Builtin functions handled by the checker (§12). */
 export const BUILTIN_FUNCTIONS = new Set([...NUM_NAMES, "wrapAdd", "wrapSub", "wrapMul", "divTrunc", "rem", "ok", "err", "panic", "cast", "requires", "ensures", "invariant", "test", "forAll", "cfn"]);
-/** §13: the identifier-like names it reserves (types, functions, `using`). Declaring one is E1000 like a builtin name (Q231 (a)). */
-export const SPEC_RESERVED = ["i64", "u64", "bigint", "undefined", "FixedArray", "Rc", "Weak", "using", "decreases"];
+/** §13: the identifier-like names it reserves (declaring or referencing one is E1000 / E2000, Q231). */
+export const SPEC_RESERVED = ["i64", "u64", "bigint", "undefined", "FixedArray", "Rc", "Weak", "Net", "decreases"];
 /** §12 global names, §13 reserved names; declaring any of them is E1000 (Q010, Q231). The tables here plus the names only the resolver and §7.1 know. */
+export const CAPABILITY_NAMES = new Set(["Copy", "Native", "Owned", "Send", "Key", "Codec"]);
+
 export const BUILTIN_NAMES = new Set<string>([
   ...SPEC_RESERVED,
-  "boolean", "string", "number", "null", "void", "unknown", "never", "Result", "Struct", "RingPair", "JsError", "CastError", "IoError", "Net",
+  "boolean", "string", "number", "null", "void", "unknown", "never", "Result", "Struct", "RingPair", "JsError", "CastError", "IoError", "AudioConfig", "Resource", "Disposable", "AsyncDisposable", "CStruct",
   ...Object.keys(GEN_ARITY), ...OPAQUE_NAMES, ...NAMESPACES, ...BUILTIN_FUNCTIONS,
 ]);
 
@@ -33,9 +35,9 @@ export const NONDET_GEN: Record<GenName, boolean> = {
   Array: false, ReadonlyArray: false, Map: false, Set: false, Promise: false, Vec: false, Slice: false, Pool: false, Handle: false, Arena: false, ArenaBuf: false,
   Ref: false, Mut: false, OwnedCell: false, CType: false, RingTx: true, RingRx: true, Ptr: true, ConstPtr: true, CHandle: true, Port: true, // §15.1, §14.4, §14.5, §15.2
 };
-/** The opaque ones (keys: OPAQUE_NAMES): the authorities, `JsRef` and the fakes, not `Test`. */
+/** The opaque ones (keys: OPAQUE_NAMES): the authorities, `JsRef`, `AudioStream` and the fakes, not `Test`. */
 export const NONDET_OPAQUE: Record<string, boolean> = {
-  ...Object.fromEntries(AUTHORITIES.map((a) => [a, true])), JsRef: true, Test: false, FakeClock: true, SeededRandom: true, MemoryLog: true, FakeFs: true,
+  ...Object.fromEntries(AUTHORITIES.map((a) => [a, true])), JsRef: true, Test: false, AudioStream: true, FakeClock: true, SeededRandom: true, MemoryLog: true, FakeFs: true, FakeAudio: true,
 };
 
 /** Builtin type names (§12) that are not generic constructors. Struct and Result are handled by the resolver. */
@@ -49,9 +51,12 @@ export function builtinType(name: string): Type | undefined {
     case "unknown": return UNKNOWN;
     case "never": return { k: "prim", name: "never" };
     case "JsError": case "CastError": case "IoError": return ERROR_RECORD;
+    case "AudioConfig": return AUDIO_CONFIG_RECORD;
+    case "Disposable": return DISPOSABLE;
+    case "AsyncDisposable": return ASYNC_DISPOSABLE;
   }
   if ((NUM_NAMES as readonly string[]).includes(name)) return num(name as NumName);
-  if (OPAQUE_NAMES.has(name) && !["FakeClock", "SeededRandom", "MemoryLog", "FakeFs"].includes(name)) return opaque(name);
+  if (OPAQUE_NAMES.has(name) && !["FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeAudio"].includes(name)) return opaque(name);
   return undefined;
 }
 export const isGenName = (n: string): n is GenName => Object.hasOwn(GEN_ARITY, n);
@@ -88,14 +93,15 @@ const mapValues = (o: Members, f: (x: Member) => Member): Members => Object.from
 const LOG: Members = { info: m(WR, [STR], VOID), warn: m(WR, [STR], VOID), error: m(WR, [STR], VOID) };
 const RANDOM: Members = { nextF64: m(WR, [], F64), nextU32: m(WR, [], num("u32")) };
 const FS: Members = { readText: m(RD, [STR], ioResult(STR)), writeText: m(WR, [STR, STR], ioResult(NULL)) };
+const AUDIO: Members = { open: mo(m(PORT_FX, [AUDIO_CONFIG_RECORD, UNKNOWN, UNKNOWN], gen("Promise", ioResult(opaque("AudioStream"))))) };
 
 /** Members of an opaque builtin type. */
 export function opaqueMembers(name: string): Members {
   const lit = (v: string): Type => ({ k: "lit", value: v });
   const table: Record<string, () => Members> = {
-    System: () => ({ alloc: prop(opaque("Alloc")), fs: prop(opaque("Fs")), clock: prop(opaque("Clock")), random: prop(opaque("Random")), log: prop(opaque("Log")), js: prop(opaque("Js")), ffi: prop(opaque("Ffi")), spawn: prop(opaque("Spawn")) }),
+    System: () => ({ alloc: prop(opaque("Alloc")), fs: prop(opaque("Fs")), clock: prop(opaque("Clock")), random: prop(opaque("Random")), log: prop(opaque("Log")), js: prop(opaque("Js")), ffi: prop(opaque("Ffi")), spawn: prop(opaque("Spawn")), audio: prop(opaque("Audio")) }),
     Log: () => LOG,
-    Clock: () => ({ nowMs: m(RD, [], F64) }),
+    Clock: () => ({ nowMs: m(RD, [], F64), sleep: mo(m(PORT_FX, [F64], gen("Promise", VOID))) }),
     Random: () => RANDOM,
     Fs: () => FS,
     Alloc: () => ({}),
@@ -103,6 +109,9 @@ export function opaqueMembers(name: string): Members {
     // §15.2: `isolate` never reaches callSig; expr.ts checks the call itself (E2011) because the
     // argument is a function *name*, not a value. This entry only lets member() resolve the name.
     Spawn: () => ({ isolate: m(PORT_FX, [UNKNOWN], VOID) }),
+    // §15.5: `open` is checked in expr.ts (audioOpenCall, E2013) because `render` is a function name.
+    Audio: () => AUDIO,
+    AudioStream: () => ({ sampleRate: prop(num("u32")), channels: prop(num("u32")), close: mo(m(PORT_FX, [], gen("Promise", VOID))), disposeAsync: mo(m(PORT_FX, [], gen("Promise", VOID))), isOpen: mo(m(RD, [], BOOL)) }),
     JsRef: () => ({}),
     Js: () => {
       const J = opaque("JsRef"), jr = result(J, ERROR_RECORD);
@@ -111,7 +120,7 @@ export function opaqueMembers(name: string): Members {
         // Q128: the callback gets its one argument from JS, checked like `decode` does.
         callback: m(RD, [fn([result({ k: "tparam", p: A }, ERROR_RECORD)], VOID)], J, { tparams: [A], tcheck: "cast" }),
         call: m(WR, [J, gen("Array", J)], jr), get: m(RD, [J, STR], jr), await: m(WR, [J], gen("Promise", jr)),
-        decode: m(RD, [J], result({ k: "tparam", p: T }, ERROR_RECORD), { tparams: [T], tcheck: "cast" }), encode: m(RD, [{ k: "tparam", p: U }], J, { tparams: [U], tcheck: "cast" }), // Q128
+        decode: m(RD, [J], result({ k: "tparam", p: T }, ERROR_RECORD), { tparams: [T], tcheck: "cast" }), encode: m(RD, [{ k: "tparam", p: U }], J, { tparams: [U], tcheck: "codec" }), // Q128
       };
     },
     Test: () => {
@@ -123,10 +132,11 @@ export function opaqueMembers(name: string): Members {
         traps: m(RD, [STR, fn([], VOID)], VOID, { tcheck: "trap" }),
       }, mo);
     },
-    FakeClock: () => ({ nowMs: m(RD, [], F64), advance: m(WR, [F64], VOID) }),
+    FakeClock: () => ({ nowMs: m(RD, [], F64), advance: m(WR, [F64], VOID), sleep: mo(m(PORT_FX, [F64], gen("Promise", VOID))) }),
     SeededRandom: () => RANDOM,
     MemoryLog: () => ({ ...LOG, entries: m(RD, [], gen("Array", record([ro("level", { k: "union", members: [lit("info"), lit("warn"), lit("error")] }), ro("message", STR)]))) }),
     FakeFs: () => FS,
+    FakeAudio: () => ({ ...AUDIO, renderFrames: mo(m(PORT_FX, [USIZE], gen("Array", num("f32")))) }),
   };
   return Object.hasOwn(table, name) ? table[name]!() : {};
 }
@@ -258,7 +268,7 @@ export function nsMembers(ns: string): Record<string, Member | "variadic"> {
     }, mo);
     case "JSON": return {
       parse: mo(m(RD, [STR], result(UNKNOWN, ERROR_RECORD))), // Q035
-      stringify: mo(m(RD, [tT], STR, { tparams: [T], tcheck: "cast" })),
+      stringify: mo(m(RD, [tT], STR, { tparams: [T], tcheck: "codec" })),
     };
     case "String": return { fromCodePoint: mo(m(RD, [num("u32")], STR)) };
     case "Promise": return { all: mo(m(RD, [gen("Array", gen("Promise", tT))], gen("Promise", gen("Array", tT)), { tparams: [T] })) };
@@ -268,13 +278,22 @@ export function nsMembers(ns: string): Record<string, Member | "variadic"> {
     case "Pool": return { create: m(RD, [opaque("Alloc"), USIZE], gen("Pool", tT), { tparams: [T], tcheck: "copy" }) };
     case "Arena": return { create: m(RD, [opaque("Alloc"), USIZE], gen("Arena")) };
     case "Ring": return { create: m(RD, [opaque("Alloc"), USIZE], record([{ name: "tx", type: gen("RingTx", tT), readonly: false }, { name: "rx", type: gen("RingRx", tT), readonly: false }], true), { tparams: [T], tcheck: "ring" }) }; // §15.1 (Q199)
-    case "OwnedCell": return { create: m(RD, [tT], gen("OwnedCell", tT), { tparams: [T] }) };
-    case "Ptr": return { box: m(WR, [opaque("Alloc"), tT], gen("Ptr", tT), { tparams: [T], tcheck: "box" }) }; // §14.4
+    case "OwnedCell": return { create: m(RD, [tT], gen("OwnedCell", tT), { tparams: [T], tcheck: "owned" }) };
+    case "Ptr": {
+      const T2 = newTParam("T"), tT2: Type = { k: "tparam", p: T2 };
+      const T3 = newTParam("T"), tT3: Type = { k: "tparam", p: T3 };
+      return {
+        box: m(WR, [opaque("Alloc"), tT], gen("Ptr", tT), { tparams: [T], tcheck: "box" }),
+        null: m(RD, [], gen("Ptr", tT2), { tparams: [T2], tcheck: "ptrnull" }),
+        sizeOf: m(RD, [], USIZE, { tparams: [T3], tcheck: "ptrsizeof" }),
+      }; // §14.4, SPEC-v1 §9
+    }
     case "CHandle": return { create: m(RD, [gen("Ptr", tT)], gen("CHandle", tT), { tparams: [T], tcheck: "chandle" }) }; // §14.5
     case "FakeClock": return { create: mo(m(RD, [F64], opaque("FakeClock"))) };
     case "SeededRandom": return { create: mo(m(RD, [num("u32")], opaque("SeededRandom"))) };
     case "MemoryLog": return { create: mo(m(RD, [], opaque("MemoryLog"))) };
     case "FakeFs": return { create: mo(m(RD, [], opaque("FakeFs"))) };
+    case "FakeAudio": return { create: mo(m(RD, [], opaque("FakeAudio"))) };
     case "TestAlloc": return { create: mo(m(RD, [], opaque("Alloc"))) };
   }
   return {};

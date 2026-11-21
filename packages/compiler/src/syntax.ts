@@ -1,7 +1,7 @@
 // Phase P1 (Q003): the syntax allowlist. Every node kind is accepted only by an explicit case below;
 // anything else falls to a default branch that reports E1000. Anchors follow docs/DIAGNOSTICS.md.
 import { dirname } from "node:path";
-import { BUILTIN_NAMES } from "./builtins.ts";
+import { BUILTIN_NAMES, CAPABILITY_NAMES } from "./builtins.ts";
 import type { Diagnostic } from "./diagnostics.ts";
 import { DETMATH_PATH } from "./detmath.ts";
 import { canonPath } from "./modules.ts";
@@ -15,7 +15,7 @@ const E1000_TYPE_NAMES = new Set([
   "Uppercase", "Lowercase", "Capitalize", "Uncapitalize", "NoInfer",
 ]);
 /** Q123: names the emitted strict-mode ESM cannot bind (reserved words, `eval` / `arguments`). */
-const RESERVED_WORDS = new Set(["implements", "interface", "let", "package", "private", "protected", "public", "static", "yield", "await", "enum", "eval", "arguments"]);
+const RESERVED_WORDS = new Set(["implements", "interface", "let", "package", "private", "protected", "public", "static", "yield", "await", "enum", "using", "eval", "arguments"]);
 /** Q123: member names with a special meaning on JS objects and classes. */
 const SPECIAL_MEMBERS = new Set(["__proto__", "constructor", "prototype", "then"]);
 const DIRECTIVES = new Set(["use owned", "use rt"]);
@@ -73,7 +73,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     return { call: c as ts.CallExpression, name: ((c as ts.CallExpression).expression as ts.Identifier).text };
   };
   const declName = (id: ts.Identifier): void => {
-    if (BUILTIN_NAMES.has(id.text)) at("E1000", id, `'${id.text}' is a builtin name`);
+    if (BUILTIN_NAMES.has(id.text) || CAPABILITY_NAMES.has(id.text)) at("E1000", id, `'${id.text}' is a builtin name`);
     else if (RESERVED_WORDS.has(id.text)) at("E1000", id, `'${id.text}' is a reserved word`);
     else if (id.text.startsWith(RUNTIME_GLOBAL)) at("E1000", id, `names starting with '${RUNTIME_GLOBAL}' are reserved`);
   };
@@ -199,22 +199,48 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     const names = cDeclares.get(spec) ?? new Set<string>();
     if (!cDeclares.has(spec)) cDeclares.set(spec, names);
     for (const st of (d.body as ts.ModuleBlock).statements) {
-      if (st.kind !== K.FunctionDeclaration) { e1000(st, "only function declarations in a 'c:' module"); continue; }
-      const f = st as ts.FunctionDeclaration;
-      mods(f, []);
-      if (!f.name) { e1000(f, "a C function without a name"); continue; }
-      if (names.has(f.name.text)) at("E1000", f.name, `declaration merging ('${f.name.text}' declared twice)`);
-      names.add(f.name.text);
-      if (f.typeParameters?.length) at("E1000", f.typeParameters[0]!, "type parameters on a C function");
-      if (f.body) e1000(f, "a C function declaration has no body");
-      params(f.parameters);
-      if (f.type) type(f.type);
+      if (st.kind === K.FunctionDeclaration) {
+        const f = st as ts.FunctionDeclaration;
+        mods(f, []);
+        if (!f.name) { e1000(f, "a C function without a name"); continue; }
+        if (names.has(f.name.text)) at("E1000", f.name, `declaration merging ('${f.name.text}' declared twice)`);
+        names.add(f.name.text);
+        if (f.typeParameters?.length) at("E1000", f.typeParameters[0]!, "type parameters on a C function");
+        if (f.body) e1000(f, "a C function declaration has no body");
+        params(f.parameters);
+        if (f.type) type(f.type);
+      } else if (st.kind === K.VariableStatement) {
+        const vs = st as ts.VariableStatement, dl = vs.declarationList;
+        mods(vs, []);
+        if (!(dl.flags & NodeFlags.Const)) {
+          if (dl.flags & NodeFlags.Let) e1000(dl, "'let' in a 'c:' module");
+          else at("E1001", dl, "'var' is not allowed");
+          continue;
+        }
+        for (const vd of dl.declarations) {
+          if (!isId(vd.name)) { e1000(vd.name, "destructuring in a 'c:' module"); continue; }
+          if (names.has(vd.name.text)) at("E1000", vd.name, `declaration merging ('${vd.name.text}' declared twice)`);
+          names.add(vd.name.text);
+          if (vd.exclamationToken) e1000(vd.exclamationToken, "definite assignment assertion");
+          if (vd.initializer) e1000(vd.initializer, "a C const declaration cannot have an initializer");
+          if (vd.type) type(vd.type);
+        }
+      } else if (st.kind === K.TypeAliasDeclaration) {
+        const ta = st as ts.TypeAliasDeclaration;
+        mods(ta, []);
+        if (names.has(ta.name.text)) at("E1000", ta.name, `declaration merging ('${ta.name.text}' declared twice)`);
+        names.add(ta.name.text);
+        if (ta.typeParameters?.length) at("E1000", ta.typeParameters[0]!, "type parameters on a C struct");
+        type(ta.type);
+      } else {
+        e1000(st, "only function, const, and CStruct type declarations in a 'c:' module");
+      }
     }
   }
 
   function specifierOk(text: string): boolean {
     if (text.startsWith("npm:")) return text.length > 4;
-    return (text.startsWith("./") || text.startsWith("../")) && text.endsWith(".ts");
+    return (text.startsWith("./") || text.startsWith("../")) && text.endsWith(".szigyr");
   }
 
   function importDecl(d: ts.ImportDeclaration): void {
@@ -238,7 +264,14 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       return;
     }
     if (d.moduleSpecifier.kind !== K.StringLiteral || !specifierOk((d.moduleSpecifier as ts.StringLiteral).text)) {
-      at("E7001", d.moduleSpecifier, "module specifier must be './x.ts', '../x.ts' or 'npm:name'");
+      at("E7001", d.moduleSpecifier, "module specifier must be './x.szigyr', '../x.szigyr' or 'npm:name'");
+      if (d.moduleSpecifier.kind === K.StringLiteral) {
+        const s = (d.moduleSpecifier as ts.StringLiteral).text;
+        if (s.startsWith("./") || s.startsWith("../")) {
+          const next = s.endsWith(".ts") ? `${s.slice(0, -3)}.szigyr` : `${s}.szigyr`;
+          fix(`rewrite module specifier to '${next}'`, d.moduleSpecifier.getStart(sf), d.moduleSpecifier.end, JSON.stringify(next));
+        }
+      }
       return;
     }
     const specText = (d.moduleSpecifier as ts.StringLiteral).text;
@@ -326,7 +359,12 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       claim(seen, p.name);
       mods(p, []);
       declName(p.name);
-      if (p.constraint) { if (p.constraint.kind === K.TypeReference) type(p.constraint); else e1000(p.constraint, "this type parameter constraint"); }
+      if (p.constraint) {
+        if (p.constraint.kind === K.TypeReference) type(p.constraint);
+        else if (p.constraint.kind === K.IntersectionType && (p.constraint as ts.IntersectionTypeNode).types.every((c) => c.kind === K.TypeReference)) {
+          for (const c of (p.constraint as ts.IntersectionTypeNode).types) type(c);
+        } else e1000(p.constraint, "this type parameter constraint");
+      }
       if (p.defaultType) e1000(p.defaultType, "default type argument");
     }
   }
@@ -422,13 +460,27 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     type(d.type);
   }
 
-  function varList(list: ts.VariableDeclarationList, where: "module" | "local" | "for-of"): void {
-    if (list.flags & NodeFlags.Using) { e1000(list, "'using'"); return; }
+  function varList(list: ts.VariableDeclarationList, where: "module" | "local" | "for" | "for-of"): void {
+    const isUsing = !!(list.flags & NodeFlags.Using);
+    const isAwaitUsing = (list.flags & NodeFlags.AwaitUsing) === NodeFlags.AwaitUsing;
+    if (isUsing) {
+      if (where !== "local") { e1000(list, isAwaitUsing ? "'await using'" : "'using'"); return; }
+      if (isAwaitUsing && !fc.async) e1000(list, "'await using' outside an async function");
+      for (const d of list.declarations) {
+        if (d.exclamationToken) e1000(d.exclamationToken, "definite assignment assertion");
+        if (isId(d.name)) { declName(d.name); bind(d.name); }
+        else e1000(d.name, "this destructuring");
+        if (d.type) type(d.type);
+        if (!d.initializer) { e1000(d.name, "declaration without initializer"); continue; }
+        expr(d.initializer);
+      }
+      return;
+    }
     const isLet = !!(list.flags & NodeFlags.Let);
     if (!isLet && !(list.flags & NodeFlags.Const)) {
       const s = list.getStart(sf);
       at("E1001", list, "'var' is not allowed");
-      fix(`use '${where === "local" ? "let" : "const"}'`, s, s + 3, where === "local" ? "let" : "const"); // 'let' is not allowed at module level or in for-of
+      fix(`use '${where === "local" || where === "for" ? "let" : "const"}'`, s, s + 3, where === "local" || where === "for" ? "let" : "const"); // 'let' is not allowed at module level or in for-of
       return;
     }
     if (isLet && where === "module") { at("E5002", list, "module-level 'let' is not allowed"); return; }
@@ -523,7 +575,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       case K.DoStatement: loopBody((s as ts.DoStatement).statement); expr((s as ts.DoStatement).expression); return;
       case K.ForStatement: scoped(() => {
         const x = s as ts.ForStatement;
-        if (x.initializer?.kind === K.VariableDeclarationList) varList(x.initializer as ts.VariableDeclarationList, "local");
+        if (x.initializer?.kind === K.VariableDeclarationList) varList(x.initializer as ts.VariableDeclarationList, "for");
         else if (x.initializer) expr(x.initializer as ts.Expression);
         if (x.condition) expr(x.condition);
         if (x.incrementor) { unusedIncs.add(x.incrementor); expr(x.incrementor); }

@@ -1,5 +1,6 @@
 // The only module that imports typescript. Uses typescript 7's unstable sync API (see DECISIONS D005):
 // a tsgo child process parses; we never call the checker or semantic diagnostics.
+import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
@@ -34,24 +35,44 @@ export interface Parser {
   close(): void;
 }
 
+const toVirtual = (p: string): string => (p.endsWith(".szigyr") ? `${p}.ts` : p);
+
+function readDisk(p: string): string | undefined {
+  try { return statSync(p).isFile() ? readFileSync(p, "utf8") : undefined; }
+  catch { return undefined; }
+}
+
 export function createParser(sources?: Record<string, string>): Parser {
   const abs: Record<string, string> = {};
   for (const [p, t] of Object.entries(sources ?? {})) abs[resolve(p)] = t;
-  let api: API | undefined;
+  const vfs = createVirtualFileSystem({});
+  const loaded = new Set<string>();
   const open = new Set<string>();
+  let api: API | undefined;
   return {
     parse(paths) {
       const out = new Map<string, ParsedFile>();
       const want = paths.map((p) => resolve(p));
       if (!want.length) return out;
-      api ??= new API({ cwd: process.cwd(), ...(sources ? { fs: createVirtualFileSystem(abs) } : {}) });
-      for (const p of want) open.add(p);
+      for (const p of want) {
+        const vp = toVirtual(p);
+        if (loaded.has(vp)) continue;
+        const text = sources ? abs[p] : readDisk(p);
+        if (text === undefined) continue;
+        vfs.writeFile!(vp, text);
+        loaded.add(vp);
+        open.add(vp);
+      }
+      if (!open.size) return out;
+      api ??= new API({ cwd: process.cwd(), fs: vfs });
       const snap = api.updateSnapshot({ openFiles: [...open] });
       for (const p of want) {
-        const program = snap.getDefaultProjectForFile(p)?.program;
-        const sf = program?.getSourceFile(p);
+        const vp = toVirtual(p);
+        if (!loaded.has(vp)) continue;
+        const program = snap.getDefaultProjectForFile(vp)?.program;
+        const sf = program?.getSourceFile(vp);
         if (!program || !sf) continue;
-        const syntaxErrors = program.getSyntacticDiagnostics(p).map((d) => ({ start: d.pos, end: d.end, code: d.code, message: d.text }));
+        const syntaxErrors = program.getSyntacticDiagnostics(vp).map((d) => ({ start: d.pos, end: d.end, code: d.code, message: d.text }));
         out.set(p, wrap(p, sf, syntaxErrors));
       }
       return out;

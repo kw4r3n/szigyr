@@ -1,6 +1,0 @@
-// expect: E7001 @ 3:21
-// stage: 2
-import { sin } from "../../packages/std/detmath.ts";
-export function f(x: f64): f64 {
-  return sin(x);
-}

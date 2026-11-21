@@ -19,7 +19,7 @@ function project(files: Record<string, string>): string {
     mkdirSync(dirname(join(dir, p)), { recursive: true });
     writeFileSync(join(dir, p), t);
   }
-  return join(dir, "main.ts");
+  return join(dir, "main.szigyr");
 }
 
 const HEAD = `declare module "c:stscb:stscb.h" {
@@ -35,7 +35,7 @@ import { stscb_call, stscb_cell, stscb_reset_stats, stscb_stat_n, stscb_stat } f
 const withDecl = (decl: string, name: string): string => HEAD.replace("}\nimport {", `  ${decl}\n}\nimport { ${name} } from "c:stscb:stscb.h";\nimport {`);
 
 /** A program whose main arms the fixture: after `delay` ms, a fixture thread calls bump twice on the cell; then `rest` runs. */
-const armed = (delay: number, rest: string, extra = ""): string => project({ "main.ts": withDecl("function stscb_start(ffi: Ffi, f: Ptr<(ud: Ptr<void>, x: i32) => i32>, ud: Ptr<void>, x: i32, delay: i32, after: Ptr<(ud: Ptr<void>, x: i32) => i32>, aud: Ptr<void>): void;", "stscb_start") + `
+const armed = (delay: number, rest: string, extra = ""): string => project({ "main.szigyr": withDecl("function stscb_start(ffi: Ffi, f: Ptr<(ud: Ptr<void>, x: i32) => i32>, ud: Ptr<void>, x: i32, delay: i32, after: Ptr<(ud: Ptr<void>, x: i32) => i32>, aud: Ptr<void>): void;", "stscb_start") + `
 function bump(ud: Ptr<void>, x: i32): i32 {
   "use rt";
   "use unsafe";
@@ -59,7 +59,7 @@ ${rest}
 
 /** Joins the armed fixture thread and returns "runs n v0 v1": bump's runs, then what the fixture got back. */
 async function readCell(): Promise<string> {
-  const r = await run(project({ "main.ts": withDecl("function stscb_join(ffi: Ffi): void;", "stscb_join") + `
+  const r = await run(project({ "main.szigyr": withDecl("function stscb_join(ffi: Ffi): void;", "stscb_join") + `
 type S = Struct<{ runs: i32; n: i32; v0: i32; v1: i32 }>;
 function read(ffi: Ffi): S {
   "use owned";
@@ -80,7 +80,7 @@ export function main(sys: System): void {
 
 describe("cfn and the end flag", () => {
   it("a trapping callback answers zero, and after the flag the callback is not run", async () => {
-    const a = project({ "main.ts": HEAD + `
+    const a = project({ "main.szigyr": HEAD + `
 function bump(ud: Ptr<void>, x: i32): i32 {
   "use rt";
   "use unsafe";
@@ -107,7 +107,7 @@ export function main(sys: System): void {
     expect(ra.stdout).toBe("");
     expect(ra.trap?.code).toBe("T001"); // bump's second call overflowed; delivered as run3 returned (§15.4 (1))
 
-    const b = project({ "main.ts": HEAD + `
+    const b = project({ "main.szigyr": HEAD + `
 type S = Struct<{ runs: i32; n: i32; v0: i32; v1: i32; v2: i32 }>;
 function read(ffi: Ffi): S {
   "use owned";
@@ -138,7 +138,7 @@ export function main(sys: System): void {
   it("a C thread trapping after main's own trap does not displace it (§15.4, D144)", async () => {
     // An npm package blocks the main thread for 1.5 s in the first macrotask after main, so the
     // fixture thread's trap 200 ms after main's panic lands before runNow finishes. Main's trap came first.
-    const a = project({ "main.ts": `import { block } from "npm:blockpkg";\n` + withDecl("function stscb_start(ffi: Ffi, f: Ptr<(ud: Ptr<void>, x: i32) => i32>, ud: Ptr<void>, x: i32, delay: i32, after: Ptr<(ud: Ptr<void>, x: i32) => i32>, aud: Ptr<void>): void;", "stscb_start") + `
+    const a = project({ "main.szigyr": `import { block } from "npm:blockpkg";\n` + withDecl("function stscb_start(ffi: Ffi, f: Ptr<(ud: Ptr<void>, x: i32) => i32>, ud: Ptr<void>, x: i32, delay: i32, after: Ptr<(ud: Ptr<void>, x: i32) => i32>, aud: Ptr<void>): void;", "stscb_start") + `
 function boom(ud: Ptr<void>, x: i32): i32 {
   "use rt";
   "use unsafe";
@@ -175,8 +175,64 @@ export function main(sys: System): void {
 
   it("an isolate trap left from an earlier run does not surface in the next one", async () => {
     rt.noteIsolateTrap({ code: "T006" });
-    const r = await run(project({ "main.ts": `export function main(sys: System): void {\n  sys.log.info("ok");\n}\n` }));
+    const r = await run(project({ "main.szigyr": `export function main(sys: System): void {\n  sys.log.info("ok");\n}\n` }));
     expect(r.trap).toBeNull();
     expect(r.stdout).toBe("ok\n");
+  }, 120000);
+
+  it("Resource.ownWith in C native backend: get, take, LIFO cleanup, and trap unwinding", async () => {
+    const entry = project({
+      "main.szigyr": HEAD + `
+function cleanPtr(cell: Ptr<i32>, p: Ptr<i32>): void {
+  "use owned";
+  "use unsafe";
+  const v = p.unbox();
+  cell.write(cell.read() * 10 + v);
+}
+function runNormal(a: Alloc, ffi: Ffi): i32 {
+  "use owned";
+  "use unsafe";
+  const cell = stscb_cell(ffi);
+  cell.write(0);
+  using r1 = Resource.ownWith<Ptr<i32>, Ptr<i32>>(Ptr.box<i32>(a, 1), cell, cleanPtr);
+  using r2 = Resource.ownWith<Ptr<i32>, Ptr<i32>>(Ptr.box<i32>(a, 2), cell, cleanPtr);
+  using r3 = Resource.ownWith<Ptr<i32>, Ptr<i32>>(Ptr.box<i32>(a, 9), cell, cleanPtr);
+  const g = r1.get().read();
+  const p3 = r3.take();
+  return g + p3.unbox();
+}
+function runTrap(a: Alloc, ffi: Ffi): void {
+  "use owned";
+  "use unsafe";
+  const cell = stscb_cell(ffi);
+  cell.write(0);
+  using r1 = Resource.ownWith<Ptr<i32>, Ptr<i32>>(Ptr.box<i32>(a, 3), cell, cleanPtr);
+  using r2 = Resource.ownWith<Ptr<i32>, Ptr<i32>>(Ptr.box<i32>(a, 4), cell, cleanPtr);
+  if (r1.get().read() === 3 && r2.get().read() === 4) {
+    panic("boom");
+  }
+}
+function readCell(ffi: Ffi): i32 {
+  "use owned";
+  "use unsafe";
+  return stscb_cell(ffi).read();
+}
+export function main(sys: System): void {
+  const s = runNormal(sys.alloc, sys.ffi);
+  sys.log.info(\`\${s}:\${readCell(sys.ffi)}\`);
+  runTrap(sys.alloc, sys.ffi);
+}
+`,
+    });
+    const r = await run(entry, { backend: "c" });
+    expect(r.diagnostics).toEqual([]);
+    expect(r.trap).toMatchObject({ code: "T006" });
+    expect(r.stdout).toBe("10:21\n");
+    const cellEntry = project({
+      "main.szigyr": HEAD + `function readCell(ffi: Ffi): i32 {\n  "use owned";\n  "use unsafe";\n  return stscb_cell(ffi).read();\n}\nexport function main(sys: System): void {\n  sys.log.info(\`\${readCell(sys.ffi)}\`);\n}\n`,
+    });
+    const r2 = await run(cellEntry, { backend: "c" });
+    expect(r2.trap).toBeNull();
+    expect(r2.stdout).toBe("43\n");
   }, 120000);
 });

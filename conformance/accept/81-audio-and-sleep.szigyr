@@ -1,0 +1,50 @@
+// expect: ok
+// stage: 5
+type OscState = Struct<{ phase: f64; freq: f64; rx: RingRx<f64> }>;
+
+function renderOwned(st: Mut<OscState>, out: Mut<Slice<f32>>, frames: usize): void {
+  "use rt";
+  const next = st.rx.pop();
+  if (next !== null) {
+    st.freq = next;
+  }
+  for (let i: usize = 0; i < frames; i += 1) {
+    out[i] = f32(DetMath.sin(st.phase));
+    st.phase = st.phase + st.freq / 48000;
+  }
+}
+
+function renderCopy(freq: f64, out: Mut<Slice<f32>>, frames: usize): void {
+  "use rt";
+  for (let i: usize = 0; i < frames; i += 1) {
+    out[i] = f32(freq * 0.0);
+  }
+}
+
+async function openWithAudio(audio: Audio, rx: RingRx<f64>): Promise<void> {
+  const cfg: AudioConfig = { sampleRate: 48000, channels: 1 };
+  const st: OscState = { phase: 0, freq: 440, rx };
+  const r = await audio.open(cfg, st, renderOwned);
+  if (r.kind === "ok") {
+    const s: AudioStream = r.value;
+    const _sr: u32 = s.sampleRate;
+    const _ch: u32 = s.channels;
+    const _op: boolean = s.isOpen();
+    await s.close();
+  }
+}
+
+export async function main(sys: System): Promise<void> {
+  const { tx, rx } = Ring.create<f64>(sys.alloc, 8);
+  tx.push(880);
+  await sys.clock.sleep(1);
+  await openWithAudio(sys.audio, rx);
+  const fc = FakeClock.create(10);
+  await fc.sleep(25);
+  const fa = FakeAudio.create();
+  const r2 = await fa.open({ sampleRate: 48000, channels: 1 }, 440.0, renderCopy);
+  if (r2.kind === "ok") {
+    const _pcm = fa.renderFrames(64);
+    await r2.value.close();
+  }
+}

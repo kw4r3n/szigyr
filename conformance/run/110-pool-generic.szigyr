@@ -1,0 +1,29 @@
+// expect-output: v=1.5 len=1
+// expect-output: w=2.5 has=true
+// stage: 2
+// open-question: Q188
+function makePool<T extends Copy & Native>(alloc: Alloc, cap: usize): Pool<T> {
+  "use owned";
+  return Pool.create<T>(alloc, cap);
+}
+function putG<T extends Copy & Native>(p: Mut<Pool<T>>, x: T): Handle<T> | null {
+  "use owned";
+  return p.insert(x);
+}
+function readG(p: Ref<Pool<f32>>, h: Handle<f32>): f32 {
+  "use rt";
+  return p.get(h);
+}
+export function main(sys: System): void {
+  const p = makePool<f32>(sys.alloc, 2);
+  const h = putG(p, 1.5);
+  if (h === null) {
+    return;
+  }
+  sys.log.info(`v=${readG(p, h)} len=${p.length}`);
+  const j = putG(p, 2.5);
+  if (j === null) {
+    return;
+  }
+  sys.log.info(`w=${readG(p, j)} has=${p.has(h)}`);
+}

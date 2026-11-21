@@ -11,21 +11,25 @@ export const GEN_ARITY: Record<GenName, number> = {
   Array: 1, ReadonlyArray: 1, Map: 2, Set: 1, Promise: 1, Vec: 1, Slice: 1, Pool: 1, Handle: 1, Arena: 0, ArenaBuf: 1, RingTx: 1, RingRx: 1, Ref: 1, Mut: 1, OwnedCell: 1, Ptr: 1, ConstPtr: 1, CType: 1, CHandle: 1, Port: 2,
 };
 /** Opaque builtin types: authorities (§7.1), Test, JsRef, the fakes (Q038). */
-export const AUTHORITIES = ["System", "Alloc", "Fs", "Clock", "Random", "Log", "Js", "Ffi", "Spawn"] as const; // Ffi: §14.2; Spawn: §15.2
-export const OPAQUE_NAMES = new Set<string>([...AUTHORITIES, "JsRef", "Test", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs"]);
+export const AUTHORITIES = ["System", "Alloc", "Fs", "Clock", "Random", "Log", "Js", "Ffi", "Spawn", "Audio"] as const; // Ffi: §14.2; Spawn: §15.2; Audio: §15.5
+export const OPAQUE_NAMES = new Set<string>([...AUTHORITIES, "JsRef", "Test", "AudioStream", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeAudio"]);
 
 export interface Field { name: string; type: Type; readonly: boolean }
 /** Q127: conditions a type parameter takes on from the positions it is used in, checked on every instantiation. */
 /** `nopromise`: every user type parameter has it (Q130 addendum): a Promise cannot hide behind a type parameter. */
-export type Need = "key" | "copy" | "layout" | "cross" | "crossp" | "field" | "borrow" | "eq" | "nopromise" | "noabuf" | "send" | "noauth";
-/** `owner`: the declaring layer for user type parameters (Q068 b): "managed" ones never take owned types, strict / rt ones may. */
-export interface TParam { name: string; id: number; constraint?: Type; need?: Set<Need>; owner?: "managed" | "strict" | "rt" }
+export type Capability = "Copy" | "Native" | "Owned" | "Send" | "Key" | "Codec";
+export const CAPABILITIES = new Set<Capability>(["Copy", "Native", "Owned", "Send", "Key", "Codec"]);
+/** `owner`: the declaring layer for user type parameters (Q068 b): "managed" ones take owned types only when explicitly bounded; strict / rt ones may. */
+export interface TParam {
+  name: string; id: number; constraint?: Type; caps?: Set<Capability>;
+  owner?: "managed" | "strict" | "rt"; allowOwned?: boolean; inParam?: boolean; noPromise?: boolean;
+}
 /** `min`: builtin optional trailing parameters (Q032). `prefix`: a builtin callback may take a prefix of the parameters. */
 export interface FnType {
   k: "fn"; tparams: TParam[]; params: Type[]; ret: Type; min?: number; prefix?: boolean;
-  /** Builtin call-site conditions: `cast` / `eq` / `copy` constrain the first type argument (Q084, Q086); `trap` checks the code literal (Q058). */
+  /** Builtin call-site conditions: `cast` / `codec` / `owned` / `eq` / `copy` constrain the first type argument (Q084, Q086); `trap` checks the code literal (Q058). */
   /** `box` / `chandle` / `castptr`: the §14.4 / §14.5 conditions on the type argument. */
-  tcheck?: "cast" | "eq" | "copy" | "trap" | "box" | "chandle" | "castptr" | "ring" | "alloc";
+  tcheck?: "cast" | "codec" | "owned" | "eq" | "copy" | "trap" | "box" | "chandle" | "castptr" | "ring" | "alloc" | "ptrnull" | "ptrsizeof";
 }
 
 export interface ClassSym {
@@ -55,7 +59,11 @@ export type Type =
   /** Namespace objects (Q034): only usable as the receiver of a member access. */
   | { k: "ns"; name: string }
   /** `keys()` / `values()` results: only usable as a for-of target (Q032). */
-  | { k: "iter"; elem: Type };
+  | { k: "iter"; elem: Type }
+  /** `Resource.own` / `Resource.ownWith` binding in a `using` declaration (SPEC-v1 §5). */
+  | { k: "resource"; inner: Type }
+  /** C ABI struct declared in `declare module "c:..."` (SPEC-v1 §9). */
+  | { k: "cstruct"; name: string; spec: string; fields: Field[] };
 
 export const ERROR: Type = { k: "error" };
 const prims = new Map<PrimName, Type>();
@@ -99,7 +107,7 @@ export const isErr = (t: Type): boolean => t.k === "error";
 export const unref = (t: Type): Type => (t.k === "gen" && (t.name === "Ref" || t.name === "Mut") ? t.args[0]! : t);
 
 export function field(t: Type, name: string): Field | undefined {
-  return t.k === "record" ? t.fields.find((f) => f.name === name) : undefined;
+  return t.k === "record" || t.k === "cstruct" ? t.fields.find((f) => f.name === name) : undefined;
 }
 /** The `kind` literal of a tagged-union member. */
 export function kindOf(t: Type): string | undefined {
@@ -119,6 +127,11 @@ export const result = (ok: Type, err: Type): Type => union([
   record([ro("kind", { k: "lit", value: "err" }), ro("error", err)]),
 ]);
 export const ERROR_RECORD = record([ro("code", STR), ro("message", STR)]); // IoError, CastError, JsError (§7.1, Q036)
+export const AUDIO_CONFIG_RECORD = record([ro("sampleRate", num("u32")), ro("channels", num("u32"))]); // AudioConfig (§15.5, Q283)
+export const DISPOSABLE_IFACE: IfaceSym = { name: "Disposable", tparams: [], methods: new Map([["dispose", fn([], VOID)]]) };
+export const ASYNC_DISPOSABLE_IFACE: IfaceSym = { name: "AsyncDisposable", tparams: [], methods: new Map([["disposeAsync", fn([], gen("Promise", VOID))]]) };
+export const DISPOSABLE: Type = { k: "iface", iface: DISPOSABLE_IFACE, args: [] };
+export const ASYNC_DISPOSABLE: Type = { k: "iface", iface: ASYNC_DISPOSABLE_IFACE, args: [] };
 
 export function same(a: Type, b: Type): boolean {
   if (a === b) return true;
@@ -128,7 +141,7 @@ export function same(a: Type, b: Type): boolean {
     case "num": return b.k === "num" && a.name === b.name;
     case "lit": return b.k === "lit" && a.value === b.value;
     case "record":
-      return b.k === "record" && a.struct === b.struct && a.fields.length === b.fields.length &&
+      return b.k === "record" && (a.struct === b.struct || (isCopyValueRecord(a) && isCopyValueRecord(b))) && a.fields.length === b.fields.length &&
         a.fields.every((f, i) => { const g = b.fields[i]!; return f.name === g.name && f.readonly === g.readonly && same(f.type, g.type); });
     case "union": return b.k === "union" && a.members.length === b.members.length && a.members.every((m) => b.members.some((n) => same(m, n)));
     case "fn": return b.k === "fn" && a.params.length === b.params.length && a.params.every((p, i) => same(p, b.params[i]!)) && same(a.ret, b.ret);
@@ -138,12 +151,14 @@ export function same(a: Type, b: Type): boolean {
     case "gen": return b.k === "gen" && a.name === b.name && sameArgs(a.args, b.args);
     case "opaque": case "ns": return b.k === a.k && a.name === b.name;
     case "iter": return b.k === "iter" && same(a.elem, b.elem);
+    case "resource": return b.k === "resource" && same(a.inner, b.inner);
+    case "cstruct": return b.k === "cstruct" && a.name === b.name && a.spec === b.spec;
   }
 }
 const sameArgs = (a: Type[], b: Type[]): boolean => a.length === b.length && a.every((x, i) => same(x, b[i]!));
 
 /** Fakes assignable to their authority (Q020-10, Q038). */
-const FAKE_OF: Record<string, string> = { FakeClock: "Clock", SeededRandom: "Random", MemoryLog: "Log", FakeFs: "Fs" };
+const FAKE_OF: Record<string, string> = { FakeClock: "Clock", SeededRandom: "Random", MemoryLog: "Log", FakeFs: "Fs", FakeAudio: "Audio" };
 
 /** Q020. `arg` enables the argument-position conversions (Vec -> Slice). */
 export function assignable(s: Type, t: Type, arg = false): boolean {
@@ -164,6 +179,7 @@ export function assignable(s: Type, t: Type, arg = false): boolean {
     return s.params.every((p, i) => assignable(t.params[i]!, p)) && (assignable(s.ret, t.ret) || (t.ret.k === "prim" && t.ret.name === "void" && !!t.prefix && !(s.ret.k === "gen" && s.ret.name === "Promise")));
   }
   if (s.k === "class" && t.k === "iface") return s.cls.implements.some((i) => same(substClass(i, s), t));
+  if (s.k === "opaque" && s.name === "AudioStream" && t.k === "iface" && t.iface === ASYNC_DISPOSABLE_IFACE) return true;
   if (s.k === "tparam" && s.p.constraint) return assignable(s.p.constraint, t, arg);
   if (s.k === "opaque" && t.k === "opaque") return FAKE_OF[s.name] === t.name;
   return false;
@@ -182,6 +198,7 @@ export function subst(t: Type, m: Map<number, Type>): Type {
     case "fn": return { ...t, params: t.params.map((x) => subst(x, m)), ret: subst(t.ret, m) };
     case "class": case "iface": case "gen": return { ...t, args: t.args.map((x) => subst(x, m)) } as Type;
     case "iter": return { k: "iter", elem: subst(t.elem, m) };
+    case "resource": return { k: "resource", inner: subst(t.inner, m) };
     default: return t;
   }
 }
@@ -194,6 +211,7 @@ export function hasTParam(t: Type, ids: Set<number>): boolean {
     case "fn": return t.params.some((x) => hasTParam(x, ids)) || hasTParam(t.ret, ids);
     case "class": case "iface": case "gen": return t.args.some((x) => hasTParam(x, ids));
     case "iter": return hasTParam(t.elem, ids);
+    case "resource": return hasTParam(t.inner, ids);
     default: return false;
   }
 }
@@ -217,7 +235,7 @@ export function unify(p: Type, a: Type, m: Map<number, Type>, ids: Set<number>):
       return;
     }
     case "gen":
-      if (a.k === "gen" && (a.name === p.name || (p.name === "ReadonlyArray" && a.name === "Array") || (p.name === "Slice" && a.name === "Vec"))) p.args.forEach((x, i) => unify(x, a.args[i]!, m, ids));
+      if (a.k === "gen" && (a.name === p.name || (p.name === "ReadonlyArray" && a.name === "Array") || (p.name === "Slice" && a.name === "Vec") || (p.name === "Ptr" && a.name === "ConstPtr"))) p.args.forEach((x, i) => unify(x, a.args[i]!, m, ids));
       return;
     case "fn":
       if (a.k === "fn") { p.params.forEach((x, i) => { if (a.params[i]) unify(x, a.params[i]!, m, ids); }); unify(p.ret, a.ret, m, ids); }
@@ -229,27 +247,57 @@ export function unify(p: Type, a: Type, m: Map<number, Type>, ids: Set<number>):
       if (a.k === p.k && (a as { args: Type[] }).args.length === p.args.length) p.args.forEach((x, i) => unify(x, (a as { args: Type[] }).args[i]!, m, ids));
       else if (p.k === "iface" && a.k === "class") for (const i of a.cls.implements) { const it = substClass(i, a); if (it.k === "iface" && it.iface === p.iface) unify(p, it, m, ids); }
       return;
+    case "resource":
+      if (a.k === "resource") unify(p.inner, a.inner, m, ids);
+      return;
     default:
   }
 }
 
-/** Copy types (§5.1): numbers, boolean, Copy Structs, unions of Copy types. Plain records count when all-readonly (Q043). */
+/** Whether a type parameter satisfies `cap` from explicit bounds or layer context (SPEC-v1 §3.4). */
+export function tparamHasCap(p: TParam, cap: Capability): boolean {
+  if (p.caps?.has(cap)) return true;
+  if ((cap === "Copy" || cap === "Send" || cap === "Codec") && p.caps?.has("Key")) return true;
+  if (cap === "Native" && (p.caps?.has("Owned") || p.owner === "strict" || p.owner === "rt")) return true;
+  return false;
+}
+/** Whether a type parameter may hold an owned value inside its declaring body. */
+export function tparamMayBeOwned(p: TParam): boolean {
+  if (p.constraint || tparamHasCap(p, "Copy") || tparamHasCap(p, "Key")) return false;
+  return p.owner === "strict" || p.owner === "rt" || tparamHasCap(p, "Owned") || (!!p.allowOwned && tparamHasCap(p, "Native"));
+}
+/** Whether a strict/managed type parameter could possibly be instantiated with an authority (Alloc, etc.). */
+export function tparamMayBeAuthority(p: TParam): boolean {
+  return p.owner !== "rt" && !p.constraint && !p.caps?.has("Native") &&
+    !tparamHasCap(p, "Copy") && !tparamHasCap(p, "Owned") && !tparamHasCap(p, "Send") && !tparamHasCap(p, "Key") && !tparamHasCap(p, "Codec");
+}
+
+/** Copy types (SPEC-v1 §3.3 / §3.4): numbers, boolean, null, string, Copy Structs, unions of Copy types, all-readonly records of Copy types. */
 export function isCopy(t: Type): boolean {
   switch (t.k) {
     case "num": case "lit": return true;
     case "gen": return t.name === "Handle" || t.name === "ArenaBuf" || t.name === "Ptr" || t.name === "ConstPtr"; // Q188: a handle is three u32s, an ArenaBuf four; §14.4: raw pointers are Copy
-    case "prim": return t.name === "boolean" || t.name === "null";
+    case "prim": return t.name === "boolean" || t.name === "null" || t.name === "string";
     case "record": return t.fields.every((f) => f.readonly && isCopy(f.type));
     case "union": return t.members.every(isCopy);
+    case "tparam": return tparamHasCap(t.p, "Copy");
     default: return false;
   }
 }
-/** Owned types (§5.1): non-Copy Structs and Vec. */
+/** Owned types (§5.1): non-Copy Structs and native owned containers. */
 export const isOwned = (t: Type): boolean => (t.k === "gen" && (t.name === "Vec" || t.name === "Pool" || t.name === "Arena" || t.name === "CHandle" || t.name === "RingTx" || t.name === "RingRx")) || (t.k === "record" && t.struct && !isCopy(t)); // CHandle: §14.5
-/**
- * P3: values that move. Owned types, unions holding one, and strict / rt type parameters (Q049; managed ones never are, Q068 b)
- * unless their instantiations cannot be owned: an interface constraint (only classes implement one), or a `key` / `copy` / `eq` condition (Q153).
- */
+/** Types satisfying explicit `Owned` capability (always move-only). */
+export function isOwnedCap(t: Type): boolean {
+  if (t.k === "error") return true;
+  if (t.k === "tparam") return tparamHasCap(t.p, "Owned");
+  if (t.k === "gen") return t.name === "Vec" || t.name === "Pool" || t.name === "Arena" || t.name === "CHandle" || t.name === "RingTx" || t.name === "RingRx";
+  if (t.k === "record" && t.struct) return t.fields.some((f) => !f.readonly || isOwnedCap(f.type));
+  return false;
+}
+/** True when a record has all-readonly Native & Copy fields, where `{ readonly ... }` and `Struct<{ readonly ... }>` normalize to the same type (SPEC-v1 §3.3). */
+export const isCopyValueRecord = (t: Extract<Type, { k: "record" }>): boolean =>
+  t.fields.every((f) => f.readonly && isCopy(f.type) && layerOk(f.type));
+
 /** Q174: an owned value (directly, in a union, or in a record / Struct field). */
 export const holdsOwned = (t: Type): boolean =>
   movesLike(t) || (t.k === "record" && t.fields.some((f) => holdsOwned(f.type))) || (t.k === "union" && t.members.some(holdsOwned));
@@ -275,28 +323,49 @@ export function ownedDeep(t: Type, seen = new Set<object>()): boolean {
       seen.delete(sym); // only the current path is guarded (a self-referencing class)
       return r;
     }
+    case "resource": return ownedDeep(t.inner, seen);
     default: return false;
   }
 }
 
 export function movesLike(t: Type): boolean {
-  if (t.k === "tparam") return (t.p.owner === "strict" || t.p.owner === "rt") && !t.p.constraint && !["key", "copy", "eq"].some((n) => t.p.need?.has(n as Need));
+  if (t.k === "tparam") return tparamMayBeOwned(t.p);
+  if (t.k === "resource") return true;
   return isOwned(t) || (t.k === "union" && t.members.some(movesLike));
 }
 
-const isAuthority = (t: Type): boolean => t.k === "opaque" && (AUTHORITIES as readonly string[]).includes(t.name);
+export const isAuthority = (t: Type): boolean => t.k === "opaque" && (AUTHORITIES as readonly string[]).includes(t.name);
 /** An authority anywhere in `t` (E4006 in rt, §6). */
 export const hasAuthority = (t: Type): boolean =>
-  isAuthority(t) || (t.k === "record" && t.fields.some((f) => hasAuthority(f.type))) || (t.k === "union" && t.members.some(hasAuthority)) || (t.k === "gen" && t.args.some(hasAuthority));
+  isAuthority(t) || (t.k === "record" && t.fields.some((f) => hasAuthority(f.type))) || (t.k === "union" && t.members.some(hasAuthority)) || (t.k === "gen" && t.args.some(hasAuthority)) || (t.k === "resource" && hasAuthority(t.inner));
+/** Native data capability (SPEC-v1 §3.4): strict / rt data types excluding authorities, `void`, and `never` (unless return-only). */
+export function isNative(t: Type, allowNever = false): boolean {
+  switch (t.k) {
+    case "error": case "num": case "lit": return true;
+    case "tparam": return tparamHasCap(t.p, "Native");
+    case "prim": return t.name === "boolean" || t.name === "null" || (allowNever && t.name === "never");
+    case "record": return t.struct ? t.fields.every((f) => isNative(f.type)) : isCopyValueRecord(t);
+    case "union": return t.members.every((m) => isCopy(m) && isNative(m));
+    case "gen": return (!ELEMENT_CONTAINERS.has(t.name) || hasLayout(t.args[0]!)) && (
+      t.name === "Vec" || t.name === "Slice" || t.name === "Pool" || t.name === "Handle" || t.name === "Arena" ||
+      t.name === "ArenaBuf" || t.name === "RingTx" || t.name === "RingRx" || t.name === "Ptr" || t.name === "ConstPtr" ||
+      t.name === "CType" || t.name === "CHandle" || ((t.name === "Ref" || t.name === "Mut") && isNative(t.args[0]!))
+    );
+    default: return false;
+  }
+}
 /** §3.3 (Q040 - Q043): the types strict / rt code may use. Authorities are strict-only (rt: E4006). */
 export function layerOk(t: Type): boolean {
   switch (t.k) {
-    case "error": case "num": case "lit": case "tparam": return true;
+    case "error": case "num": case "lit": return true;
+    case "tparam": return tparamHasCap(t.p, "Native");
     case "prim": return t.name === "boolean" || t.name === "null" || t.name === "void" || t.name === "never";
-    case "record": return t.struct ? t.fields.every((f) => layerOk(f.type)) : isCopy(t); // Q043
+    case "record": return t.struct ? t.fields.every((f) => layerOk(f.type)) : isCopy(t) && t.fields.every((f) => layerOk(f.type)); // Q043
     case "union": return t.members.every((m) => isCopy(m) && layerOk(m));
     case "gen": return (!ELEMENT_CONTAINERS.has(t.name) || hasLayout(t.args[0]!)) && (t.name === "Vec" || t.name === "Slice" || t.name === "Pool" || t.name === "Handle" || t.name === "Arena" || t.name === "ArenaBuf" || t.name === "RingTx" || t.name === "RingRx" || t.name === "Ptr" || t.name === "ConstPtr" || t.name === "CType" || t.name === "CHandle" || ((t.name === "Ref" || t.name === "Mut") && layerOk(t.args[0]!))); // Q229, §14: pointer types are layer-legal; their positions are E4007 / E4008
     case "opaque": return isAuthority(t);
+    case "resource": return layerOk(t.inner);
+    case "cstruct": return true;
     default: return false;
   }
 }
@@ -314,20 +383,26 @@ export function show(t: Type): string {
     case "tparam": return t.p.name;
     case "gen": return `${t.name}<${t.args.map(show).join(", ")}>`;
     case "iter": return `Iterator<${show(t.elem)}>`;
+    case "resource": return `Resource<${show(t.inner)}>`;
+    case "cstruct": return t.name;
   }
 }
 
-/** `Map` key / `Set` element types (§3.2, Q081). Type parameters cannot be checked here. */
-const keyOk = (t: Type): boolean =>
-  t.k === "error" || t.k === "tparam" || t.k === "num" || t.k === "lit" || (t.k === "prim" && (t.name === "string" || t.name === "boolean")) ||
-  (t.k === "union" && t.members.every((m) => m.k === "lit"));
+/** `Map` key / `Set` element types (§3.2, SPEC-v1 §3.4 Key). */
+export function keyOk(t: Type): boolean {
+  if (t.k === "error") return true;
+  if (t.k === "tparam") return tparamHasCap(t.p, "Key");
+  return t.k === "num" || t.k === "lit" || (t.k === "prim" && (t.name === "string" || t.name === "boolean")) ||
+    (t.k === "union" && t.members.every((m) => m.k === "lit"));
+}
 
-/** Types `cast<T>`, `js.decode<T>` and `JSON.stringify<T>` accept (§3.2 `unknown`, Q084): primitives, closed records, tagged / literal unions, `Array`, `T | null`. */
+/** Types `cast<T>`, `Js.decode<T>`, `Js.encode<T>`, and `JSON.stringify<T>` accept (SPEC-v1 §3.4 Codec). */
 export function castable(t: Type): boolean {
   switch (t.k) {
-    case "num": case "lit": return true;
+    case "error": case "num": case "lit": return true;
+    case "tparam": return tparamHasCap(t.p, "Codec");
     case "prim": return t.name === "boolean" || t.name === "string" || t.name === "null";
-    case "record": return !t.struct && t.fields.every((f) => castable(f.type));
+    case "record": return (!t.struct || t.fields.every((f) => f.readonly)) && t.fields.every((f) => castable(f.type));
     case "union": return t.members.every(castable);
     case "gen": return t.name === "Array" && castable(t.args[0]!);
     default: return false;
@@ -335,9 +410,11 @@ export function castable(t: Type): boolean {
 }
 
 /** `Test.eq` operands (§9.2, Q086): no owned values, function values or authorities anywhere inside. */
-function comparable(t: Type): boolean {
+export function comparable(t: Type): boolean {
   switch (t.k) {
-    case "fn": case "opaque": case "ns": case "iter": return false;
+    case "error": return true;
+    case "tparam": return tparamHasCap(t.p, "Copy");
+    case "fn": case "opaque": case "ns": case "iter": case "cstruct": return false;
     case "record": return !isOwned(t) && t.fields.every((f) => comparable(f.type));
     case "union": return t.members.every(comparable);
     case "gen": return t.name !== "Vec" && t.name !== "Slice" && t.name !== "Pool" && t.name !== "Arena" && t.name !== "OwnedCell" && t.name !== "Promise" && t.name !== "RingTx" && t.name !== "RingRx" && t.args.every(comparable);
@@ -345,8 +422,37 @@ function comparable(t: Type): boolean {
   }
 }
 
-/** Struct field types (§3.3, Q086): numbers, boolean, Struct, Vec. */
-export const structField = (t: Type): boolean => t.k === "error" || t.k === "tparam" || t.k === "num" || isBool(t) || (t.k === "record" && t.struct) || (t.k === "gen" && (t.name === "Vec" || t.name === "Pool" || t.name === "Handle" || t.name === "Arena" || t.name === "ArenaBuf" || t.name === "RingTx" || t.name === "RingRx" || t.name === "CHandle" || t.name === "Ptr" || t.name === "ConstPtr" || t.name === "CType")); // Arena as a field: Q214; CHandle as a field: §14.5. Ptr / CType in a field are the checker's E4008 / E4007, not E4002
+/** Struct field types (SPEC-v1 §3.3: Native non-authority values). */
+export function structField(t: Type): boolean {
+  switch (t.k) {
+    case "error": case "num": case "lit": return true;
+    case "tparam": return tparamHasCap(t.p, "Native");
+    case "prim": return t.name === "boolean" || t.name === "null";
+    case "record": return t.struct ? t.fields.every((f) => structField(f.type)) : isCopyValueRecord(t);
+    case "union": return t.members.every((m) => isCopy(m) && structField(m));
+    case "gen":
+      return t.name === "Vec" || t.name === "Pool" || t.name === "Handle" || t.name === "Arena" || t.name === "ArenaBuf" ||
+        t.name === "RingTx" || t.name === "RingRx" || t.name === "CHandle" || t.name === "Ptr" || t.name === "ConstPtr" || t.name === "CType";
+    default: return false;
+  }
+}
+
+/** Whether `t` satisfies capability `cap` (SPEC-v1 §3.4). */
+export function hasCap(t: Type, cap: Capability, allowNever = false): boolean {
+  if (t.k === "error") return true;
+  switch (cap) {
+    case "Copy": return isCopy(t);
+    case "Native": return isNative(t, allowNever);
+    case "Owned": return isOwnedCap(t);
+    case "Send": return sendable(t);
+    case "Key": return keyOk(t);
+    case "Codec": return castable(t);
+  }
+}
+
+/** Whether `Ref<t>` / `Mut<t>` is allowed (§5.5 / §3.4). */
+export const borrowOk = (t: Type): boolean =>
+  t.k === "error" || isOwned(t) || (t.k === "gen" && t.name === "Slice") || (t.k === "tparam" && tparamHasCap(t.p, "Owned"));
 
 /** Integer ranges (§3.1). */
 const INT_RANGE: Partial<Record<NumName, [number, number]>> = {
@@ -362,15 +468,8 @@ export function literalFits(value: number, t: NumName): boolean {
   return true;
 }
 
-/** §10.2 (Q229): `t` has a byte layout, so it can be a container element in strict / rt. A type that mentions a type
- * parameter is judged where the parameter is instantiated (the "layout" need). `null` alone and anything built on it have none. */
+/** §10.2 (Q229): `t` has a byte layout, so it can be a container element in strict / rt. */
 export const hasLayout = (t: Type): boolean => t.k === "error" || collectTParams(t).length > 0 || layout(t) !== undefined;
-/** Q229: type parameters inside a container element need a layout where they are instantiated. `checkInsts` enforces
- * it only for strict / rt generic functions (the owner is set after the signature is resolved); a managed generic may be
- * instantiated with `null` because a managed container never reaches C. */
-export function demandLayout(t: Type): void {
-  for (const p of collectTParams(t)) (p.need ??= new Set()).add("layout");
-}
 /** The element-carrying containers of §3.3 / §15.1: strict / rt code lays their elements out per §10.2. */
 export const ELEMENT_CONTAINERS = new Set(["Vec", "Slice", "Pool", "Handle", "ArenaBuf", "RingTx", "RingRx"]);
 
@@ -378,12 +477,11 @@ export const ELEMENT_CONTAINERS = new Set(["Vec", "Slice", "Pool", "Handle", "Ar
 export const hasLoneSurrogate = (s: string): boolean => /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(s);
 
 /** §3.3 (Q233): whether a parameter (`ret` false) or return (`ret` true) type of a strict / rt function can cross the
- * managed / C boundary. `null` as a value has no C representation there (the `Result` payload and `T | null` payload
- * included), and `never` is a return type only. A type parameter is judged where it is instantiated (the "cross" need). */
+ * managed / C boundary (`never` is return-only). */
 export function crossOk(t: Type, ret = false): boolean {
   t = unref(t);
   switch (t.k) {
-    case "prim": return t.name === "null" ? false : t.name === "never" ? ret : true;
+    case "prim": return t.name === "never" ? ret : true;
     case "record": return t.fields.every((f) => crossOk(f.type));
     case "union": { const n = nonNull(t); return n ? crossOk(n, ret) : t.members.every((m) => crossOk(m)); }
     default: return true;
@@ -398,25 +496,6 @@ export function crossTParams(t: Type, out: TParam[] = []): TParam[] {
   return out;
 }
 
-/** Q127: whether a type that is not a type parameter meets a condition. */
-export function needOk(n: Need, t: Type): boolean {
-  switch (n) {
-    case "key": return keyOk(t);
-    case "copy": return t.k === "error" || isCopy(t);
-    case "layout": return hasLayout(t);
-    case "cross": return crossOk(t, true);
-    case "crossp": return crossOk(t);
-    case "field": return structField(t);
-    case "borrow": return t.k === "error" || isOwned(t) || (t.k === "gen" && t.name === "Slice");
-    case "eq": return comparable(t);
-    case "noabuf": return t.k === "error" || !hasArenaBuf(t);
-    case "send": return sendable(t);
-    case "nopromise": return !promiseIn(t);
-    case "noauth": return !hasAuthority(t);
-  }
-}
-/** Needs that propagate structurally into type parameters nested inside composite types (records, unions, generics). */
-export const DEEP_NEEDS = new Set<Need>(["layout", "cross", "crossp", "eq", "noabuf", "send", "nopromise", "noauth"]);
 /** All type parameters occurring anywhere inside `t`. */
 export function collectTParams(t: Type, out: TParam[] = []): TParam[] {
   switch (t.k) {
@@ -425,25 +504,20 @@ export function collectTParams(t: Type, out: TParam[] = []): TParam[] {
     case "union": for (const m of t.members) collectTParams(m, out); break;
     case "fn": for (const p of t.params) collectTParams(p, out); collectTParams(t.ret, out); break;
     case "gen": case "class": case "iface": for (const a of t.args) collectTParams(a, out); break;
+    case "resource": collectTParams(t.inner, out); break;
   }
   return out;
 }
 /** A Promise anywhere in `t` except behind a function type (calling the function is checked where it happens). */
-function promiseIn(t: Type): boolean {
+export function promiseIn(t: Type): boolean {
   switch (t.k) {
     case "gen": return t.name === "Promise" || t.args.some(promiseIn);
     case "union": return t.members.some(promiseIn);
     case "record": return t.fields.some((f) => promiseIn(f.type));
     case "class": return t.args.some(promiseIn);
+    case "resource": return promiseIn(t.inner);
     default: return false;
   }
-}
-/** `t` meets `n`, or is a type parameter, which then requires `n` of whatever instantiates it (Q127). */
-export function demand(t: Type, n: Need): boolean {
-  if (t.k === "tparam") { (t.p.need ??= new Set()).add(n); return true; }
-  if (!needOk(n, t)) return false;
-  if (DEEP_NEEDS.has(n)) for (const p of collectTParams(t)) (p.need ??= new Set()).add(n);
-  return true;
 }
 
 /** §14.4 / §7.3: `t` mentions Ptr, ConstPtr or CHandle anywhere (function types included). */
@@ -452,11 +526,13 @@ export function demand(t: Type, n: Need): boolean {
  * so the safe side can hold and pass the handle without ever reading the pointer (Q218). */
 export function hasRawPtr(t: Type): boolean {
   switch (t.k) {
-    case "gen": return t.name === "Ptr" || t.name === "ConstPtr" || (t.name !== "CHandle" && t.args.some(hasRawPtr));
+    case "cstruct": return true;
+    case "gen": return t.name === "Ptr" || t.name === "ConstPtr" || t.name === "CType" || (t.name !== "CHandle" && t.args.some(hasRawPtr));
     case "record": return t.fields.some((f) => hasRawPtr(f.type));
     case "union": return t.members.some(hasRawPtr);
     case "fn": return t.params.some(hasRawPtr) || hasRawPtr(t.ret);
     case "class": case "iface": return t.args.some(hasRawPtr);
+    case "resource": return hasRawPtr(t.inner);
     default: return false;
   }
 }
@@ -467,51 +543,34 @@ export function hasPtr(t: Type): boolean {
     case "union": return t.members.some(hasPtr);
     case "fn": return t.params.some(hasPtr) || hasPtr(t.ret);
     case "class": case "iface": return t.args.some(hasPtr);
+    case "resource": return hasPtr(t.inner);
     default: return false;
   }
 }
 /** §15.1 (Q210): `t` is or contains an `ArenaBuf`, which a ring element may not be (the endpoints are isolate-sendable). */
-function hasArenaBuf(t: Type): boolean {
+export function hasArenaBuf(t: Type): boolean {
   switch (t.k) {
     case "gen": return t.name === "ArenaBuf" || t.args.some(hasArenaBuf);
     case "record": return t.fields.some((f) => hasArenaBuf(f.type));
     case "union": return t.members.some(hasArenaBuf);
     case "fn": return t.params.some(hasArenaBuf) || hasArenaBuf(t.ret);
     case "class": case "iface": return t.args.some(hasArenaBuf);
-    default: return false;
-  }
-}
-/** §15.2: `t` is, or contains, a type that may not cross to an isolate: the arena / pool family
- * (their ids are per-isolate), a CHandle, or one of the types §15.2 lists as unsendable. */
-function hasUnsendable(t: Type): boolean {
-  switch (t.k) {
-    case "gen": return t.name === "Pool" || t.name === "Arena" || t.name === "ArenaBuf" || t.name === "CHandle" || t.name === "Ptr" || t.name === "ConstPtr" || t.name === "CType" ||
-      t.name === "Array" || t.name === "ReadonlyArray" || t.name === "Map" || t.name === "Set" || t.name === "Promise" ||
-      t.name === "Port" || t.name === "OwnedCell" || t.args.some(hasUnsendable);
-    case "record": return t.fields.some((f) => hasUnsendable(f.type));
-    case "union": return t.members.some(hasUnsendable);
-    case "fn": case "class": case "iface": case "opaque": return true;
-    case "prim": return t.name === "unknown";
+    case "resource": return hasArenaBuf(t.inner);
     default: return false;
   }
 }
 
-/** §15.2 (Q200, Q210): the types a `Port<S, R>` may carry. A type parameter defers to the `send`
- * condition (Q127), as do type parameters in the positions this type's sendability depends on. */
+/** §15.2 / SPEC-v1 §3.4 (Send): types a `Port<S, R>` may carry. */
 export function sendable(t: Type): boolean {
   switch (t.k) {
     case "error": return true;
-    case "tparam": return demand(t, "send");
+    case "tparam": return tparamHasCap(t.p, "Send");
     case "num": case "lit": return true;
     case "prim": return t.name === "boolean" || t.name === "null" || t.name === "string";
     case "union": return t.members.every(sendable);
-    case "record": { // a Struct's type parameters get the `send` demand like a Vec's (Q236); no short-circuit, so every field is visited
-      if (t.struct) return t.fields.map((f) => sendable(f.type)).every(Boolean) && !hasUnsendable(t);
-      return t.fields.every((f) => f.readonly && sendable(f.type));
-    }
+    case "record": return t.struct ? t.fields.every((f) => sendable(f.type)) : t.fields.every((f) => f.readonly && sendable(f.type));
     case "gen":
-      if (t.name === "Vec" || t.name === "RingTx" || t.name === "RingRx") { t.args.forEach((a) => void sendable(a)); return !hasUnsendable(t); }
-      return t.name === "Handle" && !hasUnsendable(t);
+      return t.name === "Arena" || ((t.name === "Vec" || t.name === "Pool" || t.name === "Handle" || t.name === "RingTx" || t.name === "RingRx") && t.args.every(sendable));
     default: return false;
   }
 }
@@ -519,9 +578,10 @@ export function sendable(t: Type): boolean {
 /** §14.4: types that may sit behind Ptr / ConstPtr. Function types are Ptr-only; the caller decides those. */
 export function ptrTargetOk(t: Type): boolean {
   switch (t.k) {
-    case "error": case "num": case "tparam": return true;
+    case "error": case "num": case "cstruct": return true;
+    case "tparam": return tparamHasCap(t.p, "Native");
     case "prim": return t.name === "boolean" || t.name === "void" || t.name === "null";
-    case "record": return t.struct ? t.fields.every((f) => ptrTargetOk(f.type)) : isCopy(t);
+    case "record": return t.struct ? t.fields.every((f) => ptrTargetOk(f.type)) : isCopyValueRecord(t);
     case "union": return t.members.every(ptrTargetOk);
     case "gen":
       return t.name === "CType" || t.name === "Vec" || t.name === "Pool" || t.name === "Handle" || t.name === "Arena" || t.name === "ArenaBuf" || t.name === "RingTx" || t.name === "RingRx" || t.name === "CHandle" ||
@@ -529,10 +589,15 @@ export function ptrTargetOk(t: Type): boolean {
     default: return false;
   }
 }
-/** §14.4 (Q209, Q210): types `Ptr.box` accepts: Copy types, CHandle, and Structs whose fields are all boxable. */
+/** §14.4 (Q209, Q210): types `Ptr.box` accepts: Copy+Native types, CHandle, and Structs whose fields are all boxable. */
 export function boxable(t: Type): boolean {
-  if (isCopy(t)) return true;
+  if (t.k === "error") return true;
+  if (t.k === "tparam") return tparamHasCap(t.p, "Copy") && tparamHasCap(t.p, "Native");
+  if (isCopy(t) && isNative(t)) return true;
   if (t.k === "gen" && (t.name === "CHandle" || t.name === "RingTx" || t.name === "RingRx")) return true; // ring endpoints: Q209
   if (t.k === "record" && t.struct) return t.fields.every((f) => boxable(f.type));
   return false;
 }
+/** SPEC-v1 §3.4 (`Native & Send`): types `audio.open` moves to the real-time audio callback. */
+export const audioStateOk = (t: Type): boolean =>
+  t.k === "error" || (isNative(t) && sendable(t) && !hasPtr(t) && !hasArenaBuf(t));

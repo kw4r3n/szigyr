@@ -11,50 +11,50 @@ const sts = (...a: string[]) => { const r = spawnSync("node", [CLI, ...a], { enc
 const jsonLines = (s: string): any[] => s.trim().split("\n").map((l) => JSON.parse(l));
 
 it("check --json prints one JSON diagnostic per line and exits 1", () => {
-  const r = sts("check", "--json", `${CONF}reject/E2003-default-f64-let-vs-usize.ts`);
+  const r = sts("check", "--json", `${CONF}reject/E2003-default-f64-let-vs-usize.szigyr`);
   expect(r.code).toBe(1);
   const [d] = jsonLines(r.out);
   expect(d).toMatchObject({ code: "E2003", range: { start: { line: 6, col: 12 } } });
 });
 
 it("check exits 0 with no output on an accepted file", () => {
-  expect(sts("check", `${CONF}accept/02-record-readonly.ts`)).toEqual({ code: 0, out: "", err: "" });
+  expect(sts("check", `${CONF}accept/02-record-readonly.szigyr`)).toEqual({ code: 0, out: "", err: "" });
 });
 
 it("run passes the program's stdout through", () => {
-  const r = sts("run", `${CONF}run/01-arith-basic.ts`);
+  const r = sts("run", `${CONF}run/01-arith-basic.szigyr`);
   expect(r.code).toBe(0);
   expect(r.out).toContain("22");
 });
 
 it("run exits 3 on a trap and reports it as JSON on stderr (Q060)", () => {
-  const r = sts("run", "--json", `${CONF}run/26-trap-div-by-zero.ts`);
+  const r = sts("run", "--json", `${CONF}run/26-trap-div-by-zero.szigyr`);
   expect(r.code).toBe(3);
   expect(jsonLines(r.err)[0]).toMatchObject({ kind: "trap", code: "T007" });
 });
 
 it("run exits 1 with diagnostics on stderr and empty stdout when the file does not check", () => {
-  const r = sts("run", "--json", `${CONF}reject/E1001-var-in-function.ts`);
+  const r = sts("run", "--json", `${CONF}reject/E1001-var-in-function.szigyr`);
   expect(r).toMatchObject({ code: 1, out: "" });
   expect(jsonLines(r.err)[0].code).toBe("E1001");
 });
 
 it("test reports each test and a summary; failures exit 1", () => {
-  const ok = sts("test", "--json", `${CONF}accept/02-record-readonly.ts`);
+  const ok = sts("test", "--json", `${CONF}accept/02-record-readonly.szigyr`);
   expect(ok.code).toBe(0);
   expect(jsonLines(ok.out)).toEqual([
     expect.objectContaining({ kind: "test", name: "records", ok: true }),
     { kind: "summary", passed: 1, failed: 0 },
   ]);
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-`));
-  writeFileSync(join(dir, "t.ts"), 'test("bad", (t: Test) => {\n  t.ok(false);\n});\n');
-  const bad = sts("test", "--json", join(dir, "t.ts"));
+  writeFileSync(join(dir, "t.szigyr"), 'test("bad", (t: Test) => {\n  t.ok(false);\n});\n');
+  const bad = sts("test", "--json", join(dir, "t.szigyr"));
   expect(bad.code).toBe(1);
   expect(jsonLines(bad.out)[0]).toMatchObject({ kind: "test", name: "bad", ok: false });
 });
 
 it("usage errors and missing files exit 2 with a message", () => {
-  for (const a of [[], ["nope"], ["check"], ["check", "/no/such.ts"], ["run", "--bogus", "x"]]) {
+  for (const a of [[], ["nope"], ["check"], ["check", "/no/such.szigyr"], ["run", "--bogus", "x"]]) {
     const r = sts(...a);
     expect(r.code).toBe(2);
     expect(r.err).toContain(CLI_NAME);
@@ -63,20 +63,20 @@ it("usage errors and missing files exit 2 with a message", () => {
 
 it("run without an exported main is a CLI error, exit 2 (Q061)", () => {
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-`));
-  writeFileSync(join(dir, "m.ts"), "export function f(): void {}\n");
-  expect(sts("run", join(dir, "m.ts")).code).toBe(2);
+  writeFileSync(join(dir, "m.szigyr"), "export function f(): void {}\n");
+  expect(sts("run", join(dir, "m.szigyr")).code).toBe(2);
 });
 
 it("run rejects main with wrong signature or non-managed layer with exit 2 (Q061)", () => {
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-main-`));
   const bads: [string, string][] = [
-    ["param.ts", "export function main(x: i32): void { x + 1; }\n"],
-    ["ret.ts", 'export function main(sys: System): i32 { sys.log.info("side effect"); return 3; }\n'],
-    ["arity.ts", "export function main(): void {}\n"],
-    ["strict-file.ts", '"use owned";\nexport function main(sys: System): void {}\n'],
-    ["strict-fn.ts", 'export function main(sys: System): void { "use owned"; }\n'],
-    ["rt-fn.ts", 'export function main(): void { "use rt"; }\n'],
-    ["generic.ts", "export function main<T>(sys: System): void {}\n"],
+    ["param.szigyr", "export function main(x: i32): void { x + 1; }\n"],
+    ["ret.szigyr", 'export function main(sys: System): i32 { sys.log.info("side effect"); return 3; }\n'],
+    ["arity.szigyr", "export function main(): void {}\n"],
+    ["strict-file.szigyr", '"use owned";\nexport function main(sys: System): void {}\n'],
+    ["strict-fn.szigyr", 'export function main(sys: System): void { "use owned"; }\n'],
+    ["rt-fn.szigyr", 'export function main(): void { "use rt"; }\n'],
+    ["generic.szigyr", "export function main<T>(sys: System): void {}\n"],
   ];
   for (const [name, src] of bads) {
     const f = join(dir, name);
@@ -132,7 +132,7 @@ test("a failing test fails on both", (t: Test) => {
 
 it("test --backend=both runs each test under JS and C and agrees", () => {
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-both-`));
-  const f = join(dir, "both.ts");
+  const f = join(dir, "both.szigyr");
   writeFileSync(f, BOTH);
   const r = sts("test", "--json", "--backend=both", f);
   const ls = jsonLines(r.out);
@@ -143,7 +143,7 @@ it("test --backend=both runs each test under JS and C and agrees", () => {
 
 it("C traps T006 from the stack bound before the depth limit (Q182, D106)", () => {
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-stack-`));
-  const f = join(dir, "stack.ts");
+  const f = join(dir, "stack.szigyr");
   const fs = Array.from({ length: 100 }, (_, i) => `readonly f${i}: f64`).join("; ");
   const init = Array.from({ length: 100 }, (_, i) => `f${i}: ${i}`).join(", ");
   // depth 9990 is under the 10000 counter; 800-byte frames exceed an 8 MiB stack only with the stack check
@@ -184,7 +184,7 @@ test("eq fails the same way", (t: Test) => {
 
 it("t.eq on values from C (packed Vec<Struct>, unions) agrees under --backend=both", () => {
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-eq-`));
-  const f = join(dir, "eq.ts");
+  const f = join(dir, "eq.szigyr");
   writeFileSync(f, EQ);
   const r = sts("test", "--json", "--backend=both", f);
   const ls = jsonLines(r.out);
@@ -194,7 +194,7 @@ it("t.eq on values from C (packed Vec<Struct>, unions) agrees under --backend=bo
 
 it("Vec growth that runs out of memory is T006 under both backends, not a process abort (D106)", () => {
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-oom-`));
-  const f = join(dir, "oom.ts");
+  const f = join(dir, "oom.szigyr");
   writeFileSync(f, `function g(a: Alloc): usize {\n  "use owned";\n  const v = Vec.create<f64>(a, 1);\n  for (let k: i32 = 0; k < 2000000000; k += 1) v.push(2);\n  return v.length;\n}\nexport function main(sys: System): void {\n  sys.log.info("go");\n  sys.log.info(\`\${g(sys.alloc)}\`);\n}\n`);
   // ~11 GB of address space: V8 starts, and growing to 2e9 doubles fails with a RangeError
   const r = spawnSync("sh", ["-c", `ulimit -v 11000000 && exec node "$0" run --backend=both "$1"`, CLI, f], { encoding: "utf8" });
@@ -208,7 +208,7 @@ it("two Workers run C-backend strict code at the same time without sharing runti
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-thr-`));
   // Each call grows a Vec from capacity 1 (host calls) and recurses; the last call of main overflows i32 (T001).
   // Both Workers load the same addon, so before D111 they shared one env, jmp_buf and Vec list.
-  const f = join(dir, "p.ts");
+  const f = join(dir, "p.szigyr");
   writeFileSync(f, `function deep(n: i32): i32 {\n  "use owned";\n  if (n === 0) return 0;\n  return deep(n - 1) + 1;\n}\nfunction work(a: Alloc, m: i32): i32 {\n  "use owned";\n  let s: i32 = 0;\n  for (let r: i32 = 0; r < 40; r += 1) {\n    const v = Vec.create<i32>(a, 1);\n    for (let k: i32 = 0; k < 20000; k += 1) v.push(k & 1);\n    for (let k: usize = 0; k < v.length; k += 1) s = s + v[k];\n    s = s + deep(200) - 200;\n  }\n  return s * m;\n}\nexport function main(sys: System): void {\n  for (let i: i32 = 0; i < 40; i += 1) sys.log.info(\`\${work(sys.alloc, 1)}\`);\n  sys.log.info(\`\${work(sys.alloc, 10000)}\`);\n}\n`);
   const idx = new URL("../src/index.ts", import.meta.url).href;
   writeFileSync(join(dir, "w.mjs"), `import { parentPort } from "node:worker_threads";\nconst { run } = await import(${JSON.stringify(idx)});\nconst out = [];\nfor (let i = 0; i < 8; i += 1) { const r = await run(${JSON.stringify(f)}, { backend: "c" }); out.push(r.diagnostics.map((d) => d.code).join() + r.stdout + "|" + (r.trap ? r.trap.code + "@" + r.trap.line : "")); }\nparentPort.postMessage(out);\n`);
@@ -239,7 +239,7 @@ test("in main", (t: Test) => {
 
 it("run / test of a C-only program stop with E4009 on js and both; check is clean; C runs it", () => {
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-conly-`));
-  const f = join(dir, "conly.ts");
+  const f = join(dir, "conly.szigyr");
   writeFileSync(f, C_ONLY);
   expect(sts("check", f)).toEqual({ code: 0, out: "", err: "" });
   const r = sts("run", "--json", f);
@@ -260,7 +260,7 @@ it("run / test of a C-only program stop with E4009 on js and both; check is clea
 
 it("E4009 anchors at the first unsafe operation when there is no c: module", () => {
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-conly2-`));
-  const f = join(dir, "op.ts");
+  const f = join(dir, "op.szigyr");
   writeFileSync(f, `function take(p: Ptr<i32>): i32 {
   "use owned";
   "use unsafe";
@@ -279,7 +279,7 @@ export function main(sys: System): void {
 it("--backend=both stops on first backend diagnostics (E4009) without running C", () => {
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-e4009-both-`));
   const cacheDir = join(dir, "cache");
-  const f = join(dir, "conly.ts");
+  const f = join(dir, "conly.szigyr");
   const marker = join(dir, "marker.txt");
   writeFileSync(f, `function add(a: i32, b: i32): i32 {
   "use owned";
@@ -320,7 +320,7 @@ it("C FFI honors quoted pkg-config flags with spaces, CC consistency/hash, empty
   mkdirSync(workDir, { recursive: true });
   writeFileSync(join(incDir, "sp.h"), "#include <stddef.h>\nstatic inline size_t sp_fn(size_t a) { return a + 41; }\n");
   writeFileSync(join(pcDir, "sp.pc"), `Name: sp\nDescription: space path test\nVersion: 1.0\nCflags: -I"${incDir}"\nLibs:\n`);
-  const spTs = join(dir, "sp.ts");
+  const spTs = join(dir, "sp.szigyr");
   writeFileSync(spTs, `declare module "c:sp:sp.h" {
   function sp_fn(ffi: Ffi, a: usize): usize;
 }
@@ -335,7 +335,7 @@ export function main(sys: System): void {
 }
 `);
   // #16b: package name starting with '-' is not parsed as a pkg-config option
-  const optChk = sts("check", `${CONF}reject/E2009-pkg-option-flag.ts`);
+  const optChk = sts("check", `${CONF}reject/E2009-pkg-option-flag.szigyr`);
   expect(optChk.code).toBe(1);
   expect(optChk.out).toContain("pkg-config does not know the package '--version'");
 
@@ -353,7 +353,7 @@ export function main(sys: System): void {
   expect(jsonLines(chkFalse.stdout)[0]).toMatchObject({ code: "E2009" });
 
   // #16e & #16g: native cache hash includes CC, and failed build removes *.tmp* files
-  const simpleTs = join(dir, "simple.ts");
+  const simpleTs = join(dir, "simple.szigyr");
   writeFileSync(simpleTs, `function inc(x: i32): i32 { "use owned"; return x + 1; }\nexport function main(sys: System): void { sys.log.info(\`\${inc(1)}\`); }\n`);
   const okRun = spawnSync("node", [CLI, "run", "--backend=c", simpleTs], { encoding: "utf8", env: { ...process.env, XDG_CACHE_HOME: cacheDir } });
   expect(okRun.status).toBe(0);
@@ -369,39 +369,43 @@ export function main(sys: System): void {
   expect(existsSync(join(workDir, `${CLI_NAME}-native`))).toBe(false);
 });
 
-// D140 (C5c): a struct / union without JS <-> C converters (a `null` field) is fine as a local, and a boundary use is never a raw cc error.
-it("a type without boundary converters fails cleanly at the boundary, never as a cc build error (Q233, D140)", () => {
+// Null is 1B Native across all layers (SPEC-v1 §3.3); managed-only types (string) still fail cleanly at the C boundary without raw cc errors.
+it("null strict/rt boundary types work on both backends while non-Native fields still reject cleanly", () => {
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-`));
   const env = { ...process.env, XDG_CACHE_HOME: join(dir, "cache") };
   const main = `export function main(sys: System): void { sys.log.info("x"); }\n`;
-  const probes: Record<string, string> = {
+  const okProbes: Record<string, string> = {
     unionNullMember: `type U = { readonly kind: "a"; readonly v: null } | { readonly kind: "b" };\nfunction f(u: U): i32 { "use owned"; return 1; }\n${main}`,
     structResultNull: `type S = Struct<{ readonly r: Result<null, i32> }>;\nfunction f(s: S): i32 { "use owned"; return 1; }\n${main}`,
-    structString: `type S = Struct<{ readonly s: string }>;\nfunction f(s: S): i32 { "use owned"; return 1; }\n${main}`,
     resultNullParam: `function f(r: Result<null, i32>): i32 { "use owned"; return 1; }\n${main}`,
     resultNullReturn: `function f(): Result<null, i32> { "use owned"; return ok(null); }\n${main}`,
     genericNull: `function f<T>(x: T): T { "use owned"; return x; }\nexport function main(sys: System): void { const r = f<Result<null, i32>>(ok(null)); sys.log.info("x"); }\n`,
   };
-  for (const [name, src] of Object.entries(probes)) {
-    const f = join(dir, `${name}.ts`);
+  for (const [name, src] of Object.entries(okProbes)) {
+    const f = join(dir, `${name}.szigyr`);
     writeFileSync(f, src);
-    const r = spawnSync("node", [CLI, "run", "--backend=c", f], { encoding: "utf8", env });
-    expect(r.status === 1 || r.status === 2, `${name}: ${r.status} ${r.stderr}`).toBe(true);
-    expect(r.stderr, name).not.toContain("failed:");
+    const r = spawnSync("node", [CLI, "run", "--backend=both", f], { encoding: "utf8", env });
+    expect(r.status, `${name}: ${r.stderr}`).toBe(0);
+    expect(r.stdout).toBe("x\n");
   }
+  const strFile = join(dir, "structString.szigyr");
+  writeFileSync(strFile, `type S = Struct<{ readonly s: string }>;\nfunction f(s: S): i32 { "use owned"; return 1; }\n${main}`);
+  const r = spawnSync("node", [CLI, "run", "--backend=c", strFile], { encoding: "utf8", env });
+  expect(r.status).toBe(1);
+  expect(r.stderr).not.toContain("failed:");
 }, 120000);
 
 // Q240 (a): polymorphic recursion is a check error (E4010); the C backend no longer caps type-argument nesting.
 it("a polymorphically recursive strict function is rejected by check with E4010 (Q240)", () => {
-  const f = tmpFile(`type W<T> = Struct<{ readonly a: T }>;\nfunction f<T>(x: T, n: i32): i32 { "use owned"; if (n === 0) { return 0; } const p: W<T> = { a: x }; return 1 + f<W<T>>(p, n - 1); }\nexport function main(sys: System): void { sys.log.info(\`\${f<i32>(1, 3)}\`); }\n`);
+  const f = tmpFile(`type W<T extends Native> = Struct<{ readonly a: T }>;\nfunction f<T>(x: T, n: i32): i32 { "use owned"; if (n === 0) { return 0; } const p: W<T> = { a: x }; return 1 + f<W<T>>(p, n - 1); }\nexport function main(sys: System): void { sys.log.info(\`\${f<i32>(1, 3)}\`); }\n`);
   const r = spawnSync("node", [CLI, "check", "--json", f], { encoding: "utf8" });
   expect(r.status).toBe(1);
   expect(jsonLines(r.stdout)[0].code).toBe("E4010");
 });
 it("runs through a symlink to cli.ts and from a path containing % # ?", () => {
   const d = mkdtempSync(join(tmpdir(), "sts-link-%#?-"));
-  symlinkSync(CLI, join(d, "sts"));
-  const r = spawnSync(join(d, "sts"), ["check", "--json", `${CONF}reject/E1001-var-in-function.ts`], { encoding: "utf8" });
+  symlinkSync(CLI, join(d, CLI_NAME));
+  const r = spawnSync(join(d, CLI_NAME), ["check", "--json", `${CONF}reject/E1001-var-in-function.szigyr`], { encoding: "utf8" });
   expect(r.status).toBe(1);
   expect(jsonLines(r.stdout)[0].code).toBe("E1001");
 });
@@ -440,13 +444,13 @@ it("the native cache drops entries unused for 7 days once it holds more than 500
 
 it("a module imported under two names (a symlink) loads once, in check and in run (Q253)", () => {
   const d = mkdtempSync(join(tmpdir(), "sts-q253-"));
-  writeFileSync(join(d, "a.ts"), "export class C { x: f64 = 1; }\nexport function mk(): C { return new C(); }\nexport function use(c: C): f64 { return c.x; }\n");
-  symlinkSync("a.ts", join(d, "link.ts"));
-  const main = join(d, "main.ts");
-  writeFileSync(main, `import { mk } from "./a.ts";\nimport { use } from "./link.ts";\nexport function main(sys: System): void { sys.log.info(\`\${use(mk())}\`); }\n`);
+  writeFileSync(join(d, "a.szigyr"), "export class C { x: f64 = 1; }\nexport function mk(): C { return new C(); }\nexport function use(c: C): f64 { return c.x; }\n");
+  symlinkSync("a.szigyr", join(d, "link.szigyr"));
+  const main = join(d, "main.szigyr");
+  writeFileSync(main, `import { mk } from "./a.szigyr";\nimport { use } from "./link.szigyr";\nexport function main(sys: System): void { sys.log.info(\`\${use(mk())}\`); }\n`);
   expect(sts("check", main)).toEqual({ code: 0, out: "", err: "" });
   expect(sts("run", main)).toMatchObject({ code: 0, out: "1\n" });
-  expect(sts("run", join(d, "link.ts")).err).toContain("no exported function 'main'"); // the entry may itself be the link
+  expect(sts("run", join(d, "link.szigyr")).err).toContain("no exported function 'main'"); // the entry may itself be the link
 });
 
 it("a second load in the same process refreshes the cache entry too (D149)", async () => {
@@ -466,7 +470,7 @@ it("a second load in the same process refreshes the cache entry too (D149)", asy
 }, 30_000);
 
 // Q252: user input mistakes are CLI errors (exit 2) without a stack; internal errors exit 70.
-const tmpFile = (src: string): string => { const f = join(mkdtempSync(join(tmpdir(), "sts-q252-")), "a.ts"); writeFileSync(f, src); return f; };
+const tmpFile = (src: string): string => { const f = join(mkdtempSync(join(tmpdir(), "sts-q252-")), "a.szigyr"); writeFileSync(f, src); return f; };
 
 it("a directory as the entry file is a CLI error (Q252)", () => {
   const r = sts("check", CONF);
@@ -486,7 +490,7 @@ it("a source nested too deeply is a CLI error, not a raw RangeError (Q252)", () 
   const f = tmpFile(`export function main(sys: System): void {\n  const a: i32 = 1;\n  const b: i32 = ${Array(20000).fill("a").join(" + ")};\n}\n`);
   const r = sts("check", f);
   expect(r.code).toBe(2);
-  expect(r.err).toBe("sts: source nests too deeply\n");
+  expect(r.err).toBe(`${CLI_NAME}: source nests too deeply\n`);
 });
 
 // Q265: an isolate that dies with a non-Trap error (here: an npm module that throws only off the main thread) carries its cause as the trap's message.
@@ -495,7 +499,7 @@ it("run shows the cause of an isolate's abnormal end in both modes (Q265)", () =
   mkdirSync(join(dir, "node_modules/thrower"), { recursive: true });
   writeFileSync(join(dir, "node_modules/thrower/package.json"), '{"name":"thrower","version":"1.0.0","main":"index.js"}');
   writeFileSync(join(dir, "node_modules/thrower/index.js"), 'if (!require("node:worker_threads").isMainThread) throw new Error("boom in isolate");\nmodule.exports = { v: 1 };\n');
-  writeFileSync(join(dir, "m.ts"), `import { v } from "npm:thrower";
+  writeFileSync(join(dir, "m.szigyr"), `import { v } from "npm:thrower";
 function worker(port: Port<string, null>): void {
   port.send("ready");
 }
@@ -505,17 +509,17 @@ export async function main(sys: System): Promise<void> {
   const b = await p.recv();
 }
 `);
-  const t = sts("run", join(dir, "m.ts"));
+  const t = sts("run", join(dir, "m.szigyr"));
   expect(t.code).toBe(3);
   expect(t.err).toMatch(/^trap T006 at .*\n.*boom in isolate/);
-  const j = sts("run", "--json", join(dir, "m.ts"));
+  const j = sts("run", "--json", join(dir, "m.szigyr"));
   expect(jsonLines(j.err)[0]).toMatchObject({ kind: "trap", code: "T006", message: expect.stringContaining("boom in isolate") });
 }, 60000);
 
 // D161: files that share a module are checked with one tsgo process, which hands back the same AST nodes; the checker's per-node markers (`optCall`) must not leak from one entry's check into the next.
 it("check a.ts b.ts reports what each file reports alone, also with a repeated entry (D161)", () => {
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-`));
-  writeFileSync(join(dir, "shared.ts"), `class A { m(s: string | null): usize { return 1; } }
+  writeFileSync(join(dir, "shared.szigyr"), `class A { m(s: string | null): usize { return 1; } }
 export function main(sys: System): void {
   let x: string | null = null;
   const a: A | null = sys.clock.nowMs() < 0 ? new A() : null;
@@ -523,10 +527,85 @@ export function main(sys: System): void {
   sys.log.info(\`\${x.length}\`);
 }
 `);
-  for (const n of ["a", "b"]) writeFileSync(join(dir, `${n}.ts`), `import { main } from "./shared.ts";\nexport function ${n}(): i32 {\n  return 1;\n}\n`);
-  const a = join(dir, "a.ts"), b = join(dir, "b.ts");
+  for (const n of ["a", "b"]) writeFileSync(join(dir, `${n}.szigyr`), `import { main } from "./shared.szigyr";\nexport function ${n}(): i32 {\n  return 1;\n}\n`);
+  const a = join(dir, "a.szigyr"), b = join(dir, "b.szigyr");
   const alone = sts("check", "--json", b).out;
   expect(alone).toContain("E2002");
   expect(sts("check", "--json", a, b).out).toBe(sts("check", "--json", a).out + alone);
   expect(sts("check", "--json", b, a, b).out).toBe(alone + sts("check", "--json", a).out + alone);
+});
+
+it("--json emits valid JSONL for exit-2 usage/file errors and explain/query/test details", () => {
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-json-`));
+  const missing = sts("check", "--json", join(dir, "does-not-exist.szigyr"));
+  expect(missing.code).toBe(2);
+  expect(missing.out).toBe("");
+  expect(jsonLines(missing.err)[0]).toMatchObject({ kind: "error", code: "CLI_ERROR" });
+
+  const badFlag = sts("check", "--json", "--unknown-flag", "x.szigyr");
+  expect(badFlag.code).toBe(2);
+  expect(jsonLines(badFlag.err)[0]).toMatchObject({ kind: "error", code: "CLI_USAGE" });
+
+  const exText = sts("explain", "E2007");
+  expect(exText.code).toBe(0);
+  expect(exText.out).toContain("E2007 [P2]");
+  const exJson = sts("explain", "--json", "t015");
+  expect(exJson.code).toBe(0);
+  expect(jsonLines(exJson.out)[0]).toMatchObject({ kind: "explain", code: "T015", phase: "runtime" });
+  const exBad = sts("explain", "--json", "E9999");
+  expect(exBad.code).toBe(2);
+  expect(jsonLines(exBad.err)[0]).toMatchObject({ kind: "error", code: "CLI_ERROR" });
+
+  const qf = join(dir, "mod.szigyr");
+  writeFileSync(qf, `export type Pt = Struct<{ readonly x: i32; readonly y: i32 }>;
+export function add(a: i32, b: i32): i32 {
+  "use rt";
+  return a + b;
+}
+export function useLogAlloc(a: Alloc, l: Log): usize {
+  const v = Vec.create<i32>(a, 2);
+  l.info("hi");
+  return v.length;
+}
+export function useSys(sys: System): void {
+  sys.log.info("sys");
+}
+export class Counter {
+  v: i32;
+  constructor(v: i32) { this.v = v; }
+  inc(d: i32): i32 {
+    this.v += d;
+    return this.v;
+  }
+}
+test("details", (t: Test) => {
+  t.eq(1 + 1, 3);
+});
+test("forAll fail", (t: Test) => {
+  forAll((n: i32): boolean => n === 999999);
+});
+`);
+  const qRes = sts("query", "--json", qf);
+  expect(qRes.code).toBe(0);
+  const syms = jsonLines(qRes.out);
+  expect(syms.find((s) => s.name === "Pt")).toMatchObject({ kind: "symbol", symbolKind: "type", caps: expect.arrayContaining(["Native", "Copy", "Send", "Codec"]) });
+  expect(syms.find((s) => s.name === "add")).toMatchObject({
+    kind: "symbol", symbolKind: "function", layer: "rt", pure: true, mutatable: true, exported: true,
+    rtTrapSites: expect.arrayContaining([expect.objectContaining({ code: "T001" })]),
+  });
+  expect(syms.find((s) => s.name === "useLogAlloc")).toMatchObject({
+    kind: "symbol", symbolKind: "function", layer: "managed", pure: false, mutatable: true, exported: true,
+  });
+  expect(syms.find((s) => s.name === "useSys")).toMatchObject({
+    kind: "symbol", symbolKind: "function", layer: "managed", pure: false, mutatable: false, exported: true,
+  });
+  expect(syms.find((s) => s.name === "Counter.inc")).toMatchObject({
+    kind: "symbol", symbolKind: "method", layer: "managed", pure: true, mutatable: true, exported: true,
+  });
+
+  const tRes = sts("test", "--json", qf);
+  expect(tRes.code).toBe(1);
+  const tLines = jsonLines(tRes.out);
+  expect(tLines.find((l) => l.name === "details")?.detail).toEqual({ kind: "eq", actual: 2, expected: 3 });
+  expect(tLines.find((l) => l.name === "forAll fail")?.detail).toMatchObject({ kind: "forAll", reason: "returned false" });
 });

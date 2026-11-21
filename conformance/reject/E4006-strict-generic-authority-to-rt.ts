@@ -1,7 +1,0 @@
-// expect: E4006 @ 6:24
-// stage: 2
-function rtId<T>(x: T): T { "use rt"; return x; }
-function strictWrap<T>(x: T): T { "use owned"; return rtId<T>(x); }
-export function main(sys: System): void {
-  const a = strictWrap<Alloc>(sys.alloc);
-}

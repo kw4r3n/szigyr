@@ -1,3 +1,0 @@
-// expect-output: hi
-// stage: 1
-import { f } from "./helper.ts";

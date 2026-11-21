@@ -3,16 +3,16 @@
 import { realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { Diagnostic } from "./diagnostics.ts";
-import { SyntaxKind as K, hasMod, isId, type Node, type ParsedFile, type ts } from "./parse.ts";
+import { NodeFlags, SyntaxKind as K, hasMod, isId, type Node, type ParsedFile, type ts } from "./parse.ts";
 /** The absolute path with symlinks resolved, so one file reached through two names is one module (Q253). A path that does not exist stays as resolved (E7001). */
 export function canonPath(...p: string[]): string {
   const r = resolve(...p);
   try { return realpathSync(r); } catch { return r; }
 }
-import { RESERVED, builtinType, isGenName } from "./builtins.ts";
+import { CAPABILITY_NAMES, RESERVED, builtinType, isGenName } from "./builtins.ts";
 import {
-  ERROR, GEN_ARITY, NULL, VOID, gen, assignable, bindTParams, collectTParams, DEEP_NEEDS, ELEMENT_CONTAINERS, demand, demandLayout, crossTParams, fn, isTaggedUnion, sendable, hasAuthority, field, kindOf, layerOk, movesLike, needOk, holdsOwned, ownedDeep, CONTAINERS, newTParam, nonNull, record, result, show, subst, union,
-  type ClassSym, type Field, type FnType, type IfaceSym, type TParam, type Type,
+  ERROR, GEN_ARITY, NULL, VOID, gen, assignable, bindTParams, borrowOk, collectTParams, crossOk, crossTParams, fn, isTaggedUnion, sendable, hasArenaBuf, hasAuthority, hasCap, hasLayout, field, isNative, keyOk, kindOf, layerOk, promiseIn, structField, tparamHasCap, tparamMayBeAuthority, holdsOwned, ownedDeep, CONTAINERS, newTParam, nonNull, record, result, show, subst, union,
+  type Capability, type ClassSym, type Field, type FnType, type IfaceSym, type TParam, type Type,
   hasLoneSurrogate,
 } from "./types.ts";
 
@@ -21,6 +21,10 @@ export type Layer = "managed" | "strict" | "rt";
 export interface FnSym { k: "fn"; name: string; decl: ts.FunctionDeclaration; mod: Module; layer: Layer; sig: FnType; unsafe: boolean }
 /** A C function from a `declare module "c:..."` block (§14.1): callable, never a value. */
 export interface CFnSym { k: "cfn"; name: string; decl: ts.FunctionDeclaration; mod: Module; spec: string; sig: FnType }
+/** A C constant from a `declare module "c:..."` block (SPEC-v1 §9). */
+export interface CConstSym { k: "cconst"; name: string; decl: ts.VariableDeclaration; mod: Module; spec: string; type: Type }
+/** A C struct from a `declare module "c:..."` block (SPEC-v1 §9). */
+export interface CStructSym { k: "cstruct"; name: string; decl: ts.TypeAliasDeclaration; mod: Module; spec: string; type: Extract<Type, { k: "cstruct" }> | { k: "error" } }
 /** `bind`: the element of a record destructuring (`const { a, b }: T = ...`, Q225 (b)); `type` is then the field's type. */
 export interface ConstSym { k: "const"; decl: ts.VariableDeclaration; mod: Module; type: Type; bind?: ts.BindingElement }
 export interface ClassValueSym { k: "class"; cls: ClassSym; mod: Module }
@@ -30,12 +34,14 @@ export interface LocalSym {
   /** Captured by a nested function and assigned after its declaration: never narrowed (Q122). */
   unstable?: boolean;
 }
-export type ValueSym = FnSym | ConstSym | ClassValueSym | CFnSym | { k: "jsref" } | LocalSym;
+export type ValueSym = FnSym | ConstSym | ClassValueSym | CFnSym | CConstSym | { k: "jsref" } | { k: "error" } | LocalSym;
 
 export type TypeSym =
   | { k: "alias"; decl: ts.TypeAliasDeclaration; mod: Module; tparams?: TParam[]; body?: Type; busy?: boolean }
   | { k: "class"; cls: ClassSym; mod: Module }
-  | { k: "iface"; iface: IfaceSym; decl: ts.InterfaceDeclaration; mod: Module };
+  | { k: "iface"; iface: IfaceSym; decl: ts.InterfaceDeclaration; mod: Module }
+  | CStructSym
+  | { k: "error" };
 
 export interface Module {
   pf: ParsedFile;
@@ -51,6 +57,10 @@ export interface Module {
   imports: Map<string, { mod: Module; name: string }>;
   /** `declare module "c:..."` blocks of this file: specifier -> C function name -> symbol (§14.1). */
   cdecls: Map<string, Map<string, CFnSym>>;
+  /** `declare module "c:..."` constants (SPEC-v1 §9). */
+  cconsts: Map<string, Map<string, CConstSym>>;
+  /** `declare module "c:..."` CStructs (SPEC-v1 §9). */
+  cstructs: Map<string, Map<string, CStructSym>>;
 }
 
 export class Reporter {
@@ -172,7 +182,10 @@ export class Program {
   readonly insts: { mod: Module; node: Node; p: TParam; arg: Type }[] = [];
   /** §15.2: isolate entry functions by defining module path; the emitter exposes them to the isolate loader. */
   readonly isolateEntries = new Map<string, Set<string>>();
+  /** §15.5: registered `audio.open` rt callback functions, keyed by `<path>\0<name>`. */
+  readonly audioCallbacks = new Map<string, { fn: FnSym; state: Type; key: string; id: number }>();
   readonly substInsts: { mod: Module; node: Node; t: Type; args: Type[] }[] = [];
+  readonly ptrSizeOfs: { mod: Module; node: Node; cname: string }[] = [];
 
   constructor(files: ParsedFile[], display: (p: string) => string, rep: Reporter) {
     this.rep = rep;
@@ -180,13 +193,14 @@ export class Program {
       const sf = pf.sourceFile;
       const mod: Module = {
         pf, sf, file: display(pf.path), layer: directiveOf(sf.statements) ?? "managed",
-        values: new Map(), types: new Map(), exports: exportTable(sf), imports: new Map(), cdecls: new Map(),
+        values: new Map(), types: new Map(), exports: exportTable(sf), imports: new Map(), cdecls: new Map(), cconsts: new Map(), cstructs: new Map(),
       };
       this.mods.push(mod);
       this.byPath.set(pf.path, mod);
     }
     for (const mod of this.mods) this.shells(mod);
     for (const mod of this.mods) this.classIfaceConstraints(mod); // before any type reference is resolved (D013)
+    for (const mod of this.mods) this.resolveCStructs(mod); // before signatures/aliases reference CStructs
     for (const mod of this.mods) this.signatures(mod);
   }
 
@@ -199,35 +213,65 @@ export class Program {
       const spec = (d.name as ts.StringLiteral).text;
       if (!spec.startsWith("c:")) continue;
       const table = mod.cdecls.get(spec) ?? new Map<string, CFnSym>();
+      const ctable = mod.cconsts.get(spec) ?? new Map<string, CConstSym>();
+      const stable = mod.cstructs.get(spec) ?? new Map<string, CStructSym>();
       mod.cdecls.set(spec, table);
+      mod.cconsts.set(spec, ctable);
+      mod.cstructs.set(spec, stable);
       for (const st of (d.body as ts.ModuleBlock).statements) {
-        if (st.kind !== K.FunctionDeclaration) continue;
-        const f = st as ts.FunctionDeclaration;
-        if (f.name && !table.has(f.name.text)) table.set(f.name.text, { k: "cfn", name: f.name.text, decl: f, mod, spec, sig: fn([], ERROR) });
+        if (st.kind === K.FunctionDeclaration) {
+          const f = st as ts.FunctionDeclaration;
+          if (f.name && !table.has(f.name.text)) table.set(f.name.text, { k: "cfn", name: f.name.text, decl: f, mod, spec, sig: fn([], ERROR) });
+        } else if (st.kind === K.VariableStatement) {
+          const dl = (st as ts.VariableStatement).declarationList;
+          if (!(dl.flags & NodeFlags.Const)) continue;
+          for (const vd of dl.declarations) {
+            if (isId(vd.name) && !ctable.has(vd.name.text)) ctable.set(vd.name.text, { k: "cconst", name: vd.name.text, decl: vd, mod, spec, type: ERROR });
+          }
+        } else if (st.kind === K.TypeAliasDeclaration) {
+          const ta = st as ts.TypeAliasDeclaration;
+          if (ta.name && !stable.has(ta.name.text)) stable.set(ta.name.text, { k: "cstruct", name: ta.name.text, decl: ta, mod, spec, type: { k: "cstruct", name: ta.name.text, spec, fields: [] } });
+        }
       }
     }
     for (const s of mod.sf.statements) {
       switch (s.kind) {
         case K.ImportDeclaration: {
           const d = s as ts.ImportDeclaration;
+          if (d.moduleSpecifier.kind !== K.StringLiteral) break;
           const spec = (d.moduleSpecifier as ts.StringLiteral).text;
-          const nb = d.importClause?.namedBindings as ts.NamedImports;
+          const ic = d.importClause;
+          if (ic?.name) { mod.values.set(ic.name.text, { k: "error" }); mod.types.set(ic.name.text, { k: "error" }); }
+          const nb = ic?.namedBindings;
+          if (nb?.kind === K.NamespaceImport) { mod.values.set(nb.name.text, { k: "error" }); mod.types.set(nb.name.text, { k: "error" }); break; }
+          if (!nb || nb.kind !== K.NamedImports) break;
           const target = this.byPath.get(canonPath(dirname(mod.pf.path), spec));
           if (spec.startsWith("c:")) { // §14.1: binds this file's own declarations, never another file
-            const table = mod.cdecls.get(spec);
+            const fns = mod.cdecls.get(spec);
+            const consts = mod.cconsts.get(spec);
+            const structs = mod.cstructs.get(spec);
             for (const e of nb.elements) {
-              const cs = table?.get(((e.propertyName ?? e.name) as ts.Identifier).text);
-              if (cs) mod.values.set(e.name.text, cs);
+              const orig = (e.propertyName ?? e.name) as ts.Identifier;
+              if (!isId(orig)) { mod.values.set(e.name.text, { k: "error" }); mod.types.set(e.name.text, { k: "error" }); continue; }
+              const vs = fns?.get(orig.text) ?? consts?.get(orig.text);
+              const ts = structs?.get(orig.text);
+              if (vs) mod.values.set(e.name.text, vs);
+              else if (ts) mod.types.set(e.name.text, ts);
+              else { mod.values.set(e.name.text, { k: "error" }); mod.types.set(e.name.text, { k: "error" }); }
             }
             break;
           }
           for (const e of nb.elements) {
             if (spec.startsWith("npm:")) mod.values.set(e.name.text, { k: "jsref" }); // §7.4
-            else if (target) mod.imports.set(e.name.text, { mod: target, name: ((e.propertyName ?? e.name) as ts.Identifier).text });
+            else {
+              const orig = (e.propertyName ?? e.name) as ts.Identifier;
+              if (target && isId(orig) && target.exports.has(orig.text)) mod.imports.set(e.name.text, { mod: target, name: orig.text });
+              else { mod.values.set(e.name.text, { k: "error" }); mod.types.set(e.name.text, { k: "error" }); }
+            }
           }
           break;
         }
-        case K.TypeAliasDeclaration: { const d = s as ts.TypeAliasDeclaration; mod.types.set(d.name.text, { k: "alias", decl: d, mod }); break; }
+        case K.TypeAliasDeclaration: { const d = s as ts.TypeAliasDeclaration; if (d.name && d.type) mod.types.set(d.name.text, { k: "alias", decl: d, mod }); break; }
         case K.InterfaceDeclaration: {
           const d = s as ts.InterfaceDeclaration;
           mod.types.set(d.name.text, { k: "iface", decl: d, mod, iface: { name: d.name.text, tparams: tparamShells(d.typeParameters, "managed"), methods: new Map() } });
@@ -235,14 +279,16 @@ export class Program {
         }
         case K.ClassDeclaration: {
           const d = s as ts.ClassDeclaration;
-          const cls: ClassSym = { name: d.name!.text, decl: d, tparams: tparamShells(d.typeParameters, "managed"), fields: new Map(), methods: new Map(), ctor: fn([], VOID), implements: [] };
+          if (!d.name) break;
+          const cls: ClassSym = { name: d.name.text, decl: d, tparams: tparamShells(d.typeParameters, "managed"), fields: new Map(), methods: new Map(), ctor: fn([], VOID), implements: [] };
           mod.types.set(cls.name, { k: "class", cls, mod });
           mod.values.set(cls.name, { k: "class", cls, mod });
           break;
         }
         case K.FunctionDeclaration: {
           const d = s as ts.FunctionDeclaration;
-          const f: FnSym = { k: "fn", name: d.name!.text, decl: d, mod, layer: directiveOf(d.body!.statements) ?? mod.layer, sig: fn([], ERROR), unsafe: unsafeOf(d.body!.statements) };
+          if (!d.name || !d.body) break;
+          const f: FnSym = { k: "fn", name: d.name.text, decl: d, mod, layer: directiveOf(d.body.statements) ?? mod.layer, sig: fn([], ERROR), unsafe: unsafeOf(d.body.statements) };
           mod.values.set(f.name, f);
           this.fns.push(f);
           break;
@@ -257,28 +303,78 @@ export class Program {
   /** Constraints of class and interface type parameters, so that every `Box<X>` reference can be checked (§3.2). */
   private classIfaceConstraints(mod: Module): void {
     for (const t of mod.types.values()) {
-      if (t.mod !== mod || t.k === "alias") continue;
+      if (t.k === "error" || t.mod !== mod || t.k === "alias" || t.k === "cstruct") continue;
       const [decl, ps] = t.k === "iface" ? [t.decl, t.iface.tparams] : [t.cls.decl, t.cls.tparams];
       this.constraints(decl.typeParameters, ps, { mod, tparams: new Map(ps.map((p) => [p.name, p])) });
     }
   }
 
+  /** Resolves `type S = CStruct<{ ... }>` declarations in `c:` modules before general signatures (SPEC-v1 §9). */
+  private resolveCStructs(mod: Module): void {
+    for (const table of mod.cstructs.values()) {
+      const ce: TypeEnv = { mod, tparams: new Map(), cscope: table };
+      for (const cs of table.values()) {
+        const ta = cs.decl;
+        const tr = ta.type?.kind === K.TypeReference ? (ta.type as ts.TypeReferenceNode) : undefined;
+        const arg0 = tr && isId(tr.typeName) && tr.typeName.text === "CStruct" && tr.typeArguments?.length === 1 ? tr.typeArguments[0] : undefined;
+        if (!arg0 || arg0.kind !== K.TypeLiteral) { cs.type = { k: "error" }; continue; }
+        const fields: Field[] = [];
+        for (const m of (arg0 as ts.TypeLiteralNode).members) {
+          if (m.kind !== K.PropertySignature) continue;
+          const p = m as ts.PropertySignatureDeclaration;
+          if (!isId(p.name)) continue;
+          fields.push({ name: p.name.text, type: p.type ? this.typeOf(p.type, ce) : ERROR, readonly: hasMod(p, K.ReadonlyKeyword) });
+        }
+        if (cs.type.k === "cstruct") cs.type.fields = fields;
+      }
+      const cyclic: CStructSym[] = [];
+      for (const cs of table.values()) {
+        if (cs.type.k !== "cstruct") continue;
+        const visited = new Set<string>();
+        const reachesSelf = (t: Type): boolean => {
+          if (t.k !== "cstruct") return false;
+          if (t.name === cs.name) return true;
+          if (visited.has(t.name)) return false;
+          visited.add(t.name);
+          return t.fields.some((f) => reachesSelf(f.type));
+        };
+        if (cs.type.fields.some((f) => reachesSelf(f.type))) cyclic.push(cs);
+      }
+      for (const cs of cyclic) {
+        this.rep.at(mod, "E2002", cs.decl.name, `CStruct '${cs.name}' contains itself by value`);
+        if (cs.type.k === "cstruct") cs.type.fields = [];
+        cs.type = { k: "error" };
+      }
+    }
+  }
+
   private signatures(mod: Module): void {
-    const env = (tps: TParam[] = []): TypeEnv => ({ mod, tparams: new Map(tps.map((p) => [p.name, p])) });
+    const env = (tps: TParam[] = [], cscope?: Map<string, CStructSym>): TypeEnv =>
+      ({ mod, tparams: new Map(tps.map((p) => [p.name, p])), ...(cscope ? { cscope } : {}) });
     for (const t of mod.types.values()) {
-      if (t.mod !== mod) continue;
+      if (t.k === "error" || t.mod !== mod || t.k === "cstruct") continue;
       if (t.k === "alias") this.aliasBody(t);
       else if (t.k === "iface") {
         const e = env(t.iface.tparams);
         for (const m of t.decl.members) {
           const ms = m as ts.MethodSignatureDeclaration;
-          t.iface.methods.set((ms.name as ts.Identifier).text, this.signature(ms, ms.name, e));
+          if (ms.name && isId(ms.name)) t.iface.methods.set(ms.name.text, this.signature(ms, ms.name, e));
         }
       }
     }
-    for (const table of mod.cdecls.values()) for (const cs of table.values()) cs.sig = this.signature(cs.decl, cs.decl.name!, env());
+    for (const [spec, table] of mod.cconsts) {
+      const ce = env([], mod.cstructs.get(spec));
+      for (const cc of table.values()) cc.type = cc.decl.type ? this.typeOf(cc.decl.type, ce) : ERROR;
+    }
+    for (const [spec, table] of mod.cdecls) {
+      const ce = env([], mod.cstructs.get(spec));
+      for (const cs of table.values()) cs.sig = this.signature(cs.decl, cs.decl.name!, ce);
+    }
     for (const v of mod.values.values()) {
-      if (v.k === "fn" && v.mod === mod) { v.sig = this.signature(v.decl, v.decl.name!, env()); for (const p of v.sig.tparams) p.owner = v.layer; if (v.layer !== "managed") for (const [t, n] of [...v.sig.params.filter((x) => x.k !== "fn").map((x) => [x, "crossp"] as const), [v.sig.ret, "cross"] as const]) for (const p of crossTParams(t)) (p.need ??= new Set()).add(n); } // Q233
+      if (v.k === "fn" && v.mod === mod) {
+        v.sig = this.signature(v.decl, v.decl.name!, env(), true, v.layer, true);
+        for (const t of v.sig.params) if (t.k !== "fn") for (const p of crossTParams(t)) p.inParam = true; // Q233
+      }
       else if (v.k === "class" && v.mod === mod) this.classMembers(v.cls, env(v.cls.tparams));
       else if (v.k === "const" && v.mod === mod) {
         if (!v.decl.type) { if (!v.bind || v.bind === (v.decl.name as ts.ObjectBindingPattern).elements.find((el) => isId(el.name))) this.rep.at(mod, "E2006", v.decl.name, "module-level const needs a type annotation"); } // once per declaration
@@ -286,6 +382,7 @@ export class Program {
         else { // Q225 (b): the field of the annotated record
           const whole = this.typeOf(v.decl.type, env());
           const key = (v.bind.propertyName ?? v.bind.name) as ts.Identifier;
+          if (!isId(key)) continue;
           const f = whole.k === "record" ? field(whole, key.text) : undefined;
           if (f) v.type = f.type;
           else if (whole.k !== "error") this.rep.at(mod, "E2002", key, whole.k === "record" ? `no field '${key.text}'` : "only records can be destructured");
@@ -296,11 +393,12 @@ export class Program {
 
   private classMembers(cls: ClassSym, e: TypeEnv): void {
     const mod = e.mod;
-    for (const h of cls.decl.heritageClauses ?? []) for (const t of h.types) cls.implements.push(this.typeRef(t.expression as ts.Identifier, t.typeArguments, t, e));
+    for (const h of cls.decl.heritageClauses ?? []) for (const t of h.types) if (isId(t.expression)) cls.implements.push(this.typeRef(t.expression, t.typeArguments, t, e));
     for (const m of cls.decl.members) {
       if (m.kind === K.PropertyDeclaration) {
         const p = m as ts.PropertyDeclaration;
-        const name = (p.name as ts.Identifier).text;
+        if (!isId(p.name)) continue;
+        const name = p.name.text;
         if (!p.type) this.rep.at(mod, "E2006", p.name, "field needs a type annotation");
         cls.fields.set(name, {
           type: p.type ? this.typeOf(p.type, e) : ERROR, readonly: hasMod(p, K.ReadonlyKeyword),
@@ -308,7 +406,7 @@ export class Program {
         });
       } else if (m.kind === K.MethodDeclaration) {
         const md = m as ts.MethodDeclaration;
-        cls.methods.set((md.name as ts.Identifier).text, { sig: this.signature(md, md.name, e), private: hasMod(md, K.PrivateKeyword), static: hasMod(md, K.StaticKeyword), node: md });
+        if (isId(md.name)) cls.methods.set(md.name.text, { sig: this.signature(md, md.name, e), private: hasMod(md, K.PrivateKeyword), static: hasMod(md, K.StaticKeyword), node: md });
       } else if (m.kind === K.Constructor) {
         cls.ctor = this.signature(m as ts.ConstructorDeclaration, undefined, e);
       }
@@ -316,11 +414,12 @@ export class Program {
   }
 
   /** Q022: parameters always annotated; return annotated for named functions and methods (anchor: the name). */
-  signature(d: ts.SignatureDeclaration, name: Node | undefined, outer: TypeEnv, requireRet = true): FnType {
-    const tparams = tparamShells(d.typeParameters, "managed");
-    const e: TypeEnv = { mod: outer.mod, tparams: new Map([...outer.tparams, ...tparams.map((p) => [p.name, p] as const)]) };
+  signature(d: ts.SignatureDeclaration, name: Node | undefined, outer: TypeEnv, requireRet = true, owner: Layer = "managed", allowOwned = false): FnType {
+    const tparams = tparamShells(d.typeParameters, owner, allowOwned);
+    const e: TypeEnv = { mod: outer.mod, tparams: new Map([...outer.tparams, ...tparams.map((p) => [p.name, p] as const)]), ...(outer.cscope ? { cscope: outer.cscope } : {}) };
     this.constraints(d.typeParameters, tparams, e);
     const params = d.parameters.map((p) => {
+      if (!isId(p.name)) return ERROR;
       if (!p.type) { this.rep.at(e.mod, "E2006", p.name, "parameter needs a type annotation"); return ERROR; }
       return this.typeOf(p.type, e);
     });
@@ -330,16 +429,50 @@ export class Program {
     return { ...fn(params, ret, tparams) };
   }
 
-  private constraints(decls: ts.NodeArray<ts.TypeParameterDeclaration> | undefined, ps: TParam[], e: TypeEnv): void {
-    decls?.forEach((d, i) => {
-      if (!d.constraint) return;
-      const c = this.typeOf(d.constraint, e);
-      if (c.k !== "iface" && c.k !== "error") this.rep.at(e.mod, "E2002", d.constraint, "a constraint must be an interface");
-      else ps[i]!.constraint = c;
-    });
+  /** Resolves `T extends C` / `T extends C1 & C2` into capability bounds or a single interface constraint (SPEC-v1 §3.4). */
+  resolveConstraint(node: ts.TypeNode, p: TParam, e: TypeEnv): void {
+    const branches = node.kind === K.IntersectionType ? (node as ts.IntersectionTypeNode).types
+      : node.kind === K.TypeReference ? [node as ts.TypeReferenceNode] : undefined;
+    if (!branches) return;
+    const caps = new Set<Capability>();
+    let iface: Type | undefined;
+    for (const b of branches) {
+      const ref = b as ts.TypeReferenceNode;
+      if (isId(ref.typeName) && CAPABILITY_NAMES.has(ref.typeName.text)) {
+        if (ref.typeArguments?.length) {
+          this.rep.at(e.mod, "E2002", ref, `capability '${ref.typeName.text}' does not take type arguments`);
+          return;
+        }
+        caps.add(ref.typeName.text as Capability);
+        continue;
+      }
+      const c = this.typeOf(b, e);
+      if (c.k === "error") return;
+      if (c.k !== "iface") {
+        this.rep.at(e.mod, "E2002", b, "a constraint must be a capability (Copy, Native, Owned, Send, Key, Codec) or an interface");
+        return;
+      }
+      if (iface) { this.rep.at(e.mod, "E2002", b, "cannot combine multiple interface constraints"); return; }
+      iface = c;
+    }
+    if (iface && caps.size > 0) {
+      this.rep.at(e.mod, "E2002", node, "cannot combine an interface constraint with capability bounds");
+      return;
+    }
+    if (caps.has("Owned") && (caps.has("Copy") || caps.has("Key") || caps.has("Codec"))) {
+      const other = caps.has("Copy") ? "Copy" : caps.has("Key") ? "Key" : "Codec";
+      this.rep.at(e.mod, "E2002", node, `contradictory type parameter bounds: '${other}' and 'Owned'`);
+      return;
+    }
+    if (iface) p.constraint = iface;
+    if (caps.size > 0) p.caps = caps;
   }
 
-  private aliasBody(a: Extract<TypeSym, { k: "alias" }>): Type {
+  private constraints(decls: ts.NodeArray<ts.TypeParameterDeclaration> | undefined, ps: TParam[], e: TypeEnv): void {
+    decls?.forEach((d, i) => { if (d.constraint) this.resolveConstraint(d.constraint, ps[i]!, e); });
+  }
+
+  aliasBody(a: Extract<TypeSym, { k: "alias" }>): Type {
     if (a.body) return a.body;
     if (a.busy) return ERROR; // typeRef reports the cycle (Q085); shortcut: recursive aliases stay unsupported, upgrade with a lazy alias type
     a.busy = true;
@@ -362,33 +495,45 @@ export class Program {
     }
   }
 
-  /** Q127: propagates conditions through type parameters instantiated by type parameters, then checks the rest. */
+  /** Checks every generic instantiation against explicit capability bounds, Promise exclusion, and layer rules (SPEC-v1 §3.4). */
   checkInsts(): void {
     this.checkSubstInsts();
-    for (let changed = true; changed;) {
-      changed = false;
-      for (const { p, arg } of this.insts) {
-        const tps = collectTParams(arg);
-        if (!tps.length) continue;
-        if (p.owner === "rt") {
-          for (const tp of tps) if (!tp.need?.has("noauth")) { (tp.need ??= new Set()).add("noauth"); changed = true; }
-        }
-        if (!p.need) continue;
-        for (const n of p.need) {
-          if (arg.k !== "tparam" && !DEEP_NEEDS.has(n)) continue;
-          for (const tp of tps) if (!tp.need?.has(n)) { (tp.need ??= new Set()).add(n); changed = true; }
-        }
-      }
-    }
     const seen: Set<string> = new Set();
     for (const { mod, node, p, arg } of this.insts) {
-      const bad = arg.k === "tparam" ? undefined : [...p.need ?? []].find((n) => !needOk(n, arg) && ((n !== "layout" && n !== "cross" && n !== "crossp") || (p.owner !== undefined && p.owner !== "managed"))); // Q229: layout only for strict / rt generics
       const key = `${mod.file}:${node.pos}:${p.id}`;
-      if (seen.has(key)) continue;
-      if (bad) { seen.add(key); this.rep.at(mod, bad === "copy" || bad === "field" || bad === "layout" || bad === "cross" || bad === "crossp" ? "E4002" : bad === "send" ? "E2010" : bad === "noauth" ? "E4006" : "E2002", node, `'${show(arg)}' cannot instantiate '${p.name}' (${bad} condition)`); } // Q086: copy / field are §3.3 codes; send is §15.2's; noauth is §6's
-      else if (p.owner && p.owner !== "managed" && arg.k === "tparam" && arg.p.owner === "managed") { seen.add(key); this.rep.at(mod, "E4002", node, `the managed type parameter '${arg.p.name}' cannot instantiate '${p.name}' of a strict / rt function (§3.3 is not checked through it)`); }
-      else if (p.owner === "rt" && hasAuthority(arg)) { seen.add(key); this.rep.at(mod, "E4006", node, `'${show(arg)}' cannot instantiate '${p.name}' of an rt function (§6)`); }
-      else if (p.owner && p.owner !== "managed" && !layerOk(arg)) { seen.add(key); this.rep.at(mod, "E4002", node, `'${show(arg)}' cannot instantiate '${p.name}' of a strict / rt function (§3.3)`); }
+      if (seen.has(key) || arg.k === "error") continue;
+      const fail = (code: string, msg: string): void => { seen.add(key); this.rep.at(mod, code, node, msg); };
+
+      if (p.noPromise && arg.k !== "tparam" && promiseIn(arg)) {
+        fail("E2002", `'${show(arg)}' cannot instantiate '${p.name}' (Promise cannot be a type argument)`);
+        continue;
+      }
+      if (p.owner === "rt") {
+        if (hasAuthority(arg)) { fail("E4006", `'${show(arg)}' cannot instantiate '${p.name}' of an rt function (§6)`); continue; }
+        if (arg.k === "tparam" && tparamMayBeAuthority(arg.p)) {
+          fail("E4006", `'${arg.p.name}' may hold an authority and cannot instantiate '${p.name}' of an rt function (§6)`);
+          continue;
+        }
+      }
+      let capFailed = false;
+      for (const cap of p.caps ?? []) {
+        if (!hasCap(arg, cap, !p.inParam)) {
+          const code = cap === "Send" ? "E2010" : cap === "Native" ? "E4002" : "E2002";
+          fail(code, `'${show(arg)}' cannot instantiate '${p.name}' (requires '${cap}')`);
+          capFailed = true;
+          break;
+        }
+      }
+      if (capFailed) continue;
+      if (p.owner && p.owner !== "managed") {
+        if (arg.k === "tparam") {
+          if (!tparamHasCap(arg.p, "Native")) {
+            fail("E4002", `the managed type parameter '${arg.p.name}' cannot instantiate '${p.name}' of a strict / rt function (§3.3 is not checked through it)`);
+          }
+        } else if (!layerOk(arg) || !crossOk(arg, !p.inParam)) {
+          fail("E4002", `'${show(arg)}' cannot instantiate '${p.name}' of a strict / rt function (§3.3)`);
+        }
+      }
     }
   }
 
@@ -444,7 +589,8 @@ export class Program {
       }
       case K.TypeReference: {
         const r = t as ts.TypeReferenceNode;
-        const id = r.typeName as ts.Identifier;
+        if (!isId(r.typeName)) return ERROR;
+        const id = r.typeName;
         // Q130: a Promise type is only the whole return type of a function (not a type argument, field, parameter or variable)
         if (id.text === "Promise" && !e.tparams.has("Promise") && !(voidOk && r.parent.kind !== K.TypeReference)) {
           this.rep.at(e.mod, "E2002", r, "'Promise' can only be the return type of a function");
@@ -453,7 +599,7 @@ export class Program {
         return this.typeRef(id, r.typeArguments, r, e);
       }
     }
-    throw new Error(`P2: unhandled type kind ${t.kind}`); // P1 rejects every other kind
+    return ERROR; // P1 reports bad type syntax; recover without throwing
   }
 
   private recordOf(t: ts.TypeLiteralNode, e: TypeEnv, struct: boolean): Type {
@@ -463,7 +609,7 @@ export class Program {
       if (!p.type) { this.rep.at(e.mod, "E2006", p.name, "property needs a type annotation"); return ERROR; }
       const name = (p.name as ts.Identifier).text;
       const type = this.typeOf(p.type, e);
-      if (struct && !demand(type, "field") && !(type.k === "gen" && (type.name === "Ref" || type.name === "Mut"))) this.rep.at(e.mod, "E4002", p.type, `a Struct field is a number, boolean, Struct or Vec, not '${show(type)}'`); // Q086; a borrow field is P3's E3004 (§5.5)
+      if (struct && !structField(type) && !(type.k === "gen" && (type.name === "Ref" || type.name === "Mut"))) this.rep.at(e.mod, "E4002", p.type, `a Struct field needs a Native type, not '${show(type)}'`); // Q086; a borrow field is P3's E3004 (§5.5)
       fields.push({ name, type, readonly: hasMod(p, K.ReadonlyKeyword) });
     }
     return record(fields, struct);
@@ -471,7 +617,7 @@ export class Program {
 
   typeRef(id: ts.Identifier, argNodes: ts.NodeArray<ts.TypeNode> | undefined, whole: Node, e: TypeEnv): Type {
     const name = id.text;
-    const args = (argNodes ?? []).map((a) => (name === "Struct" ? ERROR : this.typeOf(a, e, name === "Promise" || name === "Ptr" || name === "ConstPtr" || name === "CHandle"))); // `Promise<void>` (Q028); `Ptr<void>` (§14.4)
+    const args = (argNodes ?? []).map((a) => (name === "Struct" || name === "CStruct" ? ERROR : this.typeOf(a, e, name === "Promise" || name === "Ptr" || name === "ConstPtr" || name === "CHandle"))); // `Promise<void>` (Q028); `Ptr<void>` (§14.4)
     const arity = (n: number): boolean => {
       if (args.length === n) return true;
       this.rep.at(e.mod, "E2002", whole, `'${name}' takes ${n} type argument(s)`);
@@ -479,8 +625,10 @@ export class Program {
     };
     const tp = e.tparams.get(name);
     if (tp) return arity(0) ? { k: "tparam", p: tp } : ERROR;
-    const sym = this.lookupType(e.mod, name);
+    const sym = e.cscope?.get(name) ?? this.lookupType(e.mod, name);
     if (sym) {
+      if (sym.k === "error") return ERROR;
+      if (sym.k === "cstruct") return arity(0) ? sym.type : ERROR;
       if (sym.k === "alias" && sym.busy) { this.rep.at(e.mod, "E2002", whole, `type alias '${name}' refers to itself`); return ERROR; } // Q085
       const body = sym.k === "alias" ? this.aliasBody(sym) : undefined;
       const ps = sym.k === "alias" ? sym.tparams! : sym.k === "class" ? sym.cls.tparams : sym.iface.tparams;
@@ -502,21 +650,39 @@ export class Program {
       if (argNodes?.length !== 1 || a!.kind !== K.TypeLiteral) { this.rep.at(e.mod, "E2002", whole, "Struct takes one record type literal"); return ERROR; }
       return this.recordOf(a as ts.TypeLiteralNode, e, true);
     }
+    if (name === "CStruct") {
+      this.rep.at(e.mod, "E4007", whole, `'CStruct' can only be used in a 'declare module "c:..."' type declaration`);
+      return ERROR;
+    }
+    const ringElemOk = (a: Type, node: Node, label: string): boolean => {
+      if (a.k === "error") return true;
+      if (!hasCap(a, "Copy") || !hasCap(a, "Native") || !hasLayout(a)) {
+        this.rep.at(e.mod, "E4002", node, `${label} needs a Copy & Native element type, not '${show(a)}'`);
+        return false;
+      }
+      if (hasArenaBuf(a)) {
+        this.rep.at(e.mod, "E2002", node, `a ring element cannot be or contain an ArenaBuf, not '${show(a)}'`);
+        return false;
+      }
+      if (collectTParams(a).length > 0 && !sendable(a)) {
+        this.rep.at(e.mod, "E2002", node, `generic ${label} requires 'Send' on '${show(a)}'`);
+        return false;
+      }
+      return true;
+    };
     if (name === "RingPair") { // §15.1 (Q199): a builtin Struct, spelled out as the record it is defined to equal
       if (!arity(1)) return ERROR;
       const a = args[0]!;
       if (a.k === "error") return ERROR;
-      if (!demand(a, "copy")) { this.rep.at(e.mod, "E4002", argNodes![0]!, `RingPair<T> needs a Copy element type, not '${show(a)}'`); return ERROR; }
-      demandLayout(a); // Q229
-      if (!demand(a, "noabuf")) { this.rep.at(e.mod, "E2002", argNodes![0]!, `a ring element cannot be or contain an ArenaBuf, not '${show(a)}'`); return ERROR; }
+      if (!ringElemOk(a, argNodes![0]!, "RingPair<T>")) return ERROR;
       return record([{ name: "tx", type: gen("RingTx", a), readonly: false }, { name: "rx", type: gen("RingRx", a), readonly: false }], true);
     }
     if (name === "Result") return arity(2) ? result(args[0]!, args[1]!) : ERROR;
+    if (name === "Resource") return arity(1) ? { k: "resource", inner: args[0]! } : ERROR;
     if (isGenName(name)) {
       if (!arity(GEN_ARITY[name])) return ERROR;
       if ((name === "Ref" || name === "Mut")) { // Q051
-        const a = args[0]!;
-        if (!demand(a, "borrow")) {
+        if (!borrowOk(args[0]!)) {
           this.rep.at(e.mod, "E2002", argNodes![0]!, `${name}<T> needs an owned type or Slice`);
           return ERROR;
         }
@@ -524,20 +690,16 @@ export class Program {
       if (name === "Port") { // §15.2 (Q200, Q210): both type arguments must be sendable, at every position a Port type is written
         for (let i = 0; i < 2; i++) if (!sendable(args[i]!)) { this.rep.at(e.mod, "E2010", argNodes![i]!, `'${show(args[i]!)}' cannot be sent to an isolate (§15.2)`); return ERROR; }
       }
-      if ((name === "RingTx" || name === "RingRx") && !demand(args[0]!, "noabuf")) { // §15.1 (Q210)
-        this.rep.at(e.mod, "E2002", argNodes![0]!, `a ring element cannot be or contain an ArenaBuf, not '${show(args[0]!)}'`);
-        return ERROR;
-      }
       if (args.some((a) => a.k === "error")) return ERROR;
-      if ((name === "Map" || name === "Set") && !demand(args[0]!, "key")) { // §3.2, Q081, Q127
+      if ((name === "RingTx" || name === "RingRx") && !ringElemOk(args[0]!, argNodes![0]!, `${name}<T>`)) return ERROR; // §15.1 (Q210)
+      if ((name === "Map" || name === "Set") && !keyOk(args[0]!)) { // §3.2, SPEC-v1 §3.4 Key
         this.rep.at(e.mod, "E2002", argNodes![0]!, `a ${name} ${name === "Map" ? "key" : "element"} is a string, number, boolean or string literal union, not '${show(args[0]!)}'`);
         return ERROR;
       }
-      if ((name === "Vec" || name === "Slice" || name === "Pool" || name === "Handle" || name === "ArenaBuf" || name === "RingTx" || name === "RingRx") && !demand(args[0]!, "copy")) { // §3.3, Q086, Q127 (Pool / Handle: Q188 (a), ArenaBuf: Q188 (b))
-        this.rep.at(e.mod, "E4002", argNodes![0]!, `${name}<T> needs a Copy element type, not '${show(args[0]!)}'`);
+      if ((name === "Vec" || name === "Slice" || name === "Pool" || name === "Handle" || name === "ArenaBuf") && (!hasCap(args[0]!, "Copy") || !hasCap(args[0]!, "Native") || !hasLayout(args[0]!))) { // §3.3, SPEC-v1 §3.4
+        this.rep.at(e.mod, "E4002", argNodes![0]!, `${name}<T> needs a Copy & Native element type, not '${show(args[0]!)}'`);
         return ERROR;
       }
-      if (ELEMENT_CONTAINERS.has(name)) demandLayout(args[0]!); // Q229
       const i = CONTAINERS.has(name) ? args.findIndex((a) => holdsOwned(a) && !ownedDeep(a)) : -1;
       if (i >= 0) this.rep.at(e.mod, "E3007", argNodes![i]!, `'${name}' cannot hold the owned type '${show(args[i]!)}' (Q174)`);
       return { k: "gen", name, args };
@@ -556,6 +718,7 @@ export function legalUnion(u: Type): boolean {
   return isTaggedUnion(rest) && new Set(rest.members.map(kindOf)).size === rest.members.length;
 }
 
-export interface TypeEnv { mod: Module; tparams: Map<string, TParam> }
+export interface TypeEnv { mod: Module; tparams: Map<string, TParam>; cscope?: Map<string, CStructSym> }
 
-export const tparamShells = (list: ts.NodeArray<ts.TypeParameterDeclaration> | undefined, owner?: "managed"): TParam[] => (list ?? []).map((d) => ({ ...newTParam(d.name.text), need: new Set(["nopromise"] as const), ...(owner ? { owner } : {}) }));
+export const tparamShells = (list: ts.NodeArray<ts.TypeParameterDeclaration> | undefined, owner?: Layer, allowOwned = false): TParam[] =>
+  (list ?? []).map((d) => ({ ...newTParam(d.name.text), noPromise: true, ...(owner ? { owner } : {}), ...(allowOwned ? { allowOwned } : {}) }));

@@ -14,13 +14,13 @@ function project(files: Record<string, string>): string {
     mkdirSync(dirname(join(dir, p)), { recursive: true });
     writeFileSync(join(dir, p), t);
   }
-  return join(dir, "main.ts");
+  return join(dir, "main.szigyr");
 }
 
 describe("run", () => {
   it("links relative and npm imports, drops test(...), checks compound element writes", async () => {
     const main = project({
-      "main.ts": `import { twice } from "./lib.ts";
+      "main.szigyr": `import { twice } from "./lib.szigyr";
 import { triple } from "npm:fakepkg";
 export function main(sys: System): void {
   const r = sys.js.call(triple, [sys.js.encode<f64>(2)]);
@@ -39,7 +39,7 @@ test("not registered by run", (t: Test) => {
   t.ok(false);
 });
 `,
-      "lib.ts": "export function twice(x: f64): f64 {\n  return x * 2;\n}\n",
+      "lib.szigyr": "export function twice(x: f64): f64 {\n  return x * 2;\n}\n",
       "node_modules/fakepkg/package.json": JSON.stringify({ name: "fakepkg", type: "module", main: "index.js" }),
       "node_modules/fakepkg/index.js": "export const triple = (x) => x * 3;\n",
     });
@@ -51,7 +51,7 @@ test("not registered by run", (t: Test) => {
 
   it("keeps user names visible in compound right sides and ensures predicates; exports only values", async () => {
     const main = project({
-      "main.ts": `import { bump, Box } from "./lib.ts";
+      "main.szigyr": `import { bump, Box } from "./lib.szigyr";
 export function main(sys: System): void {
   const xs: Array<i32> = [1, 2];
   const o: i32 = 10;
@@ -68,7 +68,7 @@ function atLeast(x: i32, r: i32): i32 {
   return x;
 }
 `,
-      "lib.ts": `type Box = { total: i32 };
+      "lib.szigyr": `type Box = { total: i32 };
 export { Box };
 export function bump(o: Box, v: i32): void {
   o.total += v;
@@ -85,7 +85,7 @@ export function bump(o: Box, v: i32): void {
 describe("run: await and JS exceptions", () => {
   it("compound assignment to an element or property with await on the right, left to right", async () => {
     const main = project({
-      "main.ts": `class Acc {
+      "main.szigyr": `class Acc {
   n: i32;
   constructor(n: i32) {
     this.n = n;
@@ -119,7 +119,7 @@ export async function main(sys: System): Promise<void> {
 
   it("an isolate trap surfaces at the next await of any promise, on both backends (§15.4 (2))", async () => {
     const main = project({
-      "main.ts": `import { later } from "npm:laterpkg";
+      "main.szigyr": `import { later } from "npm:laterpkg";
 function boom(port: Port<i32, i32>): void {
   panic("boom");
 }
@@ -146,7 +146,7 @@ export async function main(sys: System): Promise<void> {
 
   it("an isolate resolves each npm: import from the importing module's own directory", async () => {
     const main = project({
-      "main.ts": `import { tripled } from "./sub/lib.ts";
+      "main.szigyr": `import { tripled } from "./sub/lib.szigyr";
 function echo(port: Port<f64, f64>): void {
   port.send(2);
 }
@@ -158,7 +158,7 @@ export async function main(sys: System): Promise<void> {
   }
 }
 `,
-      "sub/lib.ts": `import { triple } from "npm:subpkg";
+      "sub/lib.szigyr": `import { triple } from "npm:subpkg";
 export function tripled(js: Js, x: f64): f64 {
   const r = js.call(triple, [js.encode<f64>(x)]);
   if (r.kind === "ok") {
@@ -183,7 +183,7 @@ export function tripled(js: Js, x: f64): f64 {
 describe("Q035: JS exceptions and stack exhaustion are T006 at the callee name", () => {
   it("in tests", async () => {
     const main = project({
-      "main.ts": `function deep(n: f64): f64 {
+      "main.szigyr": `function deep(n: f64): f64 {
   return deep(n + 1) + 1;
 }
 test("fromCodePoint", (t: Test) => {
@@ -216,7 +216,7 @@ test("traps sees T006", (t: Test) => {
 
   it("in run: stack exhaustion through a method", async () => {
     const main = project({
-      "main.ts": `class R {
+      "main.szigyr": `class R {
   down(n: f64): f64 {
     return this.down(n + 1);
   }
@@ -237,7 +237,7 @@ export function main(sys: System): void {
 describe("runTestFile", () => {
   it("reports passing, failing and trapping tests", async () => {
     const main = project({
-      "main.ts": `function f(x: i32): i32 {
+      "main.szigyr": `function f(x: i32): i32 {
   return x + 1;
 }
 test("passes", (t: Test) => {
@@ -276,7 +276,7 @@ test("traps", (t: Test) => {
 describe("D060: Js boundary, optional chains, cycles, JS limits, concurrent runs", () => {
   it("js.encode refuses a function, so no STS code can run inside js.call (Q128); the boundary guard is tested in std", async () => {
     const main = project({
-      "main.ts": `export function main(sys: System): void {
+      "main.szigyr": `export function main(sys: System): void {
   const f = sys.js.encode<() => void>((): void => {
     panic("x");
   });
@@ -291,7 +291,7 @@ describe("D060: Js boundary, optional chains, cycles, JS limits, concurrent runs
 
   it("`?.` on rewritten member calls short-circuits on null", async () => {
     const main = project({
-      "main.ts": `function show(x: u16 | null): string {
+      "main.szigyr": `function show(x: u16 | null): string {
   return x === null ? "null" : \`\${x}\`;
 }
 function showS(x: string | null): string {
@@ -316,7 +316,7 @@ export function main(sys: System): void {
 
   it("a negative zero literal of an integer type is +0 (Q090)", async () => {
     const main = project({
-      "main.ts": `export function main(sys: System): void {
+      "main.szigyr": `export function main(sys: System): void {
   const z: i32 = -0;
   const f: f64 = -0;
   sys.log.info(\`\${1 / f64(z)} \${1 / f}\`);
@@ -335,7 +335,7 @@ export function main(sys: System): void {
 
   it("-0 is +0 in every integer context (Q090)", async () => {
     const main = project({
-      "main.ts": `type Box = { v: u32 };
+      "main.szigyr": `type Box = { v: u32 };
 function inv(x: f64): f64 {
   return 1 / x;
 }
@@ -367,17 +367,17 @@ export function main(sys: System): void {
 
   it("an import cycle sees the function declarations of the other module (Q100)", async () => {
     const main = project({
-      "main.ts": `import { isEven } from "./even.ts";
+      "main.szigyr": `import { isEven } from "./even.szigyr";
 export function main(sys: System): void {
   sys.log.info(\`\${isEven(10)} \${isEven(7)}\`);
 }
 `,
-      "even.ts": `import { isOdd } from "./odd.ts";
+      "even.szigyr": `import { isOdd } from "./odd.szigyr";
 export function isEven(n: i32): boolean {
   return n === 0 ? true : isOdd(n - 1);
 }
 `,
-      "odd.ts": `import { isEven } from "./even.ts";
+      "odd.szigyr": `import { isEven } from "./even.szigyr";
 export function isOdd(n: i32): boolean {
   return n === 0 ? false : isEven(n - 1);
 }
@@ -390,7 +390,7 @@ export function isOdd(n: i32): boolean {
 
   it("JS RangeErrors from syntax no builtin wraps are T006 (Q035)", async () => {
     const main = project({
-      "main.ts": `function grow(s: string, n: i32): string {
+      "main.szigyr": `function grow(s: string, n: i32): string {
   return n === 0 ? s : grow(\`\${s}\${s}\`, n - 1);
 }
 export function main(sys: System): void {
@@ -408,7 +408,7 @@ export function main(sys: System): void {
 
   it("runs started together do not mix their traps or output", async () => {
     const mk = (n: number) => project({
-      "main.ts": `export function main(sys: System): void {
+      "main.szigyr": `export function main(sys: System): void {
   sys.log.info("${n}");
 ${"\n".repeat(n)}  panic("x");
 }
@@ -422,7 +422,7 @@ ${"\n".repeat(n)}  panic("x");
 // Q130 rejects a floating Promise in the source, so the Q140 host fallback is tested in packages/std/test/std.test.ts.
 it("a Promise that is neither awaited nor returned is E2002 (Q130)", () => {
   const main = project({
-    "main.ts": `async function g(): Promise<void> {
+    "main.szigyr": `async function g(): Promise<void> {
   panic("late");
 }
 export function main(sys: System): void {
@@ -438,20 +438,20 @@ test("floating", (t: Test) => {
   expect(check(main).map((d) => `${d.code} ${d.range.start.line}:${d.range.start.col}`)).toEqual(["E2002 5:13", "E2002 9:13"]);
 });
 
-// Q229 (c): an element type without a byte layout is rejected in strict / rt (E4002), so it never reaches the C backend.
-it("Pool<null> and Arena.alloc<null> are E4002 in rt code", () => {
+// 1B null fixed layout (SPEC-v1 §3.3): Pool<null> and Arena.alloc<null> check cleanly in rt code.
+it("Pool<null> and Arena.alloc<null> check cleanly in rt code (1B null layout)", () => {
   for (const body of ["const p = Pool.create<null>(sys.alloc, 4);\n  sys.log.info(`${go(p)}`);", "const a = Arena.create(sys.alloc, 64);\n  sys.log.info(`${go2(a)}`);"]) {
     const main = project({
-      "main.ts": `function go(p: Mut<Pool<null>>): usize {\n  "use rt";\n  const h = p.insert(null);\n  return p.length;\n}\nfunction go2(a: Mut<Arena>): usize {\n  "use rt";\n  const b = a.alloc<null>(2, null);\n  return a.remaining;\n}\nexport function main(sys: System): void {\n  ${body}\n}\n`,
+      "main.szigyr": `function go(p: Mut<Pool<null>>): usize {\n  "use rt";\n  const h = p.insert(null);\n  return p.length;\n}\nfunction go2(a: Mut<Arena>): usize {\n  "use rt";\n  const b = a.alloc<null>(2, null);\n  return a.remaining;\n}\nexport function main(sys: System): void {\n  ${body}\n}\n`,
     });
-    expect(check(main).map((d) => `${d.code} ${d.range.start.line}:${d.range.start.col}`)).toEqual(expect.arrayContaining(["E4002 1:16", "E4002 8:13"]));
+    expect(check(main)).toEqual([]);
   }
 });
 
 describe("C Arena (D116, Q246)", () => {
   it("a reset in C drops the notes of earlier generations: only live bufs are replayed at the boundary exit", async () => {
     const main = project({
-      "main.ts": `function churn(a: Mut<Arena>, n: i32): usize {
+      "main.szigyr": `function churn(a: Mut<Arena>, n: i32): usize {
   "use rt";
   let last: usize = 0;
   for (let i: i32 = 0; i < n; i += 1) {
@@ -479,5 +479,66 @@ export function main(sys: System): void {
       }
     } finally { proto.noteC = orig; }
     expect(notes).toBe(1);
+  }, 120000);
+});
+
+describe("Batch D: using trap unwinding & AudioStream AsyncDisposable", () => {
+  it("unwinds nested Resource.ownWith cleanups in LIFO order on trap across js, c, and wasm", async () => {
+    const main = project({
+      "main.szigyr": `type Tag = "a" | "b";
+type Item = Struct<{ id: Tag; n: i32 }>;
+function freeItem(log: Log, it: Item): void {
+  "use owned";
+  log.info(it.id);
+}
+function boom(log: Log): void {
+  "use owned";
+  using a = Resource.ownWith<Item, Log>({ id: "a", n: 1 }, log, freeItem);
+  using b = Resource.ownWith<Item, Log>({ id: "b", n: 2 }, log, freeItem);
+  if (a.borrow().n === 1 && b.borrow().n === 2) {
+    panic("trap!");
+  }
+}
+export function main(sys: System): void {
+  boom(sys.log);
+}
+`,
+    });
+    for (const backend of ["js", "c", "wasm"] as const) {
+      const r = await run(main, { backend });
+      expect(r.diagnostics).toEqual([]);
+      expect(r.trap).toMatchObject({ code: "T006" });
+      expect(r.stdout).toBe("b\na\n");
+    }
+  }, 120000);
+
+  it("closes FakeAudio AudioStream on exiting `await using` block across js, c, and wasm", async () => {
+    const main = project({
+      "main.szigyr": `function render(st: f64, out: Mut<Slice<f32>>, frames: usize): void {
+  "use rt";
+  for (let i: usize = 0; i < frames; i += 1) {
+    out[i] = f32(st);
+  }
+}
+export async function main(sys: System): Promise<void> {
+  const fa = FakeAudio.create();
+  const r = await fa.open({ sampleRate: 48000, channels: 1 }, 0, render);
+  if (r.kind === "ok") {
+    const ref = r.value;
+    {
+      await using stream = ref;
+      sys.log.info(\`in:\${stream.isOpen()}\`);
+    }
+    sys.log.info(\`out:\${ref.isOpen()}\`);
+  }
+}
+`,
+    });
+    for (const backend of ["js", "c", "wasm"] as const) {
+      const r = await run(main, { backend });
+      expect(r.diagnostics).toEqual([]);
+      expect(r.trap).toBeNull();
+      expect(r.stdout).toBe("in:true\nout:false\n");
+    }
   }, 120000);
 });

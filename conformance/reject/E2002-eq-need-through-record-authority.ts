@@ -1,6 +1,0 @@
-// expect: E2002 @ 5:9
-// stage: 1
-function same2<T>(t: Test, a: { readonly v: T }, b: { readonly v: T }): void { t.eq<{ readonly v: T }>(a, b); }
-test("a", (t: Test) => {
-  same2<Clock>(t, { v: FakeClock.create(0) }, { v: FakeClock.create(0) });
-});

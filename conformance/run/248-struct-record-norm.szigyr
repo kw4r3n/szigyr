@@ -1,0 +1,34 @@
+// expect-output: 5.5
+// expect-output: 12.5
+// expect-output: {"x":1.5,"y":11}
+// expect-output: 1.5:11
+// stage: 3
+type R = { readonly x: f64; readonly y: i32 };
+type S = Struct<{ readonly x: f64; readonly y: i32 }>;
+
+function sumS(s: S): f64 {
+  "use rt";
+  return s.x + f64(s.y);
+}
+
+function makeR(x: f64, y: i32): S {
+  "use owned";
+  const r: R = { x, y };
+  return r;
+}
+
+export function main(sys: System): void {
+  const r: R = { x: 2.5, y: 3 };
+  sys.log.info(`${sumS(r)}`);
+  const s: R = makeR(1.5, 11);
+  sys.log.info(`${sumS(s)}`);
+  const encoded = JSON.stringify<S>(s);
+  sys.log.info(encoded);
+  const parsed = JSON.parse(encoded);
+  if (parsed.kind === "ok") {
+    const res = cast<S>(parsed.value);
+    if (res.kind === "ok") {
+      sys.log.info(`${res.value.x}:${res.value.y}`);
+    }
+  }
+}
