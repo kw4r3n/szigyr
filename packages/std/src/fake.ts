@@ -1,4 +1,4 @@
-import { Slice, err, ok } from "../../runtime-js/src/index.ts";
+import { Slice, err, ok, trap, type Pos } from "../../runtime-js/src/index.ts";
 import { ALLOC, type Alloc, type Audio, type AudioCallbackSpec, type AudioConfig, type AudioStream, type Clock, type Fs, type Log, type Random } from "./types.ts";
 
 export class FakeClock implements Clock {
@@ -93,8 +93,9 @@ export class FakeAudio implements Audio {
     return ok(stream);
   }
 
-  renderFrames(frames: number): number[] {
-    if (!this.active || !this.active.isOpen() || !Number.isInteger(frames) || frames <= 0) return [];
+  renderFrames(frames: number, pos?: Pos): number[] {
+    if (!this.active || !this.active.isOpen()) trap("T006", "FakeAudio.renderFrames: no open audio stream", pos);
+    if (!Number.isInteger(frames) || frames <= 0) return [];
     const out = new Float32Array(frames * this.active.channels);
     this.active.render(out, frames);
     return Array.from(out);

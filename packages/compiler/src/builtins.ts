@@ -233,7 +233,7 @@ export function genMembers(t: { name: GenName; args: Type[] }): Members {
         cast: m(RD, [], gen("ConstPtr", tU), { tparams: [U], tcheck: "castptr" }),
       };
     }
-    case "CHandle": return { get: m(RD, [], gen("Ptr", a)) }; // §14.5
+    case "CHandle": return { get: m(REF, [], gen("Ptr", a)) }; // §14.5
     // §15.2: S is sent, R is received; recv's Promise may be awaited (and, for an owned R, only awaited: §5.6)
     case "Port": return { send: m(PORT_FX, [a], VOID), recv: m(PORT_FX, [], gen("Promise", nullable(b))), close: m(PORT_FX, [], VOID) };
     default: return {}; // Promise: await and Promise.all only (§12); Ref / Mut are unwrapped before lookup

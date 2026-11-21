@@ -38,12 +38,13 @@ describe("fakes", () => {
     expect(r.kind).toBe("ok");
     if (r.kind !== "ok") return;
     expect(r.value.isOpen()).toBe(true);
+    expect(a.renderFrames(0)).toEqual([]);
     expect(a.renderFrames(2)).toEqual([0.25, -0.25, 0.25, -0.25]);
     expect(a.renderFrames(1)).toEqual([0.5, -0.5]);
     await r.value.close();
     await r.value.close();
     expect(r.value.isOpen()).toBe(false);
-    expect(a.renderFrames(4)).toEqual([]);
+    expect(() => a.renderFrames(4)).toThrow(/^T006:/);
   });
   it("SeededRandom is deterministic, in range, seed-dependent", () => {
     const a = SeededRandom.create(42), b = SeededRandom.create(42), c = SeededRandom.create(43);

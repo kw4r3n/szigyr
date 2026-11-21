@@ -677,6 +677,7 @@ export function emitFile(
     } else if (r?.k === "opaque") {
       if (r.name === "Js" && m === "decode") return nn(withArgs([desc(resultParts(self!)!.ok)]));
       if (r.name === "Js" && m === "callback") return nn(withArgs([desc(resultParts((typeOf(e.arguments[0]!) as FnType).params[0]!)!.ok)]));
+      if (r.name === "FakeAudio" && m === "renderFrames") return nn(withArgs([at(p.name)]));
       if (r.name === "Test") return nn(withArgs([at(p.name)]));
     }
     if (groups) return groupedProp(e, groups, args, awaited);
