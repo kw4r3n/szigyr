@@ -16,9 +16,12 @@ export const WASM_CFLAGS = [
   "-Wl,--no-entry", "-Wl,--allow-undefined", "-Wl,--stack-first", "-Wl,-z,stack-size=1048576", "-Wl,--export=__stack_pointer",
 ];
 
+const wasmCcEnv = (): string | undefined => process.env.SZIGYR_WASM_CC || process.env.STS_WASM_CC;
+
 function wasmCommand(): [string, string[]] {
-  if (process.env.STS_WASM_CC) {
-    const [cmd = "clang", ...args] = splitFlags(process.env.STS_WASM_CC);
+  const wasmCc = wasmCcEnv();
+  if (wasmCc) {
+    const [cmd = "clang", ...args] = splitFlags(wasmCc);
     const hasTarget = args.some((a) => a === "-target" || a.startsWith("-target=") || a === "--target" || a.startsWith("--target="));
     return [cmd, hasTarget ? args : ["--target=wasm32", ...args]];
   }
@@ -74,7 +77,7 @@ export function compileWasm(c: string): Uint8Array {
       execFileSync(cc, [...ccArgs, ...WASM_CFLAGS, src, "-o", wasmTmp], { stdio: ["ignore", "ignore", "pipe"] });
     } catch (e) {
       const err = e as { code?: string };
-      if (!process.env.STS_WASM_CC && err.code === "ENOENT") {
+      if (!wasmCcEnv() && err.code === "ENOENT") {
         execFileSync("zig", ["cc", "-target", "wasm32-freestanding", ...WASM_CFLAGS, src, "-o", wasmTmp], { stdio: ["ignore", "ignore", "pipe"] });
       } else throw e;
     }

@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { loadNpmModule } from "./bundle-npm.ts";
 import { analyze, CliError, type Analysis } from "./index.ts";
+import { DETMATH_PATH } from "./detmath.ts";
 import { CACHE_DIR } from "./names.ts";
 import type { Diagnostic, Range } from "./diagnostics.ts";
 import { emitFile, EXPORTS, IMP, MUT_FNS, RT, SOURCE_URL, type EmitMutate, type MutantSpec } from "./emit.ts";
@@ -72,6 +73,8 @@ export interface MutateOptions {
   cache?: boolean;
   /** Override cache file path (default: `.sts-cache/mutate.json` in cwd). */
   cacheFile?: string;
+  /** Include functions and classes in locally imported modules too (default: false, entry file only). */
+  all?: boolean;
   /** Shared parser instance (D161). */
   parser?: Parser;
   /** Pre-computed analysis. */
@@ -123,42 +126,54 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
   const entryPath = canonPath(entryFile);
   const entryMod = decls.mods.find((m) => m.pf.path === entryPath)!;
   const entryDisplay = displayPath(entryPath);
+  const targetMods = opts.all ? decls.mods.filter((m) => m.pf.path !== DETMATH_PATH) : [entryMod];
+  const targetModSet = new Set(targetMods);
 
   // SPEC-v1 §7: target functions and class methods are safe, do not take Test, and pass isMutatable.
-  interface MutTarget { readonly fnId: number; readonly name: string; readonly decl: Node; readonly pure: boolean; readonly fnSym?: FnSym; readonly clsSym?: ClassSym }
+  interface MutTarget { readonly fnId: number; readonly name: string; readonly mod: Module; readonly decl: Node; readonly pure: boolean; readonly fnSym?: FnSym; readonly clsSym?: ClassSym }
   const targets: MutTarget[] = [];
   const skipped: SkippedTarget[] = [];
   for (const f of decls.fns) {
-    if (f.mod !== entryMod) continue;
-    if (f.unsafe) { skipped.push({ fn: f.name, reason: "unsafe" }); continue; }
-    if (f.sig.params.some((p) => hasTestType(p))) { skipped.push({ fn: f.name, reason: "test-helper" }); continue; }
-    if (!isMutatable(f.sig, false)) { skipped.push({ fn: f.name, reason: "not-mutatable" }); continue; }
-    targets.push({ fnId: targets.length, name: f.name, decl: f.decl, pure: isDeterministic(f.sig, false), fnSym: f });
+    if (!targetModSet.has(f.mod)) continue;
+    const skippedName = f.mod === entryMod ? f.name : `${displayPath(f.mod.pf.path)}:${f.name}`;
+    if (f.unsafe) { skipped.push({ fn: skippedName, reason: "unsafe" }); continue; }
+    if (f.sig.params.some((p) => hasTestType(p))) { skipped.push({ fn: skippedName, reason: "test-helper" }); continue; }
+    if (!isMutatable(f.sig, false)) { skipped.push({ fn: skippedName, reason: "not-mutatable" }); continue; }
+    targets.push({ fnId: targets.length, name: f.name, mod: f.mod, decl: f.decl, pure: isDeterministic(f.sig, false), fnSym: f });
   }
-  for (const [clsName, sym] of entryMod.types) {
-    if (sym.k !== "class" || sym.mod !== entryMod) continue;
-    const clsType: Type = { k: "class", cls: sym.cls, args: sym.cls.tparams.map((p) => ({ k: "tparam", p })) };
-    for (const [mName, m] of sym.cls.methods) {
-      const qName = `${clsName}.${mName}`;
-      const extra = m.static ? [] : [clsType];
-      if (m.sig.params.some((p) => hasTestType(p)) || extra.some((e) => hasTestType(e))) { skipped.push({ fn: qName, reason: "test-helper" }); continue; }
-      if (!isMutatable(m.sig, false, extra)) { skipped.push({ fn: qName, reason: "not-mutatable" }); continue; }
-      targets.push({ fnId: targets.length, name: qName, decl: m.node, pure: false, clsSym: sym.cls });
+  for (const m of targetMods) {
+    for (const [clsName, sym] of m.types) {
+      if (sym.k !== "class" || sym.mod !== m) continue;
+      const clsType: Type = { k: "class", cls: sym.cls, args: sym.cls.tparams.map((p) => ({ k: "tparam", p })) };
+      for (const [mName, method] of sym.cls.methods) {
+        const qName = `${clsName}.${mName}`;
+        const skippedName = m === entryMod ? qName : `${displayPath(m.pf.path)}:${qName}`;
+        const extra = method.static ? [] : [clsType];
+        if (method.sig.params.some((p) => hasTestType(p)) || extra.some((e) => hasTestType(e))) { skipped.push({ fn: skippedName, reason: "test-helper" }); continue; }
+        if (!isMutatable(method.sig, false, extra)) { skipped.push({ fn: skippedName, reason: "not-mutatable" }); continue; }
+        targets.push({ fnId: targets.length, name: qName, mod: m, decl: method.node, pure: false, clsSym: sym.cls });
+      }
     }
   }
-  const targetByDecl = new Map(targets.map((t) => [t.decl, { id: t.fnId, name: t.name }]));
   const unsafeDecls = new Set<Node>(decls.fns.filter((f) => f.unsafe).map((f) => f.decl));
+  const targetsByPath = new Map<string, MutTarget[]>();
+  for (const t of targets) {
+    let list = targetsByPath.get(t.mod.pf.path);
+    if (!list) targetsByPath.set(t.mod.pf.path, list = []);
+    list.push(t);
+  }
 
   // Emit ONE JS build containing all mutants, reachability hooks, step fuel, and C-only stubs (#8).
   const allMutants: MutantSpec[] = [];
   const emitted = new Map<string, { js: string; imports: string[]; calls: Map<string, rt.Pos> }>();
   for (const pf of a.files) {
     const isEntry = pf.path === entryPath;
+    const modTargets = targetsByPath.get(pf.path) ?? [];
     const mut: EmitMutate = {
-      targets: isEntry ? targetByDecl : new Map(),
+      targets: new Map(modTargets.map((t) => [t.decl, { id: t.fnId, name: t.name }])),
       unsafeDecls,
       mutants: allMutants,
-      exportFns: isEntry ? targets.filter((t) => t.fnSym && t.pure).map((t) => t.name) : [],
+      exportFns: modTargets.filter((t) => t.fnSym && t.pure).map((t) => t.name),
     };
     emitted.set(pf.path, emitFile(pf, displayPath(pf.path), isEntry, undefined, undefined, mut));
   }
@@ -270,11 +285,17 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
     f(mutRt, (k) => (k.startsWith("npm:") ? npm.get(k) : instantiate(k)), ex);
     return ex;
   };
-  let entryEx: Record<string, unknown> = {};
-  const loadRejected = await rt.capturing(async () => { entryEx = instantiate(entryPath); });
+  const loadRejected = await rt.capturing(async () => {
+    instantiate(entryPath);
+    for (const m of targetMods) instantiate(m.pf.path);
+  });
   if (loadRejected.length) throw loadRejected[0];
 
-  const fnTable = (entryEx[MUT_FNS] ?? {}) as Record<string, (...args: unknown[]) => unknown>;
+  const fnTables = new Map<string, Record<string, (...args: unknown[]) => unknown>>();
+  for (const m of targetMods) {
+    const modEx = done.get(m.pf.path);
+    if (modEx?.[MUT_FNS]) fnTables.set(m.pf.path, modEx[MUT_FNS] as Record<string, (...args: unknown[]) => unknown>);
+  }
 
   // Map top-level `test(...)` statements in entry file to AST nodes and source text (1-to-1 with registeredTests, §1 / §9.2).
   const testAsts: { source: string; node: Node }[] = [];
@@ -353,8 +374,10 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
     list.push(m);
   }
 
-  const sourceLines = entryMod.sf.text.split("\n");
-  const isEquivalentLine = (line: number): boolean => {
+  const linesByMod = new Map<Module, string[]>();
+  const isEquivalentLine = (mod: Module, line: number): boolean => {
+    let sourceLines = linesByMod.get(mod);
+    if (!sourceLines) linesByMod.set(mod, sourceLines = mod.sf.text.split("\n"));
     const cur = sourceLines[line - 1] ?? "";
     if (/\/\/\s*szigyr-equivalent:\s*\S/.test(cur)) return true;
     const prev = line >= 2 ? (sourceLines[line - 2] ?? "") : "";
@@ -363,11 +386,12 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
 
   const reports: MutantReport[] = [];
   for (const target of targets) {
-    const fnMutants = (mutantsByFn.get(target.fnId) ?? []).filter((m) => !isEquivalentLine(m.range.start.line));
+    const targetDisplay = displayPath(target.mod.pf.path);
+    const fnMutants = (mutantsByFn.get(target.fnId) ?? []).filter((m) => !isEquivalentLine(target.mod, m.range.start.line));
     if (!fnMutants.length) continue;
 
     const reaching = activeTests.filter((t) => t.reached.has(target.fnId));
-    const cacheId = `${entryPath}::${target.name}`;
+    const cacheId = `${target.mod.pf.path}::${target.name}`;
     const key = computeCacheKey(decls, entryMod, target, reaching);
     const hit = useCache ? cacheStore[cacheId] : undefined;
 
@@ -376,7 +400,7 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
         const spec = fnMutants[i]!;
         const cr = hit.results[i]!;
         reports.push({
-          file: entryDisplay, fn: spec.fn, id: spec.id, op: spec.op, range: spec.range,
+          file: targetDisplay, fn: spec.fn, id: spec.id, op: spec.op, range: spec.range,
           status: cr.status, cached: true,
           ...(cr.deadCode ? { deadCode: true } : {}),
           ...(cr.status === "survived" ? { witness: cr.witness ?? null } : {}),
@@ -386,7 +410,7 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
     }
 
     const fnResults: CacheEntry["results"] = [];
-    const fnImpl = target.fnSym ? fnTable[target.name] : undefined;
+    const fnImpl = target.fnSym ? fnTables.get(target.mod.pf.path)?.[target.name] : undefined;
     for (const spec of fnMutants) {
       let status: "killed" | "survived" | "timeout" = "survived";
       for (const t of reaching) {
@@ -404,7 +428,7 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
       const deadCode = status === "survived" && spec.isDeleteStmt ? true : undefined;
       fnResults.push({ op: spec.op, status, ...(deadCode ? { deadCode } : {}), ...(status === "survived" ? { witness: witness ?? null } : {}) });
       reports.push({
-        file: entryDisplay, fn: spec.fn, id: spec.id, op: spec.op, range: spec.range,
+        file: targetDisplay, fn: spec.fn, id: spec.id, op: spec.op, range: spec.range,
         status, cached: false,
         ...(deadCode ? { deadCode } : {}),
         ...(status === "survived" ? { witness: witness ?? null } : {}),
@@ -445,7 +469,7 @@ function writeCache(file: string, store: CacheStore): void {
 }
 
 /** Q277: hash of (target fn + transitive refs across signatures/bodies/types/consts/classes, reaching tests + helpers, version). */
-function computeCacheKey(decls: Decls, entryMod: Module, target: { readonly fnSym?: FnSym; readonly clsSym?: ClassSym }, reaching: readonly { name: string; source: string; node: Node }[]): string {
+function computeCacheKey(decls: Decls, entryMod: Module, target: { readonly mod: Module; readonly fnSym?: FnSym; readonly clsSym?: ClassSym }, reaching: readonly { name: string; source: string; node: Node }[]): string {
   const seen = new Set<string>();
   const parts: [string, string][] = [];
   const visitFn = (f: FnSym): void => {
@@ -514,7 +538,7 @@ function computeCacheKey(decls: Decls, entryMod: Module, target: { readonly fnSy
     visit(root);
   };
   if (target.fnSym) visitFn(target.fnSym);
-  else if (target.clsSym) visitType({ k: "class", cls: target.clsSym, mod: entryMod });
+  else if (target.clsSym) visitType({ k: "class", cls: target.clsSym, mod: target.mod });
   for (const t of reaching) walkDeps(entryMod, t.node);
   parts.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
   const tests = reaching.map((t) => [t.name, t.source] as [string, string]).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));

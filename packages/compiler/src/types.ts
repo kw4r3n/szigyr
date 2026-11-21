@@ -29,7 +29,7 @@ export interface FnType {
   k: "fn"; tparams: TParam[]; params: Type[]; ret: Type; min?: number; prefix?: boolean;
   /** Builtin call-site conditions: `cast` / `codec` / `owned` / `eq` / `copy` constrain the first type argument (Q084, Q086); `trap` checks the code literal (Q058). */
   /** `box` / `chandle` / `castptr`: the §14.4 / §14.5 conditions on the type argument. */
-  tcheck?: "cast" | "codec" | "owned" | "eq" | "copy" | "trap" | "box" | "chandle" | "castptr" | "ring" | "alloc" | "ptrnull" | "ptrsizeof";
+  tcheck?: "cast" | "codec" | "jsonstringify" | "owned" | "eq" | "copy" | "trap" | "box" | "chandle" | "castptr" | "ring" | "alloc" | "ptrnull" | "ptrsizeof";
 }
 
 export interface ClassSym {
@@ -141,8 +141,7 @@ export function same(a: Type, b: Type): boolean {
     case "num": return b.k === "num" && a.name === b.name;
     case "lit": return b.k === "lit" && a.value === b.value;
     case "record":
-      return b.k === "record" && (a.struct === b.struct || (isCopyValueRecord(a) && isCopyValueRecord(b))) && a.fields.length === b.fields.length &&
-        a.fields.every((f, i) => { const g = b.fields[i]!; return f.name === g.name && f.readonly === g.readonly && same(f.type, g.type); });
+      return b.k === "record" && (a.struct === b.struct || (isCopyValueRecord(a) && isCopyValueRecord(b))) && sameFields(a.fields, b.fields);
     case "union": return b.k === "union" && a.members.length === b.members.length && a.members.every((m) => b.members.some((n) => same(m, n)));
     case "fn": return b.k === "fn" && a.params.length === b.params.length && a.params.every((p, i) => same(p, b.params[i]!)) && same(a.ret, b.ret);
     case "class": return b.k === "class" && a.cls === b.cls && sameArgs(a.args, b.args);
@@ -152,10 +151,12 @@ export function same(a: Type, b: Type): boolean {
     case "opaque": case "ns": return b.k === a.k && a.name === b.name;
     case "iter": return b.k === "iter" && same(a.elem, b.elem);
     case "resource": return b.k === "resource" && same(a.inner, b.inner);
-    case "cstruct": return b.k === "cstruct" && a.name === b.name && a.spec === b.spec;
+    case "cstruct": return b.k === "cstruct" && a.name === b.name && a.spec === b.spec && sameFields(a.fields, b.fields);
   }
 }
 const sameArgs = (a: Type[], b: Type[]): boolean => a.length === b.length && a.every((x, i) => same(x, b[i]!));
+const sameFields = (a: Field[], b: Field[]): boolean =>
+  a.length === b.length && a.every((f, i) => { const g = b[i]!; return f.name === g.name && f.readonly === g.readonly && same(f.type, g.type); });
 
 /** Fakes assignable to their authority (Q020-10, Q038). */
 const FAKE_OF: Record<string, string> = { FakeClock: "Clock", SeededRandom: "Random", MemoryLog: "Log", FakeFs: "Fs", FakeAudio: "Audio" };
@@ -266,9 +267,9 @@ export function tparamMayBeOwned(p: TParam): boolean {
   if (p.constraint || tparamHasCap(p, "Copy") || tparamHasCap(p, "Key")) return false;
   return p.owner === "strict" || p.owner === "rt" || tparamHasCap(p, "Owned") || (!!p.allowOwned && tparamHasCap(p, "Native"));
 }
-/** Whether a strict/managed type parameter could possibly be instantiated with an authority (Alloc, etc.). */
+/** Whether a managed type parameter could possibly be instantiated with an authority (Alloc, etc.). */
 export function tparamMayBeAuthority(p: TParam): boolean {
-  return p.owner !== "rt" && !p.constraint && !p.caps?.has("Native") &&
+  return p.owner !== "strict" && p.owner !== "rt" && !p.constraint && !p.caps?.has("Native") &&
     !tparamHasCap(p, "Copy") && !tparamHasCap(p, "Owned") && !tparamHasCap(p, "Send") && !tparamHasCap(p, "Key") && !tparamHasCap(p, "Codec");
 }
 
@@ -452,12 +453,24 @@ export function hasCap(t: Type, cap: Capability, allowNever = false): boolean {
 
 /** Whether `Ref<t>` / `Mut<t>` is allowed (§5.5 / §3.4). */
 export const borrowOk = (t: Type): boolean =>
-  t.k === "error" || isOwned(t) || (t.k === "gen" && t.name === "Slice") || (t.k === "tparam" && tparamHasCap(t.p, "Owned"));
+  t.k === "error" || isOwnedCap(t) || (t.k === "gen" && t.name === "Slice") || (t.k === "tparam" && tparamHasCap(t.p, "Owned"));
 
 export const I64_MIN = -(1n << 63n);
 export const I64_MAX = (1n << 63n) - 1n;
 export const U64_MAX = (1n << 64n) - 1n;
 export const isInt64 = (n: NumName): n is "i64" | "u64" => n === "i64" || n === "u64";
+
+/** True when `t` statically contains `i64` or `u64` (cannot be serialized by `JSON.stringify`). */
+export function hasInt64(t: Type): boolean {
+  switch (t.k) {
+    case "num": return isInt64(t.name);
+    case "record": return t.fields.some((f) => hasInt64(f.type));
+    case "union": return t.members.some(hasInt64);
+    case "gen": return t.args.some(hasInt64);
+    case "resource": return hasInt64(t.inner);
+    default: return false;
+  }
+}
 
 /** Parses a TS numeric literal exactly as a bigint integer when exact, else null. `-0` normalizes to `0n`. */
 export function parseExactInt(text: string, neg = false): bigint | null {

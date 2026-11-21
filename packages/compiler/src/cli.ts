@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // CLI (Q060, Q061, Q110). Exit codes: 0 ok, 1 compile errors or failed tests, 2 usage / CLI error, 3 trap, 70 internal error (Q252).
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { analyze, buildBrowser, buildNode, check, CLI_NAME, CliError, createParser, explainCode, mutate, queryFile, run, type Backend, type BrowserBuildMode, type Diagnostic, type NodeBuildBackend, type NodeBuildMode, type RunResult } from "./index.ts";
@@ -9,7 +10,79 @@ import { runTestPass, startWatch } from "./watch.ts";
 import { CUnsupported } from "./emit-c.ts";
 import { CBuildError } from "./native.ts";
 
-const USAGE = `usage: ${CLI_NAME} <check|run|test|mutate|query|explain|build|mcp> [--json] [--watch] [--no-cache] [--backend=js|c|both|wasm] [--target=node|browser] [--mode=app|lib] [-o <dir>] <file...|code>`;
+const USAGE = `usage: ${CLI_NAME} <check|run|test|mutate|query|explain|build|mcp> [--json] [--watch] [--fix] [--no-cache] [--all] [--fail-on-survived] [--backend=js|c|both|wasm|all] [--target=node|browser] [--mode=app|lib] [-o <dir>] <file...|code>`;
+
+function lineStartsOf(text: string): number[] {
+  const starts = [0];
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i);
+    if (ch === 13) {
+      if (text.charCodeAt(i + 1) === 10) i++;
+      starts.push(i + 1);
+    } else if (ch === 10 || ch === 0x2028 || ch === 0x2029) {
+      starts.push(i + 1);
+    }
+  }
+  return starts;
+}
+
+function toOffset(starts: readonly number[], textLen: number, line: number, col: number): number | undefined {
+  if (line < 1 || line > starts.length || col < 1) return undefined;
+  const off = starts[line - 1]! + col - 1;
+  return off >= 0 && off <= textLen ? off : undefined;
+}
+
+export function applyDiagnosticFixes(diagnostics: readonly Diagnostic[]): { file: string; applied: number }[] {
+  const byFile = new Map<string, { display: string; fixes: NonNullable<Diagnostic["fixes"]>[number][] }>();
+  for (const d of diagnostics) {
+    const fix = d.fixes?.[0];
+    if (!fix?.edits.length) continue;
+    const absPath = resolve(d.file);
+    let entry = byFile.get(absPath);
+    if (!entry) byFile.set(absPath, entry = { display: d.file, fixes: [] });
+    entry.fixes.push(fix);
+  }
+  const results: { file: string; applied: number }[] = [];
+  for (const [absPath, { display, fixes }] of byFile) {
+    const text = readFileSync(absPath, "utf8");
+    const starts = lineStartsOf(text);
+    const seen = new Set<string>();
+    const edits: { startOff: number; endOff: number; newText: string }[] = [];
+    for (const fix of fixes) {
+      const resolved: { startOff: number; endOff: number; newText: string }[] = [];
+      let ok = true;
+      for (const e of fix.edits) {
+        const startOff = toOffset(starts, text.length, e.range.start.line, e.range.start.col);
+        const endOff = toOffset(starts, text.length, e.range.end.line, e.range.end.col);
+        if (startOff === undefined || endOff === undefined || endOff < startOff) { ok = false; break; }
+        resolved.push({ startOff, endOff, newText: e.newText });
+      }
+      if (!ok) continue;
+      for (const r of resolved) {
+        const k = `${r.startOff}:${r.endOff}:${r.newText}`;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        edits.push(r);
+      }
+    }
+    edits.sort((a, b) => a.startOff - b.startOff || a.endOff - b.endOff);
+    const accepted: typeof edits = [];
+    for (const e of edits) {
+      const prev = accepted.at(-1);
+      if (prev && (e.startOff < prev.endOff || (e.startOff === prev.startOff && e.endOff === prev.endOff))) continue;
+      accepted.push(e);
+    }
+    if (!accepted.length) continue;
+    let updated = text;
+    for (let i = accepted.length - 1; i >= 0; i--) {
+      const e = accepted[i]!;
+      updated = updated.slice(0, e.startOff) + e.newText + updated.slice(e.endOff);
+    }
+    writeFileSync(absPath, updated, "utf8");
+    results.push({ file: display, applied: accepted.length });
+  }
+  return results;
+}
 
 export async function main(argv: string[], out: (s: string) => void, err: (s: string) => void): Promise<number> {
   const rawJson = argv.includes("--json");
@@ -20,7 +93,10 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
       options: {
         json: { type: "boolean" },
         watch: { type: "boolean", short: "w" },
+        fix: { type: "boolean" },
         "no-cache": { type: "boolean" },
+        all: { type: "boolean" },
+        "fail-on-survived": { type: "boolean" },
         backend: { type: "string" },
         target: { type: "string" },
         mode: { type: "string", default: "app" },
@@ -34,13 +110,16 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
   const [cmd, ...files] = args.positionals;
   const json = !!args.values.json;
   const watch = !!args.values.watch;
+  const fix = !!args.values.fix;
   const noCache = !!args.values["no-cache"];
+  const all = !!args.values.all;
+  const failOnSurvived = !!args.values["fail-on-survived"];
   const rawBackend = args.values.backend as string | undefined;
   const target = args.values.target as string | undefined;
   const backend = rawBackend ?? (cmd === "build" && target === "node" ? "c" : "js");
   const mode = args.values.mode as string;
   const outDir = args.values["out-dir"] as string;
-  const backends: Backend[] = backend === "both" ? ["js", "c"] : [backend as Backend];
+  const backends: Backend[] = backend === "all" ? ["js", "c", "wasm"] : backend === "both" ? ["js", "c"] : [backend as Backend];
   const line = (o: unknown): string => `${JSON.stringify(o)}\n`;
   const diags = (ds: readonly Diagnostic[]): string => ds.map((d) => json ? line({ kind: "diagnostic", ...d }) : `${d.file}:${d.range.start.line}:${d.range.start.col}: ${d.severity} ${d.code}: ${d.message}\n`).join("");
   const parser = createParser(); // D161: one tsgo process for every file of this command (spawned on first use)
@@ -49,7 +128,7 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
       throw new CliError(cmd ? `unknown command '${cmd}'\n${USAGE}` : USAGE);
     }
     if (cmd === "mcp") {
-      if (files.length || rawBackend !== undefined || noCache || watch || target !== undefined) {
+      if (files.length || rawBackend !== undefined || noCache || watch || fix || all || failOnSurvived || target !== undefined) {
         throw new CliError(`mcp: takes no positional arguments or build/watch/backend flags\n${USAGE}`);
       }
     } else if (cmd === "explain") {
@@ -58,9 +137,13 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
       throw new CliError(`${cmd}: ${cmd === "run" || cmd === "build" ? "exactly one" : "at least one"} file required\n${USAGE}`);
     }
     if (watch && cmd !== "check" && cmd !== "test") throw new CliError(`${cmd}: --watch is only supported for check and test\n${USAGE}`);
-    if (!["js", "c", "both", "wasm"].includes(backend)) throw new CliError(`unknown backend '${backend}'\n${USAGE}`);
+    if (fix && cmd !== "check") throw new CliError(`${cmd}: --fix is only supported for check\n${USAGE}`);
+    if (fix && watch) throw new CliError(`check: --fix cannot be combined with --watch\n${USAGE}`);
+    if (!["js", "c", "both", "wasm", "all"].includes(backend)) throw new CliError(`unknown backend '${backend}'\n${USAGE}`);
     if ((cmd === "mutate" || cmd === "query" || cmd === "explain") && backend !== "js") throw new CliError(`${cmd}: JS backend only (--backend=${backend} is not supported)\n${USAGE}`);
     if (noCache && cmd !== "mutate") throw new CliError(`${cmd}: --no-cache is only supported for mutate\n${USAGE}`);
+    if (all && cmd !== "mutate") throw new CliError(`${cmd}: --all is only supported for mutate\n${USAGE}`);
+    if (failOnSurvived && cmd !== "mutate") throw new CliError(`${cmd}: --fail-on-survived is only supported for mutate\n${USAGE}`);
     if (cmd === "build") {
       if (target !== "browser" && target !== "node") throw new CliError(`build: missing or unknown --target '${target ?? ""}' (expected --target=node or --target=browser)\n${USAGE}`);
       if (mode !== "app" && mode !== "lib") throw new CliError(`build: unknown --mode '${mode}' (expected app or lib)\n${USAGE}`);
@@ -123,7 +206,16 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
     }
     if (cmd === "check") {
       if (watch) return await startWatch({ files, mode: "check", json, backends, out, err, parser });
-      const ds = files.flatMap((f) => check(f, parser));
+      let ds = files.flatMap((f) => check(f, parser));
+      if (fix) {
+        const applied = applyDiagnosticFixes(ds);
+        if (applied.length) {
+          ds = files.flatMap((f) => check(f, parser));
+          for (const item of applied) {
+            out(json ? line({ kind: "fixed", file: item.file, applied: item.applied }) : `fixed ${item.file} (${item.applied} edit(s))\n`);
+          }
+        }
+      }
       out(diags(ds));
       return ds.some((d) => d.severity === "error") ? 1 : 0;
     }
@@ -131,7 +223,7 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
       let targets = 0, killed = 0, survived = 0, timeout = 0, cached = 0;
       const skipped: { fn: string; reason: string }[] = [];
       for (const f of files) {
-        const r = await mutate(f, { cache: !noCache, parser });
+        const r = await mutate(f, { cache: !noCache, all, parser });
         if (r.diagnostics.length) { out(diags(r.diagnostics)); return 1; }
         if (r.baselineFailure) {
           const bf = r.baselineFailure;
@@ -168,23 +260,26 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
       out(json
         ? line({ kind: "summary", targets, killed, survived, timeout, cached, skipped })
         : `${killed} killed, ${timeout} timeout, ${survived} survived (${cached} cached; ${targets} targets, ${skipped.length} skipped)\n`);
-      return 0;
+      return failOnSurvived && survived > 0 ? 1 : 0;
     }
     if (cmd === "run") {
       const rs: RunResult[] = [];
-      const analysis = analyze(files[0]!, parser); // D162: one analysis for both backends
+      const analysis = analyze(files[0]!, parser); // D162: one analysis for all backends
       for (const b of backends) {
         const cur = await run(files[0]!, { backend: b, analysis }); // diagnostics go to stderr: stdout is the program's (Q060)
         if (cur.diagnostics.length) { err(diags(cur.diagnostics)); return 1; }
         rs.push(cur);
       }
       const r = rs[0]!;
-      if (rs.length === 2 && JSON.stringify([rs[0]!.stdout, rs[0]!.trap]) !== JSON.stringify([rs[1]!.stdout, rs[1]!.trap])) { // D101: --backend=both
+      if (rs.length >= 2 && rs.some((cur) => JSON.stringify([cur.stdout, cur.trap]) !== JSON.stringify([r.stdout, r.trap]))) { // D101: --backend=both / --backend=all
         if (json) {
-          err(line({ kind: "mismatch", js: { stdout: rs[0]!.stdout, trap: rs[0]!.trap }, c: { stdout: rs[1]!.stdout, trap: rs[1]!.trap } }));
+          const byBackend = Object.fromEntries(backends.map((b, k) => [b, { stdout: rs[k]!.stdout, trap: rs[k]!.trap }]));
+          err(line({ kind: "mismatch", ...byBackend }));
         } else {
           const fmt = (x: RunResult) => `stdout=${JSON.stringify(x.stdout)} trap=${x.trap ? `${x.trap.code}@${x.trap.file}:${x.trap.line}:${x.trap.col}` : "none"}`;
-          err(`mismatch between js and c backends:\n  js: ${fmt(rs[0]!)}\n  c:  ${fmt(rs[1]!)}\n`);
+          const label = backends.length === 2 ? "js and c" : "js, c, and wasm";
+          const pad = Math.max(...backends.map((b) => b.length)) + 1;
+          err(`mismatch between ${label} backends:\n${backends.map((b, k) => `  ${(`${b}:`).padEnd(pad)} ${fmt(rs[k]!)}`).join("\n")}\n`);
         }
         return 1;
       }

@@ -373,15 +373,12 @@ export function emitFile(
         }
         break;
       }
-      case K.CaseClause: {
-        const cc = n as ts.CaseClause;
-        if (!cc.statements.some(isUsingStmt)) return splice(n);
-        return `case ${gen(cc.expression)}: {\n${emitStmtsWithUsing(cc.statements, (s) => gen(s))}\n}`;
-      }
-      case K.DefaultClause: {
-        const dc = n as ts.DefaultClause;
-        if (!dc.statements.some(isUsingStmt)) return splice(n);
-        return `default: {\n${emitStmtsWithUsing(dc.statements, (s) => gen(s))}\n}`;
+      case K.CaseClause: case K.DefaultClause: {
+        const cc = n as ts.CaseClause | ts.DefaultClause;
+        const head = n.kind === K.CaseClause ? `case ${gen((cc as ts.CaseClause).expression)}:` : "default:";
+        if (!cc.statements.length) return head;
+        const body = cc.statements.some(isUsingStmt) ? emitStmtsWithUsing(cc.statements, (s) => gen(s)) : cc.statements.map((s) => gen(s)).join("\n");
+        return `${head} {\n${body}\n}`;
       }
       case K.Block: return block(n as ts.Block);
       case K.FunctionDeclaration: {
@@ -671,6 +668,7 @@ export function emitFile(
       if (m === "take") return `(${O} => (${O}.a = false, ${O}.v))(${gen(recv)})`;
     }
     const ns = recv.kind === K.Identifier && !r0 ? (recv as ts.Identifier).text : undefined;
+    if (ns === "Math" && m === "sqrt" && self?.k === "num" && self.name === "f32") return `${RT}.f32(Math.sqrt(${args[0]}))`;
     if (ns === "DetMath") { dmUsed.add(m); return `${dmBinding(m)}(${args.join(", ")})`; } // §12 (Q191): the bundled module, imported below under a hidden name
     if (ns === "JSON" && m === "parse") return `${RT}.jsonParse(${args[0]}, ${at(p.name)})`; // Q035: a syntax error is an `err`, other exceptions are T006
     // Q035: builtins that can throw a JS exception panic (T006) at their name.

@@ -2,12 +2,13 @@
 // (numeric literals Q014, string literals Q016, object / array literals Q021, ok / err Q037, generic calls Q030).
 import { NodeFlags, SyntaxKind as K, isId, type Node, type ts } from "./parse.ts";
 import type { Checker } from "./checker.ts";
+import type { Diagnostic } from "./diagnostics.ts";
 import { tparamShells, type FnSym, type Layer, type LocalSym } from "./modules.ts";
-import { BUILTIN_FUNCTIONS, GLOBAL_AUTHORITIES, NAMESPACES, RESERVED, contractBanned, genMember, nsMember, opaqueMember, stringMember, type Member } from "./builtins.ts";
+import { BUILTIN_FUNCTIONS, GLOBAL_AUTHORITIES, NAMESPACES, RESERVED, contractBanned, genMember, genMembers, nsMember, nsMembers, opaqueMember, opaqueMembers, stringMember, stringMembers, type Member } from "./builtins.ts";
 import { isDeterministic } from "./determinism.ts";
 import { isGeneratable } from "./gendesc.ts";
 import {
-  AUDIO_CONFIG_RECORD, BOOL, ERROR, ERROR_RECORD, F64, NEVER, NULL, NUM_NAMES, STR, UNKNOWN, USIZE, VOID, assignable, audioStateOk, bindTParams, borrowOk, boxable, comparable, field, fn, gen, hasArenaBuf, hasAuthority, hasCap, hasLayout, hasPtr, hasRawPtr, hasTParam,
+  AUDIO_CONFIG_RECORD, BOOL, ERROR, ERROR_RECORD, F64, NEVER, NULL, NUM_NAMES, STR, UNKNOWN, USIZE, VOID, assignable, audioStateOk, bindTParams, borrowOk, boxable, comparable, field, fn, gen, hasArenaBuf, hasAuthority, hasCap, hasInt64, hasLayout, hasPtr, hasRawPtr, hasTParam,
   isAuthority, isBool, isCopy, isInt, isNative, isNull, isNum, isOwned, isOwnedCap, isStr, movesLike, holdsOwned, ownedDeep, ptrTargetOk, isTaggedUnion, kindOf, keyOk, intLiteralFits, literalFits, nonNull, nullable, num, opaque, parseExactInt, result, resultParts,
   same, sendable, show, subst, tparamHasCap, unify, union, unref, castable, collectTParams, layerOk, type FnType, type NumName, type Type,
   hasLoneSurrogate,
@@ -52,9 +53,25 @@ function numCtx(want: Type | undefined): Type | undefined {
 }
 const sideCtx = (t: Type): Type => nonNull(t) ?? t;
 
+function attachConvertFix(c: Checker, e: ts.Expression, t: Type, want: Type): void {
+  if (t.k !== "num" || want.k !== "num" || t.name === want.name) return;
+  const d = c.prog.rep.out.at(-1);
+  if (d?.code !== "E2002" || attachLitLetFix(c, d, e, want)) return;
+  const sf = c.fx.mod.sf;
+  const s = e.getStart(sf);
+  d.fixes = [{
+    title: `convert to '${want.name}'`,
+    edits: [{ range: { start: c.fx.mod.pf.position(s), end: c.fx.mod.pf.position(e.end) }, newText: `${want.name}(${sf.text.slice(s, e.end)})` }],
+  }];
+}
+
 export function checkTo(c: Checker, e: ts.Expression, want: Type, arg = false): Type {
   const t = expr(c, e, want);
-  if (!assignable(t, want, arg)) { c.at("E2002", e, `expected '${show(want)}', got '${show(t)}'`, { expected: show(want), actual: show(t) }); return ERROR; }
+  if (!assignable(t, want, arg)) {
+    c.at("E2002", e, `expected '${show(want)}', got '${show(t)}'`, { expected: show(want), actual: show(t) });
+    attachConvertFix(c, e, t, want);
+    return ERROR;
+  }
   return t;
 }
 /** E2004: conditions are boolean only (§3.1). */
@@ -252,12 +269,76 @@ const MERR: MemberResult = { kind: "error" };
 /** True when `id` names a namespace object, not shadowed by a declaration. */
 const isNamespace = (c: Checker, id: ts.Identifier): boolean => NAMESPACES.has(id.text) && !c.scope.lookup(id.text) && !c.prog.lookupValue(c.mod, id.text);
 
+function levenshtein(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const cur = [i];
+    for (let j = 1; j <= n; j++) {
+      cur[j] = a[i - 1] === b[j - 1] ? prev[j - 1]! : 1 + Math.min(prev[j]!, cur[j - 1]!, prev[j - 1]!);
+    }
+    prev = cur;
+  }
+  return prev[n]!;
+}
+
+function suggestMembers(query: string, candidates: readonly string[]): string[] {
+  const q = query.toLowerCase();
+  return candidates
+    .map((name) => {
+      const nl = name.toLowerCase();
+      const dist = levenshtein(q, nl);
+      const pref = q.length >= 2 && (nl.startsWith(q) || q.startsWith(nl));
+      return { name, dist, pref };
+    })
+    .filter((x) => x.dist <= 2 || x.pref)
+    .sort((a, b) => a.dist - b.dist || (a.pref === b.pref ? 0 : a.pref ? -1 : 1) || a.name.localeCompare(b.name))
+    .slice(0, 3)
+    .map((x) => x.name);
+}
+
+const didYouMean = (suggestions: readonly string[]): string =>
+  suggestions.length ? ` (did you mean ${suggestions.map((s) => `'${s}'`).join(", ")}?)` : "";
+
+function reportUnknownBuiltinMember(c: Checker, name: ts.Identifier, t: Type, available: readonly string[]): MemberResult {
+  const n = name.text;
+  const recv = show(t);
+  if (t.k === "gen" && t.name === "Map" && n === "entries") {
+    c.at("E2001", name, `'${recv}' has no member 'entries'; use 'keys()', 'values()', or 'forEach((v, k) => ...)'`, { receiver: recv, member: n, suggestions: ["keys", "values", "forEach"] });
+    return MERR;
+  }
+  if (t.k === "gen" && (t.name === "Array" || t.name === "ReadonlyArray") && n === "at") {
+    c.at("E2001", name, `'${recv}' has no member 'at'; use indexing '[i]' and 'length'`, { receiver: recv, member: n, suggestions: ["[i]", "length"] });
+    return MERR;
+  }
+  if (isStr(t)) {
+    if (n === "replace") {
+      c.at("E2001", name, `'${recv}' has no member 'replace'; use 'replaceAll()'`, { receiver: recv, member: n, suggestions: ["replaceAll"] });
+      return MERR;
+    }
+    if (n === "substring" || n === "substr") {
+      c.at("E2001", name, `'${recv}' has no member '${n}'; use 'slice()'`, { receiver: recv, member: n, suggestions: ["slice"] });
+      return MERR;
+    }
+    if (n === "charAt") {
+      c.at("E2001", name, `'${recv}' has no member 'charAt'; use 'slice(i, i + 1)' or 'charCodeAt(i)'`, { receiver: recv, member: n, suggestions: ["slice", "charCodeAt"] });
+      return MERR;
+    }
+  }
+  const suggestions = suggestMembers(n, available);
+  c.at("E2001", name, `'${recv}' has no member '${n}'${didYouMean(suggestions)}`, { receiver: recv, member: n, ...(suggestions.length ? { suggestions } : {}) });
+  return MERR;
+}
+
 function member(c: Checker, p: ts.PropertyAccessExpression, inCall: boolean): MemberResult {
   const name = p.name as ts.Identifier; // private names are E1000 in P1
   const recvNode = p.expression;
   if (isId(recvNode) && recvNode.text === "Resource" && !c.scope.lookup("Resource") && !c.prog.lookupValue(c.mod, "Resource")) {
     if (name.text === "own" || name.text === "ownWith") c.at("E2002", name, "a method can only be called");
-    else c.at("E2001", name, `'Resource' has no member '${name.text}'`);
+    else {
+      const suggestions = suggestMembers(name.text, ["own", "ownWith"]);
+      c.at("E2001", name, `'Resource' has no member '${name.text}'${didYouMean(suggestions)}`, { receiver: "Resource", member: name.text, ...(suggestions.length ? { suggestions } : {}) });
+    }
     return MERR;
   }
   if (isId(recvNode) && isNamespace(c, recvNode)) {
@@ -268,7 +349,11 @@ function member(c: Checker, p: ts.PropertyAccessExpression, inCall: boolean): Me
       return MERR;
     }
     const m = nsMember(recvNode.text, name.text);
-    if (m === undefined) { c.at("E2001", name, `'${recvNode.text}.${name.text}' is not in the allowlist`, { namespace: recvNode.text, member: name.text }); return MERR; }
+    if (m === undefined) {
+      const suggestions = suggestMembers(name.text, Object.keys(nsMembers(recvNode.text)));
+      c.at("E2001", name, `'${recvNode.text}.${name.text}' is not in the allowlist${didYouMean(suggestions)}`, { namespace: recvNode.text, member: name.text, ...(suggestions.length ? { suggestions } : {}) });
+      return MERR;
+    }
     if (m === "variadic") return inCall ? { kind: "variadic" } : (c.at("E2002", name, "a method can only be called", { member: name.text }), MERR);
     return fromMember(c, m, name, inCall);
   }
@@ -338,11 +423,11 @@ function lookupMember(c: Checker, t: Type, name: ts.Identifier, inCall: boolean)
         return MERR;
       }
       const m = genMember(t, n);
-      return m ? fromMember(c, m, name, inCall) : missing("E2001");
+      return m ? fromMember(c, m, name, inCall) : reportUnknownBuiltinMember(c, name, t, Object.keys(genMembers(t)));
     }
-    case "opaque": { const m = opaqueMember(t.name, n); return m ? fromMember(c, m, name, inCall) : missing("E2001"); }
+    case "opaque": { const m = opaqueMember(t.name, n); return m ? fromMember(c, m, name, inCall) : reportUnknownBuiltinMember(c, name, t, Object.keys(opaqueMembers(t.name))); }
     case "resource": {
-      if (!inCall) return missing("E2001");
+      if (!inCall) return reportUnknownBuiltinMember(c, name, t, ["borrow", "get", "take"]);
       if (n === "borrow") {
         if (!isErr(t.inner) && !isOwnedCap(t.inner)) { c.at("E2001", name, "'borrow' requires an Owned Resource; use 'get()' for Ptr / ConstPtr"); return MERR; }
         return { kind: "method", sig: fn([], t.inner), layer: undefined };
@@ -355,14 +440,14 @@ function lookupMember(c: Checker, t: Type, name: ts.Identifier, inCall: boolean)
         if (c.fx.contract) c.at("E6002", name, "contracts cannot call 'take'");
         return { kind: "method", sig: fn([], t.inner), layer: undefined };
       }
-      return missing("E2001");
+      return reportUnknownBuiltinMember(c, name, t, ["borrow", "get", "take"]);
     }
     case "num": return missing("E2001");
     case "prim": if (t.name === "boolean") return missing("E2001"); break;
   }
   if (isStr(t)) {
     const m = stringMember(n);
-    return m ? fromMember(c, m, name, inCall) : missing("E2001");
+    return m ? fromMember(c, m, name, inCall) : reportUnknownBuiltinMember(c, name, t, Object.keys(stringMembers()));
   }
   return missing("E2002");
 }
@@ -383,7 +468,11 @@ function element(c: Checker, e: ts.ElementAccessExpression, write: boolean): Typ
     if (write && t.name === "ReadonlyArray") { c.at("E2002", idx, "ReadonlyArray cannot be written"); return ERROR; }
     return t.args[0]!;
   }
-  const builtin = isStr(t) || (t.k === "gen") || t.k === "opaque";
+  if (isStr(t)) {
+    c.at("E2001", idx, `'string' cannot be indexed; use 'charCodeAt(i)', 'codePointAt(i)', or 'slice(i, i + 1)'`, { receiver: show(t), suggestions: ["charCodeAt", "codePointAt", "slice"] });
+    return ERROR;
+  }
+  const builtin = (t.k === "gen") || t.k === "opaque";
   c.at(builtin ? "E2001" : "E2002", idx, `'${show(t)}' cannot be indexed`); // Q007
   return ERROR;
 }
@@ -423,6 +512,23 @@ function lvalue(c: Checker, e0: ts.Expression): Type {
   return ERROR;
 }
 
+const isPlusBin = (n: Node | undefined): n is ts.BinaryExpression =>
+  n?.kind === K.BinaryExpression && (n as ts.BinaryExpression).operatorToken.kind === K.PlusToken;
+
+const parentIsPlus = (n: Node): boolean => {
+  let p = n.parent;
+  while (p?.kind === K.ParenthesizedExpression) p = p.parent;
+  return isPlusBin(p);
+};
+
+/** Tracks string-concatenation E2002 diagnostics across nested `+` chains within a single check. */
+const strConcatDiags = new WeakMap<Node, Diagnostic>();
+
+const getStrConcatDiag = (c: Checker, e: ts.Expression): Diagnostic | undefined => {
+  const d = strConcatDiags.get(assignTarget(e));
+  return d && c.prog.rep.out.includes(d) ? d : undefined;
+};
+
 // ---- operators (§3.1, Q008, Q017 - Q019)
 /** Types two operands; a literal side takes its type from the other side (Q014). */
 function operands(c: Checker, l: ts.Expression, r: ts.Expression, want: Type | undefined): [Type, Type] {
@@ -433,18 +539,24 @@ function operands(c: Checker, l: ts.Expression, r: ts.Expression, want: Type | u
   return [expr(c, l), expr(c, r)];
 }
 
+/** Attaches a `: <type>` declaration fix to `d` when `side` is an unannotated literal `let` binding. */
+function attachLitLetFix(c: Checker, d: Diagnostic, side: ts.Expression, other: Type): boolean {
+  const u = assignTarget(side);
+  if (!isId(u) || other.k !== "num") return false;
+  const sym = c.scope.lookup(u.text);
+  const name = sym && c.litLets.get(sym.id);
+  if (!name || sym.type.k !== "num" || sym.type.name === other.name) return false;
+  const pos = c.fx.mod.pf.position(name.end);
+  (d.fixes ??= []).push({ title: `declare '${name.text}' as '${other.name}'`, edits: [{ range: { start: pos, end: pos }, newText: `: ${other.name}` }] });
+  return true;
+}
+
 /** SPEC §11 fix for an E2003 just reported at `op`: an operand that is an untyped `let x = 0` gets the other side's type. */
 function numFix(c: Checker, op: Node, l: ts.Expression, r: ts.Expression, lt: Type, rt: Type): void {
   const d = c.prog.rep.out.at(-1);
   if (d?.code !== "E2003" || d.range.start.line !== c.fx.mod.pf.position(op.getStart(c.fx.mod.sf)).line || d.range.start.col !== c.fx.mod.pf.position(op.getStart(c.fx.mod.sf)).col) return;
-  for (const [side, other] of [[l, rt], [r, lt]] as const) {
-    if (!isId(side) || other.k !== "num") continue;
-    const sym = c.scope.lookup(side.text);
-    const name = sym && c.litLets.get(sym.id);
-    if (!name || sym.type.k !== "num" || sym.type.name === other.name) continue;
-    const pos = c.fx.mod.pf.position(name.end);
-    (d.fixes ??= []).push({ title: `declare '${name.text}' as '${other.name}'`, edits: [{ range: { start: pos, end: pos }, newText: `: ${other.name}` }] });
-  }
+  attachLitLetFix(c, d, l, rt);
+  attachLitLetFix(c, d, r, lt);
 }
 
 function arith(c: Checker, op: Node, kind: K, lt: Type, rt: Type): Type {
@@ -547,23 +659,37 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
   }
   if (ARITH.has(k)) {
     const [lt, rt] = operands(c, b.left, b.right, want);
-    if (k === K.PlusToken && isStr(lt) && isStr(rt)) { // Q019
-      c.at("E2002", op, "use a template literal to concatenate strings", { kind: "string-concat" });
-      const simpleSide = (s: ts.Expression): boolean =>
-        s.kind === K.Identifier || s.kind === K.StringLiteral || s.kind === K.NoSubstitutionTemplateLiteral ||
-        s.kind === K.PropertyAccessExpression || s.kind === K.CallExpression || s.kind === K.ParenthesizedExpression;
-      if (b.parent?.kind !== K.BinaryExpression && simpleSide(b.left) && simpleSide(b.right)) {
-        const sf = c.fx.mod.sf;
-        const part = (s: ts.Expression): string => {
-          const u = assignTarget(s);
-          if (u.kind === K.StringLiteral || u.kind === K.NoSubstitutionTemplateLiteral) {
-            return (u as ts.StringLiteral).text.replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$\{/g, "\\${").replace(/\r/g, "\\r").replace(/\n/g, "\\n");
-          }
-          return `\${${u.getText(sf)}}`;
+    const lDiag = k === K.PlusToken ? getStrConcatDiag(c, b.left) : undefined;
+    const rDiag = k === K.PlusToken ? getStrConcatDiag(c, b.right) : undefined;
+    if (k === K.PlusToken && (isStr(lt) || lDiag) && (isStr(rt) || rDiag)) { // Q019
+      let d = lDiag ?? rDiag;
+      if (!d) {
+        c.at("E2002", op, "use a template literal to concatenate strings", { kind: "string-concat" });
+        d = c.prog.rep.out.at(-1);
+      }
+      if (d?.code === "E2002") strConcatDiags.set(b, d);
+      if (!parentIsPlus(b) && d?.code === "E2002") {
+        const leaves: ts.Expression[] = [];
+        const simpleLeaf = (s: ts.Expression): boolean =>
+          s.kind === K.Identifier || s.kind === K.StringLiteral || s.kind === K.NoSubstitutionTemplateLiteral ||
+          s.kind === K.PropertyAccessExpression || s.kind === K.CallExpression;
+        const collect = (e: ts.Expression): boolean => {
+          const u = assignTarget(e);
+          if (isPlusBin(u)) return collect(u.left) && collect(u.right);
+          const t = exprTypes.get(e) ?? exprTypes.get(u);
+          if (!simpleLeaf(u) || !t || !isStr(t)) return false;
+          leaves.push(u);
+          return true;
         };
-        const d = c.prog.rep.out.at(-1);
-        if (d?.code === "E2002") {
-          d.fixes = [{ title: "use a template literal", edits: [{ range: { start: c.fx.mod.pf.position(b.getStart(sf)), end: c.fx.mod.pf.position(b.end) }, newText: `\`${part(b.left)}${part(b.right)}\`` }] }];
+        if (collect(b)) {
+          const sf = c.fx.mod.sf;
+          const part = (u: ts.Expression): string => {
+            if (u.kind === K.StringLiteral || u.kind === K.NoSubstitutionTemplateLiteral) {
+              return (u as ts.StringLiteral).text.replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$\{/g, "\\${").replace(/\r/g, "\\r").replace(/\n/g, "\\n");
+            }
+            return `\${${u.getText(sf)}}`;
+          };
+          d.fixes = [{ title: "use a template literal", edits: [{ range: { start: c.fx.mod.pf.position(b.getStart(sf)), end: c.fx.mod.pf.position(b.end) }, newText: `\`${leaves.map(part).join("")}\`` }] }];
         }
       }
       return ERROR;
@@ -772,12 +898,12 @@ function audioOpenCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExp
   if (e.typeArguments) {
     if (e.typeArguments.length !== 1) { c.at("E2013", p.name, `'open' takes 1 type argument`, { reason: "type-arity" }); return ERROR; }
     S = c.typeOf(e.typeArguments[0]!);
-    if (!isErr(S) && !audioStateOk(S)) { c.at("E2013", e.typeArguments[0]!, `'${show(S)}' cannot be passed as audio callback state (§15.5)`, { reason: "invalid-state", actual: show(S) }); return ERROR; }
+    if (!isErr(S) && !audioStateOk(S)) { c.at("E2013", e.typeArguments[0]!, `'${show(S)}' cannot be passed as audio callback state`, { reason: "invalid-state", actual: show(S) }); return ERROR; }
   }
   checkTo(c, args[0]!, AUDIO_CONFIG_RECORD, true);
   const stRaw = S ? checkTo(c, args[1]!, S, true) : expr(c, args[1]!);
   const st = S ?? unref(stRaw);
-  if (!S && !isErr(st) && !audioStateOk(st)) { c.at("E2013", args[1]!, `'${show(st)}' cannot be passed as audio callback state (§15.5)`, { reason: "invalid-state", actual: show(st) }); return ERROR; }
+  if (!S && !isErr(st) && !audioStateOk(st)) { c.at("E2013", args[1]!, `'${show(st)}' cannot be passed as audio callback state`, { reason: "invalid-state", actual: show(st) }); return ERROR; }
   const a = args[2]!;
   const bad = (msg: string, reason = "invalid-callback"): Type => { c.at("E2013", a, msg, { reason }); return ERROR; };
   if (!isId(a) || c.scope.lookup(a.text)) return bad(`'open' takes the name of a module-level 'use rt' function`);
@@ -806,7 +932,11 @@ function audioOpenCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExp
 /** SPEC-v1 §5: `Resource.own(val, cleanup)` / `Resource.ownWith(val, ctx, cleanup)` in a `using` initializer. */
 function resourceCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpression, want: Type | undefined): Type {
   const m = p.name.text;
-  if (m !== "own" && m !== "ownWith") { c.at("E2001", p.name, `'Resource' has no member '${m}'`); return ERROR; }
+  if (m !== "own" && m !== "ownWith") {
+    const suggestions = suggestMembers(m, ["own", "ownWith"]);
+    c.at("E2001", p.name, `'Resource' has no member '${m}'${didYouMean(suggestions)}`, { receiver: "Resource", member: m, ...(suggestions.length ? { suggestions } : {}) });
+    return ERROR;
+  }
   if (c.fx.contract) c.at("E6002", p.name, "contracts cannot construct a Resource");
   if (!usingInitExprs.has(e)) c.at("E3004", p.name, `'Resource.${m}' can only be used as the initializer of a 'using' declaration`);
   const args = e.arguments;
@@ -911,7 +1041,7 @@ function isolateCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpre
   if (e.typeArguments) {
     if (e.typeArguments.length !== 2) { c.at("E2002", p.name, `'isolate' takes 2 type argument(s)`, { expected: "2", actual: String(e.typeArguments.length) }); return ERROR; }
     S = c.typeOf(e.typeArguments[0]!); R = c.typeOf(e.typeArguments[1]!);
-    [S, R].forEach((t, i) => { if (!isErr(t) && !sendable(t)) c.at("E2010", e.typeArguments![i]!, `'${show(t)}' cannot be sent to an isolate (§15.2)`, { actual: show(t) }); });
+    [S, R].forEach((t, i) => { if (!isErr(t) && !sendable(t)) c.at("E2010", e.typeArguments![i]!, `'${show(t)}' cannot be sent to an isolate`, { actual: show(t) }); });
     if (isErr(S) || isErr(R)) return ERROR;
   }
   if (!isId(a) || c.scope.lookup(a.text)) return bad(`'isolate' takes the name of a module-level managed function`, "not-module-fn");
@@ -931,6 +1061,25 @@ function isolateCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpre
   names.add(sym.name);
   c.prog.isolateEntries.set(sym.mod.pf.path, names);
   return gen("Port", fS, fR);
+}
+
+const MATH_POLY = new Set(["abs", "sqrt", "floor", "ceil", "trunc", "round", "sign"]);
+const NUMBER_POLY = new Set(["isFinite", "isNaN", "isInteger"]);
+type FloatNum = { k: "num"; name: "f32" | "f64" };
+const isFloatNum = (t: Type): t is FloatNum => t.k === "num" && (t.name === "f32" || t.name === "f64");
+const wantFloatType = (want: Type | undefined): FloatNum => {
+  const n = numCtx(want);
+  return (n?.k === "num" && n.name === "f32" ? num("f32") : F64) as FloatNum;
+};
+
+function floatPolyArg(c: Checker, a: ts.Expression, wantFloat: FloatNum): Type {
+  if (isLitOnly(a)) return expr(c, a, wantFloat);
+  const t = expr(c, a);
+  if (isErr(t)) return ERROR;
+  if (isFloatNum(t)) return t;
+  c.at("E2002", a, `expected 'f32' or 'f64', got '${show(t)}'`, { expected: "f32 | f64", actual: show(t) });
+  attachConvertFix(c, a, t, wantFloat);
+  return ERROR;
 }
 
 function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
@@ -981,12 +1130,54 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
       if (rt && unref(rt).k === "gen" && (unref(rt) as { name: string }).name === "Ptr" && p.name.text === "unbox") c.at("E4004", p.name, "'unbox' allocates", { op: "unbox" }); // §14.4
     }
     if (m.kind === "error") return ERROR;
-    if (m.kind === "variadic") { // Math.min / Math.max (Q033)
-      if (!e.arguments.length) c.at("E2002", p.name, "expects at least one argument");
-      for (const a of e.arguments) checkTo(c, a, F64, true);
-      return F64;
+    const ns = isId(p.expression) && isNamespace(c, p.expression) ? p.expression.text : undefined;
+    if (m.kind === "variadic") { // Math.min / Math.max (Q033, f32/f64 polymorphic)
+      if (!e.arguments.length) { c.at("E2002", p.name, "expects at least one argument"); return ERROR; }
+      if (e.typeArguments) { c.at("E2002", p.name, "expects 0 type argument(s)"); return ERROR; }
+      const cached: (Type | undefined)[] = [];
+      let ft: FloatNum | undefined;
+      let ftArg: ts.Expression | undefined;
+      for (let i = 0; i < e.arguments.length; i++) {
+        const a = e.arguments[i]!;
+        if (isLitOnly(a)) continue;
+        const at = expr(c, a);
+        cached[i] = at;
+        if (isFloatNum(at)) { ft = at; ftArg = a; break; }
+      }
+      const target = ft ?? wantFloatType(want);
+      for (let i = 0; i < e.arguments.length; i++) {
+        const a = e.arguments[i]!;
+        if (isLitOnly(a)) { checkTo(c, a, target, true); continue; }
+        const at = cached[i] ?? expr(c, a);
+        if (isErr(at)) continue;
+        if (isFloatNum(at)) {
+          if (at.name !== target.name) {
+            c.at("E2003", a, `cannot mix '${target.name}' and '${at.name}'`, { left: target.name, right: at.name });
+            const d = c.prog.rep.out.at(-1);
+            if (d?.code === "E2003") {
+              attachLitLetFix(c, d, a, target);
+              if (ftArg) attachLitLetFix(c, d, ftArg, at);
+            }
+          }
+        } else {
+          c.at("E2002", a, `expected '${target.name}', got '${show(at)}'`, { expected: target.name, actual: show(at) });
+          attachConvertFix(c, a, at, target);
+        }
+      }
+      return target;
     }
     if (m.kind === "method") {
+      if (ns === "Math" && MATH_POLY.has(p.name.text)) {
+        if (e.arguments.length !== 1) { c.at("E2002", p.name, `expects 1 argument(s), got ${e.arguments.length}`); return ERROR; }
+        if (e.typeArguments) { c.at("E2002", p.name, "expects 0 type argument(s)"); return ERROR; }
+        return floatPolyArg(c, e.arguments[0]!, wantFloatType(want));
+      }
+      if (ns === "Number" && NUMBER_POLY.has(p.name.text)) {
+        if (e.arguments.length !== 1) { c.at("E2002", p.name, `expects 1 argument(s), got ${e.arguments.length}`); return ERROR; }
+        if (e.typeArguments) { c.at("E2002", p.name, "expects 0 type argument(s)"); return ERROR; }
+        floatPolyArg(c, e.arguments[0]!, F64 as FloatNum);
+        return BOOL;
+      }
       const rt0 = exprTypes.get(p.expression);
       const recvGen = rt0 && unref(rt0).k === "gen" ? (unref(rt0) as { name: string }).name : undefined;
       if (p.name.text === "isolate" && rt0 && unref(rt0).k === "opaque" && (unref(rt0) as { name: string }).name === "Spawn") return isolateCall(c, e, p); // §15.2
@@ -1118,6 +1309,21 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
       if (!isErr(b) && !comparable(b)) { c.at("E2002", targ, `'${show(b)}' is not allowed as the type argument here`, { requiredCap: "Copy", actual: show(b) }); return ERROR; }
     } else if (tc === "codec") {
       if (!isErr(b) && !castable(b)) { c.at("E2002", targ, `'${show(b)}' is not allowed as the type argument here`, { requiredCap: "Codec", actual: show(b) }); return ERROR; }
+    } else if (tc === "jsonstringify") {
+      if (!isErr(b)) {
+        if (collectTParams(b).length > 0) {
+          c.at("E2002", targ, `'${show(b)}' contains a type parameter; JSON.stringify requires a concrete JSON-serializable Codec type without i64/u64`, { reason: "concrete-type-required", actual: show(b), requiredCap: "Codec" });
+          return ERROR;
+        }
+        if (!castable(b)) {
+          c.at("E2002", targ, `'${show(b)}' is not allowed as the type argument here`, { requiredCap: "Codec", actual: show(b) });
+          return ERROR;
+        }
+        if (hasInt64(b)) {
+          c.at("E2002", targ, `'${show(b)}' contains i64/u64, which JSON.stringify cannot serialize; convert to string or f64 first`, { reason: "json-int64", actual: show(b) });
+          return ERROR;
+        }
+      }
     } else if (tc === "cast") {
       if (!isErr(b)) {
         if (collectTParams(b).length > 0) {

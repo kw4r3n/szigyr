@@ -1,0 +1,71 @@
+// expect-output: rt:1.5:1.4142135381698608:1:2:1:2:-1:1:2.5:1
+// expect-output: negzero:false:true:true:true:true:true:true:true:false
+// expect-output: pred:true:false:true:false:false:true:false:false:true
+// expect-output: mng:1.5:1.4142135381698608:-1:1:1
+// stage: 2
+
+function isNegZero(x: f32): boolean {
+  "use rt";
+  return x === 0 && (f32(1) / x) < 0;
+}
+
+function rtClamp(x: f32): f32 {
+  "use rt";
+  return Math.max(-1, Math.min(1, x));
+}
+
+function rtOps(x: f32, two: f32, pos: f32): {
+  readonly a: f32;
+  readonly sq: f32;
+  readonly fl: f32;
+  readonly ce: f32;
+  readonly tr: f32;
+  readonly ro: f32;
+  readonly sg: f32;
+  readonly cl: f32;
+  readonly mx: f32;
+  readonly mn: f32;
+} {
+  "use rt";
+  return {
+    a: Math.abs(x),
+    sq: Math.sqrt(two),
+    fl: Math.floor(pos),
+    ce: Math.ceil(pos),
+    tr: Math.trunc(pos),
+    ro: Math.round(pos),
+    sg: Math.sign(x),
+    cl: rtClamp(pos),
+    mx: Math.max(pos, two, f32(2.5)),
+    mn: Math.min(pos, two, f32(1.0)),
+  };
+}
+
+function managedClamp(x: f32): f32 {
+  return Math.max(-1, Math.min(1, x));
+}
+
+export function main(sys: System): void {
+  const x: f32 = -1.5;
+  const two: f32 = 2.0;
+  const pos: f32 = 1.5;
+  const r = rtOps(x, two, pos);
+  sys.log.info(`rt:${r.a}:${r.sq}:${r.fl}:${r.ce}:${r.tr}:${r.ro}:${r.sg}:${r.cl}:${r.mx}:${r.mn}`);
+
+  const nz: f32 = -0.0;
+  const pz: f32 = 0.0;
+  const halfNeg: f32 = -0.5;
+  sys.log.info(
+    `negzero:${isNegZero(Math.abs(nz))}:${isNegZero(Math.sqrt(nz))}:${isNegZero(Math.floor(nz))}:${isNegZero(Math.ceil(halfNeg))}:${isNegZero(Math.trunc(halfNeg))}:${isNegZero(Math.round(halfNeg))}:${isNegZero(Math.sign(nz))}:${isNegZero(Math.min(nz, pz))}:${isNegZero(Math.max(nz, pz))}`
+  );
+
+  const inf: f32 = f32(Number.POSITIVE_INFINITY);
+  const nanv: f32 = f32(Number.NaN);
+  sys.log.info(
+    `pred:${Number.isFinite(two)}:${Number.isFinite(inf)}:${Number.isInteger(two)}:${Number.isInteger(pos)}:${Number.isNaN(two)}:${Number.isNaN(nanv)}:${Number.isFinite(nanv)}:${Number.isInteger(inf)}:${Number.isNaN(Math.sqrt(x))}`
+  );
+
+  const mSq: f32 = Math.sqrt(two);
+  const mAbs: f32 = Math.abs(x);
+  sys.log.info(`mng:${mAbs}:${mSq}:${managedClamp(-3)}:${managedClamp(3)}:${Math.min(1, two, pos)}`);
+}

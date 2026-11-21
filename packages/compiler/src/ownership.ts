@@ -81,11 +81,11 @@ class ModuleCheck {
         this.at("E3004", r, `'${name}' can only be the type of a parameter`, { kind: "borrow-position", type: name });
       } else if (name === "Ref" || name === "Mut") {
         const f = p.parent as ts.FunctionLikeDeclaration;
-        if (f.modifiers?.some((m) => m.kind === K.AsyncKeyword)) this.at("E3004", r, "an async function cannot take a borrow; it would outlive the call (Q171)", { kind: "async-borrow", type: name });
+        if (f.modifiers?.some((m) => m.kind === K.AsyncKeyword)) this.at("E3004", r, "an async function cannot take a borrow; it would outlive the call", { kind: "async-borrow", type: name });
       } else if (name === "Slice") {
         const q = r.parent as ts.TypeReferenceNode;
         const outer = q.kind === K.TypeReference && isId(q.typeName) ? q.typeName.text : undefined;
-        if (outer !== "Ref" && outer !== "Mut" && outer !== "Ptr" && outer !== "ConstPtr" && outer !== "Resource") this.at("E3004", r, "'Slice' can only appear as 'Ref<Slice<T>>' or 'Mut<Slice<T>>' (§3.2, Q173)", { kind: "slice-position" });
+        if (outer !== "Ref" && outer !== "Mut" && outer !== "Ptr" && outer !== "ConstPtr" && outer !== "Resource") this.at("E3004", r, "'Slice' can only appear as 'Ref<Slice<T>>' or 'Mut<Slice<T>>'", { kind: "slice-position" });
       } else if (name === "Resource") {
         const vd = r.parent as ts.VariableDeclaration;
         const vdl = vd?.parent as ts.VariableDeclarationList;
@@ -199,7 +199,9 @@ class Flow {
         this.ex(x.expression, "read");
         this.loop(() => {
           const out = copy(this.state);
-          for (const d of (x.initializer as ts.VariableDeclarationList).declarations) this.declared(d.name);
+          if (x.initializer.kind === K.VariableDeclarationList) {
+            for (const d of (x.initializer as ts.VariableDeclarationList).declarations) this.declared(d.name);
+          }
           this.stmt(x.statement);
           return out;
         });
@@ -387,6 +389,10 @@ class Flow {
     const at = this.state?.get(sym.id);
     if (!at) return;
     const p = this.m.mod.pf.position(at.getStart(this.m.mod.sf));
+    if (sym.type.k === "tparam") {
+      this.m.at("E3001", id, `use of moved value '${sym.name}' (type parameter '${sym.type.p.name}' is move-only unless constrained with '${sym.type.p.name} extends Copy')`, { variable: sym.name, movedAt: p, typeParam: sym.type.p.name });
+      return;
+    }
     this.m.at("E3001", id, `use of moved value '${sym.name}'`, { variable: sym.name, movedAt: p });
   }
 
@@ -691,7 +697,7 @@ class Flow {
       (callee as ts.PropertyAccessExpression).name.text === "recv" && genName(recv) === "Port" && this.awaited.has(e);
     if (res && ownedDeep(res) && !(recv && ownedDeep(recv)) && !awaitedRecv) {
       const targ = e.typeArguments?.find((a) => this.m.prog.insts.some((x) => x.node === a && movesLike(x.arg)));
-      this.m.at("E3007", targ ?? (e.kind === K.NewExpression && e.typeArguments ? e.typeArguments[e.typeArguments.length - 1]! : isId(callee) ? callee : callee.kind === K.PropertyAccessExpression ? (callee as ts.PropertyAccessExpression).name : callee), "this expression has a managed container type that holds an owned value (Q174)", { kind: "managed-container", actual: show(res) });
+      this.m.at("E3007", targ ?? (e.kind === K.NewExpression && e.typeArguments ? e.typeArguments[e.typeArguments.length - 1]! : isId(callee) ? callee : callee.kind === K.PropertyAccessExpression ? (callee as ts.PropertyAccessExpression).name : callee), "this expression has a managed container type that holds an owned value", { kind: "managed-container", actual: show(res) });
     }
     if (isNever(exprTypes.get(e))) this.state = null;
     if (opt) this.state = join(optState!, this.state);

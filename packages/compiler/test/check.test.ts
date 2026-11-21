@@ -269,12 +269,13 @@ it("enforces explicit capability bounds and intersection constraints (SPEC-v1 §
 
   expect(run({
     "main.szigyr": [
-      "function enc<T extends Codec>(x: T): string { return JSON.stringify<T>(x); }",
+      "function enc<T extends Codec>(js: Js, x: T): JsRef { return js.encode<T>(x); }",
+      "function badJson<T extends Codec>(x: T): string { return JSON.stringify<T>(x); }",
       "function dec<T extends Codec>(x: unknown): Result<T, CastError> { return cast<T>(x); }",
-      "function bad(a: Alloc): void { enc(Vec.create<i32>(a, 1)); }",
+      "function bad(js: Js, a: Alloc): void { enc(js, Vec.create<i32>(a, 1)); }",
       "",
     ].join("\n"),
-  })).toEqual(["E2002 main.szigyr 2:79", "E2002 main.szigyr 3:32"]);
+  })).toEqual(["E2002 main.szigyr 2:73", "E2002 main.szigyr 3:79", "E2002 main.szigyr 4:40"]);
 
   expect(run({
     "main.szigyr": [

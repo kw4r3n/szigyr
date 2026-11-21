@@ -159,6 +159,7 @@ export function checkImportNames(files: ParsedFile[], display: (p: string) => st
       }
       if (s.kind !== K.ImportDeclaration) continue;
       const d = s as ts.ImportDeclaration;
+      if (d.moduleSpecifier.kind !== K.StringLiteral) continue;
       const target = byPath.get(canonPath(dirname(pf.path), (d.moduleSpecifier as ts.StringLiteral).text));
       const nb = d.importClause?.namedBindings;
       if (!target || nb?.kind !== K.NamedImports) continue;
@@ -274,6 +275,7 @@ export class Program {
         case K.TypeAliasDeclaration: { const d = s as ts.TypeAliasDeclaration; if (d.name && d.type) mod.types.set(d.name.text, { k: "alias", decl: d, mod }); break; }
         case K.InterfaceDeclaration: {
           const d = s as ts.InterfaceDeclaration;
+          if (!d.name) break;
           mod.types.set(d.name.text, { k: "iface", decl: d, mod, iface: { name: d.name.text, tparams: tparamShells(d.typeParameters, "managed"), methods: new Map() } });
           break;
         }
@@ -357,6 +359,7 @@ export class Program {
       else if (t.k === "iface") {
         const e = env(t.iface.tparams);
         for (const m of t.decl.members) {
+          if (m.kind !== K.MethodSignature) continue;
           const ms = m as ts.MethodSignatureDeclaration;
           if (ms.name && isId(ms.name)) t.iface.methods.set(ms.name.text, this.signature(ms, ms.name, e));
         }
@@ -509,9 +512,9 @@ export class Program {
         continue;
       }
       if (p.owner === "rt") {
-        if (hasAuthority(arg)) { fail("E4006", `'${show(arg)}' cannot instantiate '${p.name}' of an rt function (§6)`, { layer: "rt", actual: show(arg) }); continue; }
+        if (hasAuthority(arg)) { fail("E4006", `'${show(arg)}' cannot instantiate '${p.name}' of an rt function`, { layer: "rt", actual: show(arg) }); continue; }
         if (arg.k === "tparam" && tparamMayBeAuthority(arg.p)) {
-          fail("E4006", `'${arg.p.name}' may hold an authority and cannot instantiate '${p.name}' of an rt function (§6)`, { layer: "rt", actual: arg.p.name });
+          fail("E4006", `'${arg.p.name}' may hold an authority and cannot instantiate '${p.name}' of an rt function`, { layer: "rt", actual: arg.p.name });
           continue;
         }
       }
@@ -528,10 +531,10 @@ export class Program {
       if (p.owner && p.owner !== "managed") {
         if (arg.k === "tparam") {
           if (!tparamHasCap(arg.p, "Native")) {
-            fail("E4002", `the managed type parameter '${arg.p.name}' cannot instantiate '${p.name}' of a strict / rt function (§3.3 is not checked through it)`, { layer: p.owner, actual: arg.p.name, requiredCap: "Native" });
+            fail("E4002", `the managed type parameter '${arg.p.name}' cannot instantiate '${p.name}' of a strict / rt function`, { layer: p.owner, actual: arg.p.name, requiredCap: "Native" });
           }
-        } else if (!layerOk(arg) || !crossOk(arg, !p.inParam)) {
-          fail("E4002", `'${show(arg)}' cannot instantiate '${p.name}' of a strict / rt function (§3.3)`, { layer: p.owner, actual: show(arg) });
+        } else if (!isNative(arg, !p.inParam) || !crossOk(arg, !p.inParam)) {
+          fail("E4002", `'${show(arg)}' cannot instantiate '${p.name}' of a strict / rt function`, { layer: p.owner, actual: show(arg), requiredCap: "Native" });
         }
       }
     }
@@ -573,6 +576,7 @@ export class Program {
       case K.LiteralType: {
         const l = (t as ts.LiteralTypeNode).literal;
         if (l.kind === K.NullKeyword) return NULL;
+        if (l.kind !== K.StringLiteral) return ERROR;
         const v = (l as ts.StringLiteral).text;
         if (hasLoneSurrogate(v)) { this.rep.at(e.mod, "E2012", t, "a string-literal type cannot contain an unpaired surrogate", { kind: "lone-surrogate" }); return ERROR; } // Q238
         return { k: "lit", value: v };
@@ -607,9 +611,11 @@ export class Program {
   private recordOf(t: ts.TypeLiteralNode, e: TypeEnv, struct: boolean): Type {
     const fields: Field[] = [];
     for (const m of t.members) {
+      if (m.kind !== K.PropertySignature) continue;
       const p = m as ts.PropertySignatureDeclaration;
+      if (!isId(p.name)) continue;
       if (!p.type) { this.rep.at(e.mod, "E2006", p.name, "property needs a type annotation", { kind: "missing-annotation" }); return ERROR; }
-      const name = (p.name as ts.Identifier).text;
+      const name = p.name.text;
       const type = this.typeOf(p.type, e);
       if (struct && !structField(type) && !(type.k === "gen" && (type.name === "Ref" || type.name === "Mut"))) this.rep.at(e.mod, "E4002", p.type, `a Struct field needs a Native type, not '${show(type)}'`, { requiredCap: "Native", actual: show(type) }); // Q086; a borrow field is P3's E3004 (§5.5)
       fields.push({ name, type, readonly: hasMod(p, K.ReadonlyKeyword) });
@@ -690,7 +696,7 @@ export class Program {
         }
       }
       if (name === "Port") { // §15.2 (Q200, Q210): both type arguments must be sendable, at every position a Port type is written
-        for (let i = 0; i < 2; i++) if (!sendable(args[i]!)) { this.rep.at(e.mod, "E2010", argNodes![i]!, `'${show(args[i]!)}' cannot be sent to an isolate (§15.2)`, { actual: show(args[i]!) }); return ERROR; }
+        for (let i = 0; i < 2; i++) if (!sendable(args[i]!)) { this.rep.at(e.mod, "E2010", argNodes![i]!, `'${show(args[i]!)}' cannot be sent to an isolate`, { actual: show(args[i]!) }); return ERROR; }
       }
       if (args.some((a) => a.k === "error")) return ERROR;
       if ((name === "RingTx" || name === "RingRx") && !ringElemOk(args[0]!, argNodes![0]!, `${name}<T>`)) return ERROR; // §15.1 (Q210)
@@ -703,7 +709,7 @@ export class Program {
         return ERROR;
       }
       const i = CONTAINERS.has(name) ? args.findIndex((a) => holdsOwned(a) && !ownedDeep(a)) : -1;
-      if (i >= 0) this.rep.at(e.mod, "E3007", argNodes![i]!, `'${name}' cannot hold the owned type '${show(args[i]!)}' (Q174)`, { kind: "managed-owned", container: name, actual: show(args[i]!) });
+      if (i >= 0) this.rep.at(e.mod, "E3007", argNodes![i]!, `'${name}' cannot hold the owned type '${show(args[i]!)}'`, { kind: "managed-owned", container: name, actual: show(args[i]!) });
       return { k: "gen", name, args };
     }
     const b = !RESERVED.has(name) ? builtinType(name) : undefined;

@@ -48,8 +48,8 @@ function checkKey<K extends Key>(a: K, b: K): string {
   return `${m.size}:${m.has(c.a)}`;
 }
 
-function encodeCodec<T extends Codec>(x: T): string {
-  return JSON.stringify<T>(x);
+function encodeCodec<T extends Codec>(js: Js, x: T): JsRef {
+  return js.encode<T>(x);
 }
 
 export function main(sys: System): void {
@@ -68,5 +68,7 @@ export function main(sys: System): void {
   sys.log.info(`ring:${r === null ? -1 : r}:${v1[0]}`);
 
   const pt: Pt = { x: 3, y: 4 };
-  sys.log.info(`key:${checkKey<string>("a", "b")} codec:${encodeCodec<Pt>(pt)}`);
+  const decPt = sys.js.decode<Pt>(encodeCodec<Pt>(sys.js, pt));
+  const codecJson = decPt.kind === "ok" ? JSON.stringify(decPt.value) : "err";
+  sys.log.info(`key:${checkKey<string>("a", "b")} codec:${codecJson}`);
 }

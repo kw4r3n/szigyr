@@ -208,7 +208,11 @@ describe("resident incremental checker, --watch mode, and stdio MCP server", () 
     };
 
     const init = await rpc({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26" } });
-    expect(init.result).toMatchObject({ protocolVersion: "2025-03-26", serverInfo: { name: "szigyr" } });
+    expect(init.result).toMatchObject({
+      protocolVersion: "2025-03-26",
+      capabilities: { tools: {}, resources: {} },
+      serverInfo: { name: "szigyr" },
+    });
 
     // Notifications must not produce a response
     inStream.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
@@ -218,6 +222,32 @@ describe("resident incremental checker, --watch mode, and stdio MCP server", () 
     const list = await rpc({ jsonrpc: "2.0", id: 3, method: "tools/list" });
     const names = (list.result.tools as { name: string }[]).map((t) => t.name);
     expect(names).toEqual(["szigyr_check", "szigyr_query", "szigyr_explain", "szigyr_test", "szigyr_mutate", "szigyr_run"]);
+
+    // resources/list & resources/read
+    const resList = await rpc({ jsonrpc: "2.0", id: 31, method: "resources/list" });
+    const resUris = (resList.result.resources as { uri: string }[]).map((r) => r.uri);
+    expect(resUris).toEqual(["szigyr://spec", "szigyr://builtins"]);
+
+    const specRead = await rpc({ jsonrpc: "2.0", id: 32, method: "resources/read", params: { uri: "szigyr://spec" } });
+    expect(specRead.result.contents).toHaveLength(1);
+    expect(specRead.result.contents[0]).toMatchObject({ uri: "szigyr://spec", mimeType: "text/markdown" });
+    expect(specRead.result.contents[0].text).toContain("Szigyr");
+
+    const builtinsRead = await rpc({ jsonrpc: "2.0", id: 33, method: "resources/read", params: { uri: "szigyr://builtins" } });
+    expect(builtinsRead.result.contents).toHaveLength(1);
+    expect(builtinsRead.result.contents[0]).toMatchObject({ uri: "szigyr://builtins", mimeType: "application/json" });
+    const builtinsJson = JSON.parse(builtinsRead.result.contents[0].text) as Record<string, any>;
+    expect(builtinsJson.namespaces.Math).toBeDefined();
+    expect(builtinsJson.string.slice).toBeDefined();
+    expect(builtinsJson.genericTypes.Vec).toBeDefined();
+    expect(builtinsJson.capabilities).toContain("Copy");
+    expect(builtinsJson.reserved).toContain("bigint");
+    expect(builtinsJson.functions).toContain("wrapAdd");
+
+    const badResRead = await rpc({ jsonrpc: "2.0", id: 34, method: "resources/read", params: { uri: "szigyr://unknown" } });
+    expect(badResRead.error.code).toBe(-32602);
+    const emptyResRead = await rpc({ jsonrpc: "2.0", id: 35, method: "resources/read", params: {} });
+    expect(emptyResRead.error.code).toBe(-32602);
 
     // szigyr_check (disk + unsaved single/multi-file overlays + verify overlays did not leak)
     const chkDisk = await rpc({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "szigyr_check", arguments: { file } } });
@@ -250,11 +280,18 @@ describe("resident incremental checker, --watch mode, and stdio MCP server", () 
     const chkAfterOverlay = await rpc({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "szigyr_check", arguments: { file } } });
     expect(chkAfterOverlay.result.structuredContent.ok).toBe(true);
 
-    // szigyr_query (class ctor/implements/fields, interface methods, strict+unsafe pure: false)
+    // szigyr_query (ok flag, class ctor/implements/fields, interface methods, strict+unsafe pure: false)
     const qry = await rpc({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "szigyr_query", arguments: { file } } });
+    expect(qry.result.structuredContent.ok).toBe(true);
     expect(qry.result.structuredContent.symbols.find((s: Record<string, unknown>) => s.name === "add")).toMatchObject({
       kind: "function", layer: "rt", pure: true, mutatable: true,
     });
+    const qryErr = await rpc({
+      jsonrpc: "2.0", id: 70, method: "tools/call",
+      params: { name: "szigyr_query", arguments: { file, content: `export function bad(a: i32): string { return a; }\n` } },
+    });
+    expect(qryErr.result.structuredContent.ok).toBe(false);
+    expect(qryErr.result.structuredContent.diagnostics.length).toBeGreaterThan(0);
     const qryRich = await rpc({
       jsonrpc: "2.0", id: 71, method: "tools/call",
       params: {
@@ -302,13 +339,128 @@ describe("resident incremental checker, --watch mode, and stdio MCP server", () 
     const tst = await rpc({ jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "szigyr_test", arguments: { file, backend: "js" } } });
     expect(tst.result.structuredContent).toMatchObject({ ok: true, results: [{ name: "add", ok: true }] });
 
-    const mut = await rpc({ jsonrpc: "2.0", id: 11, method: "tools/call", params: { name: "szigyr_mutate", arguments: { file, noCache: true } } });
+    const virtTestDep = join(dir, "virt-test-dep.szigyr");
+    const virtTestMain = join(dir, "virt-test-main.szigyr");
+    const virtRunMain = join(dir, "virt-run-main.szigyr");
+    const virtTestOverlays = {
+      [virtTestDep]: `export function mul2(x: i32): i32 {\n  "use rt";\n  return x * 2;\n}\n`,
+      [virtTestMain]: [
+        `import { mul2 } from "./virt-test-dep.szigyr";`,
+        `export function calc(x: i32): i32 { "use rt"; return mul2(x) + 1; }`,
+        `test("virt all", (t: Test) => { t.eq(calc(4), 9); });`,
+      ].join("\n"),
+    };
+    const tstAllOverlays = await rpc({
+      jsonrpc: "2.0", id: 101, method: "tools/call",
+      params: { name: "szigyr_test", arguments: { file: virtTestMain, overlays: virtTestOverlays, backend: "all" } },
+    });
+    expect(tstAllOverlays.result.structuredContent).toMatchObject({
+      ok: true,
+      backend: "all",
+      diagnostics: [],
+      results: [{ name: "virt all", ok: true }],
+    });
+    expect(tstAllOverlays.result.structuredContent.mismatch).toBeUndefined();
+
+    const tstContent = await rpc({
+      jsonrpc: "2.0", id: 102, method: "tools/call",
+      params: {
+        name: "szigyr_test",
+        arguments: {
+          file: virtTestMain,
+          overlays: { [virtTestDep]: virtTestOverlays[virtTestDep] },
+          content: `import { mul2 } from "./virt-test-dep.szigyr";\ntest("virt content", (t: Test) => { t.eq(mul2(5), 10); });\n`,
+          backend: "js",
+        },
+      },
+    });
+    expect(tstContent.result.structuredContent).toMatchObject({ ok: true, results: [{ name: "virt content", ok: true }] });
+
+    const mut = await rpc({ jsonrpc: "2.0", id: 11, method: "tools/call", params: { name: "szigyr_mutate", arguments: { file, noCache: true, failOnSurvived: true } } });
+    expect(mut.result.structuredContent.ok).toBe(true);
     expect(mut.result.structuredContent.summary.killed).toBeGreaterThan(0);
+    expect(mut.result.structuredContent.summary.survived).toBe(0);
+
+    const survMutFile = join(dir, "surv-mut.szigyr");
+    writeFileSync(survMutFile, `export function combine(a: i32, b: i32): i32 { return a + b; }\ntest("weak", (t: Test) => { t.eq(combine(0, 0), 0); });\n`);
+    const mutSurvOk = await rpc({ jsonrpc: "2.0", id: 111, method: "tools/call", params: { name: "szigyr_mutate", arguments: { file: survMutFile, noCache: true } } });
+    expect(mutSurvOk.result.structuredContent.ok).toBe(true);
+    expect(mutSurvOk.result.structuredContent.summary.survived).toBeGreaterThan(0);
+    const mutSurvFail = await rpc({ jsonrpc: "2.0", id: 112, method: "tools/call", params: { name: "szigyr_mutate", arguments: { file: survMutFile, noCache: true, failOnSurvived: true } } });
+    expect(mutSurvFail.result.structuredContent.ok).toBe(false);
+    expect(mutSurvFail.result.structuredContent.summary.survived).toBeGreaterThan(0);
+
+    const mutHelper = join(dir, "mut-helper.szigyr");
+    const mutEntry = join(dir, "mut-entry.szigyr");
+    writeFileSync(mutHelper, `export function helper(x: i32): i32 { return x + 10; }\n`);
+    writeFileSync(mutEntry, `import { helper } from "./mut-helper.szigyr";\nexport function entry(x: i32): i32 { return helper(x) * 2; }\ntest("multi", (t: Test) => { t.eq(entry(3), 26); });\n`);
+    const mutEntryOnly = await rpc({ jsonrpc: "2.0", id: 113, method: "tools/call", params: { name: "szigyr_mutate", arguments: { file: mutEntry, noCache: true } } });
+    expect(mutEntryOnly.result.structuredContent.mutants.some((m: Record<string, any>) => String(m.file).endsWith("mut-helper.szigyr"))).toBe(false);
+    const mutAll = await rpc({ jsonrpc: "2.0", id: 114, method: "tools/call", params: { name: "szigyr_mutate", arguments: { file: mutEntry, noCache: true, all: true } } });
+    expect(mutAll.result.structuredContent.ok).toBe(true);
+    expect(mutAll.result.structuredContent.mutants.some((m: Record<string, any>) => String(m.file).endsWith("mut-helper.szigyr"))).toBe(true);
+
+    const badMutFile = join(dir, "bad-mut.szigyr");
+    writeFileSync(badMutFile, `export function add(a: i32, b: i32): i32 { return a + b; }\ntest("fail", (t: Test) => { t.eq(add(1, 2), 99); });\n`);
+    const mutBad = await rpc({ jsonrpc: "2.0", id: 110, method: "tools/call", params: { name: "szigyr_mutate", arguments: { file: badMutFile, noCache: true } } });
+    expect(mutBad.result.structuredContent.ok).toBe(false);
+    expect(mutBad.result.structuredContent.baselineFailure).not.toBeNull();
 
     const runFile = join(dir, "run-main.szigyr");
     writeFileSync(runFile, `export function main(sys: System): void {\n  sys.log.info("hello-mcp");\n}\n`);
     const runRes = await rpc({ jsonrpc: "2.0", id: 14, method: "tools/call", params: { name: "szigyr_run", arguments: { file: runFile, backend: "js" } } });
     expect(runRes.result.structuredContent).toMatchObject({ ok: true, stdout: "hello-mcp\n", diagnostics: [] });
+
+    const runAllOverlays = await rpc({
+      jsonrpc: "2.0", id: 141, method: "tools/call",
+      params: {
+        name: "szigyr_run",
+        arguments: {
+          file: virtRunMain,
+          overlays: { [virtTestDep]: virtTestOverlays[virtTestDep] },
+          content: [
+            `import { mul2 } from "./virt-test-dep.szigyr";`,
+            `export function main(sys: System): void {`,
+            `  sys.log.info(\`ans=\${mul2(21)}\`);`,
+            `}`,
+          ].join("\n"),
+          backend: "all",
+        },
+      },
+    });
+    expect(runAllOverlays.result.structuredContent).toMatchObject({ ok: true, backend: "all", stdout: "ans=42\n", diagnostics: [] });
+    expect(runAllOverlays.result.structuredContent.mismatch).toBeUndefined();
+
+    // Validation errors for new mutate/backend flags -> -32602
+    expect((await rpc({ jsonrpc: "2.0", id: 142, method: "tools/call", params: { name: "szigyr_mutate", arguments: { file, all: "yes" } } })).error.code).toBe(-32602);
+    expect((await rpc({ jsonrpc: "2.0", id: 143, method: "tools/call", params: { name: "szigyr_mutate", arguments: { file, failOnSurvived: 1 } } })).error.code).toBe(-32602);
+    expect((await rpc({ jsonrpc: "2.0", id: 144, method: "tools/call", params: { name: "szigyr_run", arguments: { file: runFile, backend: "nope" } } })).error.code).toBe(-32602);
+
+    // Worker timeout protection on infinite loop + session recovery
+    const loopFile = join(dir, "inf-loop.szigyr");
+    writeFileSync(loopFile, `export function main(_sys: System): void {\n  while (true) {}\n}\n`);
+    const tLoop0 = performance.now();
+    const loopRes = await rpc({
+      jsonrpc: "2.0", id: 15, method: "tools/call",
+      params: { name: "szigyr_run", arguments: { file: loopFile, backend: "js", timeoutMs: 300 } },
+    });
+    expect(performance.now() - tLoop0).toBeLessThan(5000);
+    expect(loopRes.result.isError).toBe(true);
+    expect(loopRes.result.structuredContent).toMatchObject({ ok: false, timedOut: true });
+
+    // Subsequent ping and szigyr_check succeed cleanly on the same MCP session
+    expect(await rpc({ jsonrpc: "2.0", id: 16, method: "ping" })).toEqual({ jsonrpc: "2.0", id: 16, result: {} });
+    const chkAfterTimeout = await rpc({ jsonrpc: "2.0", id: 17, method: "tools/call", params: { name: "szigyr_check", arguments: { file } } });
+    expect(chkAfterTimeout.result.structuredContent).toMatchObject({ ok: true, diagnostics: [] });
+
+    // Invalid timeoutMs -> -32602
+    for (const badTimeout of [50, 300001, 1.5, "300"]) {
+      const badTo = await rpc({
+        jsonrpc: "2.0", id: 18, method: "tools/call",
+        params: { name: "szigyr_run", arguments: { file: runFile, timeoutMs: badTimeout } },
+      });
+      expect(badTo.error.code).toBe(-32602);
+    }
 
     // Protocol errors (-32700, -32601, -32602)
     inStream.write("{bad json\n");

@@ -1302,16 +1302,21 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
       if (p.expression.kind === K.Identifier && !this.lookup((p.expression as ts.Identifier).text)) {
         const ns = (p.expression as ts.Identifier).text;
         if (ns === "Math") {
+          const isF32 = t.k === "num" && t.name === "f32";
           const as = e.arguments.map((a) => this.ex(a));
           const F: Record<string, string> = { abs: "fabs", sqrt: "sqrt", floor: "floor", ceil: "ceil", trunc: "trunc", round: "sts_round", sign: "sts_sign" };
-          if (F[m]) return this.t(t, `${F[m]}(${as[0]})`, e);
+          if (F[m]) return this.t(t, isF32 ? `(float)${F[m]}((double)${as[0]})` : `${F[m]}(${as[0]})`, e);
           if (m === "fround") return this.t(t, `(float)${as[0]}`, e);
-          if (m === "min" || m === "max") { let acc = as[0]!; for (const x of as.slice(1)) acc = this.t(t, `sts_${m}(${acc}, ${x})`, e); return acc; }
+          if (m === "min" || m === "max") {
+            let acc = as[0]!;
+            for (const x of as.slice(1)) acc = this.t(t, isF32 ? `(float)sts_${m}((double)${acc}, (double)${x})` : `sts_${m}(${acc}, ${x})`, e);
+            return acc;
+          }
         }
         if (ns === "Number") {
           const a0 = this.ex(e.arguments[0]!);
           const F: Record<string, string> = { isFinite: "sts_isfinite", isNaN: "sts_isnan", isInteger: "sts_isint" };
-          if (F[m]) return this.t(t, `${F[m]}(${a0})`, e);
+          if (F[m]) return this.t(t, `${F[m]}((double)${a0})`, e);
         }
         if (ns === "DetMath") { // §12 (Q191): a direct call of the bundled module's rt function
           const dm = prog.mods.find((x) => x.pf.path === DETMATH_PATH);

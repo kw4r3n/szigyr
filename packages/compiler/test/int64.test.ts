@@ -262,7 +262,6 @@ test("64-bit managed features and forAll", (t: Test) => {
   if (parsed.kind === "ok") {
     t.eq(cast<i64>(parsed.value).kind, "err");
   }
-  t.traps("T006", () => { JSON.stringify<i64>(a); });
   forAll((x: i64): boolean => wrapSub(wrapAdd(x, 1), 1) === x);
 });
 `);
@@ -270,6 +269,20 @@ test("64-bit managed features and forAll", (t: Test) => {
     const rJs = await run(f, { backend: "js" });
     expect(rJs.trap).toBeNull();
     expect(rJs.stdout.trim()).toBe("precise|true|18446744073709551615|-9007199254740993|err");
+
+    const badJson = writeMod(`
+function encodeCodec<T extends Codec>(x: T): string { return JSON.stringify<T>(x); }
+export function f(a: i64, b: u64): void {
+  const s1 = JSON.stringify(a);
+  const s2 = JSON.stringify<u64>(b);
+  const rec: { readonly id: i64 } = { id: a };
+  const s3 = JSON.stringify(rec);
+  const s4 = encodeCodec<i64>(a);
+}
+`);
+    const badDs = check(badJson);
+    expect(badDs.filter((d) => d.code === "E2002" && d.data?.reason === "concrete-type-required").length).toBe(1);
+    expect(badDs.filter((d) => d.code === "E2002" && d.data?.reason === "json-int64").length).toBe(3);
 
     const isoFile = writeMod(`
 async function worker(port: Port<Vec<i64>, u64>): Promise<void> {

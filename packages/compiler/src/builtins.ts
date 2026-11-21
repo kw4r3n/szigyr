@@ -56,7 +56,7 @@ export function builtinType(name: string): Type | undefined {
     case "AsyncDisposable": return ASYNC_DISPOSABLE;
   }
   if ((NUM_NAMES as readonly string[]).includes(name)) return num(name as NumName);
-  if (OPAQUE_NAMES.has(name) && !["FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeAudio"].includes(name)) return opaque(name);
+  if (OPAQUE_NAMES.has(name)) return opaque(name);
   return undefined;
 }
 export const isGenName = (n: string): n is GenName => Object.hasOwn(GEN_ARITY, n);
@@ -278,7 +278,7 @@ export function nsMembers(ns: string): Record<string, Member | "variadic"> {
     };
     case "JSON": return {
       parse: mo(m(RD, [STR], result(UNKNOWN, ERROR_RECORD))), // Q035
-      stringify: mo(m(RD, [tT], STR, { tparams: [T], tcheck: "codec" })),
+      stringify: mo(m(RD, [tT], STR, { tparams: [T], tcheck: "jsonstringify" })),
     };
     case "String": return { fromCodePoint: mo(m(RD, [num("u32")], STR)) };
     case "Promise": return { all: mo(m(RD, [gen("Array", gen("Promise", tT))], gen("Promise", gen("Array", tT)), { tparams: [T] })) };

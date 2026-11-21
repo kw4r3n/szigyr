@@ -1,0 +1,100 @@
+// expect-output: managed:10:20:18:30
+// expect-output: rt:10:20:18:30
+// expect-output: void:ok
+// stage: 1
+
+type Shape =
+  | { readonly kind: "a"; readonly v: i32 }
+  | { readonly kind: "b"; readonly v: i32 }
+  | { readonly kind: "c"; readonly w: i32 };
+
+type AB =
+  | { readonly kind: "a"; readonly v: i32 }
+  | { readonly kind: "b"; readonly v: i32 };
+
+function evalManaged(s: Shape): i32 {
+  switch (s.kind) {
+    case "a":
+      const x = s.v + 1;
+      return x;
+    case "b":
+      const x = s.v + 2;
+      return x;
+    case "c":
+      const x = s.w + 3;
+      return x;
+  }
+}
+
+function groupManaged(s: Shape): i32 {
+  switch (s.kind) {
+    case "a":
+    case "b":
+      const x = s.v;
+      return x;
+    case "c":
+      const x = s.w;
+      return x;
+  }
+}
+
+function evalRt(s: Shape): i32 {
+  "use rt";
+  switch (s.kind) {
+    case "a":
+      const x = s.v + 1;
+      return x;
+    case "b":
+      const x = s.v + 2;
+      return x;
+    case "c":
+      const x = s.w + 3;
+      return x;
+  }
+}
+
+function evalAB(s: AB): i32 {
+  "use rt";
+  switch (s.kind) {
+    case "a":
+      const x = s.v;
+      return x;
+    case "b":
+      const x = s.v;
+      return x;
+  }
+}
+
+function groupRt(s: Shape): i32 {
+  "use rt";
+  switch (s.kind) {
+    case "a":
+    case "b":
+      const x = evalAB(s);
+      return x;
+    case "c":
+      const x = s.w;
+      return x;
+  }
+}
+
+function voidLastNoBreak(sys: System, n: i32): void {
+  switch (n) {
+    case 1:
+      const msg = "bad";
+      sys.log.info(`void:${msg}`);
+      break;
+    default:
+      const msg = "ok";
+      sys.log.info(`void:${msg}`);
+  }
+}
+
+export function main(sys: System): void {
+  const a: Shape = { kind: "a", v: 9 };
+  const b: Shape = { kind: "b", v: 18 };
+  const c: Shape = { kind: "c", w: 27 };
+  sys.log.info(`managed:${evalManaged(a)}:${evalManaged(b)}:${groupManaged(b)}:${evalManaged(c)}`);
+  sys.log.info(`rt:${evalRt(a)}:${evalRt(b)}:${groupRt(b)}:${evalRt(c)}`);
+  voidLastNoBreak(sys, 2);
+}

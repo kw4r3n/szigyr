@@ -50,7 +50,7 @@ export async function runTestPass(params: TestPassParams): Promise<TestPassResul
   const dirs = new Set<string>();
   for (const f of files) {
     dirs.add(dirname(canonPath(f)));
-    const rs = [];
+    const rs: Awaited<ReturnType<typeof runTestFile>>[] = [];
     let diag = false;
     const analysis = analyze(f, parser);
     for (const pf of analysis.files) dirs.add(dirname(pf.path));
@@ -61,21 +61,26 @@ export async function runTestPass(params: TestPassParams): Promise<TestPassResul
     }
     if (diag) continue;
     const r = rs[0]!;
-    // D101: --backend=both compares each test's outcome, trap code and position; a trap's message is not compared.
+    // D101: --backend=both / --backend=all compares each test's outcome, trap code and position; a trap's message is not compared.
     const key = (t: (typeof r.results)[number] | undefined): string => JSON.stringify(t && [t.name, t.ok, t.trap ? null : t.failure, t.trap?.code, t.pos?.file, t.pos?.line, t.pos?.col]);
-    if (rs.length === 2 && rs[1]!.results.length !== r.results.length) { // Q266: a result count that differs is a mismatch too
+    if (rs.length >= 2 && rs.some((cur) => cur.results.length !== r.results.length)) { // Q266: a result count that differs is a mismatch too
       failed++;
+      const counts = Object.fromEntries(backends.map((b, k) => [b, rs[k]!.results.length]));
       out(json
-        ? jsonLine({ kind: "mismatch", file: f, js: r.results.length, c: rs[1]!.results.length })
-        : `MISMATCH ${f}: backend test count differs (js=${r.results.length}, c=${rs[1]!.results.length})\n`);
+        ? jsonLine({ kind: "mismatch", file: f, ...counts })
+        : `MISMATCH ${f}: backend test count differs (${backends.map((b, k) => `${b}=${rs[k]!.results.length}`).join(", ")})\n`);
     }
     for (const [i, t] of r.results.entries()) {
-      const other = rs[1]?.results[i];
-      if (rs.length === 2 && key(t) !== key(other)) {
+      if (rs.length >= 2 && rs.slice(1).some((cur) => key(t) !== key(cur.results[i]))) {
         failed++;
+        const resultsByBackend = Object.fromEntries(backends.map((b, k) => [b, rs[k]!.results[i] ?? null]));
+        const label = backends.length === 2 ? "js and c" : "js, c, and wasm";
+        const pad = Math.max(...backends.map((b) => b.length)) + 1;
+        const fmtRes = (res: (typeof r.results)[number] | undefined) =>
+          res ? (res.ok ? "ok" : `FAIL ${res.failure ?? res.trap?.code ?? ""}`) : "missing";
         out(json
-          ? jsonLine({ kind: "mismatch", file: f, name: t.name, js: t, c: other ?? null })
-          : `MISMATCH ${t.name}: js and c backends disagree\n  js: ${t.ok ? "ok" : `FAIL ${t.failure ?? t.trap?.code ?? ""}`}\n  c:  ${other ? (other.ok ? "ok" : `FAIL ${other.failure ?? other.trap?.code ?? ""}`) : "missing"}\n`);
+          ? jsonLine({ kind: "mismatch", file: f, name: t.name, ...resultsByBackend })
+          : `MISMATCH ${t.name}: ${label} backends disagree\n${backends.map((b, k) => `  ${(`${b}:`).padEnd(pad)} ${fmtRes(rs[k]!.results[i])}`).join("\n")}\n`);
         continue;
       }
       if (t.ok) passed++; else failed++;

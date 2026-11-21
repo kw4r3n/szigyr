@@ -208,21 +208,31 @@ export class Checker {
       this.narrow = new Map();
       switch (s.kind) {
         case K.FunctionDeclaration: {
-          const sym = mod.values.get((s as ts.FunctionDeclaration).name!.text);
+          const d = s as ts.FunctionDeclaration;
+          if (!d.name || !d.body) break;
+          const sym = mod.values.get(d.name.text);
           if (sym?.k !== "fn") break;
           this.fn = sym;
           if (sym.layer !== "managed") this.layerSig(sym);
-          this.fnBody(s as ts.FunctionDeclaration, sym.sig, { layer: sym.layer, unsafe: sym.unsafe, params: (s as ts.FunctionDeclaration).parameters });
+          this.fnBody(d, sym.sig, { layer: sym.layer, unsafe: sym.unsafe, params: d.parameters });
           this.fn = undefined;
           break;
         }
-        case K.ClassDeclaration: this.classBody(mod.values.get((s as ts.ClassDeclaration).name!.text) as ClassValueSym); break;
+        case K.ClassDeclaration: {
+          const d = s as ts.ClassDeclaration;
+          if (!d.name) break;
+          const sym = mod.values.get(d.name.text);
+          if (sym?.k !== "class") break;
+          this.classBody(sym);
+          break;
+        }
         case K.VariableStatement:
           for (const d of (s as ts.VariableStatement).declarationList.declarations) {
+            if (!d.initializer) continue;
             const b = declBindings(d)[0];
             const sym = b && mod.values.get(b.id.text);
             if (sym?.k !== "const" || !d.type) continue;
-            this.moduleConst(b!.el ? this.typeOf(d.type) : sym.type, d.initializer!); // Q225 (b): a destructuring checks the whole record once
+            this.moduleConst(b!.el ? this.typeOf(d.type) : sym.type, d.initializer); // Q225 (b): a destructuring checks the whole record once
           }
           break;
         case K.ExpressionStatement: expr(this, (s as ts.ExpressionStatement).expression); break; // test(...) (§9.2)
@@ -237,8 +247,8 @@ export class Checker {
     if (kw) this.at("E4002", kw, `${f.layer} functions cannot be async`, { layer: f.layer, actual: "async" });
     d.parameters.forEach((p, i) => { if (p.type) this.layerParamType(f.sig.params[i] ?? ERROR, p.type, f.layer); });
     if (d.type) this.layerType(f.sig.ret, d.type, f.layer);
-    d.parameters.forEach((p, i) => { const t = f.sig.params[i]; if (p.type && t && t.k !== "fn" && layerOk(t) && !crossOk(t)) this.at("E4002", p.type, `'${show(t)}' cannot cross the managed / C boundary (Q233)`, { layer: f.layer, actual: show(t) }); });
-    if (d.type && layerOk(f.sig.ret) && !crossOk(f.sig.ret, true)) this.at("E4002", d.type, `'${show(f.sig.ret)}' cannot cross the managed / C boundary (Q233)`, { layer: f.layer, actual: show(f.sig.ret) });
+    d.parameters.forEach((p, i) => { const t = f.sig.params[i]; if (p.type && t && t.k !== "fn" && layerOk(t) && !crossOk(t)) this.at("E4002", p.type, `'${show(t)}' cannot cross the managed / C boundary`, { layer: f.layer, actual: show(t) }); });
+    if (d.type && layerOk(f.sig.ret) && !crossOk(f.sig.ret, true)) this.at("E4002", d.type, `'${show(f.sig.ret)}' cannot cross the managed / C boundary`, { layer: f.layer, actual: show(f.sig.ret) });
   }
   /** Q189 (b): a function type may be written as the parameter type of a strict / rt function (and, recursively,
    * as a parameter type inside one). Its return type is not a parameter position, so it goes through layerType. */
@@ -465,7 +475,7 @@ export class Checker {
     const tparams = new Map(cls.tparams.map((p) => [p.name, p]));
     this.fx = { ...this.fx, tparams };
     for (const h of cls.decl.heritageClauses ?? []) h.types.forEach((t, i) => this.implementsCheck(cls, cls.implements[i] ?? ERROR, t));
-    const ctor = cls.decl.members.find((m) => m.kind === K.Constructor) as ts.ConstructorDeclaration | undefined;
+    const ctor = cls.decl.members.find((m) => m.kind === K.Constructor && !!(m as ts.ConstructorDeclaration).body) as ts.ConstructorDeclaration | undefined;
     // Q029: `this.f = ...` as a top-level constructor statement. Q121: up to the last of them, `this` is only such a target.
     const stmts = ctor?.body?.statements ?? [];
     const initOf = (s: ts.Statement): ts.PropertyAccessExpression | undefined => {
@@ -503,17 +513,22 @@ export class Checker {
     for (const m of cls.decl.members) {
       if (m.kind === K.PropertyDeclaration) {
         const p = m as ts.PropertyDeclaration;
-        const f = cls.fields.get((p.name as ts.Identifier).text)!;
-        if (!p.initializer) continue;
+        if (!isId(p.name)) continue;
+        const f = cls.fields.get(p.name.text);
+        if (!f || !p.initializer) continue;
         this.fx = { ...this.fx, thisType, cls };
         if (f.static) this.moduleConst(f.type, p.initializer);
         else checkTo(this, p.initializer, f.type);
       } else if (m.kind === K.MethodDeclaration) {
         const md = m as ts.MethodDeclaration;
-        const me = cls.methods.get((md.name as ts.Identifier).text)!;
+        if (!isId(md.name) || !md.body) continue;
+        const me = cls.methods.get(md.name.text);
+        if (!me) continue;
         this.fnBody(md, me.sig, { layer: "managed", ...(me.static ? {} : { thisType }), cls, params: md.parameters });
       } else if (m.kind === K.Constructor) {
-        this.fnBody(ctor!, cls.ctor, { layer: "managed", thisType, cls, inCtor: true, params: ctor!.parameters });
+        const mc = m as ts.ConstructorDeclaration;
+        if (!mc.body) continue;
+        this.fnBody(mc, cls.ctor, { layer: "managed", thisType, cls, inCtor: true, params: mc.parameters });
       }
     }
     this.ctorInits = new Set();
@@ -617,9 +632,13 @@ export class Checker {
         else if (t.k !== "error") this.at("E2002", x.expression, `cannot iterate over '${show(t)}'`);
         const saved = this.scope;
         this.scope = new Scope(saved);
-        const d = (x.initializer as ts.VariableDeclarationList).declarations[0]!;
-        if (d.type) { const at = this.typeOf(d.type); this.walkTypePos(d.type, "local", { unsafe: this.fx.unsafe, cdecl: false }); if (!assignable(elem, at)) this.at("E2002", d.name, "element type does not match the annotation"); elem = at; }
-        if (isId(d.name)) this.declare(d.name, elem);
+        if (x.initializer.kind === K.VariableDeclarationList) {
+          const d = (x.initializer as ts.VariableDeclarationList).declarations[0];
+          if (d) {
+            if (d.type) { const at = this.typeOf(d.type); this.walkTypePos(d.type, "local", { unsafe: this.fx.unsafe, cdecl: false }); if (!assignable(elem, at)) this.at("E2002", d.name, "element type does not match the annotation"); elem = at; }
+            if (isId(d.name)) this.declare(d.name, elem);
+          }
+        }
         this.loopEntry(x.statement);
         this.loopBody(x.statement, new Map());
         this.scope = saved;
@@ -708,8 +727,6 @@ export class Checker {
     let fall: string[] = [];
     const caseLits = new Set(clauses.flatMap((c) => (c.kind === K.CaseClause && (c as ts.CaseClause).expression.kind === K.StringLiteral ? [((c as ts.CaseClause).expression as ts.StringLiteral).text] : [])));
     const saved = this.narrow, m0 = this.mark();
-    const savedScope = this.scope;
-    this.scope = new Scope(savedScope); // the case block is one scope
     clauses.forEach((c, i) => {
       if (c.kind === K.DefaultClause) {
         hasDefault = true;
@@ -731,12 +748,30 @@ export class Checker {
         const ms = tagged.members.filter((m) => fall.includes(kindOf(m)!));
         if (ms.length) this.narrow.set(tagged.key, subUnion(ms));
       }
-      const r = this.blockNoScope(c.statements);
-      if (!r) fall = [];
+      const r = this.block(c.statements);
+      if (c.statements.length > 0 && r && i < clauses.length - 1) {
+        const sf = this.mod.sf, cStart = c.getStart(sf), kwLen = c.kind === K.DefaultClause ? 7 : 4;
+        this.report("E2002", cStart, cStart + kwLen, "switch case cannot fall through; end with 'break' or 'return'", { kind: "switch-fallthrough" });
+        const d = this.prog.rep.out.at(-1);
+        if (d?.code === "E2002") {
+          const lastStmt = c.statements[c.statements.length - 1]!;
+          const pos = this.mod.pf.position(lastStmt.end);
+          const singleLine = sf.getLineAndCharacterOfPosition(cStart).line === sf.getLineAndCharacterOfPosition(lastStmt.end).line;
+          let newText = " break;";
+          if (!singleLine) {
+            const lastLineStart = sf.text.lastIndexOf("\n", lastStmt.getStart(sf)) + 1;
+            const cLineStart = sf.text.lastIndexOf("\n", cStart) + 1;
+            const sameStartLine = lastLineStart === cLineStart;
+            const stmtIndent = (/^[ \t]*/.exec(sf.text.slice(sameStartLine ? cLineStart : lastLineStart))?.[0] ?? "") + (sameStartLine ? "  " : "");
+            newText = `\n${stmtIndent}break;`;
+          }
+          d.fixes = [{ title: "add 'break;'", edits: [{ range: { start: pos, end: pos }, newText }] }];
+        }
+      }
+      if (!r || c.statements.length > 0) fall = [];
       if (i === clauses.length - 1) reachEnd = r;
     });
     this.restore(saved, m0);
-    this.scope = savedScope;
     const exhaustive = hasDefault || (!!labels && labels.every((l) => l.k === "lit" && seen.has(l.value))) || (isBool(t) && seen.has("true") && seen.has("false")); // Q254
     if (!exhaustive && t.k !== "error") {
       const missing = labels
@@ -763,11 +798,6 @@ export class Checker {
       }
     }
     return !exhaustive || reachEnd || clauses.length === 0 || hasBreak(x.caseBlock, true);
-  }
-  private blockNoScope(list: readonly ts.Statement[]): boolean {
-    let reach = true;
-    for (const s of list) if (!this.stmt(s)) reach = false;
-    return reach;
   }
 
   varList(list: ts.VariableDeclarationList): void {
@@ -842,10 +872,21 @@ export class Checker {
     if (!authority) return undefined;
     const ps = this.fx.params;
     const name = authority.toLowerCase();
-    const hasParam = ps?.some((p) => isId(p.name) && p.name.text === name) ?? false;
-    if (!ps && !this.scope.lookup(name)) return { authority };
+    const findParam = (typeName: string): string | undefined => {
+      for (const p of ps ?? []) {
+        if (!isId(p.name)) continue;
+        const sym = this.scope.lookup(p.name.text);
+        if (sym?.type.k === "opaque" && sym.type.name === typeName) return p.name.text;
+      }
+      return undefined;
+    };
+    const existing = findParam(authority);
+    const sysName = existing ? undefined : findParam("System");
+    const targetName = existing ?? (sysName ? `${sysName}.${name}` : name);
+    const hasNameConflict = !existing && !sysName && (ps?.some((p) => isId(p.name) && p.name.text === name) ?? false);
+    if ((!ps && !this.scope.lookup(name)) || hasNameConflict) return { authority };
     const edits: { range: { start: { line: number; col: number }; end: { line: number; col: number } }; newText: string }[] = [];
-    if (ps && !hasParam) {
+    if (ps && !existing && !sysName) {
       const pos = this.mod.pf.position(ps.end);
       edits.push({ range: { start: pos, end: pos }, newText: `${ps.length ? ", " : ""}${name}: ${authority}` });
     }
@@ -858,10 +899,10 @@ export class Checker {
       }
       const m = target && isId(target.name) ? target.name.text : undefined;
       const map: Record<string, Record<string, string>> = {
-        console: { log: `${name}.info`, info: `${name}.info`, warn: `${name}.warn`, error: `${name}.error` },
-        Date: { now: `${name}.nowMs` },
-        performance: { now: `${name}.nowMs` },
-        random: { random: `${name}.nextF64` },
+        console: { log: `${targetName}.info`, info: `${targetName}.info`, warn: `${targetName}.warn`, error: `${targetName}.error` },
+        Date: { now: `${targetName}.nowMs` },
+        performance: { now: `${targetName}.nowMs` },
+        random: { random: `${targetName}.nextF64` },
       };
       const rep = m ? map[global]?.[m] : undefined;
       if (target && rep) {
@@ -869,7 +910,8 @@ export class Checker {
       }
     }
     if (!edits.length) return { authority };
-    return { authority, fixes: [{ title: `take '${name}: ${authority}' as a parameter`, edits }] };
+    const title = existing ? `use '${existing}'` : sysName ? `use '${sysName}.${name}'` : `take '${name}: ${authority}' as a parameter`;
+    return { authority, fixes: [{ title, edits }] };
   }
 
   /** The layer of a called value symbol (E4001); undefined for non-functions. */
@@ -897,7 +939,8 @@ export class Checker {
       switch (s.kind) {
         case K.FunctionDeclaration: {
           const d = s as ts.FunctionDeclaration;
-          const sym = mod.values.get(d.name!.text);
+          if (!d.name) break;
+          const sym = mod.values.get(d.name.text);
           if (sym?.k !== "fn") break;
           this.fx.tparams = new Map(sym.sig.tparams.map((p) => [p.name, p]));
           const ctx = { unsafe: sym.unsafe, cdecl: false };
@@ -931,6 +974,7 @@ export class Checker {
               }
             } else if (st.kind === K.TypeAliasDeclaration) {
               const ta = st as ts.TypeAliasDeclaration;
+              if (!ta.name) continue;
               this.walkCStruct(ta, stable?.get(ta.name.text));
             }
           }
@@ -938,6 +982,7 @@ export class Checker {
         }
         case K.TypeAliasDeclaration: {
           const d = s as ts.TypeAliasDeclaration;
+          if (!d.name || !d.type) break;
           const sym = mod.types.get(d.name.text);
           this.fx.tparams = sym?.k === "alias" && sym.tparams ? new Map(sym.tparams.map((p) => [p.name, p])) : new Map();
           this.walkTypePos(d.type, "alias", sig);
@@ -945,7 +990,8 @@ export class Checker {
         }
         case K.ClassDeclaration: {
           const d = s as ts.ClassDeclaration;
-          const sym = mod.values.get(d.name!.text);
+          if (!d.name) break;
+          const sym = mod.values.get(d.name.text);
           this.fx.tparams = sym?.k === "class" ? new Map(sym.cls.tparams.map((p) => [p.name, p])) : new Map();
           for (const m of d.members) {
             if (m.kind === K.PropertyDeclaration) { const p = m as ts.PropertyDeclaration; if (p.type) this.walkTypePos(p.type, "field", sig); }
@@ -959,9 +1005,11 @@ export class Checker {
         }
         case K.InterfaceDeclaration: {
           const d = s as ts.InterfaceDeclaration;
+          if (!d.name) break;
           const sym = mod.types.get(d.name.text);
           this.fx.tparams = sym?.k === "iface" ? new Map(sym.iface.tparams.map((p) => [p.name, p])) : new Map();
           for (const m of d.members) {
+            if (m.kind !== K.MethodSignature) continue;
             const ms = m as ts.MethodSignatureDeclaration;
             ms.parameters.forEach((p) => { if (p.type) this.walkTypePos(p.type, "sig", sig); });
             if (ms.type) this.walkTypePos(ms.type, "sig", sig);
@@ -1018,10 +1066,10 @@ export class Checker {
   }
 
   private walkCStruct(ta: ts.TypeAliasDeclaration, cs: CStructSym | undefined): void {
-    const tr = ta.type.kind === K.TypeReference ? (ta.type as ts.TypeReferenceNode) : undefined;
+    const tr = ta.type?.kind === K.TypeReference ? (ta.type as ts.TypeReferenceNode) : undefined;
     const arg0 = tr && isId(tr.typeName) && tr.typeName.text === "CStruct" && tr.typeArguments?.length === 1 ? tr.typeArguments[0] : undefined;
     if (!arg0 || arg0.kind !== K.TypeLiteral) {
-      this.at("E4007", ta.type, "a type in a 'c:' module must be 'CStruct<{ ... }>'");
+      if (ta.type) this.at("E4007", ta.type, "a type in a 'c:' module must be 'CStruct<{ ... }>'");
       return;
     }
     const lit = arg0 as ts.TypeLiteralNode;
@@ -1120,6 +1168,7 @@ export class Checker {
       }
       case K.TypeLiteral:
         for (const m of (node as ts.TypeLiteralNode).members) {
+          if (m.kind !== K.PropertySignature) continue;
           const p = m as ts.PropertySignatureDeclaration;
           if (p.type) this.walkTypePos(p.type, "field", ctx);
         }

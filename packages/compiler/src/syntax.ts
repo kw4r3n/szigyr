@@ -308,7 +308,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         if (isId(e.name) && e.name.text === "default") { at("E1003", d, "default export is not allowed", { kind: "default-export" }); return; }
         if (e.isTypeOnly || !isId(e.name) || (e.propertyName && !isId(e.propertyName))) { at("E7001", d, "only 'export { a, b as c }' is allowed", { kind: "invalid-export" }); return; }
         const local = (e.propertyName ?? e.name) as ts.Identifier;
-        if (cImports.has(local.text)) at("E7001", local, `cannot re-export C function '${local.text}' (§14.1)`, { kind: "c-reexport", name: local.text });
+        if (cImports.has(local.text)) at("E7001", local, `cannot re-export C function '${local.text}'`, { kind: "c-reexport", name: local.text });
       }
     }
   }
@@ -456,6 +456,10 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     for (const h of d.heritageClauses ?? []) e1000(h, "'extends' on an interface");
     const names = new Set<string>(); // Q223 (a): a method name once per interface
     for (const m of d.members) {
+      if (m.kind === K.PropertySignature) {
+        at("E1000", m, "interface fields are not allowed (interfaces only declare methods); use 'type ... = { ... }' for records", { kind: "interface-field" });
+        continue;
+      }
       if (m.kind !== K.MethodSignature) { e1000(m, "interface member other than a method signature"); continue; }
       const s = m as ts.MethodSignatureDeclaration;
       mods(s, []);
@@ -613,12 +617,10 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         const x = s as ts.SwitchStatement;
         expr(x.expression);
         fc.breaks++;
-        scoped(() => { // the case block is one scope
-          for (const c of x.caseBlock.clauses) {
-            if (c.kind === K.CaseClause) expr((c as ts.CaseClause).expression);
-            for (const b of c.statements) stmt(b);
-          }
-        });
+        for (const c of x.caseBlock.clauses) {
+          if (c.kind === K.CaseClause) expr((c as ts.CaseClause).expression);
+          scoped(() => { for (const b of c.statements) stmt(b); });
+        }
         fc.breaks--;
         return;
       }
@@ -631,7 +633,17 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       case K.ReturnStatement: { const e = (s as ts.ReturnStatement).expression; if (e) expr(e); return; }
       case K.ThrowStatement: at("E1007", s, "'throw' is not allowed", { syntax: "throw" }); return;
       case K.TryStatement: at("E1007", s, "'try' is not allowed", { syntax: "try" }); return;
-      default: e1000(s, "this statement"); // includes labels, for-in, with, nested declarations (Q055)
+      case K.ForInStatement: at("E1000", s, "'for..in' is not allowed; use 'for..of' or an index loop", { kind: "for-in" }); return;
+      case K.LabeledStatement: e1000(s, "labeled statement", { kind: "labeled-statement" }); return;
+      case K.EnumDeclaration: e1000(s, "'enum' declaration", { kind: "enum" }); return;
+      case K.EmptyStatement: e1000(s, "empty statement ';'", { kind: "empty-statement" }); return;
+      case K.FunctionDeclaration: e1000(s, "nested function declaration", { kind: "nested-function" }); return;
+      case K.ClassDeclaration: e1000(s, "nested class declaration", { kind: "nested-class" }); return;
+      case K.InterfaceDeclaration: e1000(s, "nested interface declaration", { kind: "nested-interface" }); return;
+      case K.TypeAliasDeclaration: e1000(s, "nested type alias", { kind: "nested-type" }); return;
+      case K.WithStatement: e1000(s, "'with' statement", { kind: "with" }); return;
+      case K.DebuggerStatement: e1000(s, "'debugger' statement", { kind: "debugger" }); return;
+      default: e1000(s, "this statement");
     }
   }
 
@@ -676,7 +688,10 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
           const repStr = op.kind === K.EqualsEqualsToken ? "===" : "!==";
           at("E1002", op, "use '===' / '!=='", { op: opStr });
           fix(`use '${repStr}'`, op.getStart(sf), op.end, repStr);
-        } else if (!BINARY_OPS.has(op.kind)) e1000(op, "this operator");
+        } else if (!BINARY_OPS.has(op.kind)) {
+          const opText = op.getText(sf);
+          e1000(op, `operator '${opText}'`, { kind: "operator", op: opText });
+        }
         if (op.kind === K.EqualsToken && (b.left.kind === K.ArrayLiteralExpression || b.left.kind === K.ObjectLiteralExpression)) e1000(b.left, "destructuring assignment");
         else expr(b.left);
         expr(b.right);
@@ -684,7 +699,17 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       }
       case K.PrefixUnaryExpression: {
         const u = e as ts.PrefixUnaryExpression;
-        if (!PREFIX_OPS.has(u.operator)) { e1000(u, "this unary operator"); incFix(u, u.operator, u.operand); }
+        if (!PREFIX_OPS.has(u.operator)) {
+          if (u.operator === K.PlusPlusToken || u.operator === K.MinusMinusToken) {
+            const op = u.operator === K.PlusPlusToken ? "++" : "--";
+            at("E1000", u, `'${op}' is not allowed; use '${op[0]}= 1'`, { kind: "inc-dec", op });
+          } else if (u.operator === K.PlusToken) {
+            e1000(u, "unary '+'", { kind: "unary-operator", op: "+" });
+          } else {
+            e1000(u, "this unary operator");
+          }
+          incFix(u, u.operator, u.operand);
+        }
         expr(u.operand);
         return;
       }
@@ -769,11 +794,22 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         return;
       case K.PostfixUnaryExpression: {
         const u = e as ts.PostfixUnaryExpression;
-        e1000(e, "this expression");
+        const op = u.operator === K.PlusPlusToken ? "++" : "--";
+        at("E1000", e, `'${op}' is not allowed; use '${op[0]}= 1'`, { kind: "inc-dec", op });
         incFix(u, u.operator, u.operand);
         return;
       }
-      default: e1000(e, "this expression"); // typeof, void, delete, yield, ++/--, tagged templates, regex, bigint, super, ...
+      case K.RegularExpressionLiteral: e1000(e, "regular expression literal", { kind: "regex" }); return;
+      case K.TypeOfExpression: e1000(e, "'typeof' operator", { kind: "typeof" }); return;
+      case K.DeleteExpression: e1000(e, "'delete' operator", { kind: "delete" }); return;
+      case K.VoidExpression: e1000(e, "'void' operator", { kind: "void" }); return;
+      case K.TaggedTemplateExpression: e1000(e, "tagged template expression", { kind: "tagged-template" }); return;
+      case K.SuperKeyword: e1000(e, "'super'", { kind: "super" }); return;
+      case K.YieldExpression: e1000(e, "'yield' expression", { kind: "yield" }); return;
+      case K.SpreadElement: e1000(e, "spread argument '...'", { kind: "spread" }); return;
+      case K.OmittedExpression: e1000(e, "omitted array element", { kind: "array-hole" }); return;
+      case K.ClassExpression: e1000(e, "class expression", { kind: "class-expression" }); return;
+      default: e1000(e, "this expression");
     }
   }
 
@@ -819,11 +855,31 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       }
       case K.ArrayType: {
         const el = (t as ts.ArrayTypeNode).elementType;
-        e1000(t, "this type");
+        at("E1000", t, "array shorthand 'T[]' is not allowed; use 'Array<T>'", { kind: "array-shorthand" });
         fix("use 'Array<T>'", t.getStart(sf), t.end, `Array<${sf.text.slice(el.getStart(sf), el.end)}>`);
         return;
       }
-      default: e1000(t, "this type"); // T[], tuples, intersections, keyof, typeof, conditional, mapped, indexed, object, symbol, ...
+      case K.TupleType:
+        at("E1000", t, "tuple types are not allowed; use a record '{ readonly ... }' or 'Struct<{ ... }>'", { kind: "tuple-type" });
+        return;
+      case K.IntersectionType:
+        at("E1000", t, "intersection types '&' are only allowed in type parameter constraints", { kind: "intersection-type" });
+        return;
+      case K.TypeOperator:
+        at("E1000", t, "type operator is not allowed", { kind: "type-operator" });
+        return;
+      case K.TypeQuery:
+        at("E1000", t, "'typeof' type query is not allowed", { kind: "type-query" });
+        return;
+      case K.IndexedAccessType:
+        at("E1000", t, "indexed access types are not allowed", { kind: "indexed-access-type" });
+        return;
+      case K.ConditionalType: e1000(t, "conditional type", { kind: "conditional-type" }); return;
+      case K.MappedType: e1000(t, "mapped type", { kind: "mapped-type" }); return;
+      case K.ObjectKeyword: e1000(t, "'object' type", { kind: "object-type" }); return;
+      case K.SymbolKeyword: e1000(t, "'symbol' type", { kind: "symbol-type" }); return;
+      case K.TemplateLiteralType: e1000(t, "template literal type", { kind: "template-literal-type" }); return;
+      default: e1000(t, "this type");
     }
   }
 }

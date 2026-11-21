@@ -100,7 +100,6 @@ reject/E1000-duplicate-object-key-shorthand.szigyr
 reject/E1000-duplicate-object-key.szigyr
 reject/E1000-duplicate-parameter.szigyr
 reject/E1000-duplicate-record-field.szigyr
-reject/E1000-duplicate-switch-case-local.szigyr
 reject/E1000-enum.szigyr
 reject/E1000-for-in.szigyr
 reject/E1000-generator.szigyr
@@ -571,6 +570,7 @@ reject/E4002-pool-element-owned-struct.szigyr
 reject/E4002-port-in-strict.szigyr
 reject/E4002-ring-create-element-owned.szigyr
 reject/E4002-ring-element-owned.szigyr
+reject/E4002-strict-generic-authority-type-argument.szigyr
 reject/E4002-strict-generic-never-reaches-parameter.szigyr
 reject/E4002-strict-generic-type-argument-not-allowed.szigyr
 reject/E4002-strict-param-never.szigyr
@@ -617,7 +617,6 @@ reject/E4006-fs-param-in-rt.szigyr
 reject/E4006-log-param-in-rt.szigyr
 reject/E4006-random-param-after-borrow-in-rt.szigyr
 reject/E4006-rt-generic-authority-type-argument.szigyr
-reject/E4006-strict-generic-authority-to-rt.szigyr
 reject/E4007-box-of-arena.szigyr
 reject/E4007-box-of-struct-with-vec.szigyr
 reject/E4007-box-of-vec.szigyr
@@ -865,6 +864,8 @@ run/252-using-disposable-and-resource.szigyr
 run/253-audio-owned-containers.szigyr
 run/254-cffi-cstruct-const-ptr.szigyr
 run/255-number-predicates-rt.szigyr
+run/256-switch-case-scope.szigyr
+run/257-math-number-f32.szigyr
 run/26-trap-div-by-zero.szigyr
 run/27-trap-ownedcell-empty.szigyr
 run/28-trap-shift-range.szigyr
