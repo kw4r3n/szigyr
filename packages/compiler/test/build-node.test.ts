@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import { main as cliMain } from "../src/cli.ts";
-import { buildNode } from "../src/index.ts";
+import { buildNode, run } from "../src/index.ts";
 
 const runCli = async (argv: string[]): Promise<{ code: number; out: string; err: string }> => {
   let out = "", err = "";
@@ -215,5 +215,78 @@ describe("node target builder & CLI", () => {
     // Invalid backend on build
     expect((await runCli(["build", "--target=node", "--backend=both", appFile])).code).toBe(2);
     expect((await runCli(["build", "--target=node", "--mode=bad", appFile])).code).toBe(2);
+  });
+
+  it("handles dual ESM/CJS exports, opaque CJS defaults, and export * as ns in run (incl. isolate) and build --target=node", async () => {
+    const srcDir = mkdtempSync(join(tmpdir(), "szigyr-bnode-npmcompat-"));
+    const nm = join(srcDir, "node_modules");
+    mkdirSync(join(nm, "dual-pkg"), { recursive: true });
+    mkdirSync(join(nm, "opaque-cjs"), { recursive: true });
+    mkdirSync(join(nm, "reexport-ns"), { recursive: true });
+
+    // Dual ESM/CJS whose CJS lacks static named exports (`three` pattern)
+    writeFileSync(join(nm, "dual-pkg", "package.json"), JSON.stringify({
+      name: "dual-pkg",
+      exports: { ".": { import: "./esm.mjs", require: "./cjs.cjs" } },
+    }));
+    writeFileSync(join(nm, "dual-pkg", "esm.mjs"), `export const MathBox = { addOne: (x) => x + 1 };\n`);
+    writeFileSync(join(nm, "dual-pkg", "cjs.cjs"), `module.exports = (function() { return { MathBox: { addOne: (x) => x - 999 } }; })();\n`);
+
+    // Opaque CJS assigning function + methods (`lodash` pattern)
+    writeFileSync(join(nm, "opaque-cjs", "package.json"), JSON.stringify({ name: "opaque-cjs", main: "index.cjs" }));
+    writeFileSync(join(nm, "opaque-cjs", "index.cjs"), `function base(n) { return n; } base.triple = (n) => n * 3; module.exports = base;\n`);
+
+    // ESM using ES2020 `export * as ns from ...` (`zod` pattern)
+    writeFileSync(join(nm, "reexport-ns", "package.json"), JSON.stringify({ name: "reexport-ns", type: "module", main: "index.js" }));
+    writeFileSync(join(nm, "reexport-ns", "sub.js"), `export const bias = 7;\n`);
+    writeFileSync(join(nm, "reexport-ns", "index.js"), `export * as sub from "./sub.js";\n`);
+
+    const entry = join(srcDir, "app.szigyr");
+    writeFileSync(entry, [
+      `import { MathBox } from "npm:dual-pkg";`,
+      `import { triple } from "npm:opaque-cjs";`,
+      `import { sub } from "npm:reexport-ns";`,
+      `function evalJs(sys: System): i32 {`,
+      `  const fAdd = sys.js.get(MathBox, "addOne");`,
+      `  const fBias = sys.js.get(sub, "bias");`,
+      `  if (fAdd.kind !== "ok" || fBias.kind !== "ok") return -1;`,
+      `  const r1 = sys.js.call(fAdd.value, [sys.js.encode<i32>(10)]);`,
+      `  const r2 = sys.js.call(triple, [sys.js.encode<i32>(4)]);`,
+      `  if (r1.kind !== "ok" || r2.kind !== "ok") return -2;`,
+      `  const d1 = sys.js.decode<i32>(r1.value);`,
+      `  const d2 = sys.js.decode<i32>(r2.value);`,
+      `  const d3 = sys.js.decode<i32>(fBias.value);`,
+      `  if (d1.kind !== "ok" || d2.kind !== "ok" || d3.kind !== "ok") return -3;`,
+      `  return d1.value + d2.value + d3.value;`,
+      `}`,
+      `async function isoUse(p: Port<i32, i32>): Promise<void> {`,
+      `  const n = await p.recv();`,
+      `  if (n === null) return;`,
+      `  const ref: JsRef = triple;`,
+      `  p.send(n + 10);`,
+      `}`,
+      `export async function main(sys: System): Promise<void> {`,
+      `  const sum = evalJs(sys);`,
+      `  const iso = sys.spawn.isolate<i32, i32>(isoUse);`,
+      `  iso.send(sum);`,
+      `  const v = await iso.recv();`,
+      `  if (v !== null) sys.log.info(\`res=\${sum},\${v}\`);`,
+      `  iso.close();`,
+      `}`,
+    ].join("\n"));
+
+    // 1. Direct szigyr run (main + Worker isolate)
+    const runRes = await run(entry);
+    expect(runRes.diagnostics).toEqual([]);
+    expect(runRes.trap).toBeNull();
+    expect(runRes.stdout).toBe("res=30,40\n");
+
+    // 2. Standalone build --target=node relocated away from node_modules
+    const outDir = mkdtempSync(join(tmpdir(), "szigyr-bnode-npmcompat-out-"));
+    const isoDir = mkdtempSync(join(tmpdir(), "szigyr-bnode-npmcompat-iso-"));
+    expect((await runCli(["build", "--target=node", "-o", outDir, entry])).code).toBe(0);
+    cpSync(outDir, isoDir, { recursive: true });
+    rmSync(srcDir, { recursive: true, force: true });
+    expect(execFileSync(process.execPath, [join(isoDir, "main.js")], { encoding: "utf8" })).toBe("res=30,40\n");
   });
 });

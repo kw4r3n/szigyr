@@ -163,23 +163,26 @@ describe("browser target builder & CLI", () => {
       exports: { ".": { browser: "./browser.mjs", default: "./node.mjs" } },
     }));
     writeFileSync(join(nm, "esm-pkg", "helper.mjs"), `export const bias = 5;\n`);
-    writeFileSync(join(nm, "esm-pkg", "browser.mjs"), `import { bias } from "./helper.mjs";\nimport { mul } from "cjs-pkg";\nexport function calc(x, y) { return mul(x, y) + bias; }\n`);
+    writeFileSync(join(nm, "esm-pkg", "ns.mjs"), `export const scale = 2;\n`);
+    writeFileSync(join(nm, "esm-pkg", "browser.mjs"), `import { bias } from "./helper.mjs";\nimport { mul } from "cjs-pkg";\nexport * as ns from "./ns.mjs";\nexport * as cns from "cjs-pkg";\nexport function calc(x, y) { return mul(x, y) + bias; }\n`);
     writeFileSync(join(nm, "esm-pkg", "node.mjs"), `export function calc() { return -999; }\n`);
 
     const entry = join(srcDir, "app.szigyr");
     writeFileSync(entry, [
-      `import { calc } from "npm:esm-pkg";`,
+      `import { calc, ns, cns } from "npm:esm-pkg";`,
       `import { mul } from "npm:cjs-pkg";`,
       `export function main(sys: System): void {`,
       `  const ra = sys.js.call(calc, [sys.js.encode(6), sys.js.encode(7)]);`,
       `  const rb = sys.js.call(mul, [sys.js.encode(3), sys.js.encode(4)]);`,
-      `  if (ra.kind === "ok") {`,
-      `    if (rb.kind === "ok") {`,
+      `  const s = sys.js.get(ns, "scale");`,
+      `  const cmul = sys.js.get(cns, "mul");`,
+      `  if (ra.kind === "ok" && rb.kind === "ok" && s.kind === "ok" && cmul.kind === "ok") {`,
+      `    const rc = sys.js.call(cmul.value, [s.value, sys.js.encode(5)]);`,
+      `    if (rc.kind === "ok") {`,
       `      const a = sys.js.decode<i32>(ra.value);`,
       `      const b = sys.js.decode<i32>(rb.value);`,
-      `      if (a.kind === "ok") {`,
-      `        if (b.kind === "ok") sys.log.info(\`\${a.value},\${b.value}\`);`,
-      `      }`,
+      `      const c = sys.js.decode<i32>(rc.value);`,
+      `      if (a.kind === "ok" && b.kind === "ok" && c.kind === "ok") sys.log.info(\`\${a.value},\${b.value},\${c.value}\`);`,
       `    }`,
       `  }`,
       `}`,
@@ -202,7 +205,7 @@ describe("browser target builder & CLI", () => {
     };
     const loaded = await mod.load();
     await loaded.run(undefined, { stdout: (s: string) => { stdout += s; } });
-    expect(stdout).toBe("47,12\n");
+    expect(stdout).toBe("47,12,10\n");
   });
 
   it("fails with exit 2 when an npm: package is missing or imports node:* for browser", async () => {

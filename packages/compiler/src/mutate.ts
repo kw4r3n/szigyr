@@ -3,9 +3,8 @@
 // step-fuel timeout abortion, per-function diff caching, and shrunk witness search.
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { dirname, relative, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { loadNpmModule } from "./bundle-npm.ts";
 import { analyze, CliError, type Analysis } from "./index.ts";
 import { CACHE_DIR } from "./names.ts";
 import type { Diagnostic, Range } from "./diagnostics.ts";
@@ -169,13 +168,7 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
   for (const [path, e] of emitted) {
     for (const spec of e.imports) {
       if (!spec.startsWith("npm:") || npm.has(spec)) continue;
-      const name = spec.slice(4);
-      let url = name;
-      try { url = pathToFileURL(createRequire(path).resolve(name)).href; } catch { /* fall back to Node resolution */ }
-      try { npm.set(spec, await import(url)); } catch (err) {
-        if ((err as { code?: string }).code === "ERR_MODULE_NOT_FOUND") throw new CliError(`cannot resolve '${spec}'`);
-        throw err;
-      }
+      npm.set(spec, (await loadNpmModule(path, spec)).mod);
     }
   }
 

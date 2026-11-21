@@ -17,9 +17,8 @@ import { loadNative, nativePathOf, nativeProgOf } from "./native.ts";
 import { loadWasm } from "./wasm.ts";
 import { explainCode, type ExplainEntry } from "./explain.ts";
 import { hasTestType, mutateFile, type MutateOptions, type MutateResult } from "./mutate.ts";
+import { loadNpmModule } from "./bundle-npm.ts";
 import { hasCap, show, type Capability, type Type } from "./types.ts";
-import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
 import * as rt from "../../runtime-js/src/index.ts";
 import { FakeAudio, FakeClock, FakeFs, MemoryLog, SeededRandom, TestAlloc, runMain, setNodeAudio } from "../../std/src/index.ts";
 import { createNodeAudio, stopAudioStreams } from "./audio-sdl.ts";
@@ -243,16 +242,13 @@ async function load(files: ParsedFile[], entryFile: string, tests: boolean, decl
   });
   const emitted = new Map(files.map((f) => [f.path, emitFile(f, displayPath(f.path), tests && f.path === entry, c?.keys as Map<never, string> | undefined, decls?.isolateEntries.get(f.path))]));
   const npm = new Map<string, unknown>();
+  const npmUrls: Record<string, string> = {};
   for (const [path, e] of emitted) {
     for (const spec of e.imports) {
       if (!spec.startsWith("npm:") || npm.has(spec)) continue;
-      const name = spec.slice(4);
-      let url = name;
-      try { url = pathToFileURL(createRequire(path).resolve(name)).href; } catch { /* shortcut: fall back to Node's own resolution from the compiler */ }
-      try { npm.set(spec, await import(url)); } catch (e) {
-        if ((e as { code?: string }).code === "ERR_MODULE_NOT_FOUND") throw new CliError(`cannot resolve '${spec}'`); // Q252
-        throw e;
-      }
+      const loaded = await loadNpmModule(path, spec);
+      npm.set(spec, loaded.mod);
+      npmUrls[spec] = loaded.url;
     }
   }
   // Q035: stack exhaustion is reported at the innermost source call found in the JS stack.
@@ -273,6 +269,7 @@ async function load(files: ParsedFile[], entryFile: string, tests: boolean, decl
     nativeProg: backend === "c" && native ? (nativeProgOf(native) ?? null) : null,
     wasmBytes: wasm ? wasm.bytes : null,
     wasmMeta: wasm ? c!.meta! : null,
+    npmUrls,
     rtName: RT, impName: IMP, exportsName: EXPORTS,
     framePattern: frame.source,
   });

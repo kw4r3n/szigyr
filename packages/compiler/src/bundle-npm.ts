@@ -3,6 +3,7 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { builtinModules, createRequire, stripTypeScriptTypes } from "node:module";
 import { dirname, extname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { CliError } from "./index.ts";
 
 export interface NpmBundleResult {
@@ -338,22 +339,38 @@ export function bundleNpmImports(
       },
     );
 
-    // Re-exports: `export { ... } from "spec";` and `export * from "spec";`
+    // Re-exports: `export { ... } from "spec";`, `export * from "spec";`, and `export * as ns from "spec";`
     out = out.replace(
-      /(^[ \t]*export\s+)(\*|\{[^}]*\})(\s+from\s+)(["'])([^"']+)\4([ \t]*;?)/gm,
+      /(^[ \t]*export\s+)(\*(?:\s+as\s+[A-Za-z_$][\w$]*)?|\{[^}]*\})(\s+from\s+)(["'])([^"']+)\4([ \t]*;?)/gm,
       (full, kw: string, clause: string, fromKw: string, _q: string, reqSpec: string, semi: string) => {
         const dep = ensureDep(absPath, reqSpec, origLabel);
         if (dep.modKind !== "cjs" && dep.modKind !== "json") {
           return `${kw}${clause}${fromKw}${JSON.stringify(dep.targetSpec)}${semi}`;
         }
-        if (clause.startsWith("{")) {
+        const trimmed = clause.trim();
+        if (trimmed.startsWith("*")) {
+          const nsMatch = /^\*\s+as\s+([A-Za-z_$][\w$]*)$/.exec(trimmed);
+          if (nsMatch) {
+            const tmp = `__cjs${cjsTmp++}`;
+            return `import ${tmp} from ${JSON.stringify(dep.targetSpec)};\nexport const ${nsMatch[1]} = ${tmp}${semi}`;
+          }
+          return full;
+        }
+        if (trimmed.startsWith("{")) {
           const tmp = `__cjs${cjsTmp++}`;
-          const items = clause.slice(1, -1).split(",").map((s) => s.trim()).filter(Boolean);
-          const decls = items.map((it) => {
+          const items = trimmed.slice(1, -1).split(",").map((s) => s.trim()).filter(Boolean);
+          const decls: string[] = [];
+          const reDefs: string[] = [];
+          for (const it of items) {
+            if (it === "default") { reDefs.push(`${tmp} as default`); continue; }
             const m = /^([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)$/.exec(it);
-            return m ? `${m[2]} = ${tmp}.${m[1]}` : `${it} = ${tmp}.${it}`;
-          });
-          return `import ${tmp} from ${JSON.stringify(dep.targetSpec)};\nexport const ${decls.join(", ")}${semi}`;
+            if (m) decls.push(m[1] === "default" ? `${m[2]} = ${tmp}` : `${m[2]} = ${tmp}.${m[1]}`);
+            else decls.push(`${it} = ${tmp}.${it}`);
+          }
+          const lines = [`import ${tmp} from ${JSON.stringify(dep.targetSpec)};`];
+          if (decls.length) lines.push(`export const ${decls.join(", ")}${semi}`);
+          if (reDefs.length) lines.push(`export { ${reDefs.join(", ")} }${semi}`);
+          return lines.join("\n");
         }
         return full;
       },
@@ -383,4 +400,35 @@ export function bundleNpmImports(
   }
 
   return { entries, files: written };
+}
+
+/** Unwraps bundled CJS markers or Node opaque CJS (`default`-only) namespaces to their exports object. */
+export function unwrapImportedNpm(mod: unknown): unknown {
+  if (!mod || typeof mod !== "object") return mod;
+  const rec = mod as Record<string, unknown>;
+  if (rec.__stsCjs) return rec.default;
+  const def = rec.default;
+  if (def !== null && (typeof def === "object" || typeof def === "function")) {
+    const keys = Object.keys(rec);
+    if (keys.every((k) => k === "default" || k === "module.exports")) return def;
+  }
+  return mod;
+}
+
+/** Loads an `"npm:<name>"` dependency for direct Node execution, preferring ESM entries and unwrapping opaque CJS. */
+export async function loadNpmModule(fromFile: string, spec: string): Promise<{ mod: unknown; url: string }> {
+  const name = spec.slice(4);
+  let url = name;
+  const esmHit = !isBuiltin(name) ? findPackageFile(fromFile, name, true) : undefined;
+  if (esmHit) {
+    url = pathToFileURL(esmHit).href;
+  } else {
+    try { url = pathToFileURL(createRequire(fromFile).resolve(name)).href; } catch { /* shortcut: fall back to Node's own resolution from the compiler */ }
+  }
+  try {
+    return { mod: unwrapImportedNpm(await import(url)), url };
+  } catch (e) {
+    if ((e as { code?: string }).code === "ERR_MODULE_NOT_FOUND") throw new CliError(`cannot resolve '${spec}'`); // Q252
+    throw e;
+  }
 }

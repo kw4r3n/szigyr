@@ -91,20 +91,29 @@ const { pathToFileURL } = require("node:url");
     }
     return undefined;
   });
+  const unwrapNpm = (mod) => {
+    if (!mod || typeof mod !== "object") return mod;
+    if (mod.__stsCjs) return mod.default;
+    const def = mod.default;
+    if (def !== null && (typeof def === "object" || typeof def === "function")) {
+      const ks = Object.keys(mod);
+      if (ks.every((k) => k === "default" || k === "module.exports")) return def;
+    }
+    return mod;
+  };
   const npm = new Map();
   for (const [path, e] of files) {
     for (const spec of e.imports) {
       if (!spec.startsWith("npm:") || npm.has(spec)) continue;
       const bundled = workerData.npmUrls && workerData.npmUrls[spec];
       if (bundled) {
-        const mod = await import(bundled);
-        npm.set(spec, mod && mod.__stsCjs ? mod.default : mod);
+        npm.set(spec, unwrapNpm(await import(bundled)));
         continue;
       }
       const name = spec.slice(4);
       let url = name;
       try { url = pathToFileURL(createRequire(path).resolve(name)).href; } catch { /* fall back to Node's own resolution */ }
-      npm.set(spec, await import(url));
+      npm.set(spec, unwrapNpm(await import(url)));
     }
   }
   const RUNTIME = { ...rt, FakeAudio: std.FakeAudio, FakeClock: std.FakeClock, SeededRandom: std.SeededRandom, MemoryLog: std.MemoryLog, FakeFs: std.FakeFs, TestAlloc: std.TestAlloc, ...(native ? { native } : {}) };
