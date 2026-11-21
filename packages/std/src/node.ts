@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
-import { cast, err, isTrap, ok, type Result } from "../../runtime-js/src/index.ts";
-import { ALLOC, type Alloc, type Audio, type AudioCallbackSpec, type AudioConfig, type AudioStream, type Clock, type Fs, type IoError, type Js, type JsError, type JsRef, type Log, type Random, type System } from "./types.ts";
+import { cast, err, isTrap, ok, readU8Slice, replaceU8Vec, spawnIsolate, type Result } from "../../runtime-js/src/index.ts";
+import { ALLOC, type Alloc, type Audio, type AudioCallbackSpec, type AudioConfig, type AudioStream, type Clock, type Fs, type IoError, type Js, type JsError, type JsRef, type Log, type Random, type Spawn, type System } from "./types.ts";
 
 export { ALLOC };
 
@@ -28,6 +28,21 @@ const ioError = (e: unknown): IoError => {
 export const nodeFs: Fs = {
   readText(path) { try { return ok(readFileSync(path, "utf8")); } catch (e) { return err(ioError(e)); } },
   writeText(path, text) { try { writeFileSync(path, text); return ok(null); } catch (e) { return err(ioError(e)); } },
+  readBytes(path, dst) {
+    try {
+      const raw = readFileSync(path);
+      if (raw.byteLength > 0xffffffff) return err({ code: "EFBIG", message: "file exceeds usize limit (4GiB)" });
+      replaceU8Vec(dst, raw);
+      return ok(raw.byteLength);
+    } catch (e) { return err(ioError(e)); }
+  },
+  writeBytes(path, data) {
+    try { writeFileSync(path, readU8Slice(data)); return ok(null); } catch (e) { return err(ioError(e)); }
+  },
+};
+
+export const nodeSpawn: Spawn = {
+  isolate: (path, name) => spawnIsolate(path, name),
 };
 
 const jsError = (e: unknown): JsError => ({
@@ -74,5 +89,5 @@ export function createSystem(
   stdout: (s: string) => void = (s) => void process.stdout.write(s),
   stderr: (s: string) => void = (s) => void process.stderr.write(s),
 ): System {
-  return { alloc: ALLOC, fs: nodeFs, clock: nodeClock, random: nodeRandom, log: createLog(stdout, stderr), js: nodeJs, audio: nodeAudio };
+  return { alloc: ALLOC, fs: nodeFs, clock: nodeClock, random: nodeRandom, log: createLog(stdout, stderr), js: nodeJs, spawn: nodeSpawn, audio: nodeAudio };
 }

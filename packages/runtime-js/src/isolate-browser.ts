@@ -52,7 +52,7 @@ export async function stopIsolates(): Promise<void> {
 }
 
 /** Worker-side entry runner: creates the Port over DedicatedWorkerGlobalScope and forwards traps. */
-export function isolateMainBrowser(f: (port: Port) => unknown, queued?: Envelope[]): void {
+export function isolateMainBrowser(f: (port: Port, alloc: { readonly kind: "alloc" }) => unknown, queued?: Envelope[]): void {
   const g = globalThis as unknown as {
     addEventListener(type: string, fn: (ev: MessageEvent) => void): void;
     postMessage(msg: unknown, transfer?: Transferable[]): void;
@@ -75,7 +75,7 @@ export function isolateMainBrowser(f: (port: Port) => unknown, queued?: Envelope
   const port = new Port(ch);
   void (async () => {
     try {
-      await f(port);
+      await f(port, { kind: "alloc" });
     } catch (e) {
       const t = asTrap(e);
       const ft: ForeignTrap = t ? { code: t.code, ...(t.pos ? { file: t.pos.file, line: t.pos.line, col: t.pos.col } : {}) } : { code: "T006", message: String(e) };

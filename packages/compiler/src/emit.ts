@@ -26,7 +26,7 @@ const P = `${RUNTIME_GLOBAL}_P`, AP = `${RUNTIME_GLOBAL}_ap`, ENS = `${RUNTIME_G
 // Synthetic parameters: user code inside the right side / ensures predicates must not see them.
 const O = `${RUNTIME_GLOBAL}_o`, KEY = `${RUNTIME_GLOBAL}_k`, V = `${RUNTIME_GLOBAL}_v`, R = `${RUNTIME_GLOBAL}_r`;
 /** Builtin namespaces that are runtime values (the rest are JS globals). */
-const RT_NAMESPACES = ["Vec", "Pool", "Arena", "Ring", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeAudio", "TestAlloc"];
+const RT_NAMESPACES = ["Vec", "Pool", "Arena", "Ring", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeSpawn", "FakeAudio", "TestAlloc"];
 const DROP_MODS = new Set<K>([K.ExportKeyword, K.ReadonlyKeyword, K.PrivateKeyword, K.PublicKeyword, K.ProtectedKeyword, K.DeclareKeyword, K.AbstractKeyword, K.OverrideKeyword]);
 const COMPOUND: Partial<Record<K, string>> = {
   [K.PlusEqualsToken]: "+", [K.MinusEqualsToken]: "-", [K.AsteriskEqualsToken]: "*",
@@ -591,8 +591,13 @@ export function emitFile(
 
   function call(e: ts.CallExpression): string {
     const callee = e.expression;
-    const iso = isolateCalls.get(e); // §15.2: the receiver is evaluated, then the runtime starts the isolate
-    if (iso) return `(${gen((callee as ts.PropertyAccessExpression).expression)}, ${RT}.spawnIsolate(${JSON.stringify(keyOf(iso.path))}, ${JSON.stringify(iso.name)}))`;
+    const iso = isolateCalls.get(e); // §15.2: receiver dispatch (nodeSpawn/browserSpawn or FakeSpawn)
+    if (iso) {
+      const p = callee as ts.PropertyAccessExpression;
+      const args = `${JSON.stringify(keyOf(iso.path))}, ${JSON.stringify(iso.name)}, ${gen(e.arguments[0]!)}`;
+      if (p.questionDotToken) return optional(gen(p.expression), false, (o) => `${o}.isolate(${args})`);
+      return `${gen(p.expression)}.isolate(${args})`;
+    }
     const ao = audioOpenCalls.get(e); // §15.5: pass callback JS fn reference + native callback id
     if (ao) {
       const p = callee as ts.PropertyAccessExpression;

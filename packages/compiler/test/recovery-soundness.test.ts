@@ -49,13 +49,14 @@ describe("P1 -> P2 recovery without crashing", () => {
 });
 
 describe("Fake types in type annotations", () => {
-  it("accepts FakeClock, SeededRandom, MemoryLog, FakeFs, FakeAudio in params, returns, locals, fields, and assigns to authorities", () => {
+  it("accepts FakeClock, SeededRandom, MemoryLog, FakeFs, FakeSpawn, FakeAudio in params, returns, locals, fields, and assigns to authorities", () => {
     const ds = checkSrc(`
 type Fakes = {
   readonly clock: FakeClock;
   readonly rng: SeededRandom;
   readonly log: MemoryLog;
   readonly fs: FakeFs;
+  readonly spawn: FakeSpawn;
   readonly audio: FakeAudio;
 };
 
@@ -63,12 +64,14 @@ function takeClock(c: Clock): f64 { return c.nowMs(); }
 function takeRandom(r: Random): f64 { return r.nextF64(); }
 function takeLog(l: Log): void { l.info("ok"); }
 function takeFs(f: Fs): void { const _r = f.readText("a"); }
+function takeSpawn(s: Spawn): void {}
 function takeAudio(a: Audio): void {}
 
 function makeClock(): FakeClock { return FakeClock.create(0); }
 function makeRandom(): SeededRandom { return SeededRandom.create(1); }
 function makeLog(): MemoryLog { return MemoryLog.create(); }
 function makeFs(): FakeFs { return FakeFs.create(); }
+function makeSpawn(): FakeSpawn { return FakeSpawn.create(); }
 function makeAudio(): FakeAudio { return FakeAudio.create(); }
 
 export function useAll(f: Fakes): f64 {
@@ -76,6 +79,7 @@ export function useAll(f: Fakes): f64 {
   const r: SeededRandom = makeRandom();
   const l: MemoryLog = makeLog();
   const fs: FakeFs = makeFs();
+  const sp: FakeSpawn = makeSpawn();
   const au: FakeAudio = makeAudio();
   takeClock(c);
   takeClock(f.clock);
@@ -85,6 +89,8 @@ export function useAll(f: Fakes): f64 {
   takeLog(f.log);
   takeFs(fs);
   takeFs(f.fs);
+  takeSpawn(sp);
+  takeSpawn(f.spawn);
   takeAudio(au);
   takeAudio(f.audio);
   return c.nowMs() + r.nextF64();

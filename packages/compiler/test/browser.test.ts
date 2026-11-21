@@ -346,9 +346,13 @@ describe.skipIf(!pw)("real Chromium browser verification (Playwright)", () => {
       `function oob(): f32 {`,
       `  panic("boom");`,
       `}`,
-      `async function workerOk(port: Port<f32, Vec<f32>>): Promise<void> {`,
+      `async function workerOk(port: Port<f32, Vec<f32>>, alloc: Alloc): Promise<void> {`,
       `  const v = await port.recv();`,
-      `  if (v !== null) { port.send(sumVec(v)); }`,
+      `  if (v !== null) {`,
+      `    const tmp = Vec.create<f32>(alloc, 1);`,
+      `    tmp.push(sumVec(v));`,
+      `    port.send(tmp[0]);`,
+      `  }`,
       `}`,
       `async function workerTrap(port: Port<i32, i32>): Promise<void> {`,
       `  await port.recv();`,
@@ -360,7 +364,11 @@ describe.skipIf(!pw)("real Chromium browser verification (Playwright)", () => {
       `  v.push(f32(1.5)); v.push(f32(2.5)); v.push(f32(3));`,
       `  p.send(v);`,
       `  const ans = await p.recv();`,
-      `  if (ans !== null) sys.log.info(\`sum=\${ans}\`);`,
+      `  const b = Vec.create<u8>(sys.alloc, 2);`,
+      `  const rb = sys.fs.readBytes("x", b);`,
+      `  const wb = sys.fs.writeBytes("x", b);`,
+      `  const fsCode = rb.kind === "err" && wb.kind === "err" ? \`\${rb.error.code}:\${wb.error.code}\` : "ok";`,
+      `  if (ans !== null) sys.log.info(\`sum=\${ans};fs=\${fsCode}\`);`,
       `  p.close();`,
       `}`,
       `export async function testTrap(sys: System): Promise<void> {`,
@@ -398,7 +406,7 @@ describe.skipIf(!pw)("real Chromium browser verification (Playwright)", () => {
         return { okRes, trapRes };
       })()`) as { okRes: { stdout: string; trap: unknown }; trapRes: { trap: { code: string; line: number } | null } };
       expect(r1.okRes.trap).toBeNull();
-      expect(r1.okRes.stdout).toBe("sum=7\n");
+      expect(r1.okRes.stdout).toBe("sum=7;fs=ENOSYS:ENOSYS\n");
       expect(r1.trapRes.trap).not.toBeNull();
       expect(r1.trapRes.trap!.code).toBe("T006");
       expect(r1.trapRes.trap!.line).toBe(8);

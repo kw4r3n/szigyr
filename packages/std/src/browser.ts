@@ -1,8 +1,8 @@
 // Browser standard library (zero `node:*` imports; Q282, Q283, Q285).
 import {
-  Arena, Pool, RingRx, RingTx, Vec, asTrap, capturing, cast, err, isTrap, noteIsolateTrap, ok, ringPushRaw, stopIsolates, takeIsolateTrap, type Pos, type Result, type RingShared, type WasmMeta,
+  Arena, Pool, RingRx, RingTx, Vec, asTrap, capturing, cast, err, isTrap, noteIsolateTrap, ok, ringPushRaw, spawnIsolate, stopFakeIsolates, stopIsolates, takeIsolateTrap, type Pos, type Result, type RingShared, type WasmMeta,
 } from "../../runtime-js/src/browser.ts";
-import { ALLOC, type Audio, type AudioCallbackSpec, type AudioConfig, type AudioStream, type Clock, type Fs, type IoError, type Js, type JsError, type JsRef, type Log, type Random, type System } from "./types.ts";
+import { ALLOC, type Audio, type AudioCallbackSpec, type AudioConfig, type AudioStream, type Clock, type Fs, type IoError, type Js, type JsError, type JsRef, type Log, type Random, type Spawn, type System } from "./types.ts";
 
 export * from "./types.ts";
 export * from "./fake.ts";
@@ -30,6 +30,12 @@ export const browserRandom: Random = {
 export const browserFs: Fs = {
   readText: () => err({ code: "ENOSYS", message: "Fs is not available in browser" }),
   writeText: () => err({ code: "ENOSYS", message: "Fs is not available in browser" }),
+  readBytes: () => err({ code: "ENOSYS", message: "Fs is not available in browser" }),
+  writeBytes: () => err({ code: "ENOSYS", message: "Fs is not available in browser" }),
+};
+
+export const browserSpawn: Spawn = {
+  isolate: (path, name) => spawnIsolate(path, name),
 };
 
 const jsError = (e: unknown): JsError => ({ code: e instanceof Error ? e.name : "Error", message: e instanceof Error ? e.message : String(e) });
@@ -216,6 +222,7 @@ export function createBrowserSystem(opts: BrowserRunOptions): System {
     random: browserRandom,
     log: createBrowserLog(opts.stdout, opts.stderr),
     js: browserJs,
+    spawn: browserSpawn,
     audio: createBrowserAudio(opts),
   };
 }
@@ -234,6 +241,7 @@ export async function runMainBrowser(main: (sys: System) => void | Promise<void>
     if (!t) throw e;
     ownTrap = { code: t.code, file: t.pos?.file ?? "", line: t.pos?.line ?? 0, col: t.pos?.col ?? 0 };
   } finally {
+    stopFakeIsolates();
     await Promise.all([stopIsolates(), stopBrowserAudioStreams()]);
   }
   const f = takeIsolateTrap();

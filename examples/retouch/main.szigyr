@@ -14,6 +14,7 @@ import {
   createDemoSession,
   createSession,
   exportPpm,
+  frequencyWorker,
   parsePreset,
   serializePreset,
 } from "./session.szigyr";
@@ -598,15 +599,47 @@ test("RetouchSession undo/redo, presets, FakeFs/Clock/Log, exports, and dispose"
 
 test("runFrequencyInWorker matches main-thread frequencySeparatePass bit-for-bit", async (t: Test) => {
   const sysAlloc = TestAlloc.create();
-  // Create a session manually and verify parity vs main-thread applyTool
+  const fakeSpawn = FakeSpawn.create();
   const sessWorker = createDemoSession(sysAlloc, 10, 10);
   const sessMain = createDemoSession(sysAlloc, 10, 10);
+  const beforeStats = sessWorker.stats();
   const params: FilterParams = { blurRadius: 2, detailGain: f32(0.5), smoothAmount: f32(0.8), warmth: f32(0.15) };
   t.eq(sessMain.applyTool(sysAlloc, { kind: "frequency", params }), true);
-  // Note: Spawn requires System (not in Fake/Test); worker parity is also verified via `szigyr run` & Playwright E2E.
   const mainStats = sessMain.stats();
-  t.eq(mainStats.pixels, usize(100));
-  t.ok(mainStats.fnv64 !== sessWorker.stats().fnv64);
+
+  // Populate redo first to verify runFrequencyInWorker clears redo and pushes undo.
+  t.eq(sessWorker.applyTool(sysAlloc, { kind: "frequency", params }), true);
+  t.eq(sessWorker.undo(), true);
+  t.eq(sessWorker.redoDepth(), usize(1));
+  const wRes = await sessWorker.runFrequencyInWorker(fakeSpawn, sysAlloc, params);
+  t.eq(wRes.kind, "ok");
+  if (wRes.kind === "ok") {
+    t.eq(wRes.value.fnv64, mainStats.fnv64);
+    t.eq(wRes.value.lumaSum, mainStats.lumaSum);
+    t.eq(wRes.value.pixels, usize(100));
+  }
+  t.eq(sessWorker.undoDepth(), usize(1));
+  t.eq(sessWorker.redoDepth(), usize(0));
+  t.eq(sessWorker.undo(), true);
+  t.eq(sessWorker.stats().fnv64, beforeStats.fnv64);
+  t.eq(sessWorker.applyTool(sysAlloc, { kind: "frequency", params }), true);
+  t.eq(sessWorker.stats().fnv64, mainStats.fnv64);
+
+  // Small scratch arena propagates EINVAL cleanly without losing session buffers.
+  const tiny = createSession(sysAlloc, 8, 8, 0, makeSolidRgba(t, sysAlloc, 8, 8, 12, 34, 56, 255));
+  const failParams: FilterParams = { blurRadius: 64, detailGain: f32(1), smoothAmount: f32(1), warmth: f32(0) };
+  const badRes = await tiny.runFrequencyInWorker(fakeSpawn, sysAlloc, failParams);
+  t.eq(badRes.kind, "err");
+  if (badRes.kind === "err") t.eq(badRes.error.code, "EINVAL");
+  t.eq(tiny.stats().pixels, usize(64));
+
+  // Direct close without sending reaches frequencyWorker's null-job exit cleanly.
+  const idle = fakeSpawn.isolate(frequencyWorker);
+  idle.close();
+  const idleReply = await idle.recv();
+  t.ok(idleReply === null);
+
+  tiny.dispose();
   sessWorker.dispose();
   sessMain.dispose();
 });

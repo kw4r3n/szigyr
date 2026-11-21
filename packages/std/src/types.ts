@@ -1,4 +1,4 @@
-import type { Result, Slice, TypeDesc, CastError } from "../../runtime-js/src/index.ts";
+import type { Port, Result, Slice, TypeDesc, CastError, Vec } from "../../runtime-js/src/index.ts";
 
 export interface IoError { readonly code: string; readonly message: string }
 /** Q036: code is the JS exception's name. */
@@ -11,6 +11,11 @@ export interface Random { nextF64(): number; nextU32(): number }
 export interface Fs {
   readText(path: string): Result<string, IoError>;
   writeText(path: string, text: string): Result<null, IoError>;
+  readBytes(path: string, dst: Vec<number>): Result<number, IoError>;
+  writeBytes(path: string, data: Slice<number> | Vec<number>): Result<null, IoError>;
+}
+export interface Spawn {
+  isolate(path: string, name: string, fn: (port: Port, alloc: Alloc) => unknown): Port;
 }
 export interface Alloc { readonly kind: "alloc" }
 export const ALLOC: Alloc = { kind: "alloc" };
@@ -41,4 +46,4 @@ export interface Js {
   fn(f: (args: JsRef[]) => JsRef): JsRef;
 }
 /** Net is reserved. */
-export interface System { readonly alloc: Alloc; readonly fs: Fs; readonly clock: Clock; readonly random: Random; readonly log: Log; readonly js: Js; readonly audio: Audio }
+export interface System { readonly alloc: Alloc; readonly fs: Fs; readonly clock: Clock; readonly random: Random; readonly log: Log; readonly js: Js; readonly spawn: Spawn; readonly audio: Audio }

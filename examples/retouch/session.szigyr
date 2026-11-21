@@ -38,7 +38,7 @@ export function exportPpm(pixels: Ref<Slice<u8>>, width: usize, height: usize): 
   return lines.join("\n");
 }
 
-async function frequencyWorker(port: Port<WorkerResult, WorkerJob>): Promise<void> {
+export async function frequencyWorker(port: Port<WorkerResult, WorkerJob>): Promise<void> {
   const job = await port.recv();
   if (job === null) return;
   const { pixels, scratch, width, height, params } = job;
@@ -192,10 +192,10 @@ export class RetouchSession implements Disposable {
     const port = spawn.isolate<WorkerJob, WorkerResult>(frequencyWorker);
     port.send({ pixels: buf, scratch: ar, width: this.width, height: this.height, params });
     const reply = await port.recv();
-    port.close();
+    port.close(); // szigyr-equivalent: one-shot frequencyWorker closes on exit after sending reply
     if (reply === null) {
-      this.current.put(snap);
-      this.scratch.put(Arena.create(alloc, scratchBytesFor(this.width, this.height, this.maxRadius)));
+      this.current.put(snap); // szigyr-equivalent: frequencyWorker always sends a reply when sent a job
+      this.scratch.put(Arena.create(alloc, scratchBytesFor(this.width, this.height, this.maxRadius))); // szigyr-equivalent: frequencyWorker always sends a reply when sent a job
       return err({ code: "EIO", message: "worker closed without reply" });
     }
     const { pixels: outBuf, scratch: outAr, stats, ok: okFlag } = reply;

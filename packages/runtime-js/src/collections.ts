@@ -118,6 +118,13 @@ export class Slice<T = unknown> {
     const b: object = o.owner ?? o.buf;
     return a === b && Math.max(this.off, o.off) < Math.min(this.off + this.length, o.off + o.length);
   }
+  /** Internal host helper for `Fs.writeBytes`. */
+  readBytes(): Uint8Array {
+    if (this.buf instanceof Uint8Array && !this.cod) return this.buf.subarray(this.off, this.off + this.length);
+    const out = new Uint8Array(this.length);
+    for (let i = 0; i < this.length; i++) out[i] = Number(this.get(i));
+    return out;
+  }
 }
 
 /**
@@ -246,6 +253,30 @@ export class Vec<T = unknown> {
     v.len = w.buf!.byteLength / (ta as unknown as { BYTES_PER_ELEMENT: number }).BYTES_PER_ELEMENT;
     return v;
   }
+  /** Internal host helper for `Fs.writeBytes`. */
+  readBytes(): Uint8Array {
+    if (this.elem === "u8") return (this.buf as Uint8Array).subarray(0, this.len);
+    const out = new Uint8Array(this.len);
+    for (let i = 0; i < this.len; i++) out[i] = Number(this.get(i));
+    return out;
+  }
+  /** Internal host helper for `Fs.readBytes`. */
+  replaceBytes(bytes: Uint8Array): void {
+    if (this.elem === "other") this.adopt("u8");
+    const n = bytes.length;
+    if ((this.buf as Uint8Array).length < n) this.buf = new Uint8Array(Math.max(n, 4)) as Buf<T>;
+    (this.buf as Uint8Array).set(bytes);
+    this.len = n;
+  }
+}
+
+/** Internal host helper for `Fs.writeBytes` (not exposed in compiler builtins). */
+export function readU8Slice(src: Vec<number> | Slice<number>): Uint8Array {
+  return src instanceof Slice ? src.readBytes() : src.readBytes();
+}
+/** Internal host helper for `Fs.readBytes` (not exposed in compiler builtins). */
+export function replaceU8Vec(dst: Vec<number>, bytes: Uint8Array): void {
+  dst.replaceBytes(bytes);
 }
 
 /** a[i] / a[i] = x for Array, Vec and Slice (T002). */

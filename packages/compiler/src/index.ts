@@ -20,7 +20,7 @@ import { hasTestType, mutateFile, type MutateOptions, type MutateResult } from "
 import { loadNpmModule } from "./bundle-npm.ts";
 import { hasCap, show, type Capability, type Type } from "./types.ts";
 import * as rt from "../../runtime-js/src/index.ts";
-import { FakeAudio, FakeClock, FakeFs, MemoryLog, SeededRandom, TestAlloc, runMain, setNodeAudio } from "../../std/src/index.ts";
+import { FakeAudio, FakeClock, FakeFs, FakeSpawn, MemoryLog, SeededRandom, TestAlloc, runMain, setNodeAudio } from "../../std/src/index.ts";
 import { createNodeAudio, stopAudioStreams } from "./audio-sdl.ts";
 
 setNodeAudio(createNodeAudio());
@@ -290,7 +290,7 @@ async function load(files: ParsedFile[], entryFile: string, tests: boolean, decl
 }
 
 /** The runtime object generated code receives: runtime-js plus the std fakes. */
-const RUNTIME = { ...rt, FakeAudio, FakeClock, SeededRandom, MemoryLog, FakeFs, TestAlloc };
+const RUNTIME = { ...rt, FakeAudio, FakeClock, SeededRandom, MemoryLog, FakeFs, FakeSpawn, TestAlloc };
 
 /** D060: the stack locator, the test registry and the unhandled-rejection sink are per process, so runs in one process are queued. */
 let queue: Promise<unknown> = Promise.resolve();
@@ -347,6 +347,7 @@ async function runNow(entryFile: string, backend?: Backend, analysis?: Analysis)
     finish();
     return p as void;
   });
+  rt.stopFakeIsolates();
   await Promise.all([rt.stopIsolates(), stopAudioStreams()]); // Q207, §15.5: main ending stops isolates and open audio streams
   // §15.4 (3): an isolate record may have landed after main trapped (stopIsolates lets messages land), so it does not beat main's own.
   const t = rt.takeIsolateTrap();
@@ -367,7 +368,7 @@ async function runTestFileNow(entryFile: string, backend?: Backend, analysis?: A
   if (e4009) return { diagnostics: [e4009], results: [] };
   rt.clearTests();
   await loadChecked(a.files, entryFile, true, a.decls, backend);
-  try { return { diagnostics: [], results: await rt.runTests() }; } finally { await stopAudioStreams(); rt.clearTests(); }
+  try { return { diagnostics: [], results: await rt.runTests() }; } finally { rt.stopFakeIsolates(); await stopAudioStreams(); rt.clearTests(); }
 }
 
 /** `sts mutate`: JS-only mutation testing with diff cache and witness search (SPEC §16.2, Q275–Q277). */

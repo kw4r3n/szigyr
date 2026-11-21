@@ -12,7 +12,7 @@ export const GEN_ARITY: Record<GenName, number> = {
 };
 /** Opaque builtin types: authorities (§7.1), Test, JsRef, the fakes (Q038). */
 export const AUTHORITIES = ["System", "Alloc", "Fs", "Clock", "Random", "Log", "Js", "Ffi", "Spawn", "Audio"] as const; // Ffi: §14.2; Spawn: §15.2; Audio: §15.5
-export const OPAQUE_NAMES = new Set<string>([...AUTHORITIES, "JsRef", "Test", "AudioStream", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeAudio"]);
+export const OPAQUE_NAMES = new Set<string>([...AUTHORITIES, "JsRef", "Test", "AudioStream", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeSpawn", "FakeAudio"]);
 
 export interface Field { name: string; type: Type; readonly: boolean }
 /** Q127: conditions a type parameter takes on from the positions it is used in, checked on every instantiation. */
@@ -159,7 +159,7 @@ const sameFields = (a: Field[], b: Field[]): boolean =>
   a.length === b.length && a.every((f, i) => { const g = b[i]!; return f.name === g.name && f.readonly === g.readonly && same(f.type, g.type); });
 
 /** Fakes assignable to their authority (Q020-10, Q038). */
-const FAKE_OF: Record<string, string> = { FakeClock: "Clock", SeededRandom: "Random", MemoryLog: "Log", FakeFs: "Fs", FakeAudio: "Audio" };
+const FAKE_OF: Record<string, string> = { FakeClock: "Clock", SeededRandom: "Random", MemoryLog: "Log", FakeFs: "Fs", FakeSpawn: "Spawn", FakeAudio: "Audio" };
 
 /** Q020. `arg` enables the argument-position conversions (Vec -> Slice). */
 export function assignable(s: Type, t: Type, arg = false): boolean {

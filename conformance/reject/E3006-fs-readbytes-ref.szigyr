@@ -1,0 +1,5 @@
+// expect: E3006 @ 4:21
+// stage: 2
+function f(fs: Fs, dst: Ref<Vec<u8>>): void {
+  fs.readBytes("a", dst);
+}

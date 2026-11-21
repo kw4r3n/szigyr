@@ -1,0 +1,5 @@
+// expect: E3008 @ 4:21
+// stage: 2
+function f(fs: Fs, alloc: Alloc): void {
+  fs.readBytes("a", Vec.create<u8>(alloc, 0));
+}

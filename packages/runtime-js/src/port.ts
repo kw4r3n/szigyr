@@ -66,6 +66,7 @@ export interface Channel {
   onMessage(f: (msg: Envelope) => void): void;
   onClose(f: () => void): void;
   close(): void;
+  onWait?(): void;
 }
 
 /** §15.2: a Port<S, R> (the type parameters live in the checker; the runtime moves plain values). */
@@ -81,6 +82,7 @@ export class Port {
     ch.onMessage((m) => this.onEnvelope(m));
     ch.onClose(() => this.onPeerGone());
   }
+  get waiting(): boolean { return this.waiters.length > 0 && this.queue.length === 0 && !this.closed && !this.peerClosed; }
   send(x: unknown): void {
     if (this.closed || this.peerClosed) return; // §15.2: a send on a closed port discards the value
     const transfer: object[] = [];
@@ -90,7 +92,7 @@ export class Port {
   recv(): Promise<unknown> {
     const p = this.queue.length ? Promise.resolve(this.queue.shift())
       : this.peerClosed || this.closed ? Promise.resolve(null)
-      : new Promise<unknown>((res) => this.waiters.push(res));
+      : new Promise<unknown>((res) => { this.waiters.push(res); this.ch.onWait?.(); });
     // §15.4 (2): a foreign trap surfaces before the next task; a recv resumption is one, on both backends
     return p.then((v) => task(v));
   }
@@ -135,3 +137,15 @@ let isolateProgram: IsolateProgram | undefined;
 /** The host (the compiler's loader) installs the program a `spawnIsolate` call should load. */
 export function setIsolateProgram(p: IsolateProgram | undefined): void { isolateProgram = p; }
 export function getIsolateProgram(): IsolateProgram | undefined { return isolateProgram; }
+
+const fakeIsolateClosers = new Set<() => void>();
+/** Registers an in-process FakeSpawn isolate session so test/main exit can close dangling listeners. */
+export function registerFakeIsolate(close: () => void): () => void {
+  fakeIsolateClosers.add(close);
+  return () => { fakeIsolateClosers.delete(close); };
+}
+/** Closes all active in-process FakeSpawn sessions and clears their timers. */
+export function stopFakeIsolates(): void {
+  for (const close of [...fakeIsolateClosers]) close();
+  fakeIsolateClosers.clear();
+}

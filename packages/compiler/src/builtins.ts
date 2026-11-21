@@ -16,7 +16,7 @@ export const GLOBAL_AUTHORITIES = new Set([
 ]);
 
 /** Namespace objects (Q034). */
-export const NAMESPACES = new Set(["Math", "Number", "JSON", "String", "Promise", "Vec", "Pool", "Arena", "Ring", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeAudio", "TestAlloc", "DetMath", "Ptr", "CHandle"]);
+export const NAMESPACES = new Set(["Math", "Number", "JSON", "String", "Promise", "Vec", "Pool", "Arena", "Ring", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeSpawn", "FakeAudio", "TestAlloc", "DetMath", "Ptr", "CHandle"]);
 /** Builtin functions handled by the checker (§12). */
 export const BUILTIN_FUNCTIONS = new Set([...NUM_NAMES, "wrapAdd", "wrapSub", "wrapMul", "divTrunc", "rem", "ok", "err", "panic", "cast", "requires", "ensures", "invariant", "test", "forAll", "cfn"]);
 /** §13: the identifier-like names it reserves (declaring or referencing one is E1000 / E2000, Q231). */
@@ -37,7 +37,7 @@ export const NONDET_GEN: Record<GenName, boolean> = {
 };
 /** The opaque ones (keys: OPAQUE_NAMES): the authorities, `JsRef`, `AudioStream` and the fakes, not `Test`. */
 export const NONDET_OPAQUE: Record<string, boolean> = {
-  ...Object.fromEntries(AUTHORITIES.map((a) => [a, true])), JsRef: true, Test: false, AudioStream: true, FakeClock: true, SeededRandom: true, MemoryLog: true, FakeFs: true, FakeAudio: true,
+  ...Object.fromEntries(AUTHORITIES.map((a) => [a, true])), JsRef: true, Test: false, AudioStream: true, FakeClock: true, SeededRandom: true, MemoryLog: true, FakeFs: true, FakeSpawn: true, FakeAudio: true,
 };
 
 /** Builtin type names (§12) that are not generic constructors. Struct and Result are handled by the resolver. */
@@ -92,7 +92,13 @@ const mapValues = (o: Members, f: (x: Member) => Member): Members => Object.from
 
 const LOG: Members = { info: m(WR, [STR], VOID), warn: m(WR, [STR], VOID), error: m(WR, [STR], VOID) };
 const RANDOM: Members = { nextF64: m(WR, [], F64), nextU32: m(WR, [], num("u32")) };
-const FS: Members = { readText: m(RD, [STR], ioResult(STR)), writeText: m(WR, [STR, STR], ioResult(NULL)) };
+const FS: Members = {
+  readText: m(RD, [STR], ioResult(STR)),
+  writeText: m(WR, [STR, STR], ioResult(NULL)),
+  readBytes: m(WR, [STR, gen("Mut", gen("Vec", num("u8")))], ioResult(USIZE)),
+  writeBytes: m(WR, [STR, gen("Ref", gen("Slice", num("u8")))], ioResult(NULL)),
+};
+const SPAWN: Members = { isolate: m(PORT_FX, [UNKNOWN], VOID) };
 const AUDIO: Members = { open: mo(m(PORT_FX, [AUDIO_CONFIG_RECORD, UNKNOWN, UNKNOWN], gen("Promise", ioResult(opaque("AudioStream"))))) };
 
 /** Members of an opaque builtin type. */
@@ -108,7 +114,7 @@ export function opaqueMembers(name: string): Members {
     Ffi: () => ({}), // §14: the Ffi value itself has no members; it is only passed to C functions
     // §15.2: `isolate` never reaches callSig; expr.ts checks the call itself (E2011) because the
     // argument is a function *name*, not a value. This entry only lets member() resolve the name.
-    Spawn: () => ({ isolate: m(PORT_FX, [UNKNOWN], VOID) }),
+    Spawn: () => SPAWN,
     // §15.5: `open` is checked in expr.ts (audioOpenCall, E2013) because `render` is a function name.
     Audio: () => AUDIO,
     AudioStream: () => ({ sampleRate: prop(num("u32")), channels: prop(num("u32")), close: mo(m(PORT_FX, [], gen("Promise", VOID))), disposeAsync: mo(m(PORT_FX, [], gen("Promise", VOID))), isOpen: mo(m(RD, [], BOOL)) }),
@@ -146,6 +152,7 @@ export function opaqueMembers(name: string): Members {
     SeededRandom: () => RANDOM,
     MemoryLog: () => ({ ...LOG, entries: m(RD, [], gen("Array", record([ro("level", { k: "union", members: [lit("info"), lit("warn"), lit("error")] }), ro("message", STR)]))) }),
     FakeFs: () => FS,
+    FakeSpawn: () => SPAWN,
     FakeAudio: () => ({ ...AUDIO, renderFrames: mo(m(PORT_FX, [USIZE], gen("Array", num("f32")))) }),
   };
   return Object.hasOwn(table, name) ? table[name]!() : {};
@@ -303,6 +310,7 @@ export function nsMembers(ns: string): Record<string, Member | "variadic"> {
     case "SeededRandom": return { create: mo(m(RD, [num("u32")], opaque("SeededRandom"))) };
     case "MemoryLog": return { create: mo(m(RD, [], opaque("MemoryLog"))) };
     case "FakeFs": return { create: mo(m(RD, [], opaque("FakeFs"))) };
+    case "FakeSpawn": return { create: mo(m(RD, [], opaque("FakeSpawn"))) };
     case "FakeAudio": return { create: mo(m(RD, [], opaque("FakeAudio"))) };
     case "TestAlloc": return { create: mo(m(RD, [], opaque("Alloc"))) };
   }

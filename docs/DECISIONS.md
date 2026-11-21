@@ -847,3 +847,19 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - **仕様・ロードマップ更新と検証**:
   - `docs/SPEC.md`（§10.3・§15.5）および `docs/ROADMAP.md`（段階 5 全項目を `[x]` に更新）を反映し、`packages/compiler/test/browser.test.ts` でビルドオプション／`E4009` 検査および実 Chromium（Playwright）での `AudioWorklet` + Wasm 波形出力（COI SAB・非 COI `MessagePort` 両経路）・オーディオコールバック内 `T002` トラップ＋行番号表示・Web Worker `Spawn` + Wasm `Vec` + `T006` トラップ伝搬・`--mode=lib` 直接呼び出しを検証。
 - **確かめ方**: `pnpm typecheck` 通過、`pnpm verify:conformance` 通過（`accept=83 reject=652 run=199`、`PASSING.txt` 934 件）、`rtk bypass pnpm vitest run --maxWorkers=1 --reporter=basic` 通過（29 ファイル 314/314、`browser.test.ts` 7/7 の実 Chromium Playwright テストを含む）、`rtk bypass pnpm vitest run --config vitest.conformance.config.ts --maxWorkers=2 --reporter=basic` 通過（1 ファイル 1,263/1,263）、`pnpm bench`（`dot_f32` 1.01x、`saxpy_f32` 1.20x、`prefix_i32` 1.31x、`stencil_f64` 1.09x、`particles_aos_f32` 1.25x、すべて ≦ 1.5x）を実行して確認。
+
+## D173: `Fs` バイナリ I/O、`FakeSpawn`、isolate の `Alloc` 供給、`Spawn`/`Port` の `Mutatable` 化（2026-11-21）
+
+- **関連**: Q286〜Q288、SPEC §7・§8・§16.2
+- **`Fs` バイナリ I/O（Q286）**:
+  - `Fs`（および `FakeFs`）に `readBytes(path: string, dst: Mut<Vec<u8>>): Result<usize, IoError>`（成功時は `dst` を上書き置換して `ok(n)`、失敗時および `> 2^32-1` バイトの `EFBIG` は `dst` 未変更のまま `err`）と `writeBytes(path: string, data: Ref<Slice<u8>>): Result<null, IoError>` を追加。`Result<Owned, E>` 解禁（`E3007` 緩和）は見送り。
+  - Node（`nodeFs`）は `readFileSync` / `writeFileSync` + `readU8Slice` / `replaceU8Vec`（`packages/runtime-js/src/collections.ts`）、ブラウザ（`browserFs`）は `ENOSYS`、`FakeFs` は内部を `Map<string, Uint8Array>` に統一して UTF-8 で `readText`/`writeText` と相互運用するよう更新。
+- **`FakeSpawn`、isolate への `Alloc` 供給、`Mutatable` 拡張（Q287）**:
+  - `packages/compiler/src/emit.ts` の `spawn.isolate` をレシーバディスパッチ（`nodeSpawn` / `browserSpawn` / `FakeSpawn`）へ変更し、`FakeSpawn`（`FakeSpawn.create()`、`Spawn` に代入可能・型注釈可）を `packages/std/src/fake.ts` に追加。同一プロセス内で `Port` の `packValue`/`unpackValue` 境界を介した非同期実行、トラップ転送、`FakeSpawn` のデッドロック検知（双方が `Port.recv()` 待ち時に `T006` で即復帰）を実装。
+  - isolate エントリのシグネチャに 2 引数 `(port: Port<R, S>, alloc: Alloc) => void | Promise<void>` を追加許可し（1 引数と後方互換、呼び出し側 `spawn.isolate(f)` は据え置き）、`isolate.ts` / `isolate-browser.ts` / `FakeSpawn` すべてが第 2 引数に `ALLOC` を渡すよう更新。
+  - `determinism.ts` の `isMutatable` から `Spawn`・`Port` の除外を外し、`mutate.ts` に `noteIsolateTrap`/`takeIsolateTrap` 検査・テストごとの非同期タイムアウト（`max(500, durationMs * 20)` ms）と `stopFakeIsolates()` クリーンアップを追加。`examples/retouch/main.szigyr` の Worker パスも `FakeSpawn` 単体テストおよび全ミューテーション検査でカバー。
+- **診断優先順（Q288）**:
+  - `E4002` と `E2002` の優先順は現行維持。
+- **確かめ方**:
+  - 適合テスト 6 件追加（`conformance/run/258-fs-binary-io.szigyr`、`259-isolate-alloc-and-fake-spawn.szigyr`、`conformance/reject/E2011-isolate-bad-second-param.szigyr`、`E3006-fs-readbytes-ref.szigyr`、`E3008-fs-readbytes-temp.szigyr`、`E6002-fs-readbytes-in-contract.szigyr`）。
+  - `pnpm typecheck` 通過、`pnpm conformance:update-passing`・`pnpm verify:conformance` 通過（`accept=84 reject=637 run=212`、`PASSING.txt` 933 件）、`pnpm test` 通過（43 ファイル 429/429、`std.test.ts`・`builtins.test.ts`・`recovery-soundness.test.ts`・`mutate.test.ts`・`browser.test.ts` Chromium 実機・`retouch-example.test.ts` 含む）、`rtk bypass pnpm conformance` 通過（1 ファイル 1,284/1,284、JS/C/Wasm 各バックエンド）。

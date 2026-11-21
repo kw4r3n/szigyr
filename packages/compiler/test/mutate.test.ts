@@ -185,7 +185,7 @@ test("sound", (t: Test) => {
 });
 
 describe("mutate: target selection & C-only mixed files (Q275)", () => {
-  it("selects Pure + Mutatable fns and class methods (Alloc/Log/callbacks) and skips System/Port/Ffi as not-mutatable", async () => {
+  it("selects Pure + Mutatable fns and class methods (Alloc/Log/Spawn/Port/callbacks) and skips System/Js/Ffi as not-mutatable", async () => {
     const src = `function pureAdd(a: i32, b: i32): i32 {
   return a + b;
 }
@@ -210,13 +210,22 @@ class Acc {
     return this.v;
   }
 }
+async function withPort(p: Port<i32, i32>): Promise<void> {
+  const x = await p.recv();
+  if (x !== null) p.send(x + 1);
+}
+async function withSpawn(sp: Spawn, x: i32): Promise<i32> {
+  const p = sp.isolate(withPort);
+  p.send(x);
+  const y = await p.recv();
+  p.close();
+  return y ?? -1;
+}
 function withSys(sys: System): void {
   sys.log.info("skip");
 }
-function withPort(p: Port<i32, i32>): void {
-  p.close();
-}
-test("all", (t: Test) => {
+function withJs(j: Js): void {}
+test("all", async (t: Test) => {
   t.eq(pureAdd(2, 3), 5);
   const log = MemoryLog.create();
   t.eq(withLog(log, 4), 5);
@@ -224,6 +233,7 @@ test("all", (t: Test) => {
   t.eq(withCb((x: i32) => x, 1), 2);
   const acc = new Acc(10);
   t.eq(acc.add(5), 15);
+  t.eq(await withSpawn(FakeSpawn.create(), 7), 8);
 });
 `;
     const { file, cacheFile } = tmpFile("select.szigyr", src);
@@ -231,10 +241,10 @@ test("all", (t: Test) => {
     expect(res.diagnostics).toEqual([]);
     expect(res.baselineFailure).toBeNull();
     const fns = new Set(res.mutants.map((m) => m.fn));
-    expect(fns).toEqual(new Set(["pureAdd", "withLog", "withAlloc", "withCb", "Acc.add"]));
+    expect(fns).toEqual(new Set(["pureAdd", "withLog", "withAlloc", "withCb", "Acc.add", "withPort", "withSpawn"]));
     expect(res.summary.skipped).toEqual([
       { fn: "withSys", reason: "not-mutatable" },
-      { fn: "withPort", reason: "not-mutatable" },
+      { fn: "withJs", reason: "not-mutatable" },
     ]);
   });
 
@@ -946,5 +956,42 @@ test("calc", (t: Test) => {
     ]);
     expect(r.mutants.some((m) => m.fn === "clockFn")).toBe(true);
     expect(r.mutants.every((m) => m.range.start.line !== 14)).toBe(true);
+  });
+
+  it("mutates 2-param isolate workers via FakeSpawn and kills send-deletion deadlocks quickly", async () => {
+    const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-fakespawn-mut-`));
+    const f = join(dir, "main.szigyr");
+    writeFileSync(f, `async function addWorker(port: Port<Vec<u8>, u8>, alloc: Alloc): Promise<void> {
+  const seed = await port.recv();
+  if (seed === null || seed === 0) return;
+  const out = Vec.create<u8>(alloc, 0); // szigyr-equivalent: initial capacity hint does not change length or values
+  out.push(seed + 10);
+  port.send(out);
+}
+async function runWorker(sp: Spawn, seed: u8): Promise<u8> {
+  const port = sp.isolate(addWorker);
+  port.send(seed);
+  const reply = await port.recv();
+  if (reply === null) return 255;
+  return reply[0];
+}
+test("fake spawn worker", async (t: Test) => {
+  const fsp = FakeSpawn.create();
+  t.eq(await runWorker(fsp, 5), u8(15));
+  t.eq(await runWorker(fsp, 0), u8(255));
+  const idle = fsp.isolate(addWorker);
+  idle.close();
+  const empty = await idle.recv();
+  t.ok(empty === null);
+});
+`);
+    const t0 = Date.now();
+    const r = await mutate(f, { cache: false });
+    const elapsed = Date.now() - t0;
+    expect(r.diagnostics).toEqual([]);
+    expect(r.baselineFailure).toBeNull();
+    expect(r.mutants.some((m) => m.fn === "addWorker" && m.op === "delete-stmt" && m.status === "killed")).toBe(true);
+    expect(r.summary.survived).toBe(0);
+    expect(elapsed).toBeLessThan(10000);
   });
 });

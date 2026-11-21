@@ -62,7 +62,7 @@ it("documents every builtin global name in SPEC and keeps BUILTIN_NAMES complete
 
 // The expected sets are written out here, not read from the tables, so flipping a table entry fails this test.
 const NONDET_GEN_EXPECTED = ["RingTx", "RingRx", "Ptr", "ConstPtr", "CHandle", "Port"];
-const NONDET_OPAQUE_EXPECTED = [...AUTHORITIES, "JsRef", "AudioStream", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeAudio"];
+const NONDET_OPAQUE_EXPECTED = [...AUTHORITIES, "JsRef", "AudioStream", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeSpawn", "FakeAudio"];
 it("reports a function nondeterministic exactly for the §7.3 builtin types", () => {
   const det = (p: Type): boolean => isDeterministic({ k: "fn", tparams: [], params: [p], ret: VOID });
   for (const name of Object.keys(NONDET_GEN)) expect(det(gen(name as GenName, F64)), `gen ${name}`).toBe(!NONDET_GEN_EXPECTED.includes(name));

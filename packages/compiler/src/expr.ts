@@ -1029,10 +1029,10 @@ function resourceCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpr
   return { k: "resource", inner: T };
 }
 
-/** §15.2 (Q200, Q207): `spawn.isolate<S, R>(f)`. The argument is the *name* of a module-level (imports
- * included), non-generic, managed function `(port: Port<R, S>): void | Promise<void>`; any other
- * expression or signature is E2011 at the argument. Explicit type arguments name the caller's
- * `Port<S, R>` and must match the entry's own parameter. */
+/** §15.2 (Q200, Q207, Q287): `spawn.isolate<S, R>(f)`. The argument is the *name* of a module-level (imports
+ * included), non-generic, managed function `(port: Port<R, S>): void | Promise<void>` or
+ * `(port: Port<R, S>, alloc: Alloc): void | Promise<void>`; any other expression or signature is E2011
+ * at the argument. Explicit type arguments name the caller's `Port<S, R>` and must match the entry's own parameter. */
 function isolateCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpression): Type {
   if (e.arguments.length !== 1) { c.at("E2011", p.name, `'isolate' takes one argument: the entry function's name`, { reason: "arity" }); return ERROR; }
   const a = e.arguments[0]!;
@@ -1050,10 +1050,14 @@ function isolateCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpre
   if (sym.sig.tparams.length) return bad(`the isolate entry '${sym.name}' cannot be generic`, "generic-entry");
   if (sym.layer !== "managed") return bad(`the isolate entry '${sym.name}' is a ${sym.layer} function; isolates run managed functions`, "non-managed-entry");
   const sig = sym.sig;
-  const portT = sig.params.length === 1 ? unref(sig.params[0]!) : undefined;
-  if (portT && isErr(portT)) return ERROR; // the entry's own signature already reported (e.g. its E2010)
+  const portT = sig.params.length === 1 || sig.params.length === 2 ? unref(sig.params[0]!) : undefined;
+  const allocT = sig.params.length === 2 ? unref(sig.params[1]!) : undefined;
+  if ((portT && isErr(portT)) || (allocT && isErr(allocT))) return ERROR; // the entry's own signature already reported (e.g. its E2010)
+  const allocOk = !allocT || same(allocT, opaque("Alloc"));
   const retOk = same(sig.ret, VOID) || (sig.ret.k === "gen" && sig.ret.name === "Promise" && same(sig.ret.args[0]!, VOID));
-  if (!portT || portT.k !== "gen" || portT.name !== "Port" || !retOk) return bad(`the isolate entry '${sym.name}' must take one 'Port' parameter and return 'void' or 'Promise<void>'`);
+  if (!portT || portT.k !== "gen" || portT.name !== "Port" || !allocOk || !retOk) {
+    return bad(`the isolate entry '${sym.name}' must take '(port: Port<R, S>)' or '(port: Port<R, S>, alloc: Alloc)' and return 'void' or 'Promise<void>'`);
+  }
   const fR = portT.args[0]!, fS = portT.args[1]!; // the entry's Port<R, S>: it sends R, receives S
   if ((S && !same(S, fS)) || (R && !same(R, fR))) return bad(`the isolate entry '${sym.name}' does not match the given type arguments`);
   isolateCalls.set(e, { path: sym.mod.pf.path, name: sym.name });
@@ -1180,7 +1184,7 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
       }
       const rt0 = exprTypes.get(p.expression);
       const recvGen = rt0 && unref(rt0).k === "gen" ? (unref(rt0) as { name: string }).name : undefined;
-      if (p.name.text === "isolate" && rt0 && unref(rt0).k === "opaque" && (unref(rt0) as { name: string }).name === "Spawn") return isolateCall(c, e, p); // §15.2
+      if (p.name.text === "isolate" && rt0 && unref(rt0).k === "opaque" && ((unref(rt0) as { name: string }).name === "Spawn" || (unref(rt0) as { name: string }).name === "FakeSpawn")) return isolateCall(c, e, p); // §15.2
       if (p.name.text === "open" && rt0 && unref(rt0).k === "opaque" && ((unref(rt0) as { name: string }).name === "Audio" || (unref(rt0) as { name: string }).name === "FakeAudio")) return audioOpenCall(c, e, p); // §15.5
       if (p.name.text === "recv" && recvGen === "Port") {
         const R = (unref(rt0!) as { args: Type[] }).args[1]!;

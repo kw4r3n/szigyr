@@ -1,0 +1,44 @@
+// expect-output: real:3:11:22:33:fake:3:11:22:33:compat:42:42
+// stage: 3
+
+async function allocWorker(port: Port<Vec<u8>, u8>, alloc: Alloc): Promise<void> {
+  const seed = await port.recv();
+  if (seed === null) return;
+  const out = Vec.create<u8>(alloc, 3);
+  out.push(seed);
+  out.push(seed + 11);
+  out.push(seed + 22);
+  port.send(out);
+}
+
+async function compatWorker(port: Port<i32, i32>): Promise<void> {
+  const x = await port.recv();
+  if (x === null) return;
+  port.send(x + 1);
+}
+
+async function runAlloc(sp: Spawn, seed: u8): Promise<string> {
+  const p = sp.isolate(allocWorker);
+  p.send(seed);
+  const v = await p.recv();
+  p.close();
+  if (v === null) return "null";
+  return `${v.length}:${v[0]}:${v[1]}:${v[2]}`;
+}
+
+async function runCompat(sp: Spawn, x: i32): Promise<i32> {
+  const p = sp.isolate(compatWorker);
+  p.send(x);
+  const v = await p.recv();
+  p.close();
+  return v ?? -1;
+}
+
+export async function main(sys: System): Promise<void> {
+  const fsp: FakeSpawn = FakeSpawn.create();
+  const realAlloc = await runAlloc(sys.spawn, 11);
+  const fakeAlloc = await runAlloc(fsp, 11);
+  const realCompat = await runCompat(sys.spawn, 41);
+  const fakeCompat = await runCompat(fsp, 41);
+  sys.log.info(`real:${realAlloc}:fake:${fakeAlloc}:compat:${realCompat}:${fakeCompat}`);
+}

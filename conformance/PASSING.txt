@@ -394,6 +394,7 @@ reject/E2010-port-map-receive.szigyr
 reject/E2010-port-ownedcell.szigyr
 reject/E2011-isolate-arrow.szigyr
 reject/E2011-isolate-bad-return.szigyr
+reject/E2011-isolate-bad-second-param.szigyr
 reject/E2011-isolate-generic.szigyr
 reject/E2011-isolate-strict.szigyr
 reject/E2011-isolate-typearg-mismatch.szigyr
@@ -497,6 +498,7 @@ reject/E3006-conditional-ref-slice-fill.szigyr
 reject/E3006-constptr-borrow-into-mut.szigyr
 reject/E3006-constptr-chained-slice-to-mut.szigyr
 reject/E3006-fill-through-ref-slice.szigyr
+reject/E3006-fs-readbytes-ref.szigyr
 reject/E3006-pool-insert-through-ref.szigyr
 reject/E3006-push-through-ref-receiver.szigyr
 reject/E3006-push-through-ref-struct-field.szigyr
@@ -539,6 +541,7 @@ reject/E3007-recv-not-awaited.szigyr
 reject/E3008-call-result-as-mut-arg.szigyr
 reject/E3008-call-result-as-ref-arg.szigyr
 reject/E3008-call-result-as-slice-arg.szigyr
+reject/E3008-fs-readbytes-temp.szigyr
 reject/E3008-slice-of-call-result.szigyr
 reject/E3008-slice-of-chandle-get.szigyr
 reject/E3008-struct-literal-as-ref-arg.szigyr
@@ -668,6 +671,7 @@ reject/E6002-ensures-assigns.szigyr
 reject/E6002-ensures-consumes-result.szigyr
 reject/E6002-ensures-owned-arg.szigyr
 reject/E6002-forAll-in-requires.szigyr
+reject/E6002-fs-readbytes-in-contract.szigyr
 reject/E6002-invariant-mutating-method.szigyr
 reject/E6002-requires-arena-alloc.szigyr
 reject/E6002-requires-builtin-through-nullable.szigyr
@@ -866,6 +870,8 @@ run/254-cffi-cstruct-const-ptr.szigyr
 run/255-number-predicates-rt.szigyr
 run/256-switch-case-scope.szigyr
 run/257-math-number-f32.szigyr
+run/258-fs-binary-io.szigyr
+run/259-isolate-alloc-and-fake-spawn.szigyr
 run/26-trap-div-by-zero.szigyr
 run/27-trap-ownedcell-empty.szigyr
 run/28-trap-shift-range.szigyr

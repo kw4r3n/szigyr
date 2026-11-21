@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { Trap, panic, requires, type Pos } from "../../runtime-js/src/index.ts";
-import { FakeAudio, FakeClock, SeededRandom, MemoryLog, FakeFs, TestAlloc, createSystem, nodeFs, nodeJs, runMain } from "../src/index.ts";
+import { Arena, Trap, Vec, panic, requires, setForeignTrapCheck, stopFakeIsolates, takeIsolateTrap, type Pos } from "../../runtime-js/src/index.ts";
+import { ALLOC, FakeAudio, FakeClock, FakeFs, FakeSpawn, MemoryLog, SeededRandom, TestAlloc, createSystem, nodeFs, nodeJs, runMain } from "../src/index.ts";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -70,19 +70,98 @@ describe("fakes", () => {
   it("FakeFs", () => {
     const fs = FakeFs.create();
     expect(fs.readText("/x")).toEqual({ kind: "err", error: { code: "ENOENT", message: expect.any(String) } });
-    expect(fs.writeText("/x", "hi")).toEqual({ kind: "ok", value: null });
-    expect(fs.readText("/x")).toEqual({ kind: "ok", value: "hi" });
+    expect(fs.writeText("/x", "hé")).toEqual({ kind: "ok", value: null });
+    expect(fs.readText("/x")).toEqual({ kind: "ok", value: "hé" });
+
+    const dst = Vec.create<number>(ALLOC, 4, "u8");
+    dst.push(99); dst.push(77);
+    expect(fs.readBytes("/x", dst)).toEqual({ kind: "ok", value: 3 });
+    expect([dst.length, dst.get(0), dst.get(1), dst.get(2)]).toEqual([3, 104, 195, 169]);
+    expect(fs.readBytes("/missing", dst)).toEqual({ kind: "err", error: { code: "ENOENT", message: expect.any(String) } });
+    expect([dst.length, dst.get(0), dst.get(1), dst.get(2)]).toEqual([3, 104, 195, 169]);
+
+    const src = Vec.create<number>(ALLOC, 4, "u8");
+    src.push(1); src.push(2); src.push(3); src.push(4);
+    expect(fs.writeBytes("/slice", src.slice(1, 3))).toEqual({ kind: "ok", value: null });
+    src.set(1, 255); // copy isolation
+    expect(fs.readBytes("/slice", dst)).toEqual({ kind: "ok", value: 2 });
+    expect([dst.length, dst.get(0), dst.get(1)]).toEqual([2, 2, 3]);
+  });
+  it("FakeSpawn roundtrip, alloc 2nd param, trap forwarding, and deadlock detection", async () => {
+    setForeignTrapCheck(() => {
+      const ft = takeIsolateTrap();
+      if (ft) throw new Trap(ft.code as Trap["code"], ft.message ?? "trap in isolate");
+    });
+    try {
+      takeIsolateTrap();
+      const sp = FakeSpawn.create();
+      // 1) Roundtrip with Vec & Arena + alloc 2nd param
+      const p1 = sp.isolate("m", "w", async (port, alloc) => {
+        const msg = await port.recv() as { ar: Arena } | null;
+        if (!msg) return;
+        const ab = msg.ar.alloc(2, 42, "u8");
+        if (!ab) return;
+        const v = Vec.create<number>(alloc, 2, "u8");
+        v.push(msg.ar.view<number>(ab, "u8").get(1));
+        v.push(99);
+        port.send(v);
+      });
+      const ar = Arena.create(ALLOC, 64);
+      p1.send({ ar });
+      const res = await p1.recv() as Vec<number> | null;
+      p1.close();
+      expect(res).not.toBeNull();
+      expect([res!.length, res!.get(0), res!.get(1)]).toEqual([2, 42, 99]);
+
+      // 2) Trap propagation from worker
+      const p2 = sp.isolate("m", "trapW", async (port) => {
+        await port.recv();
+        panic("worker failed");
+      });
+      p2.send(1);
+      await expect(p2.recv()).rejects.toMatchObject({ code: "T006" });
+      p2.close();
+
+      // 3) Deadlock detection when both sides await recv without sending
+      const p3 = sp.isolate("m", "deadW", async (port) => {
+        await port.recv();
+      });
+      await expect(p3.recv()).rejects.toMatchObject({ code: "T006", message: expect.stringContaining("deadlock") });
+      p3.close();
+    } finally {
+      stopFakeIsolates();
+      takeIsolateTrap();
+      setForeignTrapCheck(undefined);
+    }
   });
   it("TestAlloc", () => { expect(TestAlloc.create()).toBeDefined(); });
 });
 
 describe("node authorities", () => {
   it("Fs: errors become IoError, success round-trips", () => {
-    const p = join(mkdtempSync(join(tmpdir(), "sts-")), "f.txt");
+    const dir = mkdtempSync(join(tmpdir(), "sts-"));
+    const p = join(dir, "f.txt");
     expect(nodeFs.writeText(p, "héllo")).toEqual({ kind: "ok", value: null });
     expect(nodeFs.readText(p)).toEqual({ kind: "ok", value: "héllo" });
     expect(nodeFs.readText(p + ".missing")).toEqual({ kind: "err", error: { code: "ENOENT", message: expect.any(String) } });
     expect(nodeFs.writeText("/nonexistent-dir-sts/x", "")).toMatchObject({ kind: "err" });
+
+    const bp = join(dir, "all.bin");
+    const src = Vec.create<number>(ALLOC, 256, "u8");
+    for (let i = 0; i < 256; i++) src.push(i);
+    expect(nodeFs.writeBytes(bp, src)).toEqual({ kind: "ok", value: null });
+    const dst = Vec.create<number>(ALLOC, 4, "u8");
+    dst.push(9); dst.push(8); dst.push(7);
+    expect(nodeFs.readBytes(bp + ".missing", dst)).toEqual({ kind: "err", error: { code: "ENOENT", message: expect.any(String) } });
+    expect([dst.length, dst.get(0), dst.get(1), dst.get(2)]).toEqual([3, 9, 8, 7]);
+    expect(nodeFs.readBytes(bp, dst)).toEqual({ kind: "ok", value: 256 });
+    expect(dst.length).toBe(256);
+    for (let i = 0; i < 256; i++) expect(dst.get(i)).toBe(i);
+    expect(nodeFs.readBytes(bp, src.slice(0, 10) as never)).toBeDefined(); // keep slice test below:
+    const sOut = Vec.create<number>(ALLOC, 4, "u8");
+    expect(nodeFs.writeBytes(join(dir, "sub.bin"), src.slice(10, 14))).toEqual({ kind: "ok", value: null });
+    expect(nodeFs.readBytes(join(dir, "sub.bin"), sOut)).toEqual({ kind: "ok", value: 4 });
+    expect([sOut.get(0), sOut.get(1), sOut.get(2), sOut.get(3)]).toEqual([10, 11, 12, 13]);
   });
   it("Js: traps and stack exhaustion pass through (§8)", async () => {
     const boom = (): never => panic("x");
@@ -161,10 +240,10 @@ describe("node authorities", () => {
     class TrapCtor { constructor(cb: () => unknown) { cb(); } }
     expect(() => nodeJs.new(TrapCtor, [trapFn])).toThrow(Trap);
   });
-  it("System has the seven members; Log routes to the writers (Q059)", () => {
+  it("System has the eight members; Log routes to the writers (Q059)", () => {
     const out: string[] = [], errs: string[] = [];
     const sys = createSystem((s) => out.push(s), (s) => errs.push(s));
-    expect(Object.keys(sys).sort()).toEqual(["alloc", "audio", "clock", "fs", "js", "log", "random"]);
+    expect(Object.keys(sys).sort()).toEqual(["alloc", "audio", "clock", "fs", "js", "log", "random", "spawn"]);
     sys.log.info("a"); sys.log.warn("b"); sys.log.error("c");
     expect([out, errs]).toEqual([["a\n"], ["b\n", "c\n"]]);
     const r = sys.random.nextF64();

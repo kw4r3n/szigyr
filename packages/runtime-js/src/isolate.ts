@@ -37,7 +37,7 @@ export async function stopIsolates(): Promise<void> {
 
 /** Runs inside the isolate: builds the port over parentPort, calls the entry, and reports a trap
  * before closing the port (§15.4: the isolate stops there, the trap travels to the managed side). */
-export function isolateMain(f: (port: Port) => unknown): void {
+export function isolateMain(f: (port: Port, alloc: { readonly kind: "alloc" }) => unknown): void {
   const pp = parentPort!;
   const ch: Channel = {
     post: (msg, transfer) => { pp.postMessage(msg, transfer as never); },
@@ -48,7 +48,7 @@ export function isolateMain(f: (port: Port) => unknown): void {
   const port = new Port(ch);
   void (async () => {
     try {
-      await f(port);
+      await f(port, { kind: "alloc" });
     } catch (e) {
       const t = asTrap(e);
       const ft: ForeignTrap = t ? { code: t.code, ...(t.pos ? { file: t.pos.file, line: t.pos.line, col: t.pos.col } : {}) } : { code: "T006", message: String(e) };
@@ -116,7 +116,7 @@ const { pathToFileURL } = require("node:url");
       npm.set(spec, unwrapNpm(await import(url)));
     }
   }
-  const RUNTIME = { ...rt, FakeAudio: std.FakeAudio, FakeClock: std.FakeClock, SeededRandom: std.SeededRandom, MemoryLog: std.MemoryLog, FakeFs: std.FakeFs, TestAlloc: std.TestAlloc, ...(native ? { native } : {}) };
+  const RUNTIME = { ...rt, FakeAudio: std.FakeAudio, FakeClock: std.FakeClock, SeededRandom: std.SeededRandom, MemoryLog: std.MemoryLog, FakeFs: std.FakeFs, FakeSpawn: std.FakeSpawn, TestAlloc: std.TestAlloc, ...(native ? { native } : {}) };
   const done = new Map();
   const instantiate = (path) => {
     let ex = done.get(path);

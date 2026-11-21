@@ -1,4 +1,5 @@
-import { asTrap, capturing, type Pos, type Trap, type TrapCode } from "./trap.ts";
+import { asTrap, capturing, takeIsolateTrap, task, trap, type Pos, type Trap, type TrapCode } from "./trap.ts";
+import { stopFakeIsolates } from "./port.ts";
 import type { Slice } from "./collections.ts";
 import { createRng, formatArgs, generateRaw, materializeArgs, shrinkRaw, type GenDesc } from "./arbitrary.ts";
 
@@ -156,12 +157,22 @@ export function clearTests(): void { registry.length = 0; }
 export async function runTests(): Promise<TestResult[]> {
   const out: TestResult[] = [];
   for (const { name, fn } of [...registry]) {
-    try { const rejected = await capturing(() => fn(new Test())); if (rejected.length) throw rejected[0]; out.push({ name, ok: true }); }
+    takeIsolateTrap();
+    try {
+      const rejected = await capturing(() => fn(new Test()));
+      if (rejected.length) throw rejected[0];
+      task(undefined);
+      const ft = takeIsolateTrap();
+      if (ft) trap(ft.code as TrapCode, ft.message ?? "trap in an isolate", ft.file ? { file: ft.file, line: ft.line!, col: ft.col! } : undefined);
+      out.push({ name, ok: true });
+    }
     catch (x) {
       const e = asTrap(x);
       if (x instanceof TestFailure) out.push({ name, ok: false, failure: x.message, pos: x.pos, ...(x.detail ? { detail: x.detail } : {}) });
       else if (e) out.push({ name, ok: false, failure: e.message, trap: { code: e.code, pos: e.pos }, pos: e.pos });
       else throw x; // internal error: do not hide it
+    } finally {
+      stopFakeIsolates();
     }
   }
   return out;

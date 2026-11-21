@@ -2,8 +2,8 @@
 import { bindTParams, subst, type FnType, type Type } from "./types.ts";
 import { NONDET_GEN, NONDET_OPAQUE } from "./builtins.ts";
 
-const UNMUTATABLE_OPAQUE = new Set(["System", "Ffi", "Spawn", "Js", "JsRef", "Test"]);
-const UNMUTATABLE_GEN = new Set(["Ptr", "ConstPtr", "CHandle", "Port"]);
+const UNMUTATABLE_OPAQUE = new Set(["System", "Ffi", "Js", "JsRef", "Test"]);
+const UNMUTATABLE_GEN = new Set(["Ptr", "ConstPtr", "CHandle"]);
 
 function hasForbidden(roots: readonly Type[], badLeaf: (t: Type) => boolean, rejectConstraints: boolean): boolean {
   const seen = new Set<unknown>();
@@ -55,7 +55,7 @@ export function isDeterministic(sig: FnType, unsafe = false, extraTypes: readonl
   return !unsafe && !hasForbidden([...sig.params, ...extraTypes], badDetLeaf, true); // §7.3 / §14: unsafe functions are never deterministic
 }
 
-/** SPEC-v1 §7: safe functions and class methods excluding System/Ffi/Spawn/Js/JsRef/Test/Ptr/ConstPtr/CHandle/Port. */
+/** SPEC-v1 §7: safe functions and class methods excluding System/Ffi/Js/JsRef/Test/Ptr/ConstPtr/CHandle. */
 export function isMutatable(sig: FnType, unsafe = false, extraTypes: readonly Type[] = []): boolean {
   return !unsafe && !hasForbidden([...sig.params, ...extraTypes], badMutLeaf, false);
 }

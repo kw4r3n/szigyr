@@ -1780,3 +1780,33 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
   - (a) `isolate.ts` の `Channel` 抽象を利用してブラウザ Web Worker + Wasm アダプタを実装し、`Spawn` がブラウザでも同じ意味論で動くようにする。CLI に `sts build --target=browser [-o <dir>] [--mode=app|lib] <file>` を設け、静的サイトとしてそのまま配信できる ESM バンドル・ランタイム・`.wasm`・（`app` モードでは起動用 HTML と COOP/COEP 案内または起動ボタン）を出力し、HTML/CSS 側から export 関数を直接呼べる構成（`lib` モード）にも両対応する。検証は ① 既存の非 C 専用実行適合テストの全件 `--backend=wasm`（JS / C / Wasm 3 バックエンド一致）、② Node SDL3 disk ドライバでの移植可能デモ検証、③ Playwright 実 Chromium（AudioWorklet + Wasm の PCM 出力から 440 / 660 / 880 Hz 確認）をすべて自動テスト化する。
   - (b) ブラウザ検証は手動のみにし、ブラウザ版 `Spawn` とライブラリ出力は段階 5 の外に出す。
 - 既定案: (a)。
+
+## VI. ドッグフーディング後の仕様明確化（2026-11-21 にオーナーが決めた）
+
+### Q286 `Fs` のバイナリ I/O（`readBytes` / `writeBytes` と `Result<Owned, E>` の扱い）
+- 決定（2026-11-21、オーナー）: (a)。
+- 関連: §5、§7、Q048
+- 状況: 現在の `Fs` は `readText` / `writeText` のみであり、画像・音声等のバイナリ読み書きができない。一方、`Result<Vec<u8>, IoError>` は §5 の `E3007`（managed データ型への `Owned` 格納禁止）で拒否され、`Fs` 自身も `Alloc` を持たない。
+- 選択肢:
+  - (a) Out-buffer 方式を採用し、`readBytes(path: string, dst: Mut<Vec<u8>>): Result<usize, IoError>` と `writeBytes(path: string, data: Ref<Slice<u8>>): Result<null, IoError>` を追加する。`readBytes` は成功時に `dst` を読み込んだバイト列で上書き置換（`dst.length === n`）して `ok(n)` を返し、失敗時（I/O エラーや `> 2^32-1` バイトの `EFBIG`）は `dst` を変更せず `err(IoError)` を返す。`FakeFs` は内部表現を `Uint8Array` に統一して `readText`/`writeText` と相互運用させ、ブラウザの `browserFs` は他メソッドと同じく `ENOSYS` を返す。`Result<Owned, E>` の解禁や他の `Fs` メソッド追加は今回見送り、必要が生じた時点で再検討する。
+  - (b) `E3007` を緩和して `Result<Owned, E>` を解禁し、`readBytes(alloc: Alloc, path: string): Result<Vec<u8>, IoError>` にする。
+  - (c) `readBytes(alloc: Alloc, path: string): Result<OwnedCell<Vec<u8>>, IoError>` または `Array<u8>` を返す。
+- 既定案: (a)。
+
+### Q287 `FakeSpawn`、isolate への `Alloc` 供給、`Mutatable` への `Spawn`/`Port` 編入
+- 決定（2026-11-21、オーナー）: (a)。
+- 関連: §7、§8、§15.2、§16.2、Q200、Q207、Q278
+- 状況: `examples/retouch` のドッグフーディングにおいて、① `emit.ts` が `spawn.isolate` のレシーバを捨てて直接 Worker を起動するためテスト用フェイクがなく、② isolate エントリが `port: Port<R, S>` のみを受け取るためワーカー側で `Vec`/`Arena`/`Pool` を新規確保できず（親からの事前確保転送または `TestAlloc.create()` 流用が必要）、③ `Spawn`/`Port` を引数に取る関数が `szigyr mutate` で一律 `not-mutatable` としてスキップされていた。
+- 選択肢:
+  - (a) ① レシーバディスパッチに変更して `FakeSpawn`（`FakeSpawn.create(): FakeSpawn`、`Spawn` に代入可能・型注釈可）を追加し、同一プロセス内で `Port` の `pack`/`unpack` シリアライズ境界を通した非同期実行・トラップ伝搬・デッドロック検知（双方が `Port.recv()` 待ちになったときに `T006` で即復帰）を行う。② isolate エントリは 1 引数 `(port: Port<R, S>)` に加え任意の 2 引数 `(port: Port<R, S>, alloc: Alloc)` を許可し、Node Worker / Browser Worker / `FakeSpawn` のすべてが第 2 引数へ `Alloc` を渡す（呼び出し側 `spawn.isolate(f)` は変更なし）。③ `Spawn` と `Port` の両方を `Mutatable` に含め、`szigyr mutate` の非同期タイムアウトと `FakeSpawn` のデッドロック検知で `port.send()` 削除変異等のハングを防ぐ。
+  - (b) `FakeSpawn` は作らず、`Spawn`/`Port` も `not-mutatable` のまま据え置く。
+- 既定案: (a)。
+
+### Q288 `E4002`（層違反）と `E2002`（型不一致）の診断優先順
+- 決定（2026-11-21、オーナー）: (a)。
+- 関連: §3.3、§11、Q027、Q042
+- 状況: `"use owned"` / `"use rt"` 関数で期待型が `u8` 等の式に `return "bad";` のような `string` リテラルを書くと、`expr()` の層検査（`E4002`）が `checkTo()` の型不一致検査（`E2002`）より先に走り `E4002` が `diagnostics[0]` になる。一方、文字列リテラル union 型への誤記（`const x: "ok" | "err" = "bad"`）は既に `E2002` 単独で報告される。
+- 選択肢:
+  - (a) 現行どおり変更しない（`E4002` → `E2002`）。
+  - (b) `want` があり `!assignable(t, want)` のときは `E2002` を優先または `E4002` を抑止する。
+- 既定案: (a)。

@@ -1,0 +1,62 @@
+// expect-output: slice:3:20:30:40
+// expect-output: arena:3:7:8:9
+// expect-output: missing:ENOENT:2:99:77
+// expect-output: interop:3:104:195:169:hé
+// stage: 2
+
+function fill3(s: Mut<Slice<u8>>, a: u8, b: u8, c: u8): void {
+  "use rt";
+  s[0] = a;
+  s[1] = b;
+  s[2] = c;
+}
+
+export function main(sys: System): void {
+  const fs = FakeFs.create();
+  const src = Vec.create<u8>(sys.alloc, 4);
+  src.push(10);
+  src.push(20);
+  src.push(30);
+  src.push(40);
+
+  const w1 = fs.writeBytes("slice.bin", src.slice(1, 4));
+  const dst = Vec.create<u8>(sys.alloc, 4);
+  dst.push(1);
+  dst.push(2);
+  dst.push(3);
+  dst.push(4);
+  dst.push(5);
+  const r1 = fs.readBytes("slice.bin", dst);
+  if (w1.kind === "ok" && r1.kind === "ok" && dst.length === 3) {
+    sys.log.info(`slice:${r1.value}:${dst[0]}:${dst[1]}:${dst[2]}`);
+  }
+
+  const ar = Arena.create(sys.alloc, 64);
+  const ab = ar.alloc<u8>(3, 0);
+  if (ab !== null) {
+    fill3(ar.view<u8>(ab), 7, 8, 9);
+    const w2 = fs.writeBytes("arena.bin", ar.view<u8>(ab));
+    const r2 = fs.readBytes("arena.bin", dst);
+    if (w2.kind === "ok" && r2.kind === "ok" && dst.length === 3) {
+      sys.log.info(`arena:${r2.value}:${dst[0]}:${dst[1]}:${dst[2]}`);
+    }
+  }
+
+  dst.clear();
+  dst.push(99);
+  dst.push(77);
+  const rMiss = fs.readBytes("missing.bin", dst);
+  if (rMiss.kind === "err" && dst.length === 2) {
+    sys.log.info(`missing:${rMiss.error.code}:${dst.length}:${dst[0]}:${dst[1]}`);
+  }
+
+  const wt = fs.writeText("txt.bin", "hé");
+  const rtRes = fs.readBytes("txt.bin", dst);
+  if (wt.kind === "ok" && rtRes.kind === "ok" && dst.length === 3) {
+    const wb = fs.writeBytes("raw.txt", dst);
+    const txt = fs.readText("raw.txt");
+    if (wb.kind === "ok" && txt.kind === "ok") {
+      sys.log.info(`interop:${rtRes.value}:${dst[0]}:${dst[1]}:${dst[2]}:${txt.value}`);
+    }
+  }
+}

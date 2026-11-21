@@ -17,9 +17,9 @@ import { canonPath, type ConstSym, type FnSym, type Module, type Program as Decl
 import { isDeterministic, isMutatable } from "./determinism.ts";
 import type { ClassSym, Type } from "./types.ts";
 import * as rt from "../../runtime-js/src/index.ts";
-import { FakeAudio, FakeClock, FakeFs, MemoryLog, SeededRandom, TestAlloc } from "../../std/src/index.ts";
+import { FakeAudio, FakeClock, FakeFs, FakeSpawn, MemoryLog, SeededRandom, TestAlloc } from "../../std/src/index.ts";
 
-const MUTATE_VERSION = "4";
+const MUTATE_VERSION = "5";
 
 export interface SkippedTarget {
   readonly fn: string;
@@ -196,8 +196,13 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
     }
     return undefined;
   });
-  rt.setForeignTrapCheck(undefined);
+  rt.takeIsolateTrap();
+  rt.setForeignTrapCheck(() => {
+    const t = rt.takeIsolateTrap();
+    if (t) rt.trap(t.code as rt.TrapCode, t.message ?? "trap in an isolate", t.file ? { file: t.file, line: t.line!, col: t.col! } : undefined);
+  });
 
+  try {
   // Per-run isolated runtime state (mutant switch, reachability, step fuel, own-requires watch, local test registry).
   type TestFn = (t: rt.Test) => void | Promise<void>;
   const registeredTests: { name: string; fn: TestFn }[] = [];
@@ -213,7 +218,7 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
 
   const mutRt = {
     ...rt,
-    FakeAudio, FakeClock, SeededRandom, MemoryLog, FakeFs, TestAlloc,
+    FakeAudio, FakeClock, SeededRandom, MemoryLog, FakeFs, FakeSpawn, TestAlloc,
     get m(): number { return mutState.m; },
     test(name: string, fn: TestFn): void { registeredTests.push({ name, fn }); },
     hit(fnId: number): void { if (mutState.recording) mutState.reached.add(fnId); },
@@ -309,8 +314,10 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
   }
 
   // Helper to run one test function cleanly.
-  type RunOutcome = { ok: true } | { ok: false; kind: "conly" | "timeout" | "fail" | "trap"; failure?: string; trap?: string; pos?: rt.Pos };
-  async function runOneTest(fn: TestFn, mId: number, limit: number, record: boolean): Promise<RunOutcome> {
+  type RunOutcome =
+    | { ok: true; durationMs: number }
+    | { ok: false; kind: "conly" | "timeout" | "fail" | "trap"; failure?: string; trap?: string; pos?: rt.Pos; durationMs: number };
+  async function runOneTest(fn: TestFn, mId: number, limit: number, record: boolean, asyncTimeoutMs?: number): Promise<RunOutcome> {
     mutState.m = mId;
     mutState.steps = 0;
     mutState.stepLimit = limit;
@@ -318,19 +325,42 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
     mutState.reached = new Set();
     mutState.watchFn = -1;
     mutState.watchDepth = 0;
+    rt.takeIsolateTrap();
+    const t0 = performance.now();
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const rejected = await rt.capturing(() => fn(new rt.Test()));
+      const runP = rt.capturing(async () => {
+        await fn(new rt.Test());
+        rt.task(undefined);
+      });
+      runP.catch(() => {});
+      const rejected = await (mId > 0 && asyncTimeoutMs !== undefined
+        ? Promise.race([
+          runP,
+          new Promise<never>((_res, rej) => {
+            timer = setTimeout(() => {
+              rt.stopFakeIsolates();
+              rej(new StepLimitReached());
+            }, asyncTimeoutMs);
+          }),
+        ])
+        : runP);
       if (rejected.length) throw rejected[0];
-      return { ok: true };
+      rt.task(undefined);
+      return { ok: true, durationMs: performance.now() - t0 };
     } catch (x) {
-      if (x instanceof COnlyReached) return { ok: false, kind: "conly" };
-      if (x instanceof StepLimitReached) return { ok: false, kind: "timeout" };
+      const durationMs = performance.now() - t0;
+      if (x instanceof COnlyReached) return { ok: false, kind: "conly", durationMs };
+      if (x instanceof StepLimitReached) return { ok: false, kind: "timeout", durationMs };
       const e = rt.asTrap(x);
-      if (e) return { ok: false, kind: "trap", failure: e.message, trap: e.code, pos: e.pos };
-      if (x instanceof rt.TestFailure) return { ok: false, kind: "fail", failure: x.message, pos: x.pos };
+      if (e) return { ok: false, kind: "trap", failure: e.message, trap: e.code, pos: e.pos, durationMs };
+      if (x instanceof rt.TestFailure) return { ok: false, kind: "fail", failure: x.message, pos: x.pos, durationMs };
       throw x; // unexpected internal error
     } finally {
+      if (timer !== undefined) clearTimeout(timer);
       mutState.recording = false;
+      rt.stopFakeIsolates();
+      rt.takeIsolateTrap();
     }
   }
 
@@ -341,6 +371,7 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
     node: Node;
     fn: TestFn;
     steps: number;
+    durationMs: number;
     reached: Set<number>;
   }
   const activeTests: BaselineTest[] = [];
@@ -357,7 +388,7 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
       };
     }
     const ta = testAsts[i];
-    activeTests.push({ name: t.name, source: ta?.source ?? "", node: ta?.node ?? entryMod.sf, fn: t.fn, steps: mutState.steps, reached: new Set(mutState.reached) });
+    activeTests.push({ name: t.name, source: ta?.source ?? "", node: ta?.node ?? entryMod.sf, fn: t.fn, steps: mutState.steps, durationMs: out.durationMs, reached: new Set(mutState.reached) });
   }
 
   // Cache load (Q277).
@@ -415,7 +446,8 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
       let status: "killed" | "survived" | "timeout" = "survived";
       for (const t of reaching) {
         const limit = Math.max(t.steps * 8 + 1000, 10_000);
-        const out = await runOneTest(t.fn, spec.id, limit, false);
+        const asyncTimeoutMs = Math.max(500, Math.ceil(t.durationMs * 20));
+        const out = await runOneTest(t.fn, spec.id, limit, false, asyncTimeoutMs);
         if (!out.ok) {
           status = out.kind === "timeout" ? "timeout" : "killed";
           break;
@@ -451,6 +483,11 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
     if (r.cached) cached++;
   }
   return { diagnostics: [], baselineFailure: null, mutants: reports, summary: { targets: targets.length, killed, survived, timeout, cached, skipped } };
+  } finally {
+    rt.setForeignTrapCheck(undefined);
+    rt.stopFakeIsolates();
+    rt.takeIsolateTrap();
+  }
 }
 
 // ---- Diff cache (Q277)
