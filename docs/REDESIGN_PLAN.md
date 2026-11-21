@@ -1,10 +1,10 @@
-# Szigyr 根本設計の見直し計画（段階 5 完了時点）
+# Szigyr 根本設計の見直し計画（段階 5 完了時点・Step 0〜3 完了）
 
 2026-11-21
 
 ## 1. 位置づけと前提
 
-- この文書は、段階 5 完了時点における設計監査の洗い出し結果と、根本設計を見直すための作業計画をまとめた設計メモである。
+- この文書は、段階 5 完了時点における設計監査の洗い出し結果と、根本設計を見直すための作業計画をまとめた設計メモである（Step 0〜3 の全実装と `docs/SPEC.md` 切替は 2026-11-21 時点で完了）。
 - `docs/SPEC.md`、`docs/DECISIONS.md`、`docs/ROADMAP.md` に反映されるまでは非規範（作業用の基準メモ）として扱う。
 - これまでに積み上げた 1,093 件の適合テスト、JS / C / Wasm の 3 バックエンド一致、手書き C 比 1.38 倍以内のベンチマーク資産は捨てず、ゼロからの書き直しは行わない。上流の公理と型モデルから順に引き直し、差分適用する。
 
@@ -90,7 +90,7 @@
 - [x] **公理 3-3（`using` 資源解放モデル）**: 明示的な `using`（同期解放、strict/managed 対応）＋ `await using`（非同期解放、managed 専用）に限定し、宣言された変数のみスコープ離脱（正常・早期 `return`・トラップ）時に決定的解放する。通常の所有型に自動デストラクタは入れない。
 - [x] **移行タイミング（`szigyr` / `.szigyr`）**: Step 1〜2 の新設計文書・新 `SPEC.md` は最初から `szigyr` / `.szigyr` で統一し、実装・適合テスト・CLI の切替（`packages/compiler/src/parse.ts` での `.szigyr` → 仮想 `.ts` マッピング対応を含む）は Step 3 先頭で一括実施する。
 
-### Step 1: 型能力マトリクス 1 枚の設計
+### Step 1: 型能力マトリクス 1 枚の設計（完了：2026-11-21）
 
 - `packages/compiler/src/types.ts` の 12 種の暗黙 `Need` と 15 種以上の個別型述語を、下記の 5 つの組み込みデータ能力（＋派生 `Owned`）と 2 つの資源インターフェースへ統合する。
 
@@ -181,19 +181,19 @@
 - 新 `docs/SPEC.md` だけをプロジェクト文脈を持たない素の AI エージェントに渡し、代表的な小課題（事前確保済み `Vec` バッファ付き rt 音声処理、`using` 資源管理、テスト、`npm:` / C 連携等）を書かせて、初回パス率・詰まった規則・修正往復数を実測し、公理 1-2 の緩和候補と診断の穴を実証ベースで確定する。
 - **完了状態**: `docs/SPEC-v1.md`（233 行・28 KB 未満、`zero-leak-ok`）を作成し、ブラインド AI 実地テストで 4/4 プログラムが一発生成に成功。発見された矛盾 2 件・明記漏れ 10 件を修正したうえ、オーナー判断で `Ptr.null<T>()` と `Ptr.sizeOf<T>()` を v1 に追加（`FakeJs` と `npm:` default import は v1 見送り）。
 
-### Step 3: 実装への段階適用
+### Step 3: 実装への段階適用（完了：2026-11-21）
 
-1. **`szigyr` / `.szigyr` 一括切替＋AI 観測ループの改修**（先頭で実施）:
+1. **`szigyr` / `.szigyr` 一括切替＋AI 観測ループの改修**（完了）:
    - CLI / 拡張子の `szigyr` / `.szigyr` 一括切替（`packages/compiler/src/parse.ts` の `.szigyr` → 仮想 `.ts` マッピング対応を含む）
    - `analyze()` の全フェーズ完走（P1 で後段を止めない）
    - 主要エラーコードへの `data` / `fixes` 拡充とコード細分化の整理
    - `E2009` への `cc` stderr 添付
    - `cli.ts` の `--json` 出力契約（exit 2 / 70・出力ストリーム・`forAll` / `t.eq` 反例）の統一
    - `szigyr mutate` の `skipped` 報告・`equivalent` 印・`query` / `explain` の CLI 露出
-2. **型能力マトリクスと所有権・テスト対象の刷新**:
-   - Step 1 のマトリクス、`using` / `await using`、`Audio.open` への `Vec` / `Pool` / `Arena` 移動許可、`Pure` / `Mutatable` 分離（`class` メソッド・偽権限・`Alloc` 含む）をコンパイラ／ランタイムへ適用し、適合テストを追随させる。
-3. **実運用の抜けを埋める**:
-   - C 構造体・定数（`#define` / `enum`）の取り込み、Wasm 境界の部分コピー最適化、Linux ネイティブ `szigyr build` とブラウザ `build` の `npm:` 解消。
+2. **型能力マトリクスと所有権・テスト対象の刷新**（完了）:
+   - Step 1 のマトリクス、`using` / `await using`、`Audio.open` への `Vec` / `Pool` / `Arena` 移動許可、`Pure` / `Mutatable` 分離（`class` メソッド・偽権限・`Alloc` 含む）をコンパイラ／ランタイムへ適用し、適合テストを追随させた。
+3. **実運用の抜けを埋める**（完了）:
+   - C 構造体・定数（`#define` / `enum`）の取り込み、Wasm 境界の部分コピー最適化、Linux ネイティブ `szigyr build --target=node` とブラウザ `build --target=browser` の `npm:` 解消、`docs/SPEC.md` 切替を完了。
 
 ---
 

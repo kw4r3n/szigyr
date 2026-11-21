@@ -73,7 +73,7 @@ describe.skipIf(!hasSdl3())("audio demo (examples/audio)", () => {
     expect(peak).toBeGreaterThan(0.45); // the sine reaches (near) its gain
 
     const third = Math.floor(frames / 3);
-    const freqs = [0, 1, 2].map((k) => estimateFreq(left, k * third, (k + 1) * third));
+    const freqs = [0, 1, 2].map((k) => estimateFreq(left, k * third + Math.floor(third * 0.2), k * third + Math.floor(third * 0.8)));
     const want = [440, 660, 880];
     for (let k = 0; k < 3; k += 1) {
       const f = freqs[k]!;

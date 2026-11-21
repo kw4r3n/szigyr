@@ -1,6 +1,6 @@
 # ロードマップ
 
-**現在の段階: 5**
+**現在の段階: 5（完了・v1 再設計完了）**
 
 各段階は、単独で役に立つところで区切ってある。段階を終えたら、完了条件を満たした証拠をその段階の末尾に追記し、「現在の段階」を進める。
 数値はすべて目標値で、根拠のある見積もりではない。
@@ -216,6 +216,13 @@
 - [x] 移植可能な音声デモ（`Audio` 権限＋`Clock.sleep`＋`Ring`＋rt コールバック）が Node と実ブラウザ（Playwright Chromium）の両方で期待どおりの音声を出力する。
 
 完了条件: 音声デモがブラウザ（AudioWorklet + Wasm）と Node で動き、非 C 専用の全実行適合テストが `--backend=wasm` でも一致する。
+
+### 段階 5 および v1 再設計（Step 0〜3）の完了の証拠（2026-11-21）
+
+- **段階 5**: `wasm` バックエンド、移植可能な `Audio` + `Clock.sleep`、`build --target=browser`（Playwright Chromium での COOP/COEP SAB と MessagePort フォールバックの両方での `AudioWorklet` 440/660/880 Hz 再生と Web Worker `Spawn` + Wasm 実行を確認）を実装した。
+- **v1 再設計（[REDESIGN_PLAN.md](./REDESIGN_PLAN.md) Step 0〜3 完了）**: CLI/拡張子の `szigyr`/`.szigyr` 切替と tsgo VFS、全フェーズ診断回収と主要コードの `data`/`fixes`、`--json` JSONL 契約統一、`query`/`explain`、`mutate` の `Pure`/`Mutatable` 分離（`class` メソッド・`skipped`・`equivalent`）、明示能力境界 `T extends C1 & C2`、1B `null` 配置、`Handle` `===` とプロセス一意 ID、`using`/`await using` と `Resource.own`/`ownWith`、`Audio.open` への `Native & Send` 所有コンテナ移動、C FFI v1（`const`、`CStruct`、`Ptr.null`/`Ptr.sizeOf`、P4 構造体・定数検証と `cc` stderr 添付）、Wasm 境界の部分コピー最適化、`bundle-npm.ts`（`yaml@2.9.1` / `zod@4.6.7` / `lodash@4.18.1` / `three@0.187.0` で動作確認）、Linux ネイティブ `szigyr build --target=node`、および `docs/SPEC.md` 切替を完了した。
+- **検証（2026-11-21）**: `pnpm typecheck` 成功、`pnpm verify:conformance` 通過（`accept=83 reject=633 run=207`）、`pnpm test` 32 ファイル 340 件通過、`pnpm conformance` 1,268 件通過。
+- **ベンチ（`pnpm bench`、手書き C 比・制限 1.5 倍）**: `dot_f32` 1.02（0.700 / 0.690 ms）、`saxpy_f32` 1.13（0.320 / 0.283 ms）、`prefix_i32` 1.32（0.560 / 0.425 ms）、`stencil_f64` 1.00（1.040 / 1.041 ms）、`particles_aos_f32` 1.40（1.020 / 0.730 ms）。すべて 1.5 倍以内。
 
 ## 段階 6: 静的証明
 
