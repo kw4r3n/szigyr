@@ -39,11 +39,24 @@ const guard = <T>(f: () => T): Result<T, JsError> => { try { return ok(f()); } c
 
 export const nodeJs: Js = {
   call: (f, args) => guard(() => (f as (...a: JsRef[]) => JsRef)(...args)),
+  new: (ctor, args) => guard(() => Reflect.construct(ctor as new (...a: JsRef[]) => JsRef, args)),
+  invoke: (obj, method, args) => guard(() => {
+    const f = (obj as Record<string, unknown>)[method];
+    if (typeof f !== "function") throw new TypeError(`${method} is not a function`);
+    return Reflect.apply(f, obj, args);
+  }),
   get: (obj, key) => guard(() => (obj as Record<string, JsRef>)[key]),
+  set: (obj, key, value) => guard(() => { (obj as Record<string, JsRef>)[key] = value; return null; }),
+  object: (entries) => {
+    const o: Record<string, JsRef> = {};
+    for (const e of entries) Object.defineProperty(o, e.key, { value: e.value, enumerable: true, writable: true, configurable: true });
+    return o;
+  },
   await: async (v) => { try { return ok(await v); } catch (e) { if (isTrap(e)) throw e; return err(jsError(e)); } },
   decode: (v, desc) => cast(v, desc),
   encode: (v) => v,
   callback: (f, desc) => (...a: unknown[]): void => { f(cast(a[0], desc)); },
+  fn: (f) => (...args: JsRef[]): JsRef => f(args),
 };
 
 let registeredAudio: Audio = {

@@ -118,6 +118,49 @@ describe("node authorities", () => {
     cb(bad);
     expect(cbSeen).toEqual([{ kind: "err", error: { code: "cast", message: "boom-cb" } }]);
   });
+  it("Js.new, Js.invoke, Js.set, Js.object, Js.fn handle edge cases and preserve Traps", () => {
+    class Counter {
+      v: number;
+      constructor(init: number) { this.v = init; }
+      add(delta: number): number { return this.v + delta; }
+    }
+    const cRes = nodeJs.new(Counter, [10]);
+    expect(cRes.kind).toBe("ok");
+    if (cRes.kind !== "ok") return;
+    expect(nodeJs.invoke(cRes.value, "add", [5])).toEqual({ kind: "ok", value: 15 });
+    expect(nodeJs.set(cRes.value, "v", 20)).toEqual({ kind: "ok", value: null });
+    expect(nodeJs.invoke(cRes.value, "add", [5])).toEqual({ kind: "ok", value: 25 });
+
+    // Non-constructor, throwing ctor, missing/non-function method, frozen property set
+    expect(nodeJs.new(() => 1, [])).toMatchObject({ kind: "err", error: { code: "TypeError" } });
+    function Boom(): void { throw new RangeError("bad ctor"); }
+    expect(nodeJs.new(Boom, [])).toEqual({ kind: "err", error: { code: "RangeError", message: "bad ctor" } });
+    expect(nodeJs.invoke(cRes.value, "missing", [])).toMatchObject({ kind: "err", error: { code: "TypeError" } });
+    expect(nodeJs.invoke(cRes.value, "v", [])).toMatchObject({ kind: "err", error: { code: "TypeError" } });
+    expect(nodeJs.set(Object.freeze({ x: 1 }), "x", 2)).toMatchObject({ kind: "err", error: { code: "TypeError" } });
+
+    // object builder incl. empty and __proto__ own property safety
+    expect(nodeJs.object([])).toEqual({});
+    const built = nodeJs.object([
+      { key: "ok", value: 42 },
+      { key: "__proto__", value: "safe-own" },
+    ]) as Record<string, unknown>;
+    expect(built.ok).toBe(42);
+    expect(Object.prototype.hasOwnProperty.call(built, "__proto__")).toBe(true);
+    expect(Object.getOwnPropertyDescriptor(built, "__proto__")?.value).toBe("safe-own");
+    expect(Object.getPrototypeOf(built)).toBe(Object.prototype);
+
+    // fn multi-arg returning wrapper & Trap passthrough through call/invoke/new
+    const sumFn = nodeJs.fn((args) => args.reduce<number>((a, b) => a + (b as number), 0)) as (...a: unknown[]) => unknown;
+    expect(sumFn()).toBe(0);
+    expect(sumFn(1, 2, 3, 4)).toBe(10);
+    const trapFn = nodeJs.fn(() => { throw new Trap("T006", "cb boom", { file: "t.szigyr", line: 1, col: 1 }); });
+    expect(() => nodeJs.call(trapFn, [])).toThrow(Trap);
+    const host = { run(cb: () => unknown) { return cb(); } };
+    expect(() => nodeJs.invoke(host, "run", [trapFn])).toThrow(Trap);
+    class TrapCtor { constructor(cb: () => unknown) { cb(); } }
+    expect(() => nodeJs.new(TrapCtor, [trapFn])).toThrow(Trap);
+  });
   it("System has the seven members; Log routes to the writers (Q059)", () => {
     const out: string[] = [], errs: string[] = [];
     const sys = createSystem((s) => out.push(s), (s) => errs.push(s));

@@ -115,12 +115,22 @@ export function opaqueMembers(name: string): Members {
     JsRef: () => ({}),
     Js: () => {
       const J = opaque("JsRef"), jr = result(J, ERROR_RECORD);
+      const argsT = gen("ReadonlyArray", J);
+      const entryT = record([ro("key", STR), ro("value", J)]);
       const T = newTParam("T"), U = newTParam("T"), A = newTParam("T");
       return {
         // Q128: the callback gets its one argument from JS, checked like `decode` does.
         callback: m(RD, [fn([result({ k: "tparam", p: A }, ERROR_RECORD)], VOID)], J, { tparams: [A], tcheck: "cast" }),
-        call: m(WR, [J, gen("Array", J)], jr), get: m(RD, [J, STR], jr), await: m(WR, [J], gen("Promise", jr)),
-        decode: m(RD, [J], result({ k: "tparam", p: T }, ERROR_RECORD), { tparams: [T], tcheck: "cast" }), encode: m(RD, [{ k: "tparam", p: U }], J, { tparams: [U], tcheck: "codec" }), // Q128
+        fn: m(RD, [cb([gen("Array", J)], J)], J),
+        call: m(WR, [J, argsT], jr),
+        new: m(WR, [J, argsT], jr),
+        invoke: m(WR, [J, STR, argsT], jr),
+        get: m(RD, [J, STR], jr),
+        set: m(WR, [J, STR, J], result(NULL, ERROR_RECORD)),
+        object: m(RD, [gen("ReadonlyArray", entryT)], J),
+        await: m(WR, [J], gen("Promise", jr)),
+        decode: m(RD, [J], result({ k: "tparam", p: T }, ERROR_RECORD), { tparams: [T], tcheck: "cast" }),
+        encode: m(RD, [{ k: "tparam", p: U }], J, { tparams: [U], tcheck: "codec" }), // Q128
       };
     },
     Test: () => {
