@@ -1,9 +1,9 @@
 // The only module that imports typescript. Uses typescript 7's unstable sync API (see DECISIONS D005):
 // a tsgo child process parses; we never call the checker or semantic diagnostics.
-import { readFileSync, statSync } from "node:fs";
+import { realpathSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
-import { API } from "typescript/unstable/sync";
-import { createVirtualFileSystem } from "typescript/unstable/fs";
+import { API, type Snapshot } from "typescript/unstable/sync";
+import { type FileSystem } from "typescript/unstable/fs";
 import { LanguageVariant, NodeFlags, SyntaxKind, type Identifier, type ModifierLike, type NodeArray, type Node, type SourceFile } from "typescript/unstable/ast";
 import { createScanner } from "typescript/unstable/ast/scanner";
 import type { Position } from "./diagnostics.ts";
@@ -28,14 +28,24 @@ export interface ParsedFile {
   tokenAfter(offset: number): number;
 }
 
-/** One tsgo process for several parse rounds (one check). Paths not in `sources` are read from disk. */
+/** One tsgo process for several parse rounds (one check or resident session). Paths not in `sources` are read from disk/overlays. */
 export interface Parser {
   /** Parse more files (absolute or relative paths). Missing files are absent from the result. */
   parse(paths: string[]): Map<string, ParsedFile>;
+  /** Clears JS-side AST cache at the start of an analysis pass so every node is fresh (no stale WeakMap entries). */
+  beginRun?(): void;
+  /** Reads current source text (in-memory sources/overlay if set, otherwise disk). */
+  readText?(path: string): string | undefined;
+  /** Sets or clears an in-memory buffer override (used by editors/MCP). */
+  setOverlay?(path: string, content: string): void;
+  clearOverlay?(path?: string): void;
   close(): void;
 }
 
-const toVirtual = (p: string): string => (p.endsWith(".szigyr") ? `${p}.ts` : p);
+const normPath = (p: string): string => {
+  const r = resolve(p);
+  try { return realpathSync(r); } catch { return r; }
+};
 
 function readDisk(p: string): string | undefined {
   try { return statSync(p).isFile() ? readFileSync(p, "utf8") : undefined; }
@@ -45,39 +55,93 @@ function readDisk(p: string): string | undefined {
 export function createParser(sources?: Record<string, string>): Parser {
   const abs: Record<string, string> = {};
   for (const [p, t] of Object.entries(sources ?? {})) abs[resolve(p)] = t;
-  const vfs = createVirtualFileSystem({});
-  const loaded = new Set<string>();
-  const open = new Set<string>();
+  const overlays = new Map<string, string>();
+  const vfsFiles = new Map<string, string>();
+  const entries = new Map<string, { vp: string; text: string }>();
+  const fs: FileSystem = {
+    readFile: (f) => (vfsFiles.has(f) ? vfsFiles.get(f)! : undefined),
+    fileExists: (f) => (vfsFiles.has(f) ? true : undefined),
+  };
   let api: API | undefined;
+  let snap: Snapshot | undefined;
+  let seq = 0;
+
+  const readText = (raw: string): string | undefined => {
+    const p = resolve(raw);
+    if (sources) return abs[p];
+    return overlays.get(normPath(p)) ?? overlays.get(p) ?? readDisk(p);
+  };
+
   return {
+    readText,
+    beginRun() {
+      api?.clearSourceFileCache();
+    },
+    setOverlay(path, content) {
+      overlays.set(normPath(path), content);
+    },
+    clearOverlay(path) {
+      if (path === undefined) overlays.clear();
+      else { overlays.delete(normPath(path)); overlays.delete(resolve(path)); }
+    },
     parse(paths) {
       const out = new Map<string, ParsedFile>();
       const want = paths.map((p) => resolve(p));
       if (!want.length) return out;
+      const openFiles: string[] = [];
+      const closeFiles: string[] = [];
       for (const p of want) {
-        const vp = toVirtual(p);
-        if (loaded.has(vp)) continue;
-        const text = sources ? abs[p] : readDisk(p);
-        if (text === undefined) continue;
-        vfs.writeFile!(vp, text);
-        loaded.add(vp);
-        open.add(vp);
+        const text = readText(p);
+        const cur = entries.get(p);
+        if (text === undefined) {
+          if (cur) {
+            closeFiles.push(cur.vp);
+            vfsFiles.delete(cur.vp);
+            entries.delete(p);
+          }
+          continue;
+        }
+        if (!cur || cur.text !== text) {
+          // Monotonic virtual `.ts` paths avoid Go-side cache collisions across delete/recreate cycles and re-parse in ~1ms.
+          const vp = `${p}@${++seq}.ts`;
+          if (cur) {
+            closeFiles.push(cur.vp);
+            vfsFiles.delete(cur.vp);
+          }
+          vfsFiles.set(vp, text);
+          openFiles.push(vp);
+          entries.set(p, { vp, text });
+        }
       }
-      if (!open.size) return out;
-      api ??= new API({ cwd: process.cwd(), fs: vfs });
-      const snap = api.updateSnapshot({ openFiles: [...open] });
+      if (openFiles.length || closeFiles.length || (!snap && entries.size > 0)) {
+        api ??= new API({ cwd: process.cwd(), fs });
+        snap?.dispose();
+        snap = api.updateSnapshot({
+          ...(openFiles.length ? { openFiles } : {}),
+          ...(closeFiles.length ? { closeFiles, fileChanges: { deleted: closeFiles } } : {}),
+        });
+      }
+      if (!snap) return out;
       for (const p of want) {
-        const vp = toVirtual(p);
-        if (!loaded.has(vp)) continue;
-        const program = snap.getDefaultProjectForFile(vp)?.program;
-        const sf = program?.getSourceFile(vp);
+        const cur = entries.get(p);
+        if (!cur) continue;
+        const program = snap.getDefaultProjectForFile(cur.vp)?.program;
+        const sf = program?.getSourceFile(cur.vp);
         if (!program || !sf) continue;
-        const syntaxErrors = program.getSyntacticDiagnostics(vp).map((d) => ({ start: d.pos, end: d.end, code: d.code, message: d.text }));
+        const syntaxErrors = program.getSyntacticDiagnostics(cur.vp).map((d) => ({ start: d.pos, end: d.end, code: d.code, message: d.text }));
         out.set(p, wrap(p, sf, syntaxErrors));
       }
       return out;
     },
-    close() { api?.close(); api = undefined; },
+    close() {
+      snap?.dispose();
+      snap = undefined;
+      api?.close();
+      api = undefined;
+      vfsFiles.clear();
+      entries.clear();
+      overlays.clear();
+    },
   };
 }
 

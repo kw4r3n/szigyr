@@ -3,11 +3,13 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
-import { analyze, buildBrowser, buildNode, check, CLI_NAME, CliError, createParser, explainCode, mutate, queryFile, run, runTestFile, type Backend, type BrowserBuildMode, type Diagnostic, type NodeBuildBackend, type NodeBuildMode, type RunResult } from "./index.ts";
+import { analyze, buildBrowser, buildNode, check, CLI_NAME, CliError, createParser, explainCode, mutate, queryFile, run, type Backend, type BrowserBuildMode, type Diagnostic, type NodeBuildBackend, type NodeBuildMode, type RunResult } from "./index.ts";
+import { serveMcp } from "./mcp.ts";
+import { runTestPass, startWatch } from "./watch.ts";
 import { CUnsupported } from "./emit-c.ts";
 import { CBuildError } from "./native.ts";
 
-const USAGE = `usage: ${CLI_NAME} <check|run|test|mutate|query|explain|build> [--json] [--no-cache] [--backend=js|c|both|wasm] [--target=node|browser] [--mode=app|lib] [-o <dir>] <file...|code>`;
+const USAGE = `usage: ${CLI_NAME} <check|run|test|mutate|query|explain|build|mcp> [--json] [--watch] [--no-cache] [--backend=js|c|both|wasm] [--target=node|browser] [--mode=app|lib] [-o <dir>] <file...|code>`;
 
 export async function main(argv: string[], out: (s: string) => void, err: (s: string) => void): Promise<number> {
   const rawJson = argv.includes("--json");
@@ -17,6 +19,7 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
       args: argv, allowPositionals: true,
       options: {
         json: { type: "boolean" },
+        watch: { type: "boolean", short: "w" },
         "no-cache": { type: "boolean" },
         backend: { type: "string" },
         target: { type: "string" },
@@ -30,6 +33,7 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
   }
   const [cmd, ...files] = args.positionals;
   const json = !!args.values.json;
+  const watch = !!args.values.watch;
   const noCache = !!args.values["no-cache"];
   const rawBackend = args.values.backend as string | undefined;
   const target = args.values.target as string | undefined;
@@ -41,14 +45,19 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
   const diags = (ds: readonly Diagnostic[]): string => ds.map((d) => json ? line(d) : `${d.file}:${d.range.start.line}:${d.range.start.col}: ${d.severity} ${d.code}: ${d.message}\n`).join("");
   const parser = createParser(); // D161: one tsgo process for every file of this command (spawned on first use)
   try {
-    if (cmd !== "check" && cmd !== "run" && cmd !== "test" && cmd !== "mutate" && cmd !== "query" && cmd !== "explain" && cmd !== "build") {
+    if (cmd !== "check" && cmd !== "run" && cmd !== "test" && cmd !== "mutate" && cmd !== "query" && cmd !== "explain" && cmd !== "build" && cmd !== "mcp") {
       throw new CliError(cmd ? `unknown command '${cmd}'\n${USAGE}` : USAGE);
     }
-    if (cmd === "explain") {
+    if (cmd === "mcp") {
+      if (files.length || rawBackend !== undefined || noCache || watch || target !== undefined) {
+        throw new CliError(`mcp: takes no positional arguments or build/watch/backend flags\n${USAGE}`);
+      }
+    } else if (cmd === "explain") {
       if (files.length !== 1) throw new CliError(`explain: exactly one code required\n${USAGE}`);
     } else if (!files.length || ((cmd === "run" || cmd === "build") && files.length > 1)) {
       throw new CliError(`${cmd}: ${cmd === "run" || cmd === "build" ? "exactly one" : "at least one"} file required\n${USAGE}`);
     }
+    if (watch && cmd !== "check" && cmd !== "test") throw new CliError(`${cmd}: --watch is only supported for check and test\n${USAGE}`);
     if (!["js", "c", "both", "wasm"].includes(backend)) throw new CliError(`unknown backend '${backend}'\n${USAGE}`);
     if ((cmd === "mutate" || cmd === "query" || cmd === "explain") && backend !== "js") throw new CliError(`${cmd}: JS backend only (--backend=${backend} is not supported)\n${USAGE}`);
     if (noCache && cmd !== "mutate") throw new CliError(`${cmd}: --no-cache is only supported for mutate\n${USAGE}`);
@@ -57,6 +66,9 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
       if (mode !== "app" && mode !== "lib") throw new CliError(`build: unknown --mode '${mode}' (expected app or lib)\n${USAGE}`);
       if (target === "browser" && rawBackend !== undefined) throw new CliError(`build: --backend is not supported with --target=browser\n${USAGE}`);
       if (target === "node" && !["c", "js", "wasm"].includes(backend)) throw new CliError(`build: --backend=${backend} is not supported with --target=node (expected c, js, or wasm)\n${USAGE}`);
+    }
+    if (cmd === "mcp") {
+      return await serveMcp({ parser });
     }
     if (cmd === "explain") {
       const entry = explainCode(files[0]!);
@@ -106,6 +118,7 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
       return bad ? 1 : 0;
     }
     if (cmd === "check") {
+      if (watch) return await startWatch({ files, mode: "check", json, backends, out, err, parser });
       const ds = files.flatMap((f) => check(f, parser));
       out(diags(ds));
       return ds.some((d) => d.severity === "error") ? 1 : 0;
@@ -172,39 +185,9 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
       err(json ? line({ kind: "trap", code, file, range: { start: { line: l, col }, end: { line: l, col } }, ...(message ? { message } : {}) }) : `trap ${code} at ${file}:${l}:${col}\n${message ? `${message}\n` : ""}`);
       return 3;
     }
-    let failed = 0, passed = 0, bad = false;
-    for (const f of files) {
-      const rs = [];
-      let diag = false;
-      const analysis = analyze(f, parser);
-      for (const b of backends) {
-        const cur = await runTestFile(f, { backend: b, analysis });
-        if (cur.diagnostics.length) { out(diags(cur.diagnostics)); bad = true; diag = true; break; }
-        rs.push(cur);
-      }
-      if (diag) continue;
-      const r = rs[0]!;
-      // D101: --backend=both compares each test's outcome, trap code and position; a trap's message is not compared.
-      const key = (t: (typeof r.results)[number] | undefined): string => JSON.stringify(t && [t.name, t.ok, t.trap ? null : t.failure, t.trap?.code, t.pos?.file, t.pos?.line, t.pos?.col]);
-      if (rs.length === 2 && rs[1]!.results.length !== r.results.length) { // Q266: a result count that differs is a mismatch too
-        failed++;
-        out(line({ kind: "mismatch", file: f, js: r.results.length, c: rs[1]!.results.length }));
-      }
-      for (const [i, t] of r.results.entries()) {
-        const other = rs[1]?.results[i];
-        if (rs.length === 2 && key(t) !== key(other)) {
-          failed++;
-          out(line({ kind: "mismatch", file: f, name: t.name, js: t, c: other ?? null }));
-          continue;
-        }
-        if (t.ok) passed++; else failed++;
-        const pos = t.pos ? { file: t.pos.file, line: t.pos.line, col: t.pos.col } : undefined;
-        out(json ? line({ kind: "test", file: f, name: t.name, ok: t.ok, ...(t.failure ? { failure: t.failure } : {}), ...(t.trap ? { trap: t.trap.code } : {}), ...(pos ? { pos } : {}), ...(t.detail ? { detail: t.detail } : {}) })
-          : `${t.ok ? "ok" : "FAIL"} ${t.name}${t.ok ? "" : `: ${t.failure ?? ""}${pos ? ` (${pos.file}:${pos.line}:${pos.col})` : ""}`}\n`);
-      }
-    }
-    out(json ? line({ kind: "summary", passed, failed }) : `${passed} passed, ${failed} failed\n`);
-    return failed || bad ? 1 : 0;
+    if (watch) return await startWatch({ files, mode: "test", json, backends, out, err, parser });
+    const tr = await runTestPass({ files, backends, json, out, diags, parser });
+    return tr.failed || tr.bad ? 1 : 0;
   } catch (e) {
     if (e instanceof CUnsupported || e instanceof CBuildError) {
       err(rawJson ? line({ kind: "error", code: "CLI_ERROR", message: e.message }) : `${CLI_NAME}: ${e.message}\n`);

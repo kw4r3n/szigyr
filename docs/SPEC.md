@@ -170,7 +170,7 @@ Bad index: `T002`; `.create` OOM: `T006`. Process-unique Pool/Arena IDs; `u32` g
 
 - **Layout (LE)**: Numerics natural (`usize` 4B; `i64`/`u64` 8B); `boolean` 1B; `null` 1B (`0`); lit/union `u32` (UTF-16 idx, 4B); Record/`Struct`: `kind`, UTF-16 fields aligned/padded; Tagged: `u32` tag+max; `T|null`: 1B tag+padded `T`; `Handle` 12B; `ArenaBuf` 16B.
 - **Parity & Wasm**: C/Wasm: no FMA/fast-math; `strict`/`rt` use `DetMath`. Wasm (`wasm32`, `-nostdlib`) copies active `Slice`/`Vec`/`Arena` ranges across JS (`T013`).
-- **CLI**: `szigyr <check|run|test|mutate|build|query|explain> [--json] [--backend=js|c|wasm|both] [--target=node|browser] [--mode=app|lib] [-o <dir>] [--no-cache] <args>`
+- **CLI**: `szigyr <check|run|test|mutate|build|query|explain|mcp> [--json] [--watch] [--backend=js|c|wasm|both] [--target=node|browser] [--mode=app|lib] [-o <dir>] [--no-cache] <args>`
   - **Exit**: `0` ok, `1` error/fail/mismatch, `2` CLI/`CUnsupported`/`CBuildError`/nesting, `3` trap, `70` internal.
   - **Recovery**: `check`: P1->P2->P3->P4 past recoverable errors (no `<error>` cascades).
   - **`--json`**: Pure JSONL (exit 2/70, `forAll`/`t.eq`/trap/mismatch details, `{code,severity,message,file,range,data,fixes}`). `check`/`test`/`mutate`/`query`/`explain`->stdout; `run`/`build`->stdout, errs/traps stderr. `query`: symbols/types/caps/`Pure`/`Mutatable`/`rt`; `explain <code>`: docs.

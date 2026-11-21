@@ -51,6 +51,7 @@ function loadProgram(entryFile: string, shared?: Parser): Program {
   const files = new Map<string, ParsedFile>();
   const missing: Diagnostic[] = [];
   try {
+    parser.beginRun?.();
     const entryPath = canonPath(entryFile);
     const entry = parser.parse([entryPath]).get(entryPath);
     if (!entry) throw new Error(`cannot read ${entryFile}`);
@@ -59,8 +60,9 @@ function loadProgram(entryFile: string, shared?: Parser): Program {
     const pre = new Map<string, ParsedFile>([[entry.path, entry]]);
     const todo = [entry.path], texts = new Set([entry.path]);
     for (let p = todo.pop(); p !== undefined; p = todo.pop()) {
-      let text: string;
-      try { text = pre.get(p)?.sourceFile.text ?? readFileSync(p, "utf8"); } catch { continue; }
+      let text: string | undefined;
+      try { text = pre.get(p)?.sourceFile.text ?? parser.readText?.(p) ?? readFileSync(p, "utf8"); } catch { continue; }
+      if (text === undefined) continue;
       for (const m of text.matchAll(SPEC)) {
         const q = canonPath(dirname(p), m[1]!);
         if (!texts.has(q)) { texts.add(q); todo.push(q); }
