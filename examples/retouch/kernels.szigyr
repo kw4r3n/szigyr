@@ -1,0 +1,439 @@
+import { BrushStroke, FilterParams, ImageStats, RetouchTool } from "./types.szigyr";
+
+type RoiBox = {
+  readonly empty: boolean;
+  readonly x0: usize;
+  readonly x1: usize;
+  readonly y0: usize;
+  readonly y1: usize;
+};
+
+const EMPTY_ROI: RoiBox = { empty: true, x0: 0, x1: 0, y0: 0, y1: 0 };
+
+function clamp01f32(x: f32): f32 {
+  "use rt";
+  if (!Number.isFinite(x) || x <= f32(0)) return f32(0); // szigyr-equivalent: x === 0 returns f32(0) either way
+  if (x >= f32(1)) return f32(1); // szigyr-equivalent: x === 1 returns f32(1) either way
+  return x;
+}
+
+export function clampU8(x: f32): u8 {
+  "use rt";
+  if (!Number.isFinite(x) || x <= f32(0)) return 0; // szigyr-equivalent: x === 0 rounds to 0 either way
+  if (x >= f32(255)) return 255; // szigyr-equivalent: x === 255 rounds to 255 either way
+  return u8(Math.round(x));
+}
+
+export function buildGaussianWeights(radius: usize, out: Mut<Slice<f32>>): void {
+  "use rt";
+  requires(out.length === radius * 2 + 1);
+  const sigma: f64 = f64(radius) * 0.5 + 0.5;
+  const denom: f64 = 2.0 * sigma * sigma;
+  const len = out.length;
+  let sum: f32 = f32(0);
+  for (let i: usize = 0; i < len; i += 1) {
+    const dist: usize = i < radius ? radius - i : i - radius; // szigyr-equivalent: at i === radius both arms are 0
+    const w = f32(DetMath.exp(-f64(dist * dist) / denom));
+    out[i] = w;
+    sum = sum + w;
+  }
+  for (let i: usize = 0; i < len; i += 1) {
+    out[i] = out[i] / sum;
+  }
+}
+
+export function blurHorizontal(
+  src: Ref<Slice<f32>>,
+  dst: Mut<Slice<f32>>,
+  width: usize,
+  height: usize,
+  weights: Ref<Slice<f32>>,
+  radius: usize,
+): void {
+  "use rt";
+  requires(
+    width > 0 &&
+    height > 0 &&
+    src.length === width * height * 3 &&
+    dst.length === width * height * 3 &&
+    weights.length === radius * 2 + 1,
+  );
+  const kLen = weights.length;
+  for (let y: usize = 0; y < height; y += 1) {
+    for (let x: usize = 0; x < width; x += 1) {
+      let r: f32 = f32(0);
+      let g: f32 = f32(0);
+      let b: f32 = f32(0);
+      for (let k: usize = 0; k < kLen; k += 1) {
+        // szigyr-equivalent: when x + k === radius, x + k - radius is also 0
+        const sx: usize = x + k < radius ? 0 : (x + k - radius >= width ? width - 1 : x + k - radius);
+        const w = weights[k];
+        const sIdx = (y * width + sx) * 3;
+        r = r + src[sIdx] * w;
+        g = g + src[sIdx + 1] * w;
+        b = b + src[sIdx + 2] * w;
+      }
+      const dIdx = (y * width + x) * 3;
+      dst[dIdx] = r;
+      dst[dIdx + 1] = g;
+      dst[dIdx + 2] = b;
+    }
+  }
+}
+
+export function blurVertical(
+  src: Ref<Slice<f32>>,
+  dst: Mut<Slice<f32>>,
+  width: usize,
+  height: usize,
+  weights: Ref<Slice<f32>>,
+  radius: usize,
+): void {
+  "use rt";
+  requires(
+    width > 0 &&
+    height > 0 &&
+    src.length === width * height * 3 &&
+    dst.length === width * height * 3 &&
+    weights.length === radius * 2 + 1,
+  );
+  const kLen = weights.length;
+  for (let y: usize = 0; y < height; y += 1) {
+    for (let x: usize = 0; x < width; x += 1) {
+      let r: f32 = f32(0);
+      let g: f32 = f32(0);
+      let b: f32 = f32(0);
+      for (let k: usize = 0; k < kLen; k += 1) {
+        // szigyr-equivalent: when y + k === radius, y + k - radius is also 0
+        const sy: usize = y + k < radius ? 0 : (y + k - radius >= height ? height - 1 : y + k - radius);
+        const w = weights[k];
+        const sIdx = (sy * width + x) * 3;
+        r = r + src[sIdx] * w;
+        g = g + src[sIdx + 1] * w;
+        b = b + src[sIdx + 2] * w;
+      }
+      const dIdx = (y * width + x) * 3;
+      dst[dIdx] = r;
+      dst[dIdx + 1] = g;
+      dst[dIdx + 2] = b;
+    }
+  }
+}
+
+function unpackRgbaToRgb(rgba: Ref<Slice<u8>>, dst: Mut<Slice<f32>>, npix: usize): void {
+  "use rt";
+  requires(rgba.length === npix * 4 && dst.length === npix * 3);
+  for (let p: usize = 0; p < npix; p += 1) {
+    const p4 = p * 4;
+    const p3 = p * 3;
+    dst[p3] = f32(rgba[p4]);
+    dst[p3 + 1] = f32(rgba[p4 + 1]);
+    dst[p3 + 2] = f32(rgba[p4 + 2]);
+  }
+}
+
+function reconstructFrequency(
+  rgba: Mut<Slice<u8>>,
+  srcRgb: Ref<Slice<f32>>,
+  lowRgb: Ref<Slice<f32>>,
+  npix: usize,
+  detailGain: f32,
+  smooth: f32,
+  warmth: f32,
+): void {
+  "use rt";
+  requires(rgba.length === npix * 4 && srcRgb.length === npix * 3 && lowRgb.length === npix * 3);
+  const warmShift = warmth * f32(12);
+  for (let p: usize = 0; p < npix; p += 1) {
+    const p4 = p * 4;
+    const p3 = p * 3;
+    const oR = srcRgb[p3];
+    const oG = srcRgb[p3 + 1];
+    const oB = srcRgb[p3 + 2];
+    const lR = lowRgb[p3];
+    const lG = lowRgb[p3 + 1];
+    const lB = lowRgb[p3 + 2];
+    const rR = lR + (oR - lR) * detailGain;
+    const rG = lG + (oG - lG) * detailGain;
+    const rB = lB + (oB - lB) * detailGain;
+    const bR = oR + (rR - oR) * smooth + warmShift;
+    const bG = oG + (rG - oG) * smooth;
+    const bB = oB + (rB - oB) * smooth - warmShift;
+    rgba[p4] = clampU8(bR);
+    rgba[p4 + 1] = clampU8(bG);
+    rgba[p4 + 2] = clampU8(bB);
+  }
+}
+
+export function frequencySeparatePass(
+  rgba: Mut<Slice<u8>>,
+  width: usize,
+  height: usize,
+  params: FilterParams,
+  scratch: Mut<Arena>,
+): boolean {
+  "use rt";
+  requires(width > 0 && height > 0 && rgba.length === width * height * 4);
+  scratch.reset();
+  const npix = width * height;
+  const rgbLen = npix * 3;
+  const srcRgb = scratch.alloc<f32>(rgbLen, f32(0)); // szigyr-equivalent: overwritten before read
+  const tmpRgb = scratch.alloc<f32>(rgbLen, f32(0)); // szigyr-equivalent: overwritten before read
+  const lowRgb = scratch.alloc<f32>(rgbLen, f32(0)); // szigyr-equivalent: overwritten before read
+  const weights = scratch.alloc<f32>(params.blurRadius * 2 + 1, f32(0)); // szigyr-equivalent: overwritten before read
+  if (srcRgb === null || tmpRgb === null || lowRgb === null || weights === null) {
+    return false;
+  }
+  unpackRgbaToRgb(rgba, scratch.view(srcRgb), npix);
+  buildGaussianWeights(params.blurRadius, scratch.view(weights));
+  blurHorizontal(scratch.view(srcRgb), scratch.view(tmpRgb), width, height, scratch.view(weights), params.blurRadius);
+  blurVertical(scratch.view(tmpRgb), scratch.view(lowRgb), width, height, scratch.view(weights), params.blurRadius);
+  const smooth = clamp01f32(params.smoothAmount);
+  const detailGain = Number.isFinite(params.detailGain) ? params.detailGain : f32(1);
+  const warmth = Number.isFinite(params.warmth) ? params.warmth : f32(0);
+  reconstructFrequency(rgba, scratch.view(srcRgb), scratch.view(lowRgb), npix, detailGain, smooth, warmth);
+  return true;
+}
+
+function roiBox(stroke: BrushStroke, width: usize, height: usize): RoiBox {
+  "use rt";
+  requires(width > 0 && height > 0);
+  if (
+    !Number.isFinite(stroke.radius) ||
+    stroke.radius <= f32(0) ||
+    !Number.isFinite(stroke.strength) ||
+    stroke.strength <= f32(0) ||
+    !Number.isFinite(stroke.cx) ||
+    !Number.isFinite(stroke.cy)
+  ) {
+    return EMPTY_ROI;
+  }
+  const minXF = Math.floor(stroke.cx - stroke.radius);
+  const maxXF = Math.ceil(stroke.cx + stroke.radius);
+  const minYF = Math.floor(stroke.cy - stroke.radius);
+  const maxYF = Math.ceil(stroke.cy + stroke.radius);
+  const wf = f32(width);
+  const hf = f32(height);
+  // szigyr-equivalent: boundary-touching box produces only dist >= radius (falloff = 0)
+  if (maxXF < f32(0) || minXF >= wf || maxYF < f32(0) || minYF >= hf) {
+    return EMPTY_ROI;
+  }
+  // minXF/maxXF are integers with minXF <= maxXF, maxXF >= 0, minXF < width, so 0 <= x0 <= x1 <= width - 1 holds.
+  // szigyr-equivalent: minXF/minYF are floor integers, so <= 0 and < 1 give identical 0
+  const x0: usize = minXF <= f32(0) ? 0 : usize(minXF);
+  // szigyr-equivalent: maxXF is a ceil integer, so >= width - 1 and > width - 1 give identical width - 1
+  const x1: usize = maxXF >= f32(width - 1) ? width - 1 : usize(maxXF);
+  // szigyr-equivalent: minYF is a floor integer, so <= 0 and < 1 give identical 0
+  const y0: usize = minYF <= f32(0) ? 0 : usize(minYF);
+  // szigyr-equivalent: maxYF is a ceil integer, so >= height - 1 and > height - 1 give identical height - 1
+  const y1: usize = maxYF >= f32(height - 1) ? height - 1 : usize(maxYF);
+  return { empty: false, x0, x1, y0, y1 };
+}
+
+function strokeFalloff(x: usize, y: usize, stroke: BrushStroke, hardness: f32): f32 {
+  "use rt";
+  const dx = f32(x) - stroke.cx;
+  const dy = f32(y) - stroke.cy;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist > stroke.radius) return f32(0); // szigyr-equivalent: at dist === radius formula also yields 0
+  const t = dist / stroke.radius;
+  const edgeStart = hardness * f32(0.9);
+  if (t <= edgeStart) return f32(1); // szigyr-equivalent: at t === edgeStart formula also yields 1
+  return f32(1) - (t - edgeStart) / (f32(1) - edgeStart);
+}
+
+function smoothRoiPass(
+  rgba: Mut<Slice<u8>>,
+  width: usize,
+  height: usize,
+  x0: usize,
+  y0: usize,
+  rw: usize,
+  rh: usize,
+  stroke: BrushStroke,
+  strength: f32,
+  hardness: f32,
+  smoothed: Mut<Slice<f32>>,
+): void {
+  "use rt";
+  requires(width > 0 && height > 0 && rgba.length === width * height * 4 && smoothed.length === rw * rh * 3);
+  for (let ly: usize = 0; ly < rh; ly += 1) {
+    const cy = y0 + ly;
+    const ny0 = cy > 0 ? cy - 1 : 0; // szigyr-equivalent: cy === 1 yields 0 either way
+    const ny1 = cy + 1 < height ? cy + 1 : height - 1;
+    for (let lx: usize = 0; lx < rw; lx += 1) {
+      const cx = x0 + lx;
+      const nx0 = cx > 0 ? cx - 1 : 0; // szigyr-equivalent: cx === 1 yields 0 either way
+      const nx1 = cx + 1 < width ? cx + 1 : width - 1;
+      let sumR: f32 = f32(0);
+      let sumG: f32 = f32(0);
+      let sumB: f32 = f32(0);
+      let count: usize = 0;
+      for (let sy: usize = ny0; sy <= ny1; sy += 1) {
+        for (let sx: usize = nx0; sx <= nx1; sx += 1) {
+          const sIdx = (sy * width + sx) * 4;
+          sumR = sumR + f32(rgba[sIdx]);
+          sumG = sumG + f32(rgba[sIdx + 1]);
+          sumB = sumB + f32(rgba[sIdx + 2]);
+          count += 1;
+        }
+      }
+      const inv = f32(1) / f32(count);
+      const dIdx = (ly * rw + lx) * 3;
+      smoothed[dIdx] = sumR * inv;
+      smoothed[dIdx + 1] = sumG * inv;
+      smoothed[dIdx + 2] = sumB * inv;
+    }
+  }
+  for (let ly: usize = 0; ly < rh; ly += 1) {
+    const cy = y0 + ly;
+    for (let lx: usize = 0; lx < rw; lx += 1) {
+      const cx = x0 + lx;
+      const falloff = strokeFalloff(cx, cy, stroke, hardness);
+      if (falloff > f32(0)) { // szigyr-equivalent: falloff === 0 gives blend weight 0 (no-op)
+        const w = strength * falloff;
+        const p4 = (cy * width + cx) * 4;
+        const p3 = (ly * rw + lx) * 3;
+        const oR = f32(rgba[p4]);
+        const oG = f32(rgba[p4 + 1]);
+        const oB = f32(rgba[p4 + 2]);
+        rgba[p4] = clampU8(oR + (smoothed[p3] - oR) * w);
+        rgba[p4 + 1] = clampU8(oG + (smoothed[p3 + 1] - oG) * w);
+        rgba[p4 + 2] = clampU8(oB + (smoothed[p3 + 2] - oB) * w);
+      }
+    }
+  }
+}
+
+export function applyBrushStroke(
+  rgba: Mut<Slice<u8>>,
+  width: usize,
+  height: usize,
+  tool: RetouchTool,
+  scratch: Mut<Arena>,
+): boolean {
+  "use rt";
+  requires(width > 0 && height > 0 && rgba.length === width * height * 4);
+  switch (tool.kind) {
+    case "frequency":
+      return frequencySeparatePass(rgba, width, height, tool.params, scratch);
+    case "dodge": {
+      const box = roiBox(tool.stroke, width, height);
+      if (box.empty) return true; // szigyr-equivalent: EMPTY_ROI has falloff = 0 / strength = 0
+      const strength = clamp01f32(tool.stroke.strength);
+      const hardness = clamp01f32(tool.stroke.hardness);
+      const exposure = Number.isFinite(tool.exposure) ? tool.exposure : f32(0);
+      for (let y: usize = box.y0; y <= box.y1; y += 1) {
+        for (let x: usize = box.x0; x <= box.x1; x += 1) {
+          const falloff = strokeFalloff(x, y, tool.stroke, hardness);
+          if (falloff > f32(0)) { // szigyr-equivalent: falloff === 0 gives scale = 1 (no-op)
+            const scale = f32(1) + exposure * strength * falloff;
+            const idx = (y * width + x) * 4;
+            rgba[idx] = clampU8(f32(rgba[idx]) * scale);
+            rgba[idx + 1] = clampU8(f32(rgba[idx + 1]) * scale);
+            rgba[idx + 2] = clampU8(f32(rgba[idx + 2]) * scale);
+          }
+        }
+      }
+      return true;
+    }
+    case "smooth": {
+      const box = roiBox(tool.stroke, width, height);
+      if (box.empty) return true;
+      const strength = clamp01f32(tool.stroke.strength);
+      const hardness = clamp01f32(tool.stroke.hardness);
+      const rw = box.x1 - box.x0 + 1;
+      const rh = box.y1 - box.y0 + 1;
+      scratch.reset();
+      const smoothed = scratch.alloc<f32>(rw * rh * 3, f32(0)); // szigyr-equivalent: overwritten before read
+      if (smoothed === null) {
+        return false;
+      }
+      smoothRoiPass(rgba, width, height, box.x0, box.y0, rw, rh, tool.stroke, strength, hardness, scratch.view(smoothed));
+      return true;
+    }
+  }
+}
+
+export function computeImageStats(rgba: Ref<Slice<u8>>, width: usize, height: usize): ImageStats {
+  "use rt";
+  requires(width > 0 && height > 0 && rgba.length === width * height * 4);
+  const npix = width * height;
+  let lumaSum: u64 = 0;
+  let minLuma: u8 = 255;
+  let maxLuma: u8 = 0;
+  let fnv: u64 = 14695981039346656037;
+  const prime: u64 = 1099511628211;
+  for (let p: usize = 0; p < npix; p += 1) {
+    const idx = p * 4;
+    const r = rgba[idx];
+    const g = rgba[idx + 1];
+    const b = rgba[idx + 2];
+    const a = rgba[idx + 3];
+    const luma = u8(divTrunc(u32(r) * 77 + u32(g) * 150 + u32(b) * 29, 256));
+    lumaSum = lumaSum + u64(luma);
+    if (luma < minLuma) minLuma = luma; // szigyr-equivalent: tie keeps minLuma unchanged
+    if (luma > maxLuma) maxLuma = luma; // szigyr-equivalent: tie keeps maxLuma unchanged
+    fnv = wrapMul(fnv ^ u64(r), prime);
+    fnv = wrapMul(fnv ^ u64(g), prime);
+    fnv = wrapMul(fnv ^ u64(b), prime);
+    fnv = wrapMul(fnv ^ u64(a), prime);
+  }
+  return { pixels: npix, lumaSum, minLuma, maxLuma, fnv64: fnv };
+}
+
+export function clonePixels(alloc: Alloc, src: Ref<Slice<u8>>): Vec<u8> {
+  "use owned";
+  const dst = Vec.create<u8>(alloc, src.length);
+  for (let i: usize = 0; i < src.length; i += 1) {
+    dst.push(src[i]);
+  }
+  return dst;
+}
+
+export function generateTestPortrait(alloc: Alloc, width: usize, height: usize): Vec<u8> {
+  "use owned";
+  requires(width > 0 && height > 0);
+  const out = Vec.create<u8>(alloc, width * height * 4); // szigyr-equivalent: capacity is a preallocation hint; push auto-grows
+  const cx = f32(width) * f32(0.5);
+  const cy = f32(height) * f32(0.5);
+  const invMax = f32(1) / Math.sqrt(cx * cx + cy * cy + f32(1));
+  const b1x = f32(width) * f32(0.35);
+  const b1y = f32(height) * f32(0.42);
+  const b2x = f32(width) * f32(0.65);
+  const b2y = f32(height) * f32(0.58);
+  const bRad = f32(width < height ? width : height) * f32(0.18); // szigyr-equivalent: tie gives identical value
+  for (let y: usize = 0; y < height; y += 1) {
+    for (let x: usize = 0; x < width; x += 1) {
+      const dx = f32(x) - cx;
+      const dy = f32(y) - cy;
+      const radial = clamp01f32(f32(1) - Math.sqrt(dx * dx + dy * dy) * invMax);
+      let r = f32(150) + radial * f32(82);
+      let g = f32(105) + radial * f32(66);
+      let b = f32(85) + radial * f32(52);
+      const tex: f32 = rem(x + y, 2) === 0 ? f32(8) : f32(-8);
+      r = r + tex;
+      g = g + tex;
+      b = b + tex;
+      const d1 = Math.sqrt((f32(x) - b1x) * (f32(x) - b1x) + (f32(y) - b1y) * (f32(y) - b1y));
+      if (d1 < bRad) { // szigyr-equivalent: at d1 === bRad, spot is 0
+        const spot = (f32(1) - d1 / bRad) * f32(48);
+        r = r - spot;
+        g = g - spot;
+        b = b - spot;
+      }
+      const d2 = Math.sqrt((f32(x) - b2x) * (f32(x) - b2x) + (f32(y) - b2y) * (f32(y) - b2y));
+      if (d2 < bRad) { // szigyr-equivalent: at d2 === bRad, spot is 0
+        const spot = (f32(1) - d2 / bRad) * f32(40);
+        r = r + spot * f32(0.5);
+        g = g - spot;
+        b = b - spot;
+      }
+      out.push(clampU8(r));
+      out.push(clampU8(g));
+      out.push(clampU8(b));
+      out.push(255);
+    }
+  }
+  return out;
+}

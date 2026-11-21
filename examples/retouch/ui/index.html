@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Szigyr Portable Retouch Studio</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0;
+      padding: 2rem;
+      background: #121417;
+      color: #e6e9ef;
+      font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+    }
+    .studio {
+      max-width: 720px;
+      margin: 0 auto;
+      display: grid;
+      gap: 1rem;
+    }
+    h1 { margin: 0; font-size: 1.25rem; font-weight: 600; }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      align-items: center;
+    }
+    button, select {
+      background: #1e232a;
+      color: #e6e9ef;
+      border: 1px solid #323944;
+      border-radius: 6px;
+      padding: 0.4rem 0.75rem;
+      font-size: 0.875rem;
+      cursor: pointer;
+    }
+    button:hover { background: #29303a; }
+    .stage {
+      display: flex;
+      gap: 1.5rem;
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+    canvas {
+      width: 288px;
+      height: 288px;
+      image-rendering: pixelated;
+      border: 1px solid #323944;
+      border-radius: 8px;
+      background: #0b0d10;
+      cursor: crosshair;
+      touch-action: none;
+    }
+    pre {
+      flex: 1;
+      min-width: 220px;
+      margin: 0;
+      padding: 0.9rem;
+      background: #191d23;
+      border: 1px solid #2b313b;
+      border-radius: 8px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.8125rem;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <main class="studio">
+    <h1>Szigyr Portable Frequency-Separation Retouch</h1>
+    <div class="toolbar">
+      <label>
+        Tool:
+        <select id="tool-select">
+          <option value="smooth" selected>Smooth Brush</option>
+          <option value="dodge">Dodge Brush</option>
+        </select>
+      </label>
+      <button id="btn-freq-main" type="button">Frequency (Main)</button>
+      <button id="btn-freq-worker" type="button">Frequency (Worker)</button>
+      <button id="btn-undo" type="button">Undo</button>
+      <button id="btn-redo" type="button">Redo</button>
+      <button id="btn-reset" type="button">Reset</button>
+    </div>
+    <div class="stage">
+      <canvas id="canvas" width="96" height="96"></canvas>
+      <pre id="stats" data-fnv64="" data-undo-depth="0" data-status="loading">Loading Szigyr Wasm bundle...</pre>
+    </div>
+  </main>
+  <script type="module" src="./ui.js"></script>
+</body>
+</html>

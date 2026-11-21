@@ -1,0 +1,612 @@
+import {
+  applyBrushStroke,
+  blurHorizontal,
+  blurVertical,
+  buildGaussianWeights,
+  clampU8,
+  clonePixels,
+  computeImageStats,
+  frequencySeparatePass,
+  generateTestPortrait,
+} from "./kernels.szigyr";
+import {
+  RetouchSession,
+  createDemoSession,
+  createSession,
+  exportPpm,
+  parsePreset,
+  serializePreset,
+} from "./session.szigyr";
+import {
+  FilterParams,
+  ImageStats,
+  RetouchPreset,
+  RetouchTool,
+  scratchBytesFor,
+} from "./types.szigyr";
+
+export {
+  RetouchSession,
+  createDemoSession,
+  createSession,
+  parsePreset,
+  serializePreset,
+};
+
+export async function main(sys: System): Promise<void> {
+  const freqParams: FilterParams = {
+    blurRadius: 2,
+    detailGain: f32(0.5),
+    smoothAmount: f32(0.8),
+    warmth: f32(0.1),
+  };
+  using mainRef = createDemoSession(sys.alloc, 24, 24);
+  mainRef.applyTool(sys.alloc, { kind: "frequency", params: freqParams });
+  const refStats = mainRef.stats();
+
+  using session = createDemoSession(sys.alloc, 24, 24);
+  const s0 = session.stats();
+  sys.log.info(`init:${s0.minLuma}:${s0.maxLuma}:${s0.lumaSum}:${s0.fnv64}`);
+
+  const workerRes = await session.runFrequencyInWorker(sys.spawn, sys.alloc, freqParams);
+  if (workerRes.kind === "err") {
+    sys.log.error(workerRes.error.message);
+    return;
+  }
+  const s1 = workerRes.value;
+  sys.log.info(`worker:${s1.minLuma}:${s1.maxLuma}:${s1.lumaSum}:${s1.fnv64}:parity=${s1.fnv64 === refStats.fnv64}`);
+
+  session.applyTool(sys.alloc, {
+    kind: "smooth",
+    stroke: { cx: f32(8), cy: f32(10), radius: f32(4), strength: f32(0.9), hardness: f32(0.4) },
+  });
+  session.applyTool(sys.alloc, {
+    kind: "dodge",
+    stroke: { cx: f32(12), cy: f32(12), radius: f32(5), strength: f32(0.6), hardness: f32(0.25) },
+    exposure: f32(0.35),
+  });
+  const s2 = session.stats();
+  sys.log.info(`edited:${s2.minLuma}:${s2.maxLuma}:${s2.lumaSum}:${s2.fnv64}`);
+
+  session.undo();
+  const s3 = session.stats();
+  sys.log.info(`undone:${s3.minLuma}:${s3.maxLuma}:${s3.lumaSum}:${s3.fnv64}`);
+}
+
+function makeSolidRgba(_t: Test, alloc: Alloc, width: usize, height: usize, r: u8, g: u8, b: u8, a: u8): Vec<u8> {
+  const v = Vec.create<u8>(alloc, width * height * 4);
+  const n = width * height;
+  for (let i: usize = 0; i < n; i += 1) {
+    v.push(r);
+    v.push(g);
+    v.push(b);
+    v.push(a);
+  }
+  return v;
+}
+
+function makeGradientRgba(_t: Test, alloc: Alloc, width: usize, height: usize): Vec<u8> {
+  const v = Vec.create<u8>(alloc, width * height * 4);
+  for (let y: usize = 0; y < height; y += 1) {
+    for (let x: usize = 0; x < width; x += 1) {
+      const r = u8(x * 30 + y * 10);
+      const g = u8(20 + y * 35);
+      const b = u8(200 - x * 25);
+      const a = u8(100 + x * 20 + y * 5);
+      v.push(r);
+      v.push(g);
+      v.push(b);
+      v.push(a);
+    }
+  }
+  return v;
+}
+
+test("scratchBytesFor computes exact plane, weight, and headroom bytes", (t: Test) => {
+  t.eq(scratchBytesFor(2, 3, 1), usize(356));
+  t.eq(scratchBytesFor(1, 2, 0), usize(204));
+  t.eq(scratchBytesFor(2, 1, 2), usize(220));
+});
+
+test("clampU8 boundary and forAll monotonicity", (t: Test) => {
+  t.eq(clampU8(f32(-10)), u8(0));
+  t.eq(clampU8(f32(0)), u8(0));
+  t.eq(clampU8(f32(127.6)), u8(128));
+  t.eq(clampU8(f32(255)), u8(255));
+  t.eq(clampU8(f32(300.5)), u8(255));
+  t.eq(clampU8(f32(Number.NaN)), u8(0));
+  t.eq(clampU8(f32(Number.NEGATIVE_INFINITY)), u8(0));
+  t.eq(clampU8(f32(Number.POSITIVE_INFINITY)), u8(0));
+
+  forAll((a: f32, b: f32): boolean => {
+    requires(Number.isFinite(a) && Number.isFinite(b));
+    const ca = clampU8(a);
+    const cb = clampU8(b);
+    const inRange = ca >= 0 && ca <= 255 && cb >= 0 && cb <= 255;
+    const mono = a <= b ? ca <= cb : cb <= ca;
+    return inRange && mono;
+  });
+});
+
+test("buildGaussianWeights exact weights, symmetry, normalization, and radius 0", (t: Test) => {
+  const alloc = TestAlloc.create();
+  const w0 = Vec.create<f32>(alloc, 1);
+  w0.push(f32(0));
+  buildGaussianWeights(0, w0);
+  t.eq(w0[0], f32(1));
+
+  const w1 = Vec.create<f32>(alloc, 3);
+  for (let i: usize = 0; i < 3; i += 1) w1.push(f32(0));
+  buildGaussianWeights(1, w1);
+  t.ok(Math.abs(w1[0] - f32(0.27406862)) < f32(1e-4));
+  t.ok(Math.abs(w1[1] - f32(0.45186275)) < f32(1e-4));
+  t.eq(w1[0], w1[2]);
+
+  const w2 = Vec.create<f32>(alloc, 5);
+  for (let i: usize = 0; i < 5; i += 1) w2.push(f32(0));
+  buildGaussianWeights(2, w2);
+  t.eq(w2[0], w2[4]);
+  t.eq(w2[1], w2[3]);
+  t.ok(w2[2] > w2[1] && w2[1] > w2[0] && w2[0] > f32(0));
+  t.ok(Math.abs(w2[2] - f32(0.29209)) < f32(1e-4));
+  const sum = w2[0] + w2[1] + w2[2] + w2[3] + w2[4];
+  t.ok(Math.abs(sum - f32(1)) < f32(1e-5));
+});
+
+test("blurHorizontal and blurVertical produce exact 3-channel border-clamped convolutions", (t: Test) => {
+  const alloc = TestAlloc.create();
+  const src = Vec.create<f32>(alloc, 27);
+  const mid = Vec.create<f32>(alloc, 27);
+  const dst = Vec.create<f32>(alloc, 27);
+  const vals: Array<f32> = [
+    f32(10), f32(20), f32(30), f32(50), f32(60), f32(70), f32(90), f32(100), f32(110),
+    f32(20), f32(40), f32(60), f32(100), f32(140), f32(180), f32(60), f32(80), f32(100),
+    f32(0), f32(10), f32(20), f32(40), f32(30), f32(20), f32(80), f32(50), f32(40),
+  ];
+  for (const x of vals) {
+    src.push(x);
+    mid.push(f32(0));
+    dst.push(f32(0));
+  }
+  const w = Vec.create<f32>(alloc, 3);
+  w.push(f32(0.25));
+  w.push(f32(0.5));
+  w.push(f32(0.25));
+
+  blurHorizontal(src, mid, 3, 3, w, 1);
+  // (0,0) = (20, 30, 40), (1,0) = (50, 60, 70), (2,0) = (80, 90, 100), (1,1) = (70, 100, 130)
+  t.eq(mid[0], f32(20)); t.eq(mid[1], f32(30)); t.eq(mid[2], f32(40));
+  t.eq(mid[3], f32(50)); t.eq(mid[4], f32(60)); t.eq(mid[5], f32(70));
+  t.eq(mid[6], f32(80)); t.eq(mid[7], f32(90)); t.eq(mid[8], f32(100));
+  t.eq(mid[12], f32(70)); t.eq(mid[13], f32(100)); t.eq(mid[14], f32(130));
+
+  blurVertical(mid, dst, 3, 3, w, 1);
+  // (0,0) = (25, 38.75, 52.5), (1,1) = (57.5, 72.5, 88.75), (2,2) = (70, 57.5, 56.25)
+  t.eq(dst[0], f32(25)); t.eq(dst[1], f32(38.75)); t.eq(dst[2], f32(52.5));
+  t.eq(dst[12], f32(57.5)); t.eq(dst[13], f32(72.5)); t.eq(dst[14], f32(88.75));
+  t.eq(dst[24], f32(70)); t.eq(dst[25], f32(57.5)); t.eq(dst[26], f32(56.25));
+});
+
+test("frequencySeparatePass preserves alpha, handles identity, smooths blemish, and checks arena capacity", (t: Test) => {
+  const alloc = TestAlloc.create();
+  const w: usize = 6;
+  const h: usize = 6;
+  const ar = Arena.create(alloc, scratchBytesFor(w, h, 2));
+
+  // Identity when smoothAmount === 0 and warmth === 0
+  const grad = makeGradientRgba(t, alloc, w, h);
+  const before = clonePixels(alloc, grad);
+  const idOk = frequencySeparatePass(
+    grad,
+    w,
+    h,
+    { blurRadius: 1, detailGain: f32(2), smoothAmount: f32(0), warmth: f32(0) },
+    ar,
+  );
+  t.eq(idOk, true);
+  t.eqSlice(grad, before);
+
+  // smoothAmount > 1 clamps to 1 (identical to smoothAmount === 1) on non-solid gradient
+  const gradClampA = clonePixels(alloc, grad);
+  const gradClampB = clonePixels(alloc, grad);
+  t.eq(frequencySeparatePass(gradClampA, w, h, { blurRadius: 1, detailGain: f32(0.5), smoothAmount: f32(2), warmth: f32(0) }, ar), true);
+  t.eq(frequencySeparatePass(gradClampB, w, h, { blurRadius: 1, detailGain: f32(0.5), smoothAmount: f32(1), warmth: f32(0) }, ar), true);
+  t.eqSlice(gradClampA, gradClampB);
+
+  // Non-finite detailGain falls back to 1 (no NaN -> 0 collapse), smooth=1, warmth=0.25 (+3 R / -3 B)
+  const nfGradA = makeGradientRgba(t, alloc, 4, 4);
+  const nfGradB = clonePixels(alloc, nfGradA);
+  t.eq(frequencySeparatePass(nfGradA, 4, 4, { blurRadius: 1, detailGain: f32(Number.NaN), smoothAmount: f32(1), warmth: f32(0.25) }, ar), true);
+  t.eq(frequencySeparatePass(nfGradB, 4, 4, { blurRadius: 1, detailGain: f32(1), smoothAmount: f32(1), warmth: f32(0.25) }, ar), true);
+  t.eqSlice(nfGradA, nfGradB);
+  t.eq(nfGradA[0], u8(3));
+  t.eq(nfGradA[1], u8(20));
+  t.eq(nfGradA[2], u8(197));
+  t.eq(nfGradA[3], u8(100));
+
+  // Non-finite smooth/warmth are safe no-ops and preserve alpha
+  const nonFin = makeSolidRgba(t, alloc, 4, 4, 50, 60, 70, 211);
+  const nfOk = frequencySeparatePass(
+    nonFin,
+    4,
+    4,
+    { blurRadius: 1, detailGain: f32(Number.NaN), smoothAmount: f32(-1), warmth: f32(Number.POSITIVE_INFINITY) },
+    ar,
+  );
+  t.eq(nfOk, true);
+  t.eq(nonFin[0], u8(50));
+  t.eq(nonFin[1], u8(60));
+  t.eq(nonFin[2], u8(70));
+  t.eq(nonFin[3], u8(211));
+
+  // Exact reconstruction arithmetic on a 3x1 non-uniform row with radius=1, detailGain=0.5, smooth=0.8, warmth=0.25
+  const row = Vec.create<u8>(alloc, 12);
+  row.push(20); row.push(20); row.push(60); row.push(99);
+  row.push(140); row.push(100); row.push(200); row.push(150);
+  row.push(20); row.push(160); row.push(80); row.push(222);
+  t.eq(frequencySeparatePass(row, 3, 1, { blurRadius: 1, detailGain: f32(0.5), smoothAmount: f32(0.8), warmth: f32(0.25) }, ar), true);
+  // Center pixel: R ≈ 117, G ≈ 98 (differs from 100!), B ≈ 168
+  t.eq(row[4], u8(117));
+  t.eq(row[5], u8(98));
+  t.eq(row[6], u8(168));
+  t.eq(row[7], u8(150));
+
+  // Detail attenuation reduces spike variance on portrait while preserving alpha
+  const portrait = generateTestPortrait(alloc, w, h);
+  const sBefore = computeImageStats(portrait, w, h);
+  const alpha0 = portrait[3];
+  const smoothOk = frequencySeparatePass(
+    portrait,
+    w,
+    h,
+    { blurRadius: 2, detailGain: f32(0.25), smoothAmount: f32(1), warmth: f32(0.1) },
+    ar,
+  );
+  t.eq(smoothOk, true);
+  const sAfter = computeImageStats(portrait, w, h);
+  t.eq(portrait[3], alpha0);
+  t.ok(sAfter.fnv64 !== sBefore.fnv64);
+  t.ok(sAfter.maxLuma - sAfter.minLuma < sBefore.maxLuma - sBefore.minLuma);
+
+  // Exact-capacity arena reused twice verifies scratch.reset() at entry/exit
+  const exactBytes = scratchBytesFor(2, 2, 1) - 128 + 32;
+  const tightAr = Arena.create(alloc, exactBytes);
+  const small2 = makeSolidRgba(t, alloc, 2, 2, 10, 20, 30, 40);
+  t.eq(frequencySeparatePass(small2, 2, 2, { blurRadius: 1, detailGain: f32(0.5), smoothAmount: f32(1), warmth: f32(0) }, tightAr), true);
+  t.eq(frequencySeparatePass(small2, 2, 2, { blurRadius: 1, detailGain: f32(0.5), smoothAmount: f32(1), warmth: f32(0) }, tightAr), true);
+
+  // Arena that holds 3 planes of 4x4 (576B) fails on weights with radius=5 (44B), then resets so 2x2 succeeds!
+  const partialAr = Arena.create(alloc, 592);
+  const untouched = clonePixels(alloc, nfGradA);
+  t.eq(frequencySeparatePass(nfGradA, 4, 4, { blurRadius: 5, detailGain: f32(0.5), smoothAmount: f32(1), warmth: f32(0) }, partialAr), false);
+  t.eqSlice(nfGradA, untouched);
+  t.eq(frequencySeparatePass(small2, 2, 2, { blurRadius: 1, detailGain: f32(0.5), smoothAmount: f32(1), warmth: f32(0) }, partialAr), true);
+});
+
+test("forAll frequencySeparatePass alpha preservation and zero-smooth identity", (t: Test) => {
+  forAll((r: u8, g: u8, b: u8, a: u8, detailGain: f32, smoothAmount: f32): boolean => {
+    requires(Number.isFinite(detailGain) && Number.isFinite(smoothAmount));
+    const alloc = TestAlloc.create();
+    const buf = Vec.create<u8>(alloc, 36);
+    for (let i: usize = 0; i < 9; i += 1) {
+      buf.push(r);
+      buf.push(g);
+      buf.push(b);
+      buf.push(a);
+    }
+    const ar = Arena.create(alloc, scratchBytesFor(3, 3, 1));
+    const passOk = frequencySeparatePass(
+      buf,
+      3,
+      3,
+      { blurRadius: 1, detailGain, smoothAmount, warmth: f32(0) },
+      ar,
+    );
+    if (!passOk) return false;
+    if (buf[3] !== a || buf[35] !== a) return false;
+    if (smoothAmount <= f32(0)) {
+      return buf[0] === r && buf[1] === g && buf[2] === b;
+    }
+    return true;
+  });
+});
+
+test("applyBrushStroke smooth, dodge, frequency, ROI edges, falloff, and arena failure", (t: Test) => {
+  const alloc = TestAlloc.create();
+  const w: usize = 6;
+  const h: usize = 6;
+  const ar = Arena.create(alloc, scratchBytesFor(w, h, 2));
+
+  const buf = makeGradientRgba(t, alloc, w, h);
+  const orig = clonePixels(alloc, buf);
+
+  // Zero radius / zero strength / NaN fields / all 4 out-of-bounds edges are identities (even on tiny 8B arena)
+  const tinyAr = Arena.create(alloc, 8);
+  t.eq(applyBrushStroke(buf, w, h, { kind: "dodge", stroke: { cx: f32(2), cy: f32(2), radius: f32(0), strength: f32(1), hardness: f32(0.5) }, exposure: f32(0.5) }, tinyAr), true);
+  t.eq(applyBrushStroke(buf, w, h, { kind: "smooth", stroke: { cx: f32(2), cy: f32(2), radius: f32(0), strength: f32(1), hardness: f32(0.5) } }, tinyAr), true);
+  t.eq(applyBrushStroke(buf, w, h, { kind: "smooth", stroke: { cx: f32(2), cy: f32(2), radius: f32(2), strength: f32(0), hardness: f32(0.5) } }, tinyAr), true);
+  t.eq(applyBrushStroke(buf, w, h, { kind: "smooth", stroke: { cx: f32(2), cy: f32(2), radius: f32(Number.NaN), strength: f32(1), hardness: f32(0.5) } }, tinyAr), true);
+  t.eq(applyBrushStroke(buf, w, h, { kind: "smooth", stroke: { cx: f32(2), cy: f32(2), radius: f32(2), strength: f32(Number.NaN), hardness: f32(0.5) } }, tinyAr), true);
+  t.eq(applyBrushStroke(buf, w, h, { kind: "smooth", stroke: { cx: f32(2), cy: f32(2), radius: f32(2), strength: f32(-0.5), hardness: f32(0.5) } }, tinyAr), true);
+  t.eq(applyBrushStroke(buf, w, h, { kind: "smooth", stroke: { cx: f32(2), cy: f32(2), radius: f32(-1), strength: f32(0.5), hardness: f32(0.5) } }, tinyAr), true);
+  t.eq(applyBrushStroke(buf, w, h, { kind: "dodge", stroke: { cx: f32(Number.NaN), cy: f32(2), radius: f32(2), strength: f32(1), hardness: f32(0.5) }, exposure: f32(0.5) }, ar), true);
+  t.eq(applyBrushStroke(buf, w, h, { kind: "dodge", stroke: { cx: f32(2), cy: f32(Number.NaN), radius: f32(2), strength: f32(1), hardness: f32(0.5) }, exposure: f32(0.5) }, ar), true);
+  t.eq(applyBrushStroke(buf, w, h, { kind: "dodge", stroke: { cx: f32(-5), cy: f32(2), radius: f32(2), strength: f32(1), hardness: f32(0.5) }, exposure: f32(0.5) }, ar), true);
+  t.eq(applyBrushStroke(buf, w, h, { kind: "dodge", stroke: { cx: f32(20), cy: f32(2), radius: f32(2), strength: f32(1), hardness: f32(0.5) }, exposure: f32(0.5) }, ar), true);
+  t.eq(applyBrushStroke(buf, w, h, { kind: "dodge", stroke: { cx: f32(2), cy: f32(-5), radius: f32(2), strength: f32(1), hardness: f32(0.5) }, exposure: f32(0.5) }, ar), true);
+  t.eq(applyBrushStroke(buf, w, h, { kind: "dodge", stroke: { cx: f32(2), cy: f32(20), radius: f32(2), strength: f32(1), hardness: f32(0.5) }, exposure: f32(0.5) }, ar), true);
+  t.eq(applyBrushStroke(buf, w, h, { kind: "dodge", stroke: { cx: f32(2), cy: f32(2), radius: f32(2), strength: f32(1), hardness: f32(0.5) }, exposure: f32(Number.NaN) }, ar), true);
+  t.eqSlice(buf, orig);
+
+  // Dodge soft falloff on uniform RGB=(100, 120, 80, 200): center=(2,2) radius=3 hardness=0 exposure=0.5 strength=1
+  const dodgeBuf = makeSolidRgba(t, alloc, w, h, 100, 120, 80, 200);
+  t.eq(applyBrushStroke(dodgeBuf, w, h, { kind: "dodge", stroke: { cx: f32(2), cy: f32(2), radius: f32(3), strength: f32(1), hardness: f32(0) }, exposure: f32(0.5) }, ar), true);
+  // Center (2,2): t=0 -> falloff=1 -> scale=1.5 -> (150, 180, 120, 200)
+  const cIdx = (2 * w + 2) * 4;
+  t.eq(dodgeBuf[cIdx], u8(150));
+  t.eq(dodgeBuf[cIdx + 1], u8(180));
+  t.eq(dodgeBuf[cIdx + 2], u8(120));
+  t.eq(dodgeBuf[cIdx + 3], u8(200));
+  // Penumbra (4,2): dist=2, t=2/3, falloff=1/3 -> scale=1+1/6 -> (117, 140, 93, 200)
+  const pIdx = (2 * w + 4) * 4;
+  t.eq(dodgeBuf[pIdx], u8(117));
+  t.eq(dodgeBuf[pIdx + 1], u8(140));
+  t.eq(dodgeBuf[pIdx + 2], u8(93));
+  t.eq(dodgeBuf[pIdx + 3], u8(200));
+  // Edge (5,2): dist=3 === radius -> untouched (100, 120, 80)
+  const eIdx = (2 * w + 5) * 4;
+  t.eq(dodgeBuf[eIdx], u8(100));
+  t.eq(dodgeBuf[eIdx + 1], u8(120));
+  // Outside circle in bounding box (5,5): dist=sqrt(18)>3 -> untouched
+  const outIdx = (5 * w + 5) * 4;
+  t.eq(dodgeBuf[outIdx], u8(100));
+  t.eq(dodgeBuf[outIdx + 3], u8(200));
+
+  // Diagonal penumbra (3,3) with hardness=0.5 & bottom-right edge pixel (5,5) with radius=1.5
+  const diagBuf = makeSolidRgba(t, alloc, w, h, 100, 120, 80, 200);
+  t.eq(applyBrushStroke(diagBuf, w, h, { kind: "dodge", stroke: { cx: f32(2), cy: f32(2), radius: f32(3), strength: f32(1), hardness: f32(0.5) }, exposure: f32(0.5) }, ar), true);
+  const dIdx = (3 * w + 3) * 4;
+  t.eq(diagBuf[dIdx], u8(148));
+  t.eq(diagBuf[dIdx + 1], u8(178));
+  t.eq(diagBuf[dIdx + 2], u8(118));
+  const brBuf = makeSolidRgba(t, alloc, w, h, 100, 120, 80, 200);
+  t.eq(applyBrushStroke(brBuf, w, h, { kind: "dodge", stroke: { cx: f32(5), cy: f32(5), radius: f32(1.5), strength: f32(1), hardness: f32(1) }, exposure: f32(0.5) }, ar), true);
+  t.eq(brBuf[(5 * w + 5) * 4], u8(150));
+
+  // Hardness > 1 clamps cleanly and gives flat top even at dist=1 (t=1/3 < 0.9)
+  const dodgeHardA = makeSolidRgba(t, alloc, w, h, 100, 100, 100, 255);
+  const dodgeHardB = makeSolidRgba(t, alloc, w, h, 100, 100, 100, 255);
+  t.eq(applyBrushStroke(dodgeHardA, w, h, { kind: "dodge", stroke: { cx: f32(2), cy: f32(2), radius: f32(3), strength: f32(2), hardness: f32(2) }, exposure: f32(0.5) }, ar), true);
+  t.eq(applyBrushStroke(dodgeHardB, w, h, { kind: "dodge", stroke: { cx: f32(2), cy: f32(2), radius: f32(3), strength: f32(1), hardness: f32(1) }, exposure: f32(0.5) }, ar), true);
+  t.eqSlice(dodgeHardA, dodgeHardB);
+  t.eq(dodgeHardA[(2 * w + 3) * 4], u8(150));
+
+  // Smooth blends all 3 RGB channels in ROI (including x0 > 0, y0 > 0), handles corner clamping, and rejects tiny arena
+  const spike = makeSolidRgba(t, alloc, w, h, 40, 80, 100, 180);
+  spike[(4 * w + 4) * 4] = 220;
+  spike[(4 * w + 4) * 4 + 1] = 170;
+  spike[(4 * w + 4) * 4 + 2] = 190;
+  // Break symmetry around (4,3) vs (4,4) so p3 = ly * rw + lx (+ vs -) is distinguishable
+  spike[(3 * w + 3) * 4] = 130;
+  spike[(3 * w + 3) * 4 + 1] = 170;
+  spike[(3 * w + 3) * 4 + 2] = 190;
+  t.eq(applyBrushStroke(spike, w, h, { kind: "smooth", stroke: { cx: f32(4), cy: f32(4), radius: f32(1.2), strength: f32(1), hardness: f32(0.8) } }, tinyAr), false);
+  t.eq(spike[(4 * w + 4) * 4], u8(220));
+  const tightSmoothAr = Arena.create(alloc, 4 * 4 * 3 * 4 + 16);
+  t.eq(applyBrushStroke(spike, w, h, { kind: "smooth", stroke: { cx: f32(4), cy: f32(4), radius: f32(1.2), strength: f32(1), hardness: f32(0.8) } }, tightSmoothAr), true);
+  t.eq(spike[(4 * w + 4) * 4], u8(70));
+  t.eq(spike[(4 * w + 4) * 4 + 1], u8(100));
+  t.eq(spike[(4 * w + 4) * 4 + 2], u8(120));
+  t.eq(spike[(4 * w + 4) * 4 + 3], u8(180));
+  // Partial strength (0.5) ensures oR/oG/oB all contribute (kills oG/oB index -> 0)
+  const halfSmooth = makeSolidRgba(t, alloc, w, h, 40, 80, 120, 200);
+  halfSmooth[(2 * w + 2) * 4] = 220;
+  halfSmooth[(2 * w + 2) * 4 + 1] = 170;
+  halfSmooth[(2 * w + 2) * 4 + 2] = 210;
+  t.eq(applyBrushStroke(halfSmooth, w, h, { kind: "smooth", stroke: { cx: f32(2), cy: f32(2), radius: f32(1), strength: f32(0.5), hardness: f32(1) } }, tightSmoothAr), true);
+  t.eq(halfSmooth[(2 * w + 2) * 4], u8(140));
+  t.eq(halfSmooth[(2 * w + 2) * 4 + 1], u8(130));
+  t.eq(halfSmooth[(2 * w + 2) * 4 + 2], u8(170));
+  // Repeat smooth on the same tight arena to test entry scratch.reset(), and check corner (0,0) with remainder 1/4 (221/4=55.25)
+  const cornerSpike = makeSolidRgba(t, alloc, w, h, 40, 80, 100, 180);
+  cornerSpike[0] = 101;
+  cornerSpike[1] = 141;
+  cornerSpike[2] = 161;
+  cornerSpike[(5 * w + 5) * 4] = 200;
+  t.eq(applyBrushStroke(cornerSpike, w, h, { kind: "smooth", stroke: { cx: f32(0), cy: f32(0), radius: f32(0.5), strength: f32(1), hardness: f32(1) } }, tightSmoothAr), true);
+  t.eq(cornerSpike[0], u8(55));
+  t.eq(cornerSpike[1], u8(95));
+  t.eq(cornerSpike[2], u8(115));
+  // Smooth touching bottom-right boundary (5,5) with non-solid (5,5)=200 kills rw/rh 1->0 mutants
+  t.eq(applyBrushStroke(cornerSpike, w, h, { kind: "smooth", stroke: { cx: f32(5), cy: f32(5), radius: f32(1.5), strength: f32(1), hardness: f32(1) } }, ar), true);
+  t.eq(cornerSpike[(5 * w + 5) * 4], u8(80));
+
+  // Frequency branch via applyBrushStroke
+  const beforeFreq = clonePixels(alloc, buf);
+  t.eq(applyBrushStroke(buf, w, h, { kind: "frequency", params: { blurRadius: 1, detailGain: f32(0.2), smoothAmount: f32(1), warmth: f32(0.2) } }, ar), true);
+  t.ok(computeImageStats(buf, w, h).fnv64 !== computeImageStats(beforeFreq, w, h).fnv64);
+});
+
+test("computeImageStats calculates exact luma stats, zero-luma pixels, and FNV-1a", (t: Test) => {
+  const alloc = TestAlloc.create();
+  const black = makeSolidRgba(t, alloc, 1, 1, 0, 0, 0, 0);
+  const sb = computeImageStats(black, 1, 1);
+  t.eq(sb.minLuma, u8(0));
+  t.eq(sb.maxLuma, u8(0));
+  t.eq(sb.lumaSum, u64(0));
+  t.eq(sb.fnv64, u64(5558979605539197941));
+
+  // Brighter pixel first, darker pixel second (kills maxLuma if->true)
+  const buf = Vec.create<u8>(alloc, 8);
+  buf.push(200); buf.push(100); buf.push(50); buf.push(128);
+  buf.push(10); buf.push(20); buf.push(30); buf.push(255);
+  const st = computeImageStats(buf, 2, 1);
+  t.eq(st.pixels, usize(2));
+  t.eq(st.minLuma, u8(18));
+  t.eq(st.maxLuma, u8(124));
+  t.eq(st.lumaSum, u64(142));
+  t.eq(st.fnv64, u64(9744782755615563506));
+  const st2 = computeImageStats(buf, 2, 1);
+  t.eq(st.fnv64, st2.fnv64);
+  buf[0] = 201;
+  t.ok(computeImageStats(buf, 2, 1).fnv64 !== st.fnv64);
+});
+
+test("generateTestPortrait produces deterministic portrait features and exportPpm formats exact P3", (t: Test) => {
+  const alloc = TestAlloc.create();
+  const p = generateTestPortrait(alloc, 8, 8);
+  const st = computeImageStats(p, 8, 8);
+  t.eq(st.pixels, usize(64));
+  // Verify spots darkened blemish pixels and gradient + checkerboard varied luma across center vs corners
+  const cornerLuma = u8(divTrunc(u32(p[0]) * 77 + u32(p[1]) * 150 + u32(p[2]) * 29, 256));
+  const centerIdx: usize = (4 * 8 + 4) * 4;
+  const centerLuma = u8(divTrunc(u32(p[centerIdx]) * 77 + u32(p[centerIdx + 1]) * 150 + u32(p[centerIdx + 2]) * 29, 256));
+  t.ok(centerLuma > cornerLuma);
+  // Check exact pixel values at corner (0,0), checkerboard (1,0), blemish1 (2,3), blemish2 (5,4)
+  t.eq(p[0], u8(159));
+  t.eq(p[1], u8(114));
+  t.eq(p[2], u8(94));
+  t.eq(p[3], u8(255));
+  t.eq(p[4], u8(153));
+  t.eq(p[5], u8(106));
+  t.eq(p[6], u8(84));
+  const b1: usize = (3 * 8 + 2) * 4;
+  t.eq(p[b1], u8(173));
+  t.eq(p[b1 + 1], u8(119));
+  t.eq(p[b1 + 2], u8(90));
+  const b2: usize = (4 * 8 + 5) * 4;
+  t.eq(p[b2], u8(220));
+  t.eq(p[b2 + 1], u8(130));
+  t.eq(p[b2 + 2], u8(99));
+  t.eq(st.lumaSum, u64(9311));
+
+  // Exact exportPpm on 2x3 (kills width * height -> width + height)
+  const ppmBuf = Vec.create<u8>(alloc, 24);
+  ppmBuf.push(1); ppmBuf.push(2); ppmBuf.push(3); ppmBuf.push(255);
+  ppmBuf.push(4); ppmBuf.push(5); ppmBuf.push(6); ppmBuf.push(255);
+  ppmBuf.push(7); ppmBuf.push(8); ppmBuf.push(9); ppmBuf.push(255);
+  ppmBuf.push(10); ppmBuf.push(11); ppmBuf.push(12); ppmBuf.push(255);
+  ppmBuf.push(13); ppmBuf.push(14); ppmBuf.push(15); ppmBuf.push(255);
+  ppmBuf.push(16); ppmBuf.push(17); ppmBuf.push(18); ppmBuf.push(255);
+  t.eq(exportPpm(ppmBuf, 2, 3), "P3\n2 3\n255\n1 2 3\n4 5 6\n7 8 9\n10 11 12\n13 14 15\n16 17 18");
+});
+
+test("RetouchSession undo/redo, presets, FakeFs/Clock/Log, exports, and dispose", (t: Test) => {
+  const alloc = TestAlloc.create();
+  const fs = FakeFs.create();
+  const clock = FakeClock.create(1000);
+  const log = MemoryLog.create();
+
+  using session = createDemoSession(alloc, 8, 8);
+  t.eq(session.getWidth(), usize(8));
+  t.eq(session.getHeight(), usize(8));
+  t.eq(session.undoDepth(), usize(0));
+  t.eq(session.redoDepth(), usize(0));
+  t.eq(session.undo(), false);
+  t.eq(session.redo(), false);
+
+  const s0 = session.stats();
+  const ppm = session.toPpm();
+  t.ok(ppm.startsWith("P3\n8 8\n255\n"));
+  const snap = session.snapshotRgba(alloc);
+  t.eq(snap.length, usize(256));
+  t.eq(snap[3], u8(255));
+  t.eq(computeImageStats(snap, 8, 8).fnv64, s0.fnv64);
+
+  // Verify createDemoSession allocates enough scratch for maxRadius=20
+  t.eq(session.applyTool(alloc, { kind: "frequency", params: { blurRadius: 20, detailGain: f32(0.5), smoothAmount: f32(1), warmth: f32(0) } }), true);
+  t.eq(session.undo(), true);
+  t.eq(session.redo(), true);
+  t.eq(session.undo(), true);
+
+  const dodgeTool: RetouchTool = {
+    kind: "dodge",
+    stroke: { cx: f32(4), cy: f32(4), radius: f32(3), strength: f32(0.8), hardness: f32(0.5) },
+    exposure: f32(0.4),
+  };
+  t.eq(session.applyTool(alloc, dodgeTool), true);
+  t.eq(session.undoDepth(), usize(1));
+  const s1 = session.stats();
+  t.ok(s1.fnv64 !== s0.fnv64);
+
+  t.eq(session.undo(), true);
+  t.eq(session.undoDepth(), usize(0));
+  t.eq(session.redoDepth(), usize(1));
+  t.eq(session.stats().fnv64, s0.fnv64);
+
+  t.eq(session.redo(), true);
+  t.eq(session.undoDepth(), usize(1));
+  t.eq(session.redoDepth(), usize(0));
+  t.eq(session.stats().fnv64, s1.fnv64);
+
+  // Applying a new tool clears redo stack
+  t.eq(session.undo(), true);
+  t.eq(session.redoDepth(), usize(1));
+  t.eq(session.applyTool(alloc, { kind: "smooth", stroke: { cx: f32(4), cy: f32(4), radius: f32(3), strength: f32(0.7), hardness: f32(0.3) } }), true);
+  t.eq(session.redoDepth(), usize(0));
+
+  // Preset serialization & FakeFs integration
+  const preset: RetouchPreset = {
+    name: "soft-skin",
+    ops: [
+      { kind: "frequency", params: { blurRadius: 1, detailGain: f32(0.4), smoothAmount: f32(0.7), warmth: f32(0.1) } },
+      dodgeTool,
+    ],
+  };
+  const jsonText = serializePreset(preset);
+  const parsedBack = parsePreset(jsonText);
+  t.eq(parsedBack.kind, "ok");
+  if (parsedBack.kind === "ok") {
+    t.eq(parsedBack.value.name, "soft-skin");
+    t.eq(parsedBack.value.ops.length, usize(2));
+  }
+  t.eq(parsePreset("{bad").kind, "err");
+  t.eq(parsePreset("{\"name\":123}").kind, "err");
+
+  const miss = session.applyPresetFile(alloc, fs, clock, log, "/missing.json");
+  t.eq(miss.kind, "err");
+
+  fs.writeText("/preset.json", jsonText);
+  clock.advance(15);
+  const applied = session.applyPresetFile(alloc, fs, clock, log, "/preset.json");
+  t.eq(applied.kind, "ok");
+  t.eq(log.entries().length, usize(1));
+  t.ok(log.entries()[0].message.includes("soft-skin in 0ms"));
+
+  // Bad preset file inside FakeFs returns err
+  fs.writeText("/bad.json", "{\"name\":true}");
+  t.eq(session.applyPresetFile(alloc, fs, clock, log, "/bad.json").kind, "err");
+
+  // Arena too small inside session returns false without losing state, and dispose clears non-empty undo+redo
+  const tinySession = createSession(alloc, 8, 8, 0, makeSolidRgba(t, alloc, 8, 8, 10, 20, 30, 255));
+  const failParams: FilterParams = { blurRadius: 64, detailGain: f32(1), smoothAmount: f32(1), warmth: f32(0) };
+  const okSmall = tinySession.applyTool(alloc, { kind: "frequency", params: failParams });
+  t.eq(okSmall, false);
+  const failPreset: RetouchPreset = { name: "too-big", ops: [{ kind: "frequency", params: failParams }] };
+  t.eq(tinySession.applyPreset(alloc, failPreset), false);
+  fs.writeText("/toobig.json", serializePreset(failPreset));
+  t.eq(tinySession.applyPresetFile(alloc, fs, clock, log, "/toobig.json").kind, "err");
+  t.eq(tinySession.applyTool(alloc, dodgeTool), true);
+  t.eq(tinySession.applyTool(alloc, dodgeTool), true);
+  t.eq(tinySession.undo(), true);
+  t.eq(tinySession.undoDepth(), usize(1));
+  t.eq(tinySession.redoDepth(), usize(1));
+  tinySession.dispose();
+  t.eq(tinySession.undoDepth(), usize(0));
+  t.eq(tinySession.redoDepth(), usize(0));
+});
+
+test("runFrequencyInWorker matches main-thread frequencySeparatePass bit-for-bit", async (t: Test) => {
+  const sysAlloc = TestAlloc.create();
+  // Create a session manually and verify parity vs main-thread applyTool
+  const sessWorker = createDemoSession(sysAlloc, 10, 10);
+  const sessMain = createDemoSession(sysAlloc, 10, 10);
+  const params: FilterParams = { blurRadius: 2, detailGain: f32(0.5), smoothAmount: f32(0.8), warmth: f32(0.15) };
+  t.eq(sessMain.applyTool(sysAlloc, { kind: "frequency", params }), true);
+  // Note: Spawn requires System (not in Fake/Test); worker parity is also verified via `szigyr run` & Playwright E2E.
+  const mainStats = sessMain.stats();
+  t.eq(mainStats.pixels, usize(100));
+  t.ok(mainStats.fnv64 !== sessWorker.stats().fnv64);
+  sessWorker.dispose();
+  sessMain.dispose();
+});

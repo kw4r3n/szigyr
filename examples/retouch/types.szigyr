@@ -1,0 +1,54 @@
+export type BrushStroke = {
+  readonly cx: f32;
+  readonly cy: f32;
+  readonly radius: f32;
+  readonly strength: f32;
+  readonly hardness: f32;
+};
+
+export type FilterParams = {
+  readonly blurRadius: usize;
+  readonly detailGain: f32;
+  readonly smoothAmount: f32;
+  readonly warmth: f32;
+};
+
+export type RetouchTool =
+  | { readonly kind: "smooth"; readonly stroke: BrushStroke }
+  | { readonly kind: "dodge"; readonly stroke: BrushStroke; readonly exposure: f32 }
+  | { readonly kind: "frequency"; readonly params: FilterParams };
+
+export type RetouchPreset = {
+  readonly name: string;
+  readonly ops: Array<RetouchTool>;
+};
+
+export type ImageStats = {
+  readonly pixels: usize;
+  readonly lumaSum: u64;
+  readonly minLuma: u8;
+  readonly maxLuma: u8;
+  readonly fnv64: u64;
+};
+
+export type WorkerJob = Struct<{
+  pixels: Vec<u8>;
+  scratch: Arena;
+  width: usize;
+  height: usize;
+  params: FilterParams;
+}>;
+
+export type WorkerResult = Struct<{
+  pixels: Vec<u8>;
+  scratch: Arena;
+  stats: ImageStats;
+  ok: boolean;
+}>;
+
+export function scratchBytesFor(width: usize, height: usize, maxRadius: usize): usize {
+  "use rt";
+  const planeBytes = width * height * 3 * 4;
+  const weightBytes = (maxRadius * 2 + 1) * 4;
+  return planeBytes * 3 + weightBytes + 128;
+}

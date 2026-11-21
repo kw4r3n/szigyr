@@ -1,0 +1,242 @@
+import {
+  applyBrushStroke,
+  clonePixels,
+  computeImageStats,
+  frequencySeparatePass,
+  generateTestPortrait,
+} from "./kernels.szigyr";
+import {
+  FilterParams,
+  ImageStats,
+  RetouchPreset,
+  RetouchTool,
+  WorkerJob,
+  WorkerResult,
+  scratchBytesFor,
+} from "./types.szigyr";
+
+export function parsePreset(raw: string): Result<RetouchPreset, CastError> {
+  const parsed = JSON.parse(raw);
+  if (parsed.kind === "err") {
+    return err({ code: parsed.error.code, message: parsed.error.message });
+  }
+  return cast<RetouchPreset>(parsed.value);
+}
+
+export function serializePreset(preset: RetouchPreset): string {
+  return JSON.stringify<RetouchPreset>(preset);
+}
+
+export function exportPpm(pixels: Ref<Slice<u8>>, width: usize, height: usize): string {
+  requires(width > 0 && height > 0 && pixels.length === width * height * 4);
+  const npix = width * height;
+  const lines: Array<string> = [`P3\n${width} ${height}\n255`];
+  for (let p: usize = 0; p < npix; p += 1) {
+    const idx = p * 4;
+    lines.push(`${pixels[idx]} ${pixels[idx + 1]} ${pixels[idx + 2]}`);
+  }
+  return lines.join("\n");
+}
+
+async function frequencyWorker(port: Port<WorkerResult, WorkerJob>): Promise<void> {
+  const job = await port.recv();
+  if (job === null) return;
+  const { pixels, scratch, width, height, params } = job;
+  const okFlag = frequencySeparatePass(pixels, width, height, params, scratch);
+  const stats = computeImageStats(pixels, width, height);
+  port.send({ pixels, scratch, stats, ok: okFlag });
+}
+
+export class RetouchSession implements Disposable {
+  private readonly width: usize;
+  private readonly height: usize;
+  private readonly maxRadius: usize;
+  private readonly current: OwnedCell<Vec<u8>>;
+  private readonly scratch: OwnedCell<Arena>;
+  private readonly undoStack: Array<OwnedCell<Vec<u8>>>;
+  private readonly redoStack: Array<OwnedCell<Vec<u8>>>;
+
+  constructor(
+    width: usize,
+    height: usize,
+    maxRadius: usize,
+    current: OwnedCell<Vec<u8>>,
+    scratch: OwnedCell<Arena>,
+  ) {
+    this.width = width;
+    this.height = height;
+    this.maxRadius = maxRadius;
+    this.current = current;
+    this.scratch = scratch;
+    this.undoStack = [];
+    this.redoStack = [];
+  }
+
+  getWidth(): usize {
+    return this.width;
+  }
+
+  getHeight(): usize {
+    return this.height;
+  }
+
+  undoDepth(): usize {
+    return this.undoStack.length;
+  }
+
+  redoDepth(): usize {
+    return this.redoStack.length;
+  }
+
+  private clearRedo(): void {
+    while (this.redoStack.length > 0) {
+      const _dropped = this.redoStack.pop();
+    }
+  }
+
+  applyTool(alloc: Alloc, tool: RetouchTool): boolean {
+    const buf = this.current.take();
+    const ar = this.scratch.take();
+    const snap = clonePixels(alloc, buf);
+    const applied = applyBrushStroke(buf, this.width, this.height, tool, ar);
+    this.current.put(buf);
+    this.scratch.put(ar);
+    if (!applied) {
+      return false;
+    }
+    this.undoStack.push(OwnedCell.create<Vec<u8>>(snap));
+    this.clearRedo();
+    return true;
+  }
+
+  undo(): boolean {
+    const prev = this.undoStack.pop();
+    if (prev === null) return false;
+    const cur = this.current.take();
+    this.redoStack.push(OwnedCell.create<Vec<u8>>(cur));
+    this.current.put(prev.take());
+    return true;
+  }
+
+  redo(): boolean {
+    const next = this.redoStack.pop();
+    if (next === null) return false;
+    const cur = this.current.take();
+    this.undoStack.push(OwnedCell.create<Vec<u8>>(cur));
+    this.current.put(next.take());
+    return true;
+  }
+
+  stats(): ImageStats {
+    const buf = this.current.take();
+    const s = computeImageStats(buf, this.width, this.height);
+    this.current.put(buf);
+    return s;
+  }
+
+  toPpm(): string {
+    const buf = this.current.take();
+    const ppm = exportPpm(buf, this.width, this.height);
+    this.current.put(buf);
+    return ppm;
+  }
+
+  snapshotRgba(alloc: Alloc): Vec<u8> {
+    const buf = this.current.take();
+    const out = clonePixels(alloc, buf);
+    this.current.put(buf);
+    return out;
+  }
+
+  applyPreset(alloc: Alloc, preset: RetouchPreset): boolean {
+    for (const op of preset.ops) {
+      if (!this.applyTool(alloc, op)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  applyPresetFile(
+    alloc: Alloc,
+    fs: Fs,
+    clock: Clock,
+    log: Log,
+    path: string,
+  ): Result<ImageStats, IoError> {
+    const t0 = clock.nowMs();
+    const text = fs.readText(path);
+    if (text.kind === "err") {
+      return err(text.error);
+    }
+    const parsed = parsePreset(text.value);
+    if (parsed.kind === "err") {
+      return err({ code: parsed.error.code, message: parsed.error.message });
+    }
+    if (!this.applyPreset(alloc, parsed.value)) {
+      return err({ code: "EINVAL", message: "scratch arena too small for preset" });
+    }
+    const elapsed = clock.nowMs() - t0;
+    log.info(`applied preset ${parsed.value.name} in ${elapsed}ms`);
+    return ok(this.stats());
+  }
+
+  async runFrequencyInWorker(
+    spawn: Spawn,
+    alloc: Alloc,
+    params: FilterParams,
+  ): Promise<Result<ImageStats, IoError>> {
+    const buf = this.current.take();
+    const ar = this.scratch.take();
+    const snap = clonePixels(alloc, buf);
+    const port = spawn.isolate<WorkerJob, WorkerResult>(frequencyWorker);
+    port.send({ pixels: buf, scratch: ar, width: this.width, height: this.height, params });
+    const reply = await port.recv();
+    port.close();
+    if (reply === null) {
+      this.current.put(snap);
+      this.scratch.put(Arena.create(alloc, scratchBytesFor(this.width, this.height, this.maxRadius)));
+      return err({ code: "EIO", message: "worker closed without reply" });
+    }
+    const { pixels: outBuf, scratch: outAr, stats, ok: okFlag } = reply;
+    this.current.put(outBuf);
+    this.scratch.put(outAr);
+    if (!okFlag) {
+      return err({ code: "EINVAL", message: "scratch arena too small for frequency pass" });
+    }
+    this.undoStack.push(OwnedCell.create<Vec<u8>>(snap));
+    this.clearRedo();
+    return ok(stats);
+  }
+
+  dispose(): void {
+    while (this.undoStack.length > 0) {
+      const _u = this.undoStack.pop();
+    }
+    this.clearRedo();
+  }
+}
+
+export function createSession(
+  alloc: Alloc,
+  width: usize,
+  height: usize,
+  maxRadius: usize,
+  pixels: Vec<u8>,
+): RetouchSession {
+  requires(width > 0 && height > 0 && pixels.length === width * height * 4);
+  const ar = Arena.create(alloc, scratchBytesFor(width, height, maxRadius));
+  return new RetouchSession(
+    width,
+    height,
+    maxRadius,
+    OwnedCell.create<Vec<u8>>(pixels),
+    OwnedCell.create<Arena>(ar),
+  );
+}
+
+export function createDemoSession(alloc: Alloc, width: usize, height: usize): RetouchSession {
+  requires(width > 0 && height > 0);
+  const pixels = generateTestPortrait(alloc, width, height);
+  return createSession(alloc, width, height, 20, pixels);
+}
