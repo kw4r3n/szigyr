@@ -2,7 +2,8 @@
 import {
   Arena, Pool, RingRx, RingTx, Vec, asTrap, capturing, cast, err, isTrap, noteIsolateTrap, ok, ringPushRaw, spawnIsolate, stopFakeIsolates, stopIsolates, takeIsolateTrap, type Pos, type Result, type RingShared, type WasmMeta,
 } from "../../runtime-js/src/browser.ts";
-import { ALLOC, type Audio, type AudioCallbackSpec, type AudioConfig, type AudioStream, type Clock, type Fs, type IoError, type Js, type JsError, type JsRef, type Log, type Random, type Spawn, type System } from "./types.ts";
+import { ALLOC, type Audio, type AudioCallbackSpec, type AudioConfig, type AudioStream, type Clock, type Fs, type IoError, type Js, type JsError, type JsRef, type Log, type Net, type Proc, type Random, type Spawn, type System } from "./types.ts";
+import { webFetch } from "./fake.ts";
 
 export * from "./types.ts";
 export * from "./fake.ts";
@@ -32,6 +33,26 @@ export const browserFs: Fs = {
   writeText: () => err({ code: "ENOSYS", message: "Fs is not available in browser" }),
   readBytes: () => err({ code: "ENOSYS", message: "Fs is not available in browser" }),
   writeBytes: () => err({ code: "ENOSYS", message: "Fs is not available in browser" }),
+  exists: () => false,
+  stat: () => err({ code: "ENOSYS", message: "Fs is not available in browser" }),
+  readDir: () => err({ code: "ENOSYS", message: "Fs is not available in browser" }),
+  mkdir: () => err({ code: "ENOSYS", message: "Fs is not available in browser" }),
+  remove: () => err({ code: "ENOSYS", message: "Fs is not available in browser" }),
+  rename: () => err({ code: "ENOSYS", message: "Fs is not available in browser" }),
+  writeTextAtomic: () => err({ code: "ENOSYS", message: "Fs is not available in browser" }),
+  writeBytesAtomic: () => err({ code: "ENOSYS", message: "Fs is not available in browser" }),
+};
+
+export const browserProc: Proc = {
+  run: async () => err({ code: "ENOSYS", message: "Proc.run is not available in browser" }),
+  env: () => null,
+  cwd: () => "/",
+  args: () => [],
+};
+
+export const browserNet: Net = {
+  fetch: webFetch,
+  serve: async () => err({ code: "ENOSYS", message: "Net.serve is not available in browser" }),
 };
 
 export const browserSpawn: Spawn = {
@@ -224,6 +245,8 @@ export function createBrowserSystem(opts: BrowserRunOptions): System {
     js: browserJs,
     spawn: browserSpawn,
     audio: createBrowserAudio(opts),
+    net: browserNet,
+    proc: browserProc,
   };
 }
 

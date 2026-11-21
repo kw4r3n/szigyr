@@ -11,8 +11,8 @@ export const GEN_ARITY: Record<GenName, number> = {
   Array: 1, ReadonlyArray: 1, Map: 2, Set: 1, Promise: 1, Vec: 1, Slice: 1, Pool: 1, Handle: 1, Arena: 0, ArenaBuf: 1, RingTx: 1, RingRx: 1, Ref: 1, Mut: 1, OwnedCell: 1, Ptr: 1, ConstPtr: 1, CType: 1, CHandle: 1, Port: 2,
 };
 /** Opaque builtin types: authorities (§7.1), Test, JsRef, the fakes (Q038). */
-export const AUTHORITIES = ["System", "Alloc", "Fs", "Clock", "Random", "Log", "Js", "Ffi", "Spawn", "Audio"] as const; // Ffi: §14.2; Spawn: §15.2; Audio: §15.5
-export const OPAQUE_NAMES = new Set<string>([...AUTHORITIES, "JsRef", "Test", "AudioStream", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeSpawn", "FakeAudio"]);
+export const AUTHORITIES = ["System", "Alloc", "Fs", "Clock", "Random", "Log", "Js", "Ffi", "Spawn", "Audio", "Net", "Proc"] as const; // Ffi: §14.2; Spawn: §15.2; Audio: §15.5; Net/Proc: Q294-Q295
+export const OPAQUE_NAMES = new Set<string>([...AUTHORITIES, "JsRef", "Test", "AudioStream", "HttpServer", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeSpawn", "FakeAudio", "FakeNet", "FakeProc"]);
 
 export interface Field { name: string; type: Type; readonly: boolean }
 /** Q127: conditions a type parameter takes on from the positions it is used in, checked on every instantiation. */
@@ -128,6 +128,20 @@ export const result = (ok: Type, err: Type): Type => union([
 ]);
 export const ERROR_RECORD = record([ro("code", STR), ro("message", STR)]); // IoError, CastError, JsError (§7.1, Q036)
 export const AUDIO_CONFIG_RECORD = record([ro("sampleRate", num("u32")), ro("channels", num("u32"))]); // AudioConfig (§15.5, Q283)
+export const FS_KIND_UNION = union([{ k: "lit", value: "file" }, { k: "lit", value: "dir" }, { k: "lit", value: "symlink" }, { k: "lit", value: "other" }]);
+export const DIR_ENTRY_RECORD = record([ro("name", STR), ro("kind", FS_KIND_UNION)]);
+export const FILE_STAT_RECORD = record([ro("kind", FS_KIND_UNION), ro("size", num("u64")), ro("mtimeMs", F64)]);
+export const ENV_VAR_RECORD = record([ro("name", STR), ro("value", STR)]);
+export const PROC_OPTIONS_RECORD = record([ro("cwd", nullable(STR)), ro("env", gen("ReadonlyArray", ENV_VAR_RECORD)), ro("stdin", nullable(STR)), ro("timeoutMs", nullable(num("u32")))]);
+export const PROC_OUTPUT_RECORD = record([ro("exitCode", num("i32")), ro("stdout", STR), ro("stderr", STR), ro("timedOut", BOOL)]);
+export const PROC_REQUEST_RECORD = record([ro("program", STR), ro("args", gen("Array", STR)), ro("cwd", nullable(STR)), ro("env", gen("Array", ENV_VAR_RECORD)), ro("stdin", nullable(STR)), ro("timeoutMs", nullable(num("u32")))]);
+export const HTTP_HEADER_RECORD = record([ro("name", STR), ro("value", STR)]);
+export const HTTP_REQUEST_INIT_RECORD = record([ro("method", STR), ro("headers", gen("ReadonlyArray", HTTP_HEADER_RECORD)), ro("body", nullable(STR)), ro("timeoutMs", nullable(num("u32")))]);
+export const HTTP_RESPONSE_RECORD = record([ro("status", num("u16")), ro("headers", gen("Array", HTTP_HEADER_RECORD)), ro("body", STR)]);
+export const HTTP_SERVER_CONFIG_RECORD = record([ro("host", STR), ro("port", num("u16"))]);
+export const HTTP_SERVER_REQUEST_RECORD = record([ro("method", STR), ro("path", STR), ro("query", STR), ro("headers", gen("Array", HTTP_HEADER_RECORD)), ro("body", STR)]);
+export const HTTP_SERVER_RESPONSE_RECORD = record([ro("status", num("u16")), ro("headers", gen("ReadonlyArray", HTTP_HEADER_RECORD)), ro("body", STR)]);
+export const HTTP_CLIENT_REQUEST_RECORD = record([ro("method", STR), ro("url", STR), ro("headers", gen("Array", HTTP_HEADER_RECORD)), ro("body", nullable(STR))]);
 export const DISPOSABLE_IFACE: IfaceSym = { name: "Disposable", tparams: [], methods: new Map([["dispose", fn([], VOID)]]) };
 export const ASYNC_DISPOSABLE_IFACE: IfaceSym = { name: "AsyncDisposable", tparams: [], methods: new Map([["disposeAsync", fn([], gen("Promise", VOID))]]) };
 export const DISPOSABLE: Type = { k: "iface", iface: DISPOSABLE_IFACE, args: [] };
@@ -159,7 +173,7 @@ const sameFields = (a: Field[], b: Field[]): boolean =>
   a.length === b.length && a.every((f, i) => { const g = b[i]!; return f.name === g.name && f.readonly === g.readonly && same(f.type, g.type); });
 
 /** Fakes assignable to their authority (Q020-10, Q038). */
-const FAKE_OF: Record<string, string> = { FakeClock: "Clock", SeededRandom: "Random", MemoryLog: "Log", FakeFs: "Fs", FakeSpawn: "Spawn", FakeAudio: "Audio" };
+const FAKE_OF: Record<string, string> = { FakeClock: "Clock", SeededRandom: "Random", MemoryLog: "Log", FakeFs: "Fs", FakeSpawn: "Spawn", FakeAudio: "Audio", FakeNet: "Net", FakeProc: "Proc" };
 
 /** Q020. `arg` enables the argument-position conversions (Vec -> Slice). */
 export function assignable(s: Type, t: Type, arg = false): boolean {
@@ -180,7 +194,7 @@ export function assignable(s: Type, t: Type, arg = false): boolean {
     return s.params.every((p, i) => assignable(t.params[i]!, p)) && (assignable(s.ret, t.ret) || (t.ret.k === "prim" && t.ret.name === "void" && !!t.prefix && !(s.ret.k === "gen" && s.ret.name === "Promise")));
   }
   if (s.k === "class" && t.k === "iface") return s.cls.implements.some((i) => same(substClass(i, s), t));
-  if (s.k === "opaque" && s.name === "AudioStream" && t.k === "iface" && t.iface === ASYNC_DISPOSABLE_IFACE) return true;
+  if (s.k === "opaque" && (s.name === "AudioStream" || s.name === "HttpServer") && t.k === "iface" && t.iface === ASYNC_DISPOSABLE_IFACE) return true;
   if (s.k === "tparam" && s.p.constraint) return assignable(s.p.constraint, t, arg);
   if (s.k === "opaque" && t.k === "opaque") return FAKE_OF[s.name] === t.name;
   return false;

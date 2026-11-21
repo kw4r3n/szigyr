@@ -1850,3 +1850,30 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
   - (a) 独立コマンド `szigyr prove [--json] [--no-cache] [--all] [--strict] [--timeout=<ms>] <file>`（および MCP `szigyr_prove`、関数単位ハッシュキャッシュ `.szigyr-cache/prove.json`）を設け、**`szigyr build --release` のときに限り**証明済みの C / Wasm 検査を削除する（開発時の `run` / `test` および通常 `build` ではすべての実行時検査を維持する）。
   - (b) `run` / `test` でも `--prove` 指定で検査を削除する。
 - 既定案: (a)。
+
+### Q293 ツール系権限の拡充（`Fs` ディレクトリ操作・`stat`・atomic 書込）
+- 決定（2026-11-22、オーナー）: (a)。
+- 関連: §7.1、Q279、Q286
+- 状況: 既存の `Fs`（`readText`/`writeText`/`readBytes`/`writeBytes`）に加えて、ローカル CLI / ツール系アプリ向けに存在確認・メタデータ取得・ディレクトリ走査/作成/削除/リネーム・クラッシュセーフな atomic 上書きが必要である。
+- 選択肢:
+  - (a) `Fs` と `FakeFs` に managed 専用の `exists(path): boolean`、`stat(path): Result<FileStat, IoError>`（シンボリックリンクを辿らない `lstat`、`size: u64`・`mtimeMs: f64`）、`readDir(path): Result<Array<DirEntry>, IoError>`（辞書順ソート、`kind: "file" | "dir" | "symlink" | "other"`）、`mkdir(path)`（再帰作成）、`remove(path)`（ファイルまたは再帰削除、不在時は `ENOENT`）、`rename(from, to)`、`writeTextAtomic(path, text)`、`writeBytesAtomic(path, data: Ref<Slice<u8>>)`（同ディレクトリ一時ファイル `O_EXCL`＋`fsync`＋`rename`）を追加する。
+  - (b) 別権限 `FsAdmin` に分離する。
+- 既定案: (a)。
+
+### Q294 `Proc` 権限と `FakeProc`
+- 決定（2026-11-22、オーナー）: (a)。
+- 関連: §7.1、§11、Q279
+- 状況: 外部コマンドの安全な直接起動（シェルインジェクション回避）とプロセス環境・引数参照を決定的テストと両立させる必要がある。
+- 選択肢:
+  - (a) `System.proc: Proc`（managed 専用）を設け、一括実行 `run(program, args, opts?): Promise<Result<ProcOutput, IoError>>`（`shell: false` 固定、任意の `opts?: ProcOptions` は `sig.min = 2`、`timeoutMs` で `SIGKILL`＋`timedOut: true`）、`env(name): string | null`、`cwd(): string`、`args(): Array<string>`（CLI `szigyr run file.szigyr -- ...` は `--` 以降の引数を渡す）を提供する。テスト用フェイク `FakeProc` に `setEnv`/`setCwd`/`setArgs`/`onRun`/`calls` を設ける。
+  - (b) 対話ストリーミング起動 `spawn` を含めるか、`env`/`cwd`/`args` を別権限にする。
+- 既定案: (a)。
+
+### Q295 `Net` 権限、`HttpServer`、`FakeNet`
+- 決定（2026-11-22、オーナー）: (a)。
+- 関連: §5、§7.1、§13、Q279
+- 状況: 予約語だった `Net` を解禁し、HTTP クライアントとローカル HTTP サーバを依存ゼロ・UTF-8 テキスト最小構成で提供する必要がある。
+- 選択肢:
+  - (a) `Net` を予約語から外して `System.net: Net`（managed 専用）に追加する。`fetch(url, init?): Promise<Result<HttpResponse, IoError>>`（`http:`/`https:` 限定・UTF-8 `body: string`・任意の第 2 引数 `HttpRequestInit` は `sig.min = 1`・`timeoutMs` 付き）および `serve(cfg: HttpServerConfig, handler): Promise<Result<HttpServer, IoError>>`（`HttpServer` は `AsyncDisposable` で `await using` と `main`/テスト終了時自動クローズに対応）を提供する。テスト用 `FakeNet` は決定的インメモリループバック（`localhost` / `127.0.0.1`）と `onFetch` / `requests` を提供する。
+  - (b) バイナリ `fetchBytes` や WebSocket / 生 TCP ソケットも含める。
+- 既定案: (a)。

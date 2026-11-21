@@ -1,0 +1,5 @@
+// expect: E4006 @ 3:17
+// stage: 2
+function f(net: Net): void {
+  "use rt";
+}

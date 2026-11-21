@@ -4,6 +4,27 @@ export interface IoError { readonly code: string; readonly message: string }
 /** Q036: code is the JS exception's name. */
 export interface JsError { readonly code: string; readonly message: string }
 export type JsRef = unknown;
+export type FsEntryKind = "file" | "dir" | "symlink" | "other";
+export interface DirEntry { readonly name: string; readonly kind: FsEntryKind }
+export interface FileStat { readonly kind: FsEntryKind; readonly size: bigint; readonly mtimeMs: number }
+export interface EnvVar { readonly name: string; readonly value: string }
+export interface ProcOptions { readonly cwd: string | null; readonly env: readonly EnvVar[]; readonly stdin: string | null; readonly timeoutMs: number | null }
+export interface ProcOutput { readonly exitCode: number; readonly stdout: string; readonly stderr: string; readonly timedOut: boolean }
+export interface ProcRequest { readonly program: string; readonly args: string[]; readonly cwd: string | null; readonly env: EnvVar[]; readonly stdin: string | null; readonly timeoutMs: number | null }
+export interface HttpHeader { readonly name: string; readonly value: string }
+export interface HttpRequestInit { readonly method: string; readonly headers: readonly HttpHeader[]; readonly body: string | null; readonly timeoutMs: number | null }
+export interface HttpResponse { readonly status: number; readonly headers: HttpHeader[]; readonly body: string }
+export interface HttpServerConfig { readonly host: string; readonly port: number }
+export interface HttpServerRequest { readonly method: string; readonly path: string; readonly query: string; readonly headers: HttpHeader[]; readonly body: string }
+export interface HttpServerResponse { readonly status: number; readonly headers: readonly HttpHeader[]; readonly body: string }
+export interface HttpClientRequest { readonly method: string; readonly url: string; readonly headers: HttpHeader[]; readonly body: string | null }
+export interface HttpServer {
+  readonly host: string;
+  readonly port: number;
+  close(): Promise<void>;
+  disposeAsync(): Promise<void>;
+  isOpen(): boolean;
+}
 
 export interface Log { info(msg: string): void; warn(msg: string): void; error(msg: string): void }
 export interface Clock { nowMs(): number; sleep(ms: number): Promise<void> }
@@ -13,6 +34,24 @@ export interface Fs {
   writeText(path: string, text: string): Result<null, IoError>;
   readBytes(path: string, dst: Vec<number>): Result<number, IoError>;
   writeBytes(path: string, data: Slice<number> | Vec<number>): Result<null, IoError>;
+  exists(path: string): boolean;
+  stat(path: string): Result<FileStat, IoError>;
+  readDir(path: string): Result<DirEntry[], IoError>;
+  mkdir(path: string): Result<null, IoError>;
+  remove(path: string): Result<null, IoError>;
+  rename(from: string, to: string): Result<null, IoError>;
+  writeTextAtomic(path: string, text: string): Result<null, IoError>;
+  writeBytesAtomic(path: string, data: Slice<number> | Vec<number>): Result<null, IoError>;
+}
+export interface Proc {
+  run(program: string, args: readonly string[], options?: ProcOptions): Promise<Result<ProcOutput, IoError>>;
+  env(name: string): string | null;
+  cwd(): string;
+  args(): string[];
+}
+export interface Net {
+  fetch(url: string, init?: HttpRequestInit): Promise<Result<HttpResponse, IoError>>;
+  serve(config: HttpServerConfig, handler: (req: HttpServerRequest) => Promise<HttpServerResponse>): Promise<Result<HttpServer, IoError>>;
 }
 export interface Spawn {
   isolate(path: string, name: string, fn: (port: Port, alloc: Alloc) => unknown): Port;
@@ -45,5 +84,4 @@ export interface Js {
   /** Wraps a Szigyr function as a multi-arg returning JS function receiving raw `JsRef[]`. */
   fn(f: (args: JsRef[]) => JsRef): JsRef;
 }
-/** Net is reserved. */
-export interface System { readonly alloc: Alloc; readonly fs: Fs; readonly clock: Clock; readonly random: Random; readonly log: Log; readonly js: Js; readonly spawn: Spawn; readonly audio: Audio }
+export interface System { readonly alloc: Alloc; readonly fs: Fs; readonly clock: Clock; readonly random: Random; readonly log: Log; readonly js: Js; readonly spawn: Spawn; readonly audio: Audio; readonly net: Net; readonly proc: Proc }

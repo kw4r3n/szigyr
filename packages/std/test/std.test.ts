@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { Arena, Trap, Vec, panic, requires, setForeignTrapCheck, stopFakeIsolates, takeIsolateTrap, type Pos } from "../../runtime-js/src/index.ts";
-import { ALLOC, FakeAudio, FakeClock, FakeFs, FakeSpawn, MemoryLog, SeededRandom, TestAlloc, createSystem, nodeFs, nodeJs, runMain } from "../src/index.ts";
-import { mkdtempSync } from "node:fs";
+import { ALLOC, FakeAudio, FakeClock, FakeFs, FakeNet, FakeProc, FakeSpawn, MemoryLog, SeededRandom, TestAlloc, createSystem, nodeFs, nodeJs, runMain } from "../src/index.ts";
+import { mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -86,6 +86,34 @@ describe("fakes", () => {
     src.set(1, 255); // copy isolation
     expect(fs.readBytes("/slice", dst)).toEqual({ kind: "ok", value: 2 });
     expect([dst.length, dst.get(0), dst.get(1)]).toEqual([2, 2, 3]);
+
+    expect(fs.mkdir("/a/b")).toEqual({ kind: "ok", value: null });
+    expect(fs.exists("/a")).toBe(true);
+    expect(fs.exists("/a/b")).toBe(true);
+    expect(fs.exists("/missing")).toBe(false);
+    expect(fs.writeTextAtomic("/a/b/z.txt", "hi")).toEqual({ kind: "ok", value: null });
+    expect(fs.writeBytesAtomic("/a/b/a.bin", src.slice(0, 2))).toEqual({ kind: "ok", value: null });
+    const st = fs.stat("/a/b/a.bin");
+    expect(st.kind).toBe("ok");
+    if (st.kind === "ok") {
+      expect(st.value.kind).toBe("file");
+      expect(st.value.size).toBe(2n);
+      expect(st.value.mtimeMs).toBeGreaterThan(0);
+    }
+    const dir = fs.readDir("/a/b");
+    expect(dir).toEqual({ kind: "ok", value: [{ name: "a.bin", kind: "file" }, { name: "z.txt", kind: "file" }] });
+    expect(fs.rename("/a/b/z.txt", "/a/b/m.txt")).toEqual({ kind: "ok", value: null });
+    expect(fs.rename("/a/b", "/a/c")).toEqual({ kind: "ok", value: null });
+    expect(fs.readText("/a/c/m.txt")).toEqual({ kind: "ok", value: "hi" });
+    expect(fs.rename("/a/c/m.txt", "/a/c").kind).toBe("err"); // EISDIR
+    expect(fs.rename("/a/c/m.txt/sub", "/a/x").kind).toBe("err"); // ENOTDIR
+    expect(fs.rename("/missing", "/a/x").kind).toBe("err"); // ENOENT
+    expect(fs.mkdir("/a/c/m.txt/sub").kind).toBe("err"); // EEXIST/ENOTDIR
+    expect(fs.writeTextAtomic("/a/c", "x").kind).toBe("err"); // EISDIR
+    expect(fs.remove("/").kind).toBe("err"); // EBUSY
+    expect(fs.remove("/a").kind).toBe("ok");
+    expect(fs.exists("/a")).toBe(false);
+    expect(fs.remove("/a").kind).toBe("err"); // ENOENT
   });
   it("FakeSpawn roundtrip, alloc 2nd param, trap forwarding, and deadlock detection", async () => {
     setForeignTrapCheck(() => {
@@ -134,6 +162,70 @@ describe("fakes", () => {
       setForeignTrapCheck(undefined);
     }
   });
+  it("FakeProc env, cwd, args, onRun, calls, and errors", async () => {
+    const p = FakeProc.create();
+    p.setEnv("MODE", "test");
+    p.setCwd("/work");
+    p.setArgs(["--flag", "val"]);
+    expect(p.env("MODE")).toBe("test");
+    expect(p.env("MISSING")).toBeNull();
+    expect(p.cwd()).toBe("/work");
+    expect(p.args()).toEqual(["--flag", "val"]);
+
+    expect(await p.run("", [])).toEqual({ kind: "err", error: { code: "EINVAL", message: expect.any(String) } });
+    expect(await p.run("missing", [])).toEqual({ kind: "err", error: { code: "ENOENT", message: expect.any(String) } });
+
+    p.onRun((req) => ({ kind: "ok", value: { exitCode: 0, stdout: `${req.program}:${req.args.join(",")}:${req.stdin ?? ""}`, stderr: "", timedOut: false } }));
+    const res = await p.run("echo", ["a", "b"], { cwd: "/sub", env: [{ name: "K", value: "V" }], stdin: "in", timeoutMs: 50 });
+    expect(res).toEqual({ kind: "ok", value: { exitCode: 0, stdout: "echo:a,b:in", stderr: "", timedOut: false } });
+    p.onRun(() => ({ kind: "err", error: { code: "EACCES", message: "denied" } }));
+    expect(await p.run("denied", [])).toEqual({ kind: "err", error: { code: "EACCES", message: "denied" } });
+    expect(p.calls()).toHaveLength(4);
+    expect(p.calls()[2]).toEqual({
+      program: "echo",
+      args: ["a", "b"],
+      cwd: "/sub",
+      env: [{ name: "K", value: "V" }],
+      stdin: "in",
+      timeoutMs: 50,
+    });
+  });
+  it("FakeNet serve, loopback fetch, onFetch, close, and errors", async () => {
+    const n = FakeNet.create();
+    expect((await n.serve({ host: "bad host", port: 0 }, async () => ({ status: 200, headers: [], body: "" }))).kind).toBe("err");
+    expect((await n.serve({ host: "127.0.0.1", port: -1 }, async () => ({ status: 200, headers: [], body: "" }))).kind).toBe("err");
+    expect((await n.fetch("http://127.0.0.1:9999/")).kind).toBe("err"); // ECONNREFUSED
+
+    const srvRes = await n.serve({ host: "127.0.0.1", port: 0 }, async (req) => ({
+      status: 201,
+      headers: [{ name: "X-Method", value: req.method }],
+      body: `${req.path}?${req.query}:${req.body}`,
+    }));
+    expect(srvRes.kind).toBe("ok");
+    if (srvRes.kind !== "ok") return;
+    const srv = srvRes.value;
+    expect(srv.port).toBeGreaterThan(0);
+    expect((await n.serve({ host: "127.0.0.1", port: srv.port }, async () => ({ status: 200, headers: [], body: "" }))).kind).toBe("err"); // EADDRINUSE
+
+    const r1 = await n.fetch(`http://127.0.0.1:${srv.port}/items?q=42`, {
+      method: "POST",
+      headers: [{ name: "Content-Type", value: "text/plain" }],
+      body: "hello",
+      timeoutMs: 1000,
+    });
+    expect(r1).toEqual({
+      kind: "ok",
+      value: { status: 201, headers: [{ name: "x-method", value: "POST" }], body: "/items?q=42:hello" },
+    });
+    await srv.disposeAsync();
+    expect(srv.isOpen()).toBe(false);
+    expect((await n.fetch(`http://127.0.0.1:${srv.port}/`)).kind).toBe("err");
+
+    n.onFetch((req) => ({ kind: "ok", value: { status: 200, headers: [], body: `mock:${req.url}` } }));
+    const r2 = await n.fetch("https://example.invalid/api");
+    expect(r2).toEqual({ kind: "ok", value: { status: 200, headers: [], body: "mock:https://example.invalid/api" } });
+    expect(n.requests().map((r) => r.url)).toContain("https://example.invalid/api");
+  });
   it("TestAlloc", () => { expect(TestAlloc.create()).toBeDefined(); });
 });
 
@@ -162,6 +254,24 @@ describe("node authorities", () => {
     expect(nodeFs.writeBytes(join(dir, "sub.bin"), src.slice(10, 14))).toEqual({ kind: "ok", value: null });
     expect(nodeFs.readBytes(join(dir, "sub.bin"), sOut)).toEqual({ kind: "ok", value: 4 });
     expect([sOut.get(0), sOut.get(1), sOut.get(2), sOut.get(3)]).toEqual([10, 11, 12, 13]);
+
+    expect(nodeFs.mkdir(join(dir, "nested/sub"))).toEqual({ kind: "ok", value: null });
+    expect(nodeFs.exists(join(dir, "nested/sub"))).toBe(true);
+    expect(nodeFs.writeTextAtomic(join(dir, "nested/sub/b.txt"), "atomic")).toEqual({ kind: "ok", value: null });
+    expect(nodeFs.writeBytesAtomic(join(dir, "nested/sub/a.bin"), src.slice(0, 3))).toEqual({ kind: "ok", value: null });
+    expect(nodeFs.writeTextAtomic(join(dir, "nested"), "bad").kind).toBe("err"); // EISDIR
+    expect(readdirSync(dir).some((e) => e.startsWith(".sztmp-"))).toBe(false);
+    const st = nodeFs.stat(join(dir, "nested/sub/a.bin"));
+    expect(st.kind).toBe("ok");
+    if (st.kind === "ok") { expect(st.value.kind).toBe("file"); expect(st.value.size).toBe(3n); }
+    expect(nodeFs.readDir(join(dir, "nested/sub"))).toEqual({
+      kind: "ok",
+      value: [{ name: "a.bin", kind: "file" }, { name: "b.txt", kind: "file" }],
+    });
+    expect(nodeFs.rename(join(dir, "nested/sub/b.txt"), join(dir, "nested/sub/c.txt"))).toEqual({ kind: "ok", value: null });
+    expect(nodeFs.readText(join(dir, "nested/sub/c.txt"))).toEqual({ kind: "ok", value: "atomic" });
+    expect(nodeFs.remove(join(dir, "nested"))).toEqual({ kind: "ok", value: null });
+    expect(nodeFs.exists(join(dir, "nested"))).toBe(false);
   });
   it("Js: traps and stack exhaustion pass through (§8)", async () => {
     const boom = (): never => panic("x");
@@ -240,10 +350,10 @@ describe("node authorities", () => {
     class TrapCtor { constructor(cb: () => unknown) { cb(); } }
     expect(() => nodeJs.new(TrapCtor, [trapFn])).toThrow(Trap);
   });
-  it("System has the eight members; Log routes to the writers (Q059)", () => {
+  it("System has the ten members; Log routes to the writers (Q059)", () => {
     const out: string[] = [], errs: string[] = [];
     const sys = createSystem((s) => out.push(s), (s) => errs.push(s));
-    expect(Object.keys(sys).sort()).toEqual(["alloc", "audio", "clock", "fs", "js", "log", "random", "spawn"]);
+    expect(Object.keys(sys).sort()).toEqual(["alloc", "audio", "clock", "fs", "js", "log", "net", "proc", "random", "spawn"]);
     sys.log.info("a"); sys.log.warn("b"); sys.log.error("c");
     expect([out, errs]).toEqual([["a\n"], ["b\n", "c\n"]]);
     const r = sys.random.nextF64();

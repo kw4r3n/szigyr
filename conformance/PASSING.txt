@@ -542,6 +542,7 @@ reject/E3008-call-result-as-mut-arg.szigyr
 reject/E3008-call-result-as-ref-arg.szigyr
 reject/E3008-call-result-as-slice-arg.szigyr
 reject/E3008-fs-readbytes-temp.szigyr
+reject/E3008-fs-writebytesatomic-temp.szigyr
 reject/E3008-slice-of-call-result.szigyr
 reject/E3008-slice-of-chandle-get.szigyr
 reject/E3008-struct-literal-as-ref-arg.szigyr
@@ -549,6 +550,7 @@ reject/E3008-vec-create-as-ref-arg.szigyr
 reject/E4001-cfn-of-strict-function.szigyr
 reject/E4001-file-rt-function-override-strict.szigyr
 reject/E4001-forAll-rt-unsafe.szigyr
+reject/E4001-fs-exists-in-strict.szigyr
 reject/E4001-managed-calls-rt-unsafe.szigyr
 reject/E4001-managed-function-as-fn-arg.szigyr
 reject/E4001-pow-assign-in-strict.szigyr
@@ -618,6 +620,8 @@ reject/E4006-alloc-param-in-rt.szigyr
 reject/E4006-clock-param-in-rt.szigyr
 reject/E4006-fs-param-in-rt.szigyr
 reject/E4006-log-param-in-rt.szigyr
+reject/E4006-net-param-in-rt.szigyr
+reject/E4006-proc-param-in-rt.szigyr
 reject/E4006-random-param-after-borrow-in-rt.szigyr
 reject/E4006-rt-generic-authority-type-argument.szigyr
 reject/E4007-box-of-arena.szigyr
@@ -672,6 +676,7 @@ reject/E6002-ensures-consumes-result.szigyr
 reject/E6002-ensures-owned-arg.szigyr
 reject/E6002-forAll-in-requires.szigyr
 reject/E6002-fs-readbytes-in-contract.szigyr
+reject/E6002-fs-remove-in-contract.szigyr
 reject/E6002-invariant-mutating-method.szigyr
 reject/E6002-requires-arena-alloc.szigyr
 reject/E6002-requires-builtin-through-nullable.szigyr
@@ -873,6 +878,9 @@ run/257-math-number-f32.szigyr
 run/258-fs-binary-io.szigyr
 run/259-isolate-alloc-and-fake-spawn.szigyr
 run/26-trap-div-by-zero.szigyr
+run/260-fs-dir-stat-atomic.szigyr
+run/261-proc-and-fake-proc.szigyr
+run/262-net-and-fake-net.szigyr
 run/27-trap-ownedcell-empty.szigyr
 run/28-trap-shift-range.szigyr
 run/29-trap-invariant.szigyr

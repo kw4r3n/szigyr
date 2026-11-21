@@ -86,31 +86,35 @@ export function applyDiagnosticFixes(diagnostics: readonly Diagnostic[]): { file
 
 export async function main(argv: string[], out: (s: string) => void, err: (s: string) => void): Promise<number> {
   const rawJson = argv.includes("--json");
+  const dashIdx = argv.indexOf("--");
+  const parseOpts = (raw: string[]) => parseArgs({
+    args: raw, allowPositionals: true,
+    options: {
+      json: { type: "boolean" },
+      watch: { type: "boolean", short: "w" },
+      fix: { type: "boolean" },
+      "no-cache": { type: "boolean" },
+      all: { type: "boolean" },
+      strict: { type: "boolean" },
+      release: { type: "boolean" },
+      timeout: { type: "string" },
+      "fail-on-survived": { type: "boolean" },
+      backend: { type: "string" },
+      target: { type: "string" },
+      mode: { type: "string", default: "app" },
+      "out-dir": { type: "string", short: "o", default: "dist" },
+    },
+  });
   let args;
   try {
-    args = parseArgs({
-      args: argv, allowPositionals: true,
-      options: {
-        json: { type: "boolean" },
-        watch: { type: "boolean", short: "w" },
-        fix: { type: "boolean" },
-        "no-cache": { type: "boolean" },
-        all: { type: "boolean" },
-        strict: { type: "boolean" },
-        release: { type: "boolean" },
-        timeout: { type: "string" },
-        "fail-on-survived": { type: "boolean" },
-        backend: { type: "string" },
-        target: { type: "string" },
-        mode: { type: "string", default: "app" },
-        "out-dir": { type: "string", short: "o", default: "dist" },
-      },
-    });
+    args = parseOpts(dashIdx >= 0 ? argv.slice(0, dashIdx) : argv);
+    if (dashIdx >= 0 && args.positionals[0] !== "run") args = parseOpts(argv);
   } catch (e) {
     err(rawJson ? `${JSON.stringify({ kind: "error", code: "CLI_USAGE", message: (e as Error).message, usage: USAGE })}\n` : `${(e as Error).message}\n${USAGE}\n`);
     return 2;
   }
   const [cmd, ...files] = args.positionals;
+  const progArgs = dashIdx >= 0 && cmd === "run" ? argv.slice(dashIdx + 1) : [];
   const json = !!args.values.json;
   const watch = !!args.values.watch;
   const fix = !!args.values.fix;
@@ -333,7 +337,7 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
       const rs: RunResult[] = [];
       const analysis = analyze(files[0]!, parser); // D162: one analysis for all backends
       for (const b of backends) {
-        const cur = await run(files[0]!, { backend: b, analysis }); // diagnostics go to stderr: stdout is the program's (Q060)
+        const cur = await run(files[0]!, { backend: b, analysis, args: progArgs }); // diagnostics go to stderr: stdout is the program's (Q060)
         if (cur.diagnostics.length) { err(diags(cur.diagnostics)); return 1; }
         rs.push(cur);
       }

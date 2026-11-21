@@ -1,0 +1,41 @@
+// expect-output: env=dev:null;cwd=/repo;args=--one|two;r1=0:tool:x,y::0;r2=0:tool:z:in:25;deny=EACCES;calls=3
+// stage: 2
+
+export async function main(sys: System): Promise<void> {
+  const fp = FakeProc.create();
+  fp.setEnv("MODE", "dev");
+  fp.setCwd("/repo");
+  fp.setArgs(["--one", "two"]);
+  const eMode = fp.env("MODE") ?? "null";
+  const eMiss = fp.env("MISSING") ?? "null";
+  const curCwd = fp.cwd();
+  const curArgs = fp.args().join("|");
+
+  fp.onRun((req: ProcRequest) => {
+    if (req.program === "deny") {
+      return err({ code: "EACCES", message: "denied" });
+    }
+    const tout = req.timeoutMs ?? 0;
+    const sin = req.stdin ?? "";
+    return ok({
+      exitCode: 0,
+      stdout: `${req.program}:${req.args.join(",")}:${sin}:${tout}`,
+      stderr: "",
+      timedOut: false,
+    });
+  });
+
+  const r1 = await fp.run("tool", ["x", "y"]);
+  const r2 = await fp.run("tool", ["z"], {
+    cwd: "/sub",
+    env: [{ name: "K", value: "V" }],
+    stdin: "in",
+    timeoutMs: 25,
+  });
+  const r3 = await fp.run("deny", []);
+
+  const s1 = r1.kind === "ok" ? `${r1.value.exitCode}:${r1.value.stdout}` : `err:${r1.error.code}`;
+  const s2 = r2.kind === "ok" ? `${r2.value.exitCode}:${r2.value.stdout}` : `err:${r2.error.code}`;
+  const s3 = r3.kind === "ok" ? `ok:${r3.value.exitCode}` : r3.error.code;
+  sys.log.info(`env=${eMode}:${eMiss};cwd=${curCwd};args=${curArgs};r1=${s1};r2=${s2};deny=${s3};calls=${fp.calls().length}`);
+}

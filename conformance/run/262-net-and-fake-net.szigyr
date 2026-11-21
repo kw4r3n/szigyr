@@ -1,0 +1,43 @@
+// expect-output: r1=201:/ping?:;r2=201:/items?a=1:hi:POST;after=ECONNREFUSED;mock=200:mock:GET:https://example.invalid/v1;reqs=4
+// stage: 2
+
+async function runWithScopedServer(net: FakeNet): Promise<string> {
+  const res = await net.serve({ host: "127.0.0.1", port: 0 }, async (req: HttpServerRequest) => ({
+    status: 201,
+    headers: [{ name: "X-Req", value: req.method }],
+    body: `${req.path}?${req.query}:${req.body}`,
+  }));
+  if (res.kind !== "ok") return `serve_err=${res.error.code}`;
+  await using srv = res.value;
+  const port = srv.port;
+  const r1 = await net.fetch(`http://127.0.0.1:${port}/ping`);
+  const r2 = await net.fetch(`http://127.0.0.1:${port}/items?a=1`, {
+    method: "POST",
+    headers: [{ name: "X-In", value: "9" }],
+    body: "hi",
+    timeoutMs: 500,
+  });
+  const s1 = r1.kind === "ok" ? `${r1.value.status}:${r1.value.body}` : r1.error.code;
+  const h2 = r2.kind === "ok" ? (r2.value.headers.find((h: HttpHeader) => h.name === "x-req")?.value ?? "missing") : "err";
+  const s2 = r2.kind === "ok" ? `${r2.value.status}:${r2.value.body}:${h2}` : r2.error.code;
+  return `${port}|r1=${s1};r2=${s2}`;
+}
+
+export async function main(sys: System): Promise<void> {
+  const net = FakeNet.create();
+  const scoped = await runWithScopedServer(net);
+  const parts = scoped.split("|");
+  const portStr = parts[0];
+  const loopOut = parts[1];
+  const after = await net.fetch(`http://127.0.0.1:${portStr}/after`);
+  const afterStr = after.kind === "ok" ? `ok:${after.value.status}` : after.error.code;
+
+  net.onFetch((req: HttpClientRequest) => ok({
+    status: 200,
+    headers: [],
+    body: `mock:${req.method}:${req.url}`,
+  }));
+  const r3 = await net.fetch("https://example.invalid/v1");
+  const mockStr = r3.kind === "ok" ? `${r3.value.status}:${r3.value.body}` : r3.error.code;
+  sys.log.info(`${loopOut};after=${afterStr};mock=${mockStr};reqs=${net.requests().length}`);
+}

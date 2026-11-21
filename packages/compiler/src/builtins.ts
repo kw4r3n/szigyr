@@ -1,12 +1,15 @@
 // §12 allowlist for P2 (D010): builtin type names, global values, namespace and member tables (signatures from Q032, Q033, Q038).
 import {
-  AUDIO_CONFIG_RECORD, ASYNC_DISPOSABLE, BOOL, DISPOSABLE, ERROR_RECORD, F64, NULL, STR, UNKNOWN, USIZE, VOID, fn, gen, newTParam, nullable, num, opaque, result, record, ro, unref,
+  AUDIO_CONFIG_RECORD, ASYNC_DISPOSABLE, BOOL, DIR_ENTRY_RECORD, DISPOSABLE, ENV_VAR_RECORD, ERROR_RECORD, F64, FILE_STAT_RECORD,
+  HTTP_CLIENT_REQUEST_RECORD, HTTP_HEADER_RECORD, HTTP_REQUEST_INIT_RECORD, HTTP_RESPONSE_RECORD, HTTP_SERVER_CONFIG_RECORD,
+  HTTP_SERVER_REQUEST_RECORD, HTTP_SERVER_RESPONSE_RECORD, NULL, PROC_OPTIONS_RECORD, PROC_OUTPUT_RECORD, PROC_REQUEST_RECORD,
+  STR, UNKNOWN, USIZE, VOID, fn, gen, newTParam, nullable, num, opaque, result, record, ro, unref,
   type FnType, type GenName, type NumName, type Type, AUTHORITIES, NUM_NAMES, GEN_ARITY, OPAQUE_NAMES,
 } from "./types.ts";
 import { DETMATH_BINARY, DETMATH_UNARY } from "./detmath.ts";
 
 /** Names reserved by §13 / Q011 that resolve to nothing (E2000). */
-export const RESERVED = new Set(["bigint", "undefined", "Net"]); // Ffi resolves since §14, Spawn since §15.2, i64/u64 in §3.1
+export const RESERVED = new Set(["bigint", "undefined"]); // Ffi: §14, Spawn: §15.2, i64/u64: §3.1, Net: Q295
 
 /** Q006: unresolved names that are global authorities (E5001). */
 export const GLOBAL_AUTHORITIES = new Set([
@@ -16,17 +19,20 @@ export const GLOBAL_AUTHORITIES = new Set([
 ]);
 
 /** Namespace objects (Q034). */
-export const NAMESPACES = new Set(["Math", "Number", "JSON", "String", "Promise", "Vec", "Pool", "Arena", "Ring", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeSpawn", "FakeAudio", "TestAlloc", "DetMath", "Ptr", "CHandle"]);
+export const NAMESPACES = new Set(["Math", "Number", "JSON", "String", "Promise", "Vec", "Pool", "Arena", "Ring", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeSpawn", "FakeAudio", "FakeNet", "FakeProc", "TestAlloc", "DetMath", "Ptr", "CHandle"]);
 /** Builtin functions handled by the checker (§12). */
 export const BUILTIN_FUNCTIONS = new Set([...NUM_NAMES, "wrapAdd", "wrapSub", "wrapMul", "divTrunc", "rem", "ok", "err", "panic", "cast", "requires", "ensures", "invariant", "test", "forAll", "cfn"]);
 /** §13: the identifier-like names it reserves (declaring or referencing one is E1000 / E2000, Q231). */
-export const SPEC_RESERVED = ["bigint", "undefined", "FixedArray", "Rc", "Weak", "Net", "decreases"];
+export const SPEC_RESERVED = ["bigint", "undefined", "FixedArray", "Rc", "Weak", "decreases"];
 /** §12 global names, §13 reserved names; declaring any of them is E1000 (Q010, Q231). The tables here plus the names only the resolver and §7.1 know. */
 export const CAPABILITY_NAMES = new Set(["Copy", "Native", "Owned", "Send", "Key", "Codec"]);
 
 export const BUILTIN_NAMES = new Set<string>([
   ...SPEC_RESERVED,
-  "boolean", "string", "number", "null", "void", "unknown", "never", "Result", "Struct", "RingPair", "JsError", "CastError", "IoError", "AudioConfig", "Resource", "Disposable", "AsyncDisposable", "CStruct",
+  "boolean", "string", "number", "null", "void", "unknown", "never", "Result", "Struct", "RingPair", "JsError", "CastError", "IoError", "AudioConfig",
+  "DirEntry", "FileStat", "EnvVar", "ProcOptions", "ProcOutput", "ProcRequest",
+  "HttpHeader", "HttpRequestInit", "HttpResponse", "HttpServerConfig", "HttpServerRequest", "HttpServerResponse", "HttpClientRequest",
+  "Resource", "Disposable", "AsyncDisposable", "CStruct",
   ...Object.keys(GEN_ARITY), ...OPAQUE_NAMES, ...NAMESPACES, ...BUILTIN_FUNCTIONS,
 ]);
 
@@ -35,9 +41,9 @@ export const NONDET_GEN: Record<GenName, boolean> = {
   Array: false, ReadonlyArray: false, Map: false, Set: false, Promise: false, Vec: false, Slice: false, Pool: false, Handle: false, Arena: false, ArenaBuf: false,
   Ref: false, Mut: false, OwnedCell: false, CType: false, RingTx: true, RingRx: true, Ptr: true, ConstPtr: true, CHandle: true, Port: true, // §15.1, §14.4, §14.5, §15.2
 };
-/** The opaque ones (keys: OPAQUE_NAMES): the authorities, `JsRef`, `AudioStream` and the fakes, not `Test`. */
+/** The opaque ones (keys: OPAQUE_NAMES): the authorities, `JsRef`, `AudioStream`, `HttpServer` and the fakes, not `Test`. */
 export const NONDET_OPAQUE: Record<string, boolean> = {
-  ...Object.fromEntries(AUTHORITIES.map((a) => [a, true])), JsRef: true, Test: false, AudioStream: true, FakeClock: true, SeededRandom: true, MemoryLog: true, FakeFs: true, FakeSpawn: true, FakeAudio: true,
+  ...Object.fromEntries(AUTHORITIES.map((a) => [a, true])), JsRef: true, Test: false, AudioStream: true, HttpServer: true, FakeClock: true, SeededRandom: true, MemoryLog: true, FakeFs: true, FakeSpawn: true, FakeAudio: true, FakeNet: true, FakeProc: true,
 };
 
 /** Builtin type names (§12) that are not generic constructors. Struct and Result are handled by the resolver. */
@@ -52,6 +58,19 @@ export function builtinType(name: string): Type | undefined {
     case "never": return { k: "prim", name: "never" };
     case "JsError": case "CastError": case "IoError": return ERROR_RECORD;
     case "AudioConfig": return AUDIO_CONFIG_RECORD;
+    case "DirEntry": return DIR_ENTRY_RECORD;
+    case "FileStat": return FILE_STAT_RECORD;
+    case "EnvVar": return ENV_VAR_RECORD;
+    case "ProcOptions": return PROC_OPTIONS_RECORD;
+    case "ProcOutput": return PROC_OUTPUT_RECORD;
+    case "ProcRequest": return PROC_REQUEST_RECORD;
+    case "HttpHeader": return HTTP_HEADER_RECORD;
+    case "HttpRequestInit": return HTTP_REQUEST_INIT_RECORD;
+    case "HttpResponse": return HTTP_RESPONSE_RECORD;
+    case "HttpServerConfig": return HTTP_SERVER_CONFIG_RECORD;
+    case "HttpServerRequest": return HTTP_SERVER_REQUEST_RECORD;
+    case "HttpServerResponse": return HTTP_SERVER_RESPONSE_RECORD;
+    case "HttpClientRequest": return HTTP_CLIENT_REQUEST_RECORD;
     case "Disposable": return DISPOSABLE;
     case "AsyncDisposable": return ASYNC_DISPOSABLE;
   }
@@ -97,6 +116,24 @@ const FS: Members = {
   writeText: m(WR, [STR, STR], ioResult(NULL)),
   readBytes: m(WR, [STR, gen("Mut", gen("Vec", num("u8")))], ioResult(USIZE)),
   writeBytes: m(WR, [STR, gen("Ref", gen("Slice", num("u8")))], ioResult(NULL)),
+  exists: mo(m(RD, [STR], BOOL)),
+  stat: mo(m(RD, [STR], ioResult(FILE_STAT_RECORD))),
+  readDir: mo(m(RD, [STR], ioResult(gen("Array", DIR_ENTRY_RECORD)))),
+  mkdir: mo(m(WR, [STR], ioResult(NULL))),
+  remove: mo(m(WR, [STR], ioResult(NULL))),
+  rename: mo(m(WR, [STR, STR], ioResult(NULL))),
+  writeTextAtomic: mo(m(WR, [STR, STR], ioResult(NULL))),
+  writeBytesAtomic: mo(m(WR, [STR, gen("Ref", gen("Slice", num("u8")))], ioResult(NULL))),
+};
+const PROC: Members = {
+  run: mo(m(PORT_FX, [STR, gen("ReadonlyArray", STR), PROC_OPTIONS_RECORD], gen("Promise", ioResult(PROC_OUTPUT_RECORD)), { min: 2 })),
+  env: mo(m(RD, [STR], nullable(STR))),
+  cwd: mo(m(RD, [], STR)),
+  args: mo(m(RD, [], gen("Array", STR))),
+};
+const NET: Members = {
+  fetch: mo(m(PORT_FX, [STR, HTTP_REQUEST_INIT_RECORD], gen("Promise", ioResult(HTTP_RESPONSE_RECORD)), { min: 1 })),
+  serve: mo(m(PORT_FX, [HTTP_SERVER_CONFIG_RECORD, fn([HTTP_SERVER_REQUEST_RECORD], gen("Promise", HTTP_SERVER_RESPONSE_RECORD))], gen("Promise", ioResult(opaque("HttpServer"))))),
 };
 const SPAWN: Members = { isolate: m(PORT_FX, [UNKNOWN], VOID) };
 const AUDIO: Members = { open: mo(m(PORT_FX, [AUDIO_CONFIG_RECORD, UNKNOWN, UNKNOWN], gen("Promise", ioResult(opaque("AudioStream"))))) };
@@ -105,11 +142,13 @@ const AUDIO: Members = { open: mo(m(PORT_FX, [AUDIO_CONFIG_RECORD, UNKNOWN, UNKN
 export function opaqueMembers(name: string): Members {
   const lit = (v: string): Type => ({ k: "lit", value: v });
   const table: Record<string, () => Members> = {
-    System: () => ({ alloc: prop(opaque("Alloc")), fs: prop(opaque("Fs")), clock: prop(opaque("Clock")), random: prop(opaque("Random")), log: prop(opaque("Log")), js: prop(opaque("Js")), ffi: prop(opaque("Ffi")), spawn: prop(opaque("Spawn")), audio: prop(opaque("Audio")) }),
+    System: () => ({ alloc: prop(opaque("Alloc")), fs: prop(opaque("Fs")), clock: prop(opaque("Clock")), random: prop(opaque("Random")), log: prop(opaque("Log")), js: prop(opaque("Js")), ffi: prop(opaque("Ffi")), spawn: prop(opaque("Spawn")), audio: prop(opaque("Audio")), net: prop(opaque("Net")), proc: prop(opaque("Proc")) }),
     Log: () => LOG,
     Clock: () => ({ nowMs: m(RD, [], F64), sleep: mo(m(PORT_FX, [F64], gen("Promise", VOID))) }),
     Random: () => RANDOM,
     Fs: () => FS,
+    Proc: () => PROC,
+    Net: () => NET,
     Alloc: () => ({}),
     Ffi: () => ({}), // §14: the Ffi value itself has no members; it is only passed to C functions
     // §15.2: `isolate` never reaches callSig; expr.ts checks the call itself (E2011) because the
@@ -118,6 +157,7 @@ export function opaqueMembers(name: string): Members {
     // §15.5: `open` is checked in expr.ts (audioOpenCall, E2013) because `render` is a function name.
     Audio: () => AUDIO,
     AudioStream: () => ({ sampleRate: prop(num("u32")), channels: prop(num("u32")), close: mo(m(PORT_FX, [], gen("Promise", VOID))), disposeAsync: mo(m(PORT_FX, [], gen("Promise", VOID))), isOpen: mo(m(RD, [], BOOL)) }),
+    HttpServer: () => ({ host: prop(STR), port: prop(num("u16")), close: mo(m(PORT_FX, [], gen("Promise", VOID))), disposeAsync: mo(m(PORT_FX, [], gen("Promise", VOID))), isOpen: mo(m(RD, [], BOOL)) }),
     JsRef: () => ({}),
     Js: () => {
       const J = opaque("JsRef"), jr = result(J, ERROR_RECORD);
@@ -154,6 +194,8 @@ export function opaqueMembers(name: string): Members {
     FakeFs: () => FS,
     FakeSpawn: () => SPAWN,
     FakeAudio: () => ({ ...AUDIO, renderFrames: mo(m(PORT_FX, [USIZE], gen("Array", num("f32")))) }),
+    FakeProc: () => ({ ...PROC, setEnv: mo(m(WR, [STR, STR], VOID)), setCwd: mo(m(WR, [STR], VOID)), setArgs: mo(m(WR, [gen("ReadonlyArray", STR)], VOID)), onRun: mo(m(WR, [fn([PROC_REQUEST_RECORD], ioResult(PROC_OUTPUT_RECORD))], VOID)), calls: mo(m(RD, [], gen("Array", PROC_REQUEST_RECORD))) }),
+    FakeNet: () => ({ ...NET, onFetch: mo(m(WR, [fn([HTTP_CLIENT_REQUEST_RECORD], ioResult(HTTP_RESPONSE_RECORD))], VOID)), requests: mo(m(RD, [], gen("Array", HTTP_CLIENT_REQUEST_RECORD))) }),
   };
   return Object.hasOwn(table, name) ? table[name]!() : {};
 }
@@ -312,6 +354,8 @@ export function nsMembers(ns: string): Record<string, Member | "variadic"> {
     case "FakeFs": return { create: mo(m(RD, [], opaque("FakeFs"))) };
     case "FakeSpawn": return { create: mo(m(RD, [], opaque("FakeSpawn"))) };
     case "FakeAudio": return { create: mo(m(RD, [], opaque("FakeAudio"))) };
+    case "FakeNet": return { create: mo(m(RD, [], opaque("FakeNet"))) };
+    case "FakeProc": return { create: mo(m(RD, [], opaque("FakeProc"))) };
     case "TestAlloc": return { create: mo(m(RD, [], opaque("Alloc"))) };
   }
   return {};

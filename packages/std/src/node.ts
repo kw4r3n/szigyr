@@ -1,6 +1,16 @@
-import { readFileSync, writeFileSync } from "node:fs";
-import { cast, err, isTrap, ok, readU8Slice, replaceU8Vec, spawnIsolate, type Result } from "../../runtime-js/src/index.ts";
-import { ALLOC, type Alloc, type Audio, type AudioCallbackSpec, type AudioConfig, type AudioStream, type Clock, type Fs, type IoError, type Js, type JsError, type JsRef, type Log, type Random, type Spawn, type System } from "./types.ts";
+import { spawn, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import * as http from "node:http";
+import { basename, dirname, join } from "node:path";
+import { asTrap, cast, err, isTrap, noteIsolateTrap, ok, readU8Slice, replaceU8Vec, spawnIsolate, type ForeignTrap, type Result } from "../../runtime-js/src/index.ts";
+import { webFetch } from "./fake.ts";
+import {
+  ALLOC, type Alloc, type Audio, type AudioCallbackSpec, type AudioConfig, type AudioStream, type Clock, type DirEntry,
+  type FileStat, type Fs, type FsEntryKind, type HttpHeader, type HttpServer, type HttpServerConfig, type HttpServerRequest,
+  type HttpServerResponse, type IoError, type Js, type JsError, type JsRef, type Log, type Net, type Proc, type ProcOptions,
+  type ProcOutput, type Random, type Spawn, type System,
+} from "./types.ts";
 
 export { ALLOC };
 
@@ -25,6 +35,28 @@ const ioError = (e: unknown): IoError => {
   const x = e as { code?: unknown; message?: unknown };
   return { code: typeof x.code === "string" ? x.code : "EIO", message: String(x.message ?? e) };
 };
+const kindOfStat = (s: { isSymbolicLink(): boolean; isDirectory(): boolean; isFile(): boolean }): FsEntryKind =>
+  s.isSymbolicLink() ? "symlink" : s.isDirectory() ? "dir" : s.isFile() ? "file" : "other";
+let atomicSeq = 0;
+function writeAtomic(path: string, data: string | Uint8Array): Result<null, IoError> {
+  if (!path) return err({ code: "EINVAL", message: "empty path" });
+  const tmp = join(dirname(path), `.${basename(path)}.sztmp-${process.pid}-${++atomicSeq}-${randomBytes(4).toString("hex")}`);
+  let fd: number | undefined;
+  try {
+    fd = openSync(tmp, "wx", 0o666);
+    writeFileSync(fd, data);
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = undefined;
+    renameSync(tmp, path);
+    return ok(null);
+  } catch (e) {
+    if (fd !== undefined) try { closeSync(fd); } catch { /* ignore */ }
+    try { unlinkSync(tmp); } catch { /* ignore */ }
+    return err(ioError(e));
+  }
+}
+
 export const nodeFs: Fs = {
   readText(path) { try { return ok(readFileSync(path, "utf8")); } catch (e) { return err(ioError(e)); } },
   writeText(path, text) { try { writeFileSync(path, text); return ok(null); } catch (e) { return err(ioError(e)); } },
@@ -38,6 +70,179 @@ export const nodeFs: Fs = {
   },
   writeBytes(path, data) {
     try { writeFileSync(path, readU8Slice(data)); return ok(null); } catch (e) { return err(ioError(e)); }
+  },
+  exists(path) { return Boolean(path) && existsSync(path); },
+  stat(path) {
+    try {
+      const s = lstatSync(path, { bigint: true });
+      return ok({ kind: kindOfStat(s), size: s.size, mtimeMs: Number(s.mtimeMs) });
+    } catch (e) { return err(ioError(e)); }
+  },
+  readDir(path) {
+    try {
+      const ds = readdirSync(path, { withFileTypes: true }).map((d): DirEntry => ({ name: d.name, kind: kindOfStat(d) }));
+      ds.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      return ok(ds);
+    } catch (e) { return err(ioError(e)); }
+  },
+  mkdir(path) { try { mkdirSync(path, { recursive: true }); return ok(null); } catch (e) { return err(ioError(e)); } },
+  remove(path) { try { rmSync(path, { recursive: true, force: false }); return ok(null); } catch (e) { return err(ioError(e)); } },
+  rename(from, to) { try { renameSync(from, to); return ok(null); } catch (e) { return err(ioError(e)); } },
+  writeTextAtomic(path, text) { return writeAtomic(path, text); },
+  writeBytesAtomic(path, data) { return writeAtomic(path, readU8Slice(data)); },
+};
+
+const activeProcs = new Set<ChildProcess>();
+export function stopNodeProcs(): void {
+  for (const child of [...activeProcs]) {
+    try { child.kill("SIGKILL"); } catch { /* exited */ }
+    activeProcs.delete(child);
+  }
+}
+
+export function createNodeProc(argv?: readonly string[]): Proc {
+  return {
+    run(program: string, args: readonly string[], options?: ProcOptions): Promise<Result<ProcOutput, IoError>> {
+      if (!program) return Promise.resolve(err({ code: "EINVAL", message: "Proc.run: empty program" }));
+      if (options?.timeoutMs != null && (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 0)) {
+        return Promise.resolve(err({ code: "EINVAL", message: `Proc.run: invalid timeoutMs ${options.timeoutMs}` }));
+      }
+      let mergedEnv: NodeJS.ProcessEnv | undefined;
+      if (options?.env?.length) {
+        mergedEnv = { ...process.env };
+        for (const e of options.env) mergedEnv[e.name] = e.value;
+      }
+      return new Promise((resolve) => {
+        let settled = false;
+        let timedOut = false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let child: ChildProcess;
+        try {
+          child = spawn(program, [...args], {
+            shell: false,
+            stdio: [options?.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
+            ...(options?.cwd != null ? { cwd: options.cwd } : {}),
+            ...(mergedEnv ? { env: mergedEnv } : {}),
+          });
+        } catch (e) {
+          resolve(err(ioError(e)));
+          return;
+        }
+        activeProcs.add(child);
+        const cleanup = (): void => {
+          activeProcs.delete(child);
+          if (timer !== undefined) { clearTimeout(timer); timer = undefined; }
+        };
+        const outChunks: Buffer[] = [];
+        const errChunks: Buffer[] = [];
+        child.stdout?.on("data", (c: Buffer) => outChunks.push(c));
+        child.stderr?.on("data", (c: Buffer) => errChunks.push(c));
+        if (options?.timeoutMs != null && options.timeoutMs > 0) {
+          timer = setTimeout(() => {
+            timedOut = true;
+            try { child.kill("SIGKILL"); } catch { /* ignore */ }
+          }, options.timeoutMs);
+        }
+        child.on("error", (e) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve(err(ioError(e)));
+        });
+        child.on("close", (code) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve(ok({
+            exitCode: code ?? -1,
+            stdout: Buffer.concat(outChunks).toString("utf8"),
+            stderr: Buffer.concat(errChunks).toString("utf8"),
+            timedOut,
+          }));
+        });
+        if (options?.stdin != null && child.stdin) {
+          child.stdin.on("error", () => { /* child may exit before reading stdin */ });
+          child.stdin.end(options.stdin);
+        }
+      });
+    },
+    env(name: string): string | null { return Object.hasOwn(process.env, name) ? process.env[name]! : null; },
+    cwd(): string { return process.cwd(); },
+    args(): string[] { return argv ? [...argv] : process.argv.slice(2); },
+  };
+}
+export const nodeProc: Proc = createNodeProc();
+
+const activeNetServers = new Set<() => Promise<void>>();
+export async function stopNodeNetServers(): Promise<void> {
+  for (const close of [...activeNetServers]) await close();
+}
+
+export const nodeNet: Net = {
+  fetch: webFetch,
+  serve(config: HttpServerConfig, handler: (req: HttpServerRequest) => Promise<HttpServerResponse>): Promise<Result<HttpServer, IoError>> {
+    if (!config.host) return Promise.resolve(err({ code: "EINVAL", message: "Net.serve: empty host" }));
+    if (!Number.isInteger(config.port) || config.port < 0 || config.port > 65535) {
+      return Promise.resolve(err({ code: "EINVAL", message: `Net.serve: invalid port ${config.port}` }));
+    }
+    return new Promise((resolve) => {
+      const server = http.createServer((req, res) => {
+        const chunks: Buffer[] = [];
+        req.on("data", (c: Buffer) => chunks.push(c));
+        req.on("end", () => {
+          void (async () => {
+            const u = new URL(req.url ?? "/", "http://127.0.0.1");
+            const headers: HttpHeader[] = [];
+            for (let i = 0; i + 1 < req.rawHeaders.length; i += 2) {
+              headers.push({ name: req.rawHeaders[i]!.toLowerCase(), value: req.rawHeaders[i + 1]! });
+            }
+            const httpReq: HttpServerRequest = {
+              method: req.method ?? "GET",
+              path: u.pathname,
+              query: u.search.startsWith("?") ? u.search.slice(1) : "",
+              headers,
+              body: Buffer.concat(chunks).toString("utf8"),
+            };
+            try {
+              const resp = await handler(httpReq);
+              res.statusCode = resp.status;
+              for (const h of resp.headers) res.appendHeader(h.name, h.value);
+              res.end(resp.body);
+            } catch (e) {
+              const t = asTrap(e);
+              const ft: ForeignTrap = t
+                ? { code: t.code, ...(t.pos ? { file: t.pos.file, line: t.pos.line, col: t.pos.col } : {}), message: t.message }
+                : { code: "T006", message: String(e) };
+              noteIsolateTrap(ft);
+              if (!res.headersSent) { res.statusCode = 500; res.end("internal error"); }
+              else if (!res.writableEnded) { res.end(); }
+            }
+          })();
+        });
+      });
+      const onListenErr = (e: Error): void => {
+        server.removeListener("listening", onListening);
+        resolve(err(ioError(e)));
+      };
+      const onListening = (): void => {
+        server.removeListener("error", onListenErr);
+        const addr = server.address();
+        const port = typeof addr === "object" && addr ? addr.port : config.port;
+        let closed = false;
+        const close = async (): Promise<void> => {
+          if (closed) return;
+          closed = true;
+          activeNetServers.delete(close);
+          server.closeAllConnections?.();
+          await new Promise<void>((r) => server.close(() => r()));
+        };
+        activeNetServers.add(close);
+        resolve(ok({ host: config.host, port, close, disposeAsync: close, isOpen: () => !closed }));
+      };
+      server.once("error", onListenErr);
+      server.once("listening", onListening);
+      server.listen(config.port, config.host);
+    });
   },
 };
 
@@ -88,6 +293,18 @@ export const nodeAudio: Audio = {
 export function createSystem(
   stdout: (s: string) => void = (s) => void process.stdout.write(s),
   stderr: (s: string) => void = (s) => void process.stderr.write(s),
+  opts?: { args?: readonly string[] },
 ): System {
-  return { alloc: ALLOC, fs: nodeFs, clock: nodeClock, random: nodeRandom, log: createLog(stdout, stderr), js: nodeJs, spawn: nodeSpawn, audio: nodeAudio };
+  return {
+    alloc: ALLOC,
+    fs: nodeFs,
+    clock: nodeClock,
+    random: nodeRandom,
+    log: createLog(stdout, stderr),
+    js: nodeJs,
+    spawn: nodeSpawn,
+    audio: nodeAudio,
+    net: nodeNet,
+    proc: opts?.args ? createNodeProc(opts.args) : nodeProc,
+  };
 }

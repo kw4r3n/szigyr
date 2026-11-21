@@ -1,8 +1,13 @@
 import {
   Port, Slice, asTrap, err, noteIsolateTrap, ok, readU8Slice, registerFakeIsolate, replaceU8Vec, trap,
-  type Channel, type Envelope, type ForeignTrap, type Pos, type Vec,
+  type Channel, type Envelope, type ForeignTrap, type Pos, type Result, type Vec,
 } from "../../runtime-js/src/index.ts";
-import { ALLOC, type Alloc, type Audio, type AudioCallbackSpec, type AudioConfig, type AudioStream, type Clock, type Fs, type Log, type Random, type Spawn } from "./types.ts";
+import {
+  ALLOC, type Alloc, type Audio, type AudioCallbackSpec, type AudioConfig, type AudioStream, type Clock, type DirEntry,
+  type FileStat, type Fs, type FsEntryKind, type HttpClientRequest, type HttpHeader, type HttpRequestInit, type HttpResponse,
+  type HttpServer, type HttpServerConfig, type HttpServerRequest, type HttpServerResponse, type IoError, type Log, type Net,
+  type Proc, type ProcOptions, type ProcOutput, type ProcRequest, type Random, type Spawn,
+} from "./types.ts";
 
 export class FakeClock implements Clock {
   private ms: number;
@@ -42,25 +47,200 @@ export class MemoryLog implements Log {
 const utf8Enc = new TextEncoder();
 const utf8Dec = new TextDecoder("utf-8", { fatal: false });
 
+function normFakePath(raw: string): string {
+  const abs = raw.startsWith("/");
+  const parts: string[] = [];
+  for (const seg of raw.split("/")) {
+    if (!seg || seg === ".") continue;
+    if (seg === "..") {
+      if (parts.length && parts.at(-1) !== "..") parts.pop();
+      else if (!abs) parts.push("..");
+    } else {
+      parts.push(seg);
+    }
+  }
+  return abs ? `/${parts.join("/")}` : (parts.join("/") || ".");
+}
+
+function parentDirOf(norm: string): string | undefined {
+  if (norm === "." || norm === "/") return undefined;
+  const i = norm.lastIndexOf("/");
+  if (i < 0) return ".";
+  return i === 0 ? "/" : norm.slice(0, i);
+}
+
+function baseNameOf(norm: string): string {
+  if (norm === "." || norm === "/") return norm;
+  const i = norm.lastIndexOf("/");
+  return i < 0 ? norm : norm.slice(i + 1);
+}
+
+function ancestorsOf(norm: string): string[] {
+  const out: string[] = [];
+  let cur = parentDirOf(norm);
+  while (cur && cur !== "." && cur !== "/") {
+    out.push(cur);
+    cur = parentDirOf(cur);
+  }
+  out.reverse();
+  return out;
+}
+
 export class FakeFs implements Fs {
-  private readonly files = new Map<string, Uint8Array>();
+  private readonly files = new Map<string, { data: Uint8Array; mtimeMs: number }>();
+  private readonly dirs = new Set<string>([".", "/"]);
+  private tick = 0;
   static create(): FakeFs { return new FakeFs(); }
+
+  private prepareWrite(path: string): Result<string, IoError> {
+    if (!path) return err({ code: "EINVAL", message: "empty path" });
+    const norm = normFakePath(path);
+    if (this.dirs.has(norm)) return err({ code: "EISDIR", message: `illegal operation on a directory: ${path}` });
+    for (const anc of ancestorsOf(norm)) {
+      if (this.files.has(anc)) return err({ code: "ENOTDIR", message: `not a directory: ${anc}` });
+    }
+    for (const anc of ancestorsOf(norm)) this.dirs.add(anc);
+    return ok(norm);
+  }
+
   readText(path: string) {
-    const b = this.files.get(path);
-    return b === undefined ? err({ code: "ENOENT", message: `no such file: ${path}` }) : ok(utf8Dec.decode(b));
+    if (!path) return err({ code: "EINVAL", message: "empty path" });
+    const norm = normFakePath(path);
+    if (this.dirs.has(norm)) return err({ code: "EISDIR", message: `illegal operation on a directory: ${path}` });
+    const f = this.files.get(norm);
+    return f === undefined ? err({ code: "ENOENT", message: `no such file: ${path}` }) : ok(utf8Dec.decode(f.data));
   }
-  writeText(path: string, text: string) { this.files.set(path, utf8Enc.encode(text)); return ok(null); }
-  readBytes(path: string, dst: Vec<number>) {
-    const b = this.files.get(path);
-    if (b === undefined) return err({ code: "ENOENT", message: `no such file: ${path}` });
-    if (b.byteLength > 0xffffffff) return err({ code: "EFBIG", message: "file exceeds usize limit (4GiB)" });
-    replaceU8Vec(dst, b);
-    return ok(b.byteLength);
-  }
-  writeBytes(path: string, data: Slice<number> | Vec<number>) {
-    this.files.set(path, new Uint8Array(readU8Slice(data)));
+
+  writeText(path: string, text: string) {
+    const p = this.prepareWrite(path);
+    if (p.kind === "err") return p;
+    this.files.set(p.value, { data: utf8Enc.encode(text), mtimeMs: ++this.tick });
     return ok(null);
   }
+
+  readBytes(path: string, dst: Vec<number>) {
+    if (!path) return err({ code: "EINVAL", message: "empty path" });
+    const norm = normFakePath(path);
+    if (this.dirs.has(norm)) return err({ code: "EISDIR", message: `illegal operation on a directory: ${path}` });
+    const f = this.files.get(norm);
+    if (f === undefined) return err({ code: "ENOENT", message: `no such file: ${path}` });
+    if (f.data.byteLength > 0xffffffff) return err({ code: "EFBIG", message: "file exceeds usize limit (4GiB)" });
+    replaceU8Vec(dst, f.data);
+    return ok(f.data.byteLength);
+  }
+
+  writeBytes(path: string, data: Slice<number> | Vec<number>) {
+    const p = this.prepareWrite(path);
+    if (p.kind === "err") return p;
+    this.files.set(p.value, { data: new Uint8Array(readU8Slice(data)), mtimeMs: ++this.tick });
+    return ok(null);
+  }
+
+  exists(path: string): boolean {
+    if (!path) return false;
+    const norm = normFakePath(path);
+    return this.files.has(norm) || this.dirs.has(norm);
+  }
+
+  stat(path: string): Result<FileStat, IoError> {
+    if (!path) return err({ code: "EINVAL", message: "empty path" });
+    const norm = normFakePath(path);
+    const f = this.files.get(norm);
+    if (f) return ok({ kind: "file", size: BigInt(f.data.byteLength), mtimeMs: f.mtimeMs });
+    if (this.dirs.has(norm)) return ok({ kind: "dir", size: 0n, mtimeMs: 0 });
+    return err({ code: "ENOENT", message: `no such file or directory: ${path}` });
+  }
+
+  readDir(path: string): Result<DirEntry[], IoError> {
+    if (!path) return err({ code: "EINVAL", message: "empty path" });
+    const norm = normFakePath(path);
+    if (this.files.has(norm)) return err({ code: "ENOTDIR", message: `not a directory: ${path}` });
+    if (!this.dirs.has(norm)) return err({ code: "ENOENT", message: `no such file or directory: ${path}` });
+    const out = new Map<string, FsEntryKind>();
+    for (const k of this.files.keys()) {
+      if (parentDirOf(k) === norm) out.set(baseNameOf(k), "file");
+    }
+    for (const d of this.dirs) {
+      if (parentDirOf(d) === norm) out.set(baseNameOf(d), "dir");
+    }
+    const entries: DirEntry[] = [...out.entries()].map(([name, kind]) => ({ name, kind }));
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    return ok(entries);
+  }
+
+  mkdir(path: string): Result<null, IoError> {
+    if (!path) return err({ code: "EINVAL", message: "empty path" });
+    const norm = normFakePath(path);
+    if (this.files.has(norm)) return err({ code: "EEXIST", message: `file already exists: ${path}` });
+    for (const anc of ancestorsOf(norm)) {
+      if (this.files.has(anc)) return err({ code: "ENOTDIR", message: `not a directory: ${anc}` });
+    }
+    for (const anc of ancestorsOf(norm)) this.dirs.add(anc);
+    this.dirs.add(norm);
+    return ok(null);
+  }
+
+  remove(path: string): Result<null, IoError> {
+    if (!path) return err({ code: "EINVAL", message: "empty path" });
+    const norm = normFakePath(path);
+    if (norm === "." || norm === "/") return err({ code: "EBUSY", message: `cannot remove root directory: ${path}` });
+    if (this.files.delete(norm)) return ok(null);
+    if (this.dirs.has(norm)) {
+      const prefix = `${norm}/`;
+      for (const k of [...this.files.keys()]) if (k.startsWith(prefix)) this.files.delete(k);
+      for (const d of [...this.dirs]) if (d === norm || d.startsWith(prefix)) this.dirs.delete(d);
+      return ok(null);
+    }
+    return err({ code: "ENOENT", message: `no such file or directory: ${path}` });
+  }
+
+  rename(from: string, to: string): Result<null, IoError> {
+    if (!from || !to) return err({ code: "EINVAL", message: "empty path" });
+    const src = normFakePath(from);
+    const dst = normFakePath(to);
+    const isFile = this.files.has(src);
+    const isDir = this.dirs.has(src);
+    if (!isFile && !isDir) return err({ code: "ENOENT", message: `no such file or directory: ${from}` });
+    if (src === "." || src === "/" || dst === "." || dst === "/") return err({ code: "EBUSY", message: "cannot rename root directory" });
+    if (src === dst) return ok(null);
+    const dstParent = parentDirOf(dst);
+    if (dstParent) {
+      if (this.files.has(dstParent)) return err({ code: "ENOTDIR", message: `not a directory: ${dstParent}` });
+      if (!this.dirs.has(dstParent)) return err({ code: "ENOENT", message: `no such parent directory: ${dstParent}` });
+    }
+    if (isFile) {
+      if (this.dirs.has(dst)) return err({ code: "EISDIR", message: `is a directory: ${to}` });
+      const f = this.files.get(src)!;
+      this.files.set(dst, { data: f.data, mtimeMs: ++this.tick });
+      this.files.delete(src);
+      return ok(null);
+    }
+    if (this.files.has(dst)) return err({ code: "ENOTDIR", message: `not a directory: ${to}` });
+    if (dst.startsWith(`${src}/`)) return err({ code: "EINVAL", message: `cannot move directory inside itself: ${to}` });
+    if (this.dirs.has(dst)) {
+      const dstPrefix = `${dst}/`;
+      const hasChild = [...this.files.keys()].some((k) => k.startsWith(dstPrefix)) || [...this.dirs].some((d) => d.startsWith(dstPrefix));
+      if (hasChild) return err({ code: "ENOTEMPTY", message: `directory not empty: ${to}` });
+    }
+    const srcPrefix = `${src}/`;
+    for (const k of [...this.files.keys()]) {
+      if (k.startsWith(srcPrefix)) {
+        const entry = this.files.get(k)!;
+        this.files.delete(k);
+        this.files.set(`${dst}${k.slice(src.length)}`, entry);
+      }
+    }
+    for (const d of [...this.dirs]) {
+      if (d === src || d.startsWith(srcPrefix)) {
+        this.dirs.delete(d);
+        this.dirs.add(`${dst}${d.slice(src.length)}`);
+      }
+    }
+    return ok(null);
+  }
+
+  writeTextAtomic(path: string, text: string) { return this.writeText(path, text); }
+  writeBytesAtomic(path: string, data: Slice<number> | Vec<number>) { return this.writeBytes(path, data); }
 }
 
 export class TestAlloc {
@@ -269,5 +449,167 @@ export class FakeSpawn implements Spawn {
     });
 
     return mainPort;
+  }
+}
+
+export class FakeProc implements Proc {
+  private readonly envMap = new Map<string, string>();
+  private curCwd = "/";
+  private curArgs: string[] = [];
+  private runner: ((req: ProcRequest) => Result<ProcOutput, IoError>) | undefined;
+  private readonly callLog: ProcRequest[] = [];
+  static create(): FakeProc { return new FakeProc(); }
+
+  setEnv(name: string, value: string): void { this.envMap.set(name, value); }
+  setCwd(path: string): void { this.curCwd = path; }
+  setArgs(args: readonly string[]): void { this.curArgs = [...args]; }
+  onRun(fn: (req: ProcRequest) => Result<ProcOutput, IoError>): void { this.runner = fn; }
+  calls(): ProcRequest[] {
+    return this.callLog.map((c) => ({ ...c, args: [...c.args], env: c.env.map((e) => ({ name: e.name, value: e.value })) }));
+  }
+
+  env(name: string): string | null { return this.envMap.get(name) ?? null; }
+  cwd(): string { return this.curCwd; }
+  args(): string[] { return [...this.curArgs]; }
+
+  async run(program: string, args: readonly string[], options?: ProcOptions): Promise<Result<ProcOutput, IoError>> {
+    const req: ProcRequest = {
+      program,
+      args: [...args],
+      cwd: options?.cwd ?? null,
+      env: (options?.env ?? []).map((e) => ({ name: e.name, value: e.value })),
+      stdin: options?.stdin ?? null,
+      timeoutMs: options?.timeoutMs ?? null,
+    };
+    this.callLog.push({ ...req, args: [...req.args], env: req.env.map((e) => ({ name: e.name, value: e.value })) });
+    if (!program) return err({ code: "EINVAL", message: "Proc.run: empty program" });
+    if (!this.runner) return err({ code: "ENOENT", message: `FakeProc: no handler for ${program}` });
+    return this.runner(req);
+  }
+}
+
+export async function webFetch(url: string, init?: HttpRequestInit): Promise<Result<HttpResponse, IoError>> {
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { return err({ code: "EINVAL", message: `Net.fetch: invalid URL: ${url}` }); }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return err({ code: "EINVAL", message: `Net.fetch: unsupported protocol '${parsed.protocol}'` });
+  }
+  const headers = new Headers();
+  for (const h of init?.headers ?? []) headers.append(h.name, h.value);
+  let ac: AbortController | undefined;
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  if (init?.timeoutMs != null && init.timeoutMs > 0) {
+    ac = new AbortController();
+    timer = setTimeout(() => { timedOut = true; ac!.abort(); }, init.timeoutMs);
+  }
+  try {
+    const res = await globalThis.fetch(parsed, {
+      method: init?.method ?? "GET",
+      headers,
+      ...(init?.body != null ? { body: init.body } : {}),
+      ...(ac ? { signal: ac.signal } : {}),
+    });
+    const resHeaders: HttpHeader[] = [];
+    res.headers.forEach((value, name) => resHeaders.push({ name, value }));
+    const body = await res.text();
+    return ok({ status: res.status, headers: resHeaders, body });
+  } catch (e) {
+    if (timedOut) return err({ code: "ETIMEDOUT", message: `Net.fetch: timed out after ${init!.timeoutMs}ms` });
+    const x = e as { code?: unknown; cause?: { code?: unknown } };
+    const code = typeof x?.code === "string" ? x.code : typeof x?.cause?.code === "string" ? x.cause.code : "EIO";
+    return err({ code, message: e instanceof Error ? e.message : String(e) });
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+export class FakeNet implements Net {
+  private readonly servers = new Map<string, (req: HttpServerRequest) => Promise<HttpServerResponse>>();
+  private fetchHandler: ((req: HttpClientRequest) => Result<HttpResponse, IoError>) | undefined;
+  private readonly sent: HttpClientRequest[] = [];
+  private nextPort = 18000;
+  static create(): FakeNet { return new FakeNet(); }
+
+  onFetch(fn: (req: HttpClientRequest) => Result<HttpResponse, IoError>): void { this.fetchHandler = fn; }
+  requests(): HttpClientRequest[] {
+    return this.sent.map((r) => ({ ...r, headers: r.headers.map((h) => ({ name: h.name, value: h.value })) }));
+  }
+
+  private findServer(host: string, port: number) {
+    const alt = host === "localhost" ? "127.0.0.1" : host === "127.0.0.1" ? "localhost" : undefined;
+    return this.servers.get(`${host}:${port}`)
+      ?? (alt ? this.servers.get(`${alt}:${port}`) : undefined)
+      ?? this.servers.get(`0.0.0.0:${port}`);
+  }
+
+  async serve(config: HttpServerConfig, handler: (req: HttpServerRequest) => Promise<HttpServerResponse>): Promise<Result<HttpServer, IoError>> {
+    if (!config.host || /\s/.test(config.host)) return err({ code: "EINVAL", message: `Net.serve: invalid host '${config.host}'` });
+    if (!Number.isInteger(config.port) || config.port < 0 || config.port > 65535) {
+      return err({ code: "EINVAL", message: `Net.serve: invalid port ${config.port}` });
+    }
+    let port = config.port;
+    if (port === 0) {
+      let tries = 0;
+      while (this.servers.has(`${config.host}:${this.nextPort}`)) {
+        this.nextPort = this.nextPort >= 65535 ? 18000 : this.nextPort + 1;
+        if (++tries > 48000) return err({ code: "EADDRINUSE", message: "no ephemeral port available" });
+      }
+      port = this.nextPort++;
+    } else if (this.servers.has(`${config.host}:${port}`)) {
+      return err({ code: "EADDRINUSE", message: `address already in use ${config.host}:${port}` });
+    }
+    const key = `${config.host}:${port}`;
+    this.servers.set(key, handler);
+    let closed = false;
+    const close = async (): Promise<void> => {
+      if (closed) return;
+      closed = true;
+      if (this.servers.get(key) === handler) this.servers.delete(key);
+    };
+    return ok({ host: config.host, port, close, disposeAsync: close, isOpen: () => !closed });
+  }
+
+  async fetch(url: string, init?: HttpRequestInit): Promise<Result<HttpResponse, IoError>> {
+    let parsed: URL;
+    try { parsed = new URL(url); } catch { return err({ code: "EINVAL", message: `Net.fetch: invalid URL: ${url}` }); }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return err({ code: "EINVAL", message: `Net.fetch: unsupported protocol '${parsed.protocol}'` });
+    }
+    const req: HttpClientRequest = {
+      method: init?.method ?? "GET",
+      url: parsed.toString(),
+      headers: (init?.headers ?? []).map((h) => ({ name: h.name, value: h.value })),
+      body: init?.body ?? null,
+    };
+    this.sent.push({ ...req, headers: req.headers.map((h) => ({ name: h.name, value: h.value })) });
+
+    const port = parsed.port ? Number(parsed.port) : parsed.protocol === "https:" ? 443 : 80;
+    const srv = this.findServer(parsed.hostname, port);
+    if (srv) {
+      const serverReq: HttpServerRequest = {
+        method: req.method,
+        path: parsed.pathname,
+        query: parsed.search.startsWith("?") ? parsed.search.slice(1) : "",
+        headers: req.headers.map((h) => ({ name: h.name.toLowerCase(), value: h.value })),
+        body: req.body ?? "",
+      };
+      try {
+        const resp = await srv(serverReq);
+        return ok({
+          status: resp.status,
+          headers: resp.headers.map((h) => ({ name: h.name.toLowerCase(), value: h.value })),
+          body: resp.body,
+        });
+      } catch (e) {
+        const t = asTrap(e);
+        noteIsolateTrap(t
+          ? { code: t.code, ...(t.pos ? { file: t.pos.file, line: t.pos.line, col: t.pos.col } : {}), message: t.message }
+          : { code: "T006", message: String(e) });
+        return err({ code: "ECONNRESET", message: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    if (this.fetchHandler) return this.fetchHandler(req);
+    return err({ code: "ECONNREFUSED", message: `FakeNet: no handler for ${url}` });
   }
 }

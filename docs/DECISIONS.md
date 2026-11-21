@@ -908,3 +908,24 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - **確かめ方**:
   - ゼロ残存監査（履歴 4 ドキュメントと `pnpm-lock.yaml` を除いた全リポジトリに対する `rg`）: **0 件**（終了コード 1）、ファイル名検索 `*sts*` も英単語 `consts` の 2 ファイルのみ。
   - `pnpm typecheck` 通過、`pnpm verify:conformance` 通過（`accept=84 reject=637 run=212`、`ok`）、`rtk bypass pnpm test` 通過（44 ファイル 438/438、`browser.test.ts` Playwright Chromium・`retouch-example.test.ts`・`prove.test.ts` 9/9・`cfn.test.ts` 6/6・`passing.test.ts` 含む）、`rtk bypass pnpm conformance` 通過（1 ファイル 1,284/1,284）、`rtk bypass pnpm bench` 通過（`proved: 45 checks eliminated`、`dot_f32` 1.01x、`saxpy_f32` 1.03x、`prefix_i32` 1.08x、`stencil_f64` 0.99x、`particles_aos_f32` 1.41x、4 者チェックサム一致）。
+
+## D177: ツール系権限の拡充（Fs 拡充・Proc・Net）（2026-11-22）
+
+- **前提**: D176（`STS` 名称オミット）コミット（`b7aa15d`）後の状態から、ローカル CLI／開発ツール用途に向けて保留項目「ツール系権限の拡充」を一括実装した（外部 npm 依存追加なし、仕様・未解決質問は [Q293〜Q295](./OPEN_QUESTIONS.md) および [SPEC.md](./SPEC.md) §3.3・§5・§7・§11・§13）。
+- **オーナー合意とスコープ**:
+  - **実装範囲**: `Fs` 拡充・`Proc`／`FakeProc`・`Net`／`HttpServer`／`FakeNet` の 3 領域を最小実用的 API と決定的な偽物付きで同時実装した。
+  - **1 発完結型 `Proc`**: ストリーミング spawn は採らず、`proc.run(program, args, options?)`（`shell: false`、`stdin` / `env` / `cwd` / `timeoutMs` で `SIGKILL` + `timedOut`）および `env` / `cwd` / `args` のみを提供する。合わせて CLI の `szigyr run <file> [-- <args...>]` と `RunOptions.args` を接続した。
+  - **テキスト中心 `Net`**: UTF-8 `body: string` ベースの `net.fetch(url, init?)` と、`HttpServer`（`await using` 対応、`host` / `port` / `close` / `disposeAsync` / `isOpen`）を返す `net.serve(config, handler)` を提供する。バイナリ `fetchBytes` 等は今回見送った。
+- **実装の要点**:
+  - **型・組込Allowlist（`compiler`）**: `AUTHORITIES` に `"Net"`・`"Proc"`、`OPAQUE_NAMES` に `"HttpServer"`・`"FakeNet"`・`"FakeProc"` を追加し、`RESERVED`/`SPEC_RESERVED` から `"Net"` を解放した。13 個の組込レコード別名（`DirEntry`, `FileStat`, `EnvVar`, `ProcOptions`, `ProcOutput`, `ProcRequest`, `HttpHeader`, `HttpRequestInit`, `HttpResponse`, `HttpServerConfig`, `HttpServerRequest`, `HttpServerResponse`, `HttpClientRequest`）を追加し、`Fs` の新規 8 メソッド・`Proc`・`Net`・`HttpServer`・`FakeProc`・`FakeNet` の新規メソッドをすべて `managedOnly`（strict/rt で `E4001`、コントラクトで `E6002`、`FileStat.size` は `u64`）とした。`FakeProc`/`FakeNet` は変異テスト可能な `Mutatable`（`UNMUTATABLE_OPAQUE` 非追加）とし、`E5001` 自動修正に `fetch` → `net.fetch`・`process.cwd` → `proc.cwd` を追加した。
+  - **Node / Fake / Browser 実装（`std`）**:
+    - `nodeFs` は `exists`, `stat`, `readDir`（名前昇順）, `mkdir`（再帰）, `remove`（再帰、`force: false`）, `rename`, および同一ディレクトリ内の `.sztmp-*` 一時ファイル `"wx"` + `fsyncSync` + `closeSync` + `renameSync`（失敗時掃除）による `writeTextAtomic`/`writeBytesAtomic` を提供。`FakeFs` は POSIX パス正規化と単調 `tick` ベースの `mtimeMs` で同等仕様をメモリ上に再現。
+    - `nodeProc` / `FakeProc` / `browserProc`（`run` は `ENOSYS`、`cwd` `"/"`、`args` `[]`、`env` `null`）を実装し、`stopNodeProcs()` で異常終了時や停止時の子プロセス残留を防止。
+    - `nodeNet` / `FakeNet` / `browserNet`（`fetch: webFetch`、`serve` は `ENOSYS`）を実装。`nodeNet.serve` はハンドラ内の `Trap` を `noteIsolateTrap` へ転送し、`close()` で `closeAllConnections?.()` を呼んで Node の keep-alive 接続待ちによる終了遅延を防ぎ、`stopNodeNetServers()` で `close()` 忘れサーバも自動解放する。`FakeNet` はホスト文字列の空白・ポート範囲を検証し、`port: 0` のエフェメラル割当と同一プロセス内ループバック `fetch`（小文字化ヘッダ名）を提供する。
+  - **ランタイム・バンドラ接続**: `index.ts`・`cli.ts`・`mutate.ts`・`isolate.ts`・`build-node.ts`・`build-browser.ts` に `FakeNet`/`FakeProc`・`stopNodeNetServers()`/`stopNodeProcs()`・`args` 引渡しを配線した（`fake.ts`/`browser.ts` の `node:*` import ゼロ制約を維持）。
+- **確かめ方（コミット前の最終検証結果）**:
+  - `pnpm typecheck`: 通過（エラー 0）。
+  - `conformance`: 新規 8 件追加（`run/260..262`、`reject/E4006-net-param-in-rt`・`E4006-proc-param-in-rt`・`E4001-fs-exists-in-strict`・`E6002-fs-remove-in-contract`・`E3008-fs-writebytesatomic-temp`、`conformance/PASSING.txt` に 8 件追加・脱落 0）。`pnpm verify:conformance` 通過（`accept=84 reject=642 run=215`、`ok`）。
+  - `rtk bypass pnpm test`: **45 ファイル 446/446 通過**（`packages/std/test/std.test.ts` 20/20、`packages/compiler/test/tool-authorities.test.ts` 6/6 で実 `nodeFs` atomic、`nodeProc` CLI `--` / timeout / `ENOENT` / `shell: false`、`nodeNet` `serve` + `await using` + `fetch` + `ETIMEDOUT` + trap 伝搬 + orphan server 自動停止、`szigyr mutate` 生存ミュータント 0、`E5001`/`E4001`、`buildNode --target=node --backend=c` リロケート実行、`buildBrowser` `node:` ゼロ＆実行を確認）。
+  - `rtk bypass pnpm conformance`: **1 ファイル 1,298/1,298 通過**（JS / C / Wasm 全バックエンド一致）。
+  - `rtk bypass pnpm bench`: 通過（`proved: 45 checks eliminated`、`rel / hand C`: `dot_f32` `1.00`、`saxpy_f32` `0.99`、`prefix_i32` `1.08`、`stencil_f64` `0.99`、`particles_aos_f32` `1.37`）。

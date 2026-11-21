@@ -241,10 +241,16 @@
   - `pnpm typecheck` 通過、`pnpm verify:conformance` 通過（`accept=84 reject=637 run=212`）、`pnpm test` 通過（44 ファイル 436/436）、`rtk bypass pnpm conformance` 通過（1 ファイル 1,284/1,284）、`pnpm bench` 通過（`dot_f32` 1.02x、`saxpy_f32` 1.18x、`prefix_i32` 1.29x、`stencil_f64` 1.03x、`particles_aos_f32` 1.40x）。
   - **実アプリドッグフーディング・リリースベンチ比較（D175）**: `Arena.alloc`/`view` 長伝搬・構造体/`Vec` 戻り値 `ensures`・レコード引数転送・タグつきユニオン判別子モデルを追加し、`bench/kernels.szigyr`・`examples/retouch/{kernels,session}.szigyr`・`examples/audio-portable/main.szigyr`・`examples/audio/main.szigyr` に契約のみ補強して **`proved=287 failed=0 unknown=7 timeout=0`**（30 関数、`examples/retouch` 生存ミュータント 0 件維持）を達成。`pnpm bench`（`STS-C rel`、`proved: 45 checks eliminated`、4 者チェックサム一致）で手書き C 比 `dot_f32` 1.02x→0.99x、`saxpy_f32` 1.26x→1.04x、`prefix_i32` 1.23x→1.04x、`stencil_f64` 1.00x→0.98x、`particles_aos_f32` 1.36x→1.33x。`pnpm typecheck`、`pnpm verify:conformance`（`accept=84 reject=637 run=212`）、`pnpm test`（44 ファイル 438/438）、`pnpm conformance`（1,284/1,284）通過。
 
+## ツール系権限の拡充（D177、2026-11-22）
+
+- [x] `Fs` 拡充（`exists`・`stat`・`readDir`・`mkdir`・`remove`・`rename`・`writeTextAtomic`・`writeBytesAtomic`、13 個の組込レコード別名、`managedOnly`）。
+- [x] `Proc`（`run` / `env` / `cwd` / `args`、`shell: false`、タイムアウト `SIGKILL`、`szigyr run ... [-- <args...>]` 引数受け渡し）＋決定的な偽物 `FakeProc`。
+- [x] `Net`（`fetch` / `serve`、`HttpServer` の `await using` 対応、`nodeNet` trap 伝搬・keep-alive 即時クローズ・終了時サーバ自動回収）＋決定的な偽物 `FakeNet`。
+- **検証（D177）**: `pnpm typecheck` 通過、`pnpm verify:conformance` 通過（`accept=84 reject=642 run=215`、`ok`）、`rtk bypass pnpm test` 45 ファイル 446/446 通過（`tool-authorities.test.ts` 6/6・`std.test.ts` 20/20 含む）、`rtk bypass pnpm conformance` 1 ファイル 1,298/1,298 通過、`rtk bypass pnpm bench` 通過（`dot_f32` 1.00x / `saxpy_f32` 0.99x / `prefix_i32` 1.08x / `stencil_f64` 0.99x / `particles_aos_f32` 1.37x）。
+
 ## 保留
 
 - **2D 描画＋入力権限**（段階 5 の次の独立タスク、Q279）: `microdaw`（自前描画 UI）と `skin-retouch`（ピクセル転送＋操作）を見据えた最小の 2D 描画・テキスト・ポインタ／キー入力の権限抽象（Node/SDL3＋HTML Canvas 2D）。
-- **ツール系権限の拡充**（段階 5 の後の独立タスク、Q279）: `Net`（HTTP クライアント／ローカルサーバ）、`Proc`（外部コマンド起動と標準入出力）、`Fs` 拡充（バイナリ読み書き・ディレクトリ走査・atomic 置換）。`prompt-desk`、`rrawrlet`、`idev-gui`、`booth-shop` 等のローカルツール向け。
 - **ネイティブモバイル殻（iOS / Android）**（Q279）: モバイル専用ターゲットの必要が出たときに着手する（ブラウザ版 Wasm 成果物自体はモバイルブラウザでも動く）。
 - **managed 層のネイティブ化**: 単体の実行ファイルが必要になったら着手する。そのときに managed 層のメモリ管理方式（第一候補は参照カウント＋循環回収）も決める。
 - **本物の権限を使う統合テストと、権限の記録・再生**（Q272）: 偽の権限では足りない場面が出てから対象権限と記録形式を決める。

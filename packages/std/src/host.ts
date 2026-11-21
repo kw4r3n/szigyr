@@ -10,10 +10,10 @@ export interface RunResult {
 }
 
 /** Runs `main` against a real System whose Log is captured. Awaits a Promise result. Stack exhaustion is T006 (Q035). */
-export async function runMain(main: (sys: System) => void | Promise<void>): Promise<RunResult> {
+export async function runMain(main: (sys: System) => void | Promise<void>, opts?: { args?: readonly string[] }): Promise<RunResult> {
   let stdout = "";
   let stderr = "";
-  const sys = createSystem((s) => (stdout += s), (s) => (stderr += s));
+  const sys = createSystem((s) => (stdout += s), (s) => (stderr += s), opts);
   try {
     const rejected = await capturing(() => main(sys)); // Q140
     if (rejected.length) throw rejected[0];

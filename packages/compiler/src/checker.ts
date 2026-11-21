@@ -868,7 +868,7 @@ export class Checker {
 
   /** Q073 (E5001 fix): the authority a global maps to, and a fix that adds it as a parameter and rewrites the call. */
   authorityFix(global: string, exprNode?: ts.Expression): { authority: string; fixes?: { title: string; edits: { range: { start: { line: number; col: number }; end: { line: number; col: number } }; newText: string }[] }[] } | undefined {
-    const authority = ({ console: "Log", Date: "Clock", performance: "Clock", random: "Random" } as Record<string, string>)[global];
+    const authority = ({ console: "Log", Date: "Clock", performance: "Clock", random: "Random", fetch: "Net", process: "Proc" } as Record<string, string>)[global];
     if (!authority) return undefined;
     const ps = this.fx.params;
     const name = authority.toLowerCase();
@@ -903,10 +903,13 @@ export class Checker {
         Date: { now: `${targetName}.nowMs` },
         performance: { now: `${targetName}.nowMs` },
         random: { random: `${targetName}.nextF64` },
+        process: { cwd: `${targetName}.cwd` },
       };
       const rep = m ? map[global]?.[m] : undefined;
       if (target && rep) {
         edits.push({ range: { start: this.mod.pf.position(target.getStart(sf)), end: this.mod.pf.position(target.end) }, newText: rep });
+      } else if (!target && global === "fetch") {
+        edits.push({ range: { start: this.mod.pf.position(exprNode.getStart(sf)), end: this.mod.pf.position(exprNode.end) }, newText: `${targetName}.fetch` });
       }
     }
     if (!edits.length) return { authority };

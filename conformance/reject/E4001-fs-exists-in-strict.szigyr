@@ -1,0 +1,6 @@
+// expect: E4001 @ 5:13
+// stage: 2
+function f(fs: Fs): boolean {
+  "use owned";
+  return fs.exists("a");
+}

@@ -1,0 +1,43 @@
+// expect-output: exists=true,false;stat=file:3:true;dir=a.bin:file,z.txt:file;txt=hello;after=false
+// stage: 2
+
+function fillBytes(buf: Mut<Vec<u8>>): void {
+  "use rt";
+  buf[0] = 65;
+  buf[1] = 66;
+  buf[2] = 67;
+}
+
+export async function main(sys: System): Promise<void> {
+  const fs = FakeFs.create();
+  const mk = fs.mkdir("/a/b");
+  const e1 = fs.exists("/a");
+  const e2 = fs.exists("/missing");
+  const wt = fs.writeTextAtomic("/a/b/z.txt", "hello");
+  const buf = Vec.create<u8>(sys.alloc, 4);
+  buf.push(0);
+  buf.push(0);
+  buf.push(0);
+  fillBytes(buf);
+  const wb = fs.writeBytesAtomic("/a/b/a.bin", buf.slice(0, 3));
+  const stRes = fs.stat("/a/b/a.bin");
+  let statStr = "err";
+  if (stRes.kind === "ok") {
+    statStr = `${stRes.value.kind}:${stRes.value.size}:${stRes.value.mtimeMs > 0}`;
+  }
+  const rdRes = fs.readDir("/a/b");
+  let dirStr = "err";
+  if (rdRes.kind === "ok") {
+    dirStr = rdRes.value.map((d: DirEntry) => `${d.name}:${d.kind}`).join(",");
+  }
+  const rn = fs.rename("/a/b/z.txt", "/a/b/m.txt");
+  const rt = fs.readText("/a/b/m.txt");
+  const txtStr = rt.kind === "ok" ? rt.value : "err";
+  const rm = fs.remove("/a");
+  const e3 = fs.exists("/a");
+  if (mk.kind !== "ok" || wt.kind !== "ok" || wb.kind !== "ok" || rn.kind !== "ok" || rm.kind !== "ok") {
+    sys.log.info("unexpected error");
+    return;
+  }
+  sys.log.info(`exists=${e1},${e2};stat=${statStr};dir=${dirStr};txt=${txtStr};after=${e3}`);
+}

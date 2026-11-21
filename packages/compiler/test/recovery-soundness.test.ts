@@ -49,7 +49,7 @@ describe("P1 -> P2 recovery without crashing", () => {
 });
 
 describe("Fake types in type annotations", () => {
-  it("accepts FakeClock, SeededRandom, MemoryLog, FakeFs, FakeSpawn, FakeAudio in params, returns, locals, fields, and assigns to authorities", () => {
+  it("accepts FakeClock, SeededRandom, MemoryLog, FakeFs, FakeSpawn, FakeAudio, FakeNet, FakeProc in params, returns, locals, fields, and assigns to authorities", () => {
     const ds = checkSrc(`
 type Fakes = {
   readonly clock: FakeClock;
@@ -58,6 +58,8 @@ type Fakes = {
   readonly fs: FakeFs;
   readonly spawn: FakeSpawn;
   readonly audio: FakeAudio;
+  readonly net: FakeNet;
+  readonly proc: FakeProc;
 };
 
 function takeClock(c: Clock): f64 { return c.nowMs(); }
@@ -66,6 +68,8 @@ function takeLog(l: Log): void { l.info("ok"); }
 function takeFs(f: Fs): void { const _r = f.readText("a"); }
 function takeSpawn(s: Spawn): void {}
 function takeAudio(a: Audio): void {}
+function takeNet(n: Net): void {}
+function takeProc(p: Proc): string { return p.cwd(); }
 
 function makeClock(): FakeClock { return FakeClock.create(0); }
 function makeRandom(): SeededRandom { return SeededRandom.create(1); }
@@ -73,6 +77,8 @@ function makeLog(): MemoryLog { return MemoryLog.create(); }
 function makeFs(): FakeFs { return FakeFs.create(); }
 function makeSpawn(): FakeSpawn { return FakeSpawn.create(); }
 function makeAudio(): FakeAudio { return FakeAudio.create(); }
+function makeNet(): FakeNet { return FakeNet.create(); }
+function makeProc(): FakeProc { return FakeProc.create(); }
 
 export function useAll(f: Fakes): f64 {
   const c: FakeClock = makeClock();
@@ -81,6 +87,8 @@ export function useAll(f: Fakes): f64 {
   const fs: FakeFs = makeFs();
   const sp: FakeSpawn = makeSpawn();
   const au: FakeAudio = makeAudio();
+  const nt: FakeNet = makeNet();
+  const pr: FakeProc = makeProc();
   takeClock(c);
   takeClock(f.clock);
   takeRandom(r);
@@ -93,6 +101,10 @@ export function useAll(f: Fakes): f64 {
   takeSpawn(f.spawn);
   takeAudio(au);
   takeAudio(f.audio);
+  takeNet(nt);
+  takeNet(f.net);
+  takeProc(pr);
+  takeProc(f.proc);
   return c.nowMs() + r.nextF64();
 }
 `);

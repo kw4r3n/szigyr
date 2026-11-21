@@ -22,7 +22,7 @@ import { detectSolver, parseGetValue, runSmtBatch, shutdownSmt } from "./smt.ts"
 import { loadNpmModule } from "./bundle-npm.ts";
 import { hasCap, show, type Capability, type Type } from "./types.ts";
 import * as rt from "../../runtime-js/src/index.ts";
-import { FakeAudio, FakeClock, FakeFs, FakeSpawn, MemoryLog, SeededRandom, TestAlloc, runMain, setNodeAudio } from "../../std/src/index.ts";
+import { FakeAudio, FakeClock, FakeFs, FakeNet, FakeProc, FakeSpawn, MemoryLog, SeededRandom, TestAlloc, runMain, setNodeAudio, stopNodeNetServers, stopNodeProcs } from "../../std/src/index.ts";
 import { createNodeAudio, stopAudioStreams } from "./audio-sdl.ts";
 
 setNodeAudio(createNodeAudio());
@@ -223,7 +223,7 @@ export function rtTrapSites(entryFile: string): Record<string, TrapSite[]> {
 /** Which backend runs strict / rt functions (D101, Q280). Managed code always runs on the JS engine. */
 export type Backend = "js" | "c" | "wasm";
 /** `analysis`: the result of `analyze` for this entry file, reused instead of analysing again (D162: `--backend=both` runs both backends over one analysis). */
-export interface RunOptions { backend?: Backend; analysis?: Analysis }
+export interface RunOptions { backend?: Backend; analysis?: Analysis; args?: readonly string[] }
 
 /** Q265: the cause an isolate's abnormal end recorded (no position, not a Trap); the foreign-trap check below rethrows it as main's own trap. */
 let isolateCause: string | undefined;
@@ -294,7 +294,7 @@ async function load(files: ParsedFile[], entryFile: string, tests: boolean, decl
 }
 
 /** The runtime object generated code receives: runtime-js plus the std fakes. */
-const RUNTIME = { ...rt, FakeAudio, FakeClock, SeededRandom, MemoryLog, FakeFs, FakeSpawn, TestAlloc };
+const RUNTIME = { ...rt, FakeAudio, FakeClock, FakeNet, FakeProc, SeededRandom, MemoryLog, FakeFs, FakeSpawn, TestAlloc };
 
 /** D060: the stack locator, the test registry and the unhandled-rejection sink are per process, so runs in one process are queued. */
 let queue: Promise<unknown> = Promise.resolve();
@@ -328,8 +328,8 @@ export function checkMain(decls: Decls, entryFile: string): void {
 }
 
 /** Checks, emits and runs `main(sys)` of the entry file with a real System (Q059, Q061). */
-export const run = (entryFile: string, opts: RunOptions = {}): Promise<RunResult> => exclusive(() => runNow(entryFile, opts.backend, opts.analysis));
-async function runNow(entryFile: string, backend?: Backend, analysis?: Analysis): Promise<RunResult> {
+export const run = (entryFile: string, opts: RunOptions = {}): Promise<RunResult> => exclusive(() => runNow(entryFile, opts.backend, opts.analysis, opts.args));
+async function runNow(entryFile: string, backend?: Backend, analysis?: Analysis, args?: readonly string[]): Promise<RunResult> {
   const a = analysis ?? analyze(entryFile);
   if (a.diagnostics.length) return { diagnostics: a.diagnostics, stdout: "", trap: null };
   const e4009 = backend !== "c" ? cOnlyDiagnostic(a.files, a.unsafeOps ?? []) : undefined; // §14.7
@@ -350,9 +350,10 @@ async function runNow(entryFile: string, backend?: Backend, analysis?: Analysis)
     if (p instanceof Promise) return p.finally(finish);
     finish();
     return p as void;
-  });
+  }, { args: args ?? [] });
   rt.stopFakeIsolates();
-  await Promise.all([rt.stopIsolates(), stopAudioStreams()]); // Q207, §15.5: main ending stops isolates and open audio streams
+  stopNodeProcs();
+  await Promise.all([rt.stopIsolates(), stopAudioStreams(), stopNodeNetServers()]); // Q207, §15.5, Q295: main ending stops isolates, audio streams, HTTP servers, and child processes
   // §15.4 (3): an isolate record may have landed after main trapped (stopIsolates lets messages land), so it does not beat main's own.
   const t = rt.takeIsolateTrap();
   const c = Array.isArray(v) ? { code: `T${String(v[0]).padStart(3, "0")}`, file: v[1] as string, line: v[2] as number, col: v[3] as number } : null;
@@ -372,7 +373,7 @@ async function runTestFileNow(entryFile: string, backend?: Backend, analysis?: A
   if (e4009) return { diagnostics: [e4009], results: [] };
   rt.clearTests();
   await loadChecked(a.files, entryFile, true, a.decls, backend);
-  try { return { diagnostics: [], results: await rt.runTests() }; } finally { rt.stopFakeIsolates(); await stopAudioStreams(); rt.clearTests(); }
+  try { return { diagnostics: [], results: await rt.runTests() }; } finally { rt.stopFakeIsolates(); stopNodeProcs(); await Promise.all([stopAudioStreams(), stopNodeNetServers()]); rt.clearTests(); }
 }
 
 /** `szigyr mutate`: JS-only mutation testing with diff cache and witness search (SPEC §16.2, Q275–Q277). */
