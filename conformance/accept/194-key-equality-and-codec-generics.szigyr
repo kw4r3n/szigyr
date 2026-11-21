@@ -1,0 +1,31 @@
+// expect: ok
+// stage: 2
+type Pair<T> = { readonly a: T; readonly b: T };
+
+export function sameKey<K extends Key>(a: K, b: K): boolean {
+  return a === b && !(a !== b);
+}
+
+export function hasKey<K extends Key>(xs: ReadonlyArray<K>, target: K): boolean {
+  return xs.includes(target) && xs.indexOf(target) !== null;
+}
+
+export function checkCodecEq<T extends Codec>(t: Test, a: T, b: T): void {
+  t.eq<T>(a, b);
+}
+
+export function codecRo(xs: ReadonlyArray<i32>): string {
+  return JSON.stringify<ReadonlyArray<i32>>(xs);
+}
+
+test("Key equality and Codec t.eq / ReadonlyArray Codec", (t: Test) => {
+  t.ok(sameKey<string>("a", "a"));
+  t.ok(hasKey<i32>([1, 2, 3], 2));
+  checkCodecEq<Pair<i32>>(t, { a: 1, b: 2 }, { a: 1, b: 2 });
+  const parsed = JSON.parse(codecRo([4, 5]));
+  t.ok(parsed.kind === "ok");
+  if (parsed.kind === "ok") {
+    const dec = cast<ReadonlyArray<i32>>(parsed.value);
+    t.ok(dec.kind === "ok");
+  }
+});

@@ -491,7 +491,7 @@ export class Program {
    */
   private checkSubstInsts(): void {
     for (const { mod, node, t, args } of this.substInsts) {
-      if (!args.some((a) => ownedDeep(a)) && ownedDeep(t)) this.rep.at(mod, "E3007", node, `'${show(t)}' holds a managed container of an owned type`);
+      if (!args.some((a) => ownedDeep(a)) && ownedDeep(t)) this.rep.at(mod, "E3007", node, `'${show(t)}' holds a managed container of an owned type`, { kind: "managed-owned", actual: show(t) });
     }
   }
 
@@ -502,16 +502,16 @@ export class Program {
     for (const { mod, node, p, arg } of this.insts) {
       const key = `${mod.file}:${node.pos}:${p.id}`;
       if (seen.has(key) || arg.k === "error") continue;
-      const fail = (code: string, msg: string): void => { seen.add(key); this.rep.at(mod, code, node, msg); };
+      const fail = (code: string, msg: string, data?: Record<string, unknown>): void => { seen.add(key); this.rep.at(mod, code, node, msg, data); };
 
       if (p.noPromise && arg.k !== "tparam" && promiseIn(arg)) {
-        fail("E2002", `'${show(arg)}' cannot instantiate '${p.name}' (Promise cannot be a type argument)`);
+        fail("E2002", `'${show(arg)}' cannot instantiate '${p.name}' (Promise cannot be a type argument)`, { kind: "promise-tparam", param: p.name, actual: show(arg) });
         continue;
       }
       if (p.owner === "rt") {
-        if (hasAuthority(arg)) { fail("E4006", `'${show(arg)}' cannot instantiate '${p.name}' of an rt function (§6)`); continue; }
+        if (hasAuthority(arg)) { fail("E4006", `'${show(arg)}' cannot instantiate '${p.name}' of an rt function (§6)`, { layer: "rt", actual: show(arg) }); continue; }
         if (arg.k === "tparam" && tparamMayBeAuthority(arg.p)) {
-          fail("E4006", `'${arg.p.name}' may hold an authority and cannot instantiate '${p.name}' of an rt function (§6)`);
+          fail("E4006", `'${arg.p.name}' may hold an authority and cannot instantiate '${p.name}' of an rt function (§6)`, { layer: "rt", actual: arg.p.name });
           continue;
         }
       }
@@ -519,7 +519,7 @@ export class Program {
       for (const cap of p.caps ?? []) {
         if (!hasCap(arg, cap, !p.inParam)) {
           const code = cap === "Send" ? "E2010" : cap === "Native" ? "E4002" : "E2002";
-          fail(code, `'${show(arg)}' cannot instantiate '${p.name}' (requires '${cap}')`);
+          fail(code, `'${show(arg)}' cannot instantiate '${p.name}' (requires '${cap}')`, { requiredCap: cap, actual: show(arg), param: p.name });
           capFailed = true;
           break;
         }
@@ -528,10 +528,10 @@ export class Program {
       if (p.owner && p.owner !== "managed") {
         if (arg.k === "tparam") {
           if (!tparamHasCap(arg.p, "Native")) {
-            fail("E4002", `the managed type parameter '${arg.p.name}' cannot instantiate '${p.name}' of a strict / rt function (§3.3 is not checked through it)`);
+            fail("E4002", `the managed type parameter '${arg.p.name}' cannot instantiate '${p.name}' of a strict / rt function (§3.3 is not checked through it)`, { layer: p.owner, actual: arg.p.name, requiredCap: "Native" });
           }
         } else if (!layerOk(arg) || !crossOk(arg, !p.inParam)) {
-          fail("E4002", `'${show(arg)}' cannot instantiate '${p.name}' of a strict / rt function (§3.3)`);
+          fail("E4002", `'${show(arg)}' cannot instantiate '${p.name}' of a strict / rt function (§3.3)`, { layer: p.owner, actual: show(arg) });
         }
       }
     }
@@ -565,21 +565,23 @@ export class Program {
         return ERROR;
       case K.UnknownKeyword: return builtinType("unknown")!;
       case K.NeverKeyword: return builtinType("never")!;
-      case K.BigIntKeyword: case K.UndefinedKeyword:
-        this.rep.at(e.mod, "E2000", t, `'${t.getText(e.mod.sf)}' does not exist`);
+      case K.BigIntKeyword: case K.UndefinedKeyword: {
+        const name = t.getText(e.mod.sf);
+        this.rep.at(e.mod, "E2000", t, `'${name}' does not exist`, { name });
         return ERROR;
+      }
       case K.LiteralType: {
         const l = (t as ts.LiteralTypeNode).literal;
         if (l.kind === K.NullKeyword) return NULL;
         const v = (l as ts.StringLiteral).text;
-        if (hasLoneSurrogate(v)) { this.rep.at(e.mod, "E2012", t, "a string-literal type cannot contain an unpaired surrogate"); return ERROR; } // Q238
+        if (hasLoneSurrogate(v)) { this.rep.at(e.mod, "E2012", t, "a string-literal type cannot contain an unpaired surrogate", { kind: "lone-surrogate" }); return ERROR; } // Q238
         return { k: "lit", value: v };
       }
       case K.ParenthesizedType: return this.typeOf((t as ts.ParenthesizedTypeNode).type, e, voidOk);
       case K.UnionType: { // §3.2: tagged unions, string-literal unions and `T | null` only (Q080)
         const u = union((t as ts.UnionTypeNode).types.map((x) => this.typeOf(x, e)));
         if (u.k === "union" && u.members.some((m) => m.k === "error" || (m.k === "record" && m.fields.some((f) => f.type.k === "error")))) return ERROR;
-        if (!legalUnion(u)) { this.rep.at(e.mod, "E2002", t, `'${show(u)}' is not a tagged union, a string-literal union or 'T | null'`); return ERROR; }
+        if (!legalUnion(u)) { this.rep.at(e.mod, "E2002", t, `'${show(u)}' is not a tagged union, a string-literal union or 'T | null'`, { kind: "illegal-union", actual: show(u) }); return ERROR; }
         return u;
       }
       case K.TypeLiteral: return this.recordOf(t as ts.TypeLiteralNode, e, false);
@@ -593,7 +595,7 @@ export class Program {
         const id = r.typeName;
         // Q130: a Promise type is only the whole return type of a function (not a type argument, field, parameter or variable)
         if (id.text === "Promise" && !e.tparams.has("Promise") && !(voidOk && r.parent.kind !== K.TypeReference)) {
-          this.rep.at(e.mod, "E2002", r, "'Promise' can only be the return type of a function");
+          this.rep.at(e.mod, "E2002", r, "'Promise' can only be the return type of a function", { kind: "promise-position" });
           return ERROR;
         }
         return this.typeRef(id, r.typeArguments, r, e);
@@ -606,10 +608,10 @@ export class Program {
     const fields: Field[] = [];
     for (const m of t.members) {
       const p = m as ts.PropertySignatureDeclaration;
-      if (!p.type) { this.rep.at(e.mod, "E2006", p.name, "property needs a type annotation"); return ERROR; }
+      if (!p.type) { this.rep.at(e.mod, "E2006", p.name, "property needs a type annotation", { kind: "missing-annotation" }); return ERROR; }
       const name = (p.name as ts.Identifier).text;
       const type = this.typeOf(p.type, e);
-      if (struct && !structField(type) && !(type.k === "gen" && (type.name === "Ref" || type.name === "Mut"))) this.rep.at(e.mod, "E4002", p.type, `a Struct field needs a Native type, not '${show(type)}'`); // Q086; a borrow field is P3's E3004 (§5.5)
+      if (struct && !structField(type) && !(type.k === "gen" && (type.name === "Ref" || type.name === "Mut"))) this.rep.at(e.mod, "E4002", p.type, `a Struct field needs a Native type, not '${show(type)}'`, { requiredCap: "Native", actual: show(type) }); // Q086; a borrow field is P3's E3004 (§5.5)
       fields.push({ name, type, readonly: hasMod(p, K.ReadonlyKeyword) });
     }
     return record(fields, struct);
@@ -651,21 +653,21 @@ export class Program {
       return this.recordOf(a as ts.TypeLiteralNode, e, true);
     }
     if (name === "CStruct") {
-      this.rep.at(e.mod, "E4007", whole, `'CStruct' can only be used in a 'declare module "c:..."' type declaration`);
+      this.rep.at(e.mod, "E4007", whole, `'CStruct' can only be used in a 'declare module "c:..."' type declaration`, { type: "CStruct" });
       return ERROR;
     }
     const ringElemOk = (a: Type, node: Node, label: string): boolean => {
       if (a.k === "error") return true;
       if (!hasCap(a, "Copy") || !hasCap(a, "Native") || !hasLayout(a)) {
-        this.rep.at(e.mod, "E4002", node, `${label} needs a Copy & Native element type, not '${show(a)}'`);
+        this.rep.at(e.mod, "E4002", node, `${label} needs a Copy & Native element type, not '${show(a)}'`, { actual: show(a), requiredCap: "Copy & Native" });
         return false;
       }
       if (hasArenaBuf(a)) {
-        this.rep.at(e.mod, "E2002", node, `a ring element cannot be or contain an ArenaBuf, not '${show(a)}'`);
+        this.rep.at(e.mod, "E2002", node, `a ring element cannot be or contain an ArenaBuf, not '${show(a)}'`, { actual: show(a) });
         return false;
       }
       if (collectTParams(a).length > 0 && !sendable(a)) {
-        this.rep.at(e.mod, "E2002", node, `generic ${label} requires 'Send' on '${show(a)}'`);
+        this.rep.at(e.mod, "E2002", node, `generic ${label} requires 'Send' on '${show(a)}'`, { actual: show(a), requiredCap: "Send" });
         return false;
       }
       return true;
@@ -683,30 +685,30 @@ export class Program {
       if (!arity(GEN_ARITY[name])) return ERROR;
       if ((name === "Ref" || name === "Mut")) { // Q051
         if (!borrowOk(args[0]!)) {
-          this.rep.at(e.mod, "E2002", argNodes![0]!, `${name}<T> needs an owned type or Slice`);
+          this.rep.at(e.mod, "E2002", argNodes![0]!, `${name}<T> needs an owned type or Slice`, { kind: "borrow-target", actual: show(args[0]!) });
           return ERROR;
         }
       }
       if (name === "Port") { // §15.2 (Q200, Q210): both type arguments must be sendable, at every position a Port type is written
-        for (let i = 0; i < 2; i++) if (!sendable(args[i]!)) { this.rep.at(e.mod, "E2010", argNodes![i]!, `'${show(args[i]!)}' cannot be sent to an isolate (§15.2)`); return ERROR; }
+        for (let i = 0; i < 2; i++) if (!sendable(args[i]!)) { this.rep.at(e.mod, "E2010", argNodes![i]!, `'${show(args[i]!)}' cannot be sent to an isolate (§15.2)`, { actual: show(args[i]!) }); return ERROR; }
       }
       if (args.some((a) => a.k === "error")) return ERROR;
       if ((name === "RingTx" || name === "RingRx") && !ringElemOk(args[0]!, argNodes![0]!, `${name}<T>`)) return ERROR; // §15.1 (Q210)
       if ((name === "Map" || name === "Set") && !keyOk(args[0]!)) { // §3.2, SPEC-v1 §3.4 Key
-        this.rep.at(e.mod, "E2002", argNodes![0]!, `a ${name} ${name === "Map" ? "key" : "element"} is a string, number, boolean or string literal union, not '${show(args[0]!)}'`);
+        this.rep.at(e.mod, "E2002", argNodes![0]!, `a ${name} ${name === "Map" ? "key" : "element"} is a string, number, boolean or string literal union, not '${show(args[0]!)}'`, { requiredCap: "Key", actual: show(args[0]!) });
         return ERROR;
       }
       if ((name === "Vec" || name === "Slice" || name === "Pool" || name === "Handle" || name === "ArenaBuf") && (!hasCap(args[0]!, "Copy") || !hasCap(args[0]!, "Native") || !hasLayout(args[0]!))) { // §3.3, SPEC-v1 §3.4
-        this.rep.at(e.mod, "E4002", argNodes![0]!, `${name}<T> needs a Copy & Native element type, not '${show(args[0]!)}'`);
+        this.rep.at(e.mod, "E4002", argNodes![0]!, `${name}<T> needs a Copy & Native element type, not '${show(args[0]!)}'`, { actual: show(args[0]!), requiredCap: "Copy & Native" });
         return ERROR;
       }
       const i = CONTAINERS.has(name) ? args.findIndex((a) => holdsOwned(a) && !ownedDeep(a)) : -1;
-      if (i >= 0) this.rep.at(e.mod, "E3007", argNodes![i]!, `'${name}' cannot hold the owned type '${show(args[i]!)}' (Q174)`);
+      if (i >= 0) this.rep.at(e.mod, "E3007", argNodes![i]!, `'${name}' cannot hold the owned type '${show(args[i]!)}' (Q174)`, { kind: "managed-owned", container: name, actual: show(args[i]!) });
       return { k: "gen", name, args };
     }
     const b = !RESERVED.has(name) ? builtinType(name) : undefined;
     if (b) return arity(0) ? b : ERROR;
-    this.rep.at(e.mod, "E2000", id, `unknown type '${name}'`);
+    this.rep.at(e.mod, "E2000", id, `unknown type '${name}'`, { name });
     return ERROR;
   }
 }

@@ -83,7 +83,7 @@ export class Checker {
     // Fail closed: an error type without any diagnostic would accept anything (D050).
     // When P1 already produced errors, skip the internal fallback (those errors explain cascades).
     if (this.firstError && !hasPriorErrors && this.prog.rep.out.length === 0) { // any diagnostic, signatures included
-      this.prog.rep.at(this.firstError.mod, "E2002", this.firstError.node, "internal: expression has no type");
+      this.prog.rep.at(this.firstError.mod, "E2002", this.firstError.node, "internal: expression has no type", { kind: "internal-error-type" });
     }
   }
 
@@ -234,25 +234,25 @@ export class Checker {
   private layerSig(f: FnSym): void {
     const d = f.decl;
     const kw = (d.modifiers ?? []).find((m) => m.kind === K.AsyncKeyword);
-    if (kw) this.at("E4002", kw, `${f.layer} functions cannot be async`);
+    if (kw) this.at("E4002", kw, `${f.layer} functions cannot be async`, { layer: f.layer, actual: "async" });
     d.parameters.forEach((p, i) => { if (p.type) this.layerParamType(f.sig.params[i] ?? ERROR, p.type, f.layer); });
     if (d.type) this.layerType(f.sig.ret, d.type, f.layer);
-    d.parameters.forEach((p, i) => { const t = f.sig.params[i]; if (p.type && t && t.k !== "fn" && layerOk(t) && !crossOk(t)) this.at("E4002", p.type, `'${show(t)}' cannot cross the managed / C boundary (Q233)`); });
-    if (d.type && layerOk(f.sig.ret) && !crossOk(f.sig.ret, true)) this.at("E4002", d.type, `'${show(f.sig.ret)}' cannot cross the managed / C boundary (Q233)`);
+    d.parameters.forEach((p, i) => { const t = f.sig.params[i]; if (p.type && t && t.k !== "fn" && layerOk(t) && !crossOk(t)) this.at("E4002", p.type, `'${show(t)}' cannot cross the managed / C boundary (Q233)`, { layer: f.layer, actual: show(t) }); });
+    if (d.type && layerOk(f.sig.ret) && !crossOk(f.sig.ret, true)) this.at("E4002", d.type, `'${show(f.sig.ret)}' cannot cross the managed / C boundary (Q233)`, { layer: f.layer, actual: show(f.sig.ret) });
   }
   /** Q189 (b): a function type may be written as the parameter type of a strict / rt function (and, recursively,
    * as a parameter type inside one). Its return type is not a parameter position, so it goes through layerType. */
   layerParamType(t: Type, node: Node, layer: Layer): void {
     if (t.k !== "fn") { this.layerType(t, node, layer); return; }
-    if (layer === "rt" && hasAuthDeep(t)) this.at("E4006", node, "rt functions cannot take authorities");
+    if (layer === "rt" && hasAuthDeep(t)) this.at("E4006", node, "rt functions cannot take authorities", { layer: "rt", actual: show(t) });
     const f = node.kind === K.FunctionType ? (node as ts.FunctionTypeNode) : undefined;
     t.params.forEach((pt, i) => this.layerParamType(pt, f?.parameters[i]?.type ?? node, layer));
     this.layerType(t.ret, f?.type ?? node, layer);
   }
   layerType(t: Type, node: Node, layer: Layer): void {
-    if (layer === "rt" && hasAuthority(t)) this.at("E4006", node, "rt functions cannot take authorities");
-    else if (t.k === "fn") this.at("E4003", node, `a function value cannot be used in ${layer} code`); // §2: function values are E4003
-    else if (!layerOk(t)) this.at("E4002", node, `'${show(t)}' cannot be used in ${layer} code`);
+    if (layer === "rt" && hasAuthority(t)) this.at("E4006", node, "rt functions cannot take authorities", { layer: "rt", actual: show(t) });
+    else if (t.k === "fn") this.at("E4003", node, `a function value cannot be used in ${layer} code`, { layer, actual: show(t) }); // §2: function values are E4003
+    else if (!layerOk(t)) this.at("E4002", node, `'${show(t)}' cannot be used in ${layer} code`, { layer, actual: show(t) });
   }
 
   /** E4010 (Q240 (a)): a strict / rt generic function may not instantiate itself, directly or through a cycle of
@@ -289,7 +289,7 @@ export class Checker {
     const reported = new Set<Node>();
     for (const [from, es] of edges) for (const e of es) if (e.grow && !reported.has(e.site.node) && reaches(e.to, from)) {
       reported.add(e.site.node);
-      this.prog.rep.at(e.site.mod, "E4010", e.site.node, `polymorphic recursion: '${(e.site.callee as FnSym).name}' is instantiated with a type argument that wraps a type parameter of its own cycle`);
+      this.prog.rep.at(e.site.mod, "E4010", e.site.node, `polymorphic recursion: '${(e.site.callee as FnSym).name}' is instantiated with a type argument that wraps a type parameter of its own cycle`, { callee: (e.site.callee as FnSym).name });
     }
   }
 
@@ -338,50 +338,61 @@ export class Checker {
         list.push({ to, site });
       }
     }
-    const reaches = (from: Inst, to: Inst): boolean => {
-      const target = key(to), seen = new Set<string>(), todo = [from];
-      while (todo.length) {
-        const x = todo.pop()!;
-        if (key(x) === target) return true;
-        if (seen.has(key(x))) continue;
-        seen.add(key(x));
-        for (const e of edges.get(key(x)) ?? []) todo.push(e.to);
+    const cyclePath = (from: Inst, to: Inst): string[] | undefined => {
+      const target = key(to), seen = new Set<string>(), q: { inst: Inst; path: string[] }[] = [{ inst: from, path: [to.f.name, from.f.name] }];
+      while (q.length) {
+        const cur = q.shift()!, k = key(cur.inst);
+        if (k === target) return cur.path;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        for (const e of edges.get(k) ?? []) q.push({ inst: e.to, path: [...cur.path, e.to.f.name] });
       }
-      return false;
+      return undefined;
     };
     const reported = new Set<Node>();
     for (const [fromKey, es] of edges) {
       const from = insts.get(fromKey)!;
       if (from.f.layer !== "rt") continue;
-      for (const e of es) if (!reported.has(e.site.node) && reaches(e.to, from)) {
-        reported.add(e.site.node);
-        this.prog.rep.at(e.site.mod, "E4005", e.site.node, `recursive call to '${e.to.f.name}' in rt code`);
+      for (const e of es) if (!reported.has(e.site.node)) {
+        const cyc = cyclePath(e.to, from);
+        if (cyc) {
+          reported.add(e.site.node);
+          this.prog.rep.at(e.site.mod, "E4005", e.site.node, `recursive call to '${e.to.f.name}' in rt code`, { callee: e.to.f.name, cycle: cyc });
+        }
       }
     }
     // Q227 (a): calls by name never depend on an instantiation, so a cycle of them is recursion even when
     // nothing calls the function (a function with function-typed parameters has no instantiation then).
     const direct = new Map<FnSym, FnSite[]>();
     for (const s of this.fnSites) if (typeof s.callee !== "number" && s.from?.layer === "rt") (direct.get(s.from) ?? direct.set(s.from, []).get(s.from)!).push(s);
-    const reachesF = (from: FnSym, to: FnSym): boolean => {
-      const seen = new Set<FnSym>(), todo = [from];
-      for (let x = todo.pop(); x; x = todo.pop()) {
-        if (x === to) return true;
-        if (seen.has(x)) continue;
-        seen.add(x);
-        for (const s of direct.get(x) ?? []) todo.push(s.callee as FnSym);
+    const cyclePathF = (from: FnSym, to: FnSym): string[] | undefined => {
+      const seen = new Set<FnSym>(), q2: { fn: FnSym; path: string[] }[] = [{ fn: from, path: [to.name, from.name] }];
+      while (q2.length) {
+        const cur = q2.shift()!;
+        if (cur.fn === to) return cur.path;
+        if (seen.has(cur.fn)) continue;
+        seen.add(cur.fn);
+        for (const s of direct.get(cur.fn) ?? []) {
+          const cf = s.callee as FnSym;
+          q2.push({ fn: cf, path: [...cur.path, cf.name] });
+        }
       }
-      return false;
+      return undefined;
     };
-    for (const [from, ss] of direct) for (const s of ss) if (!reported.has(s.node) && reachesF(s.callee as FnSym, from)) {
-      reported.add(s.node);
-      this.prog.rep.at(s.mod, "E4005", s.node, `recursive call to '${(s.callee as FnSym).name}' in rt code`);
+    for (const [from, ss] of direct) for (const s of ss) if (!reported.has(s.node)) {
+      const cf = s.callee as FnSym;
+      const cyc = cyclePathF(cf, from);
+      if (cyc) {
+        reported.add(s.node);
+        this.prog.rep.at(s.mod, "E4005", s.node, `recursive call to '${cf.name}' in rt code`, { callee: cf.name, cycle: cyc });
+      }
     }
   }
 
 
   /** Module-level const and static field initializers (Q054, Q072). */
   private moduleConst(t: Type, init: ts.Expression): void {
-    if (mutable(t)) { this.at("E5002", init, "module-level const must have an immutable type"); return; }
+    if (mutable(t)) { this.at("E5002", init, "module-level const must have an immutable type", { kind: "mutable-type", type: show(t) }); return; }
     checkTo(this, init, t);
   }
 
@@ -429,16 +440,16 @@ export class Checker {
       const r = this.fx.ret;
       const anchor = d.kind === K.ArrowFunction ? (d as ts.ArrowFunction).equalsGreaterThanToken : (d as { name?: Node }).name ?? d;
       if (r && reach && !isVoidish(r) && r.k !== "error") {
-        this.at("E2002", anchor, "function can reach its end without returning a value");
+        this.at("E2002", anchor, "function can reach its end without returning a value", { kind: "missing-return", expected: show(r) });
       }
       if (!r) {
         const rs = this.fx.returns.filter((t) => !(t.k === "prim" && t.name === "never"));
         result = rs.length ? union(rs) : this.fx.returns.length ? NEVER : VOID;
         if (result.k === "union" && !legalUnion(result) && !rs.some((t) => t.k === "error")) { // Q126
-          this.at("E2002", anchor, `the inferred return type '${show(result)}' is not an allowed union; annotate the return type`);
+          this.at("E2002", anchor, `the inferred return type '${show(result)}' is not an allowed union; annotate the return type`, { kind: "illegal-return-union", actual: show(result) });
           result = ERROR;
         } else if (reach && !isVoidish(result) && result.k !== "error" && !rs.some((t) => t.k === "error")) { // Q221
-          this.at("E2002", anchor, "function can reach its end without returning a value");
+          this.at("E2002", anchor, "function can reach its end without returning a value", { kind: "missing-return", expected: show(result) });
           result = ERROR;
         }
       }
@@ -667,13 +678,13 @@ export class Checker {
   private returnStmt(r: ts.ReturnStatement): void {
     const want = this.fx.ret;
     if (!r.expression) {
-      if (want && !isVoidish(want) && want.k !== "error") this.at("E2002", r, "missing return value");
+      if (want && !isVoidish(want) && want.k !== "error") this.at("E2002", r, "missing return value", { expected: show(want) });
       if (!want) this.fx.returns.push(VOID);
       return;
     }
     if (!want || isPromise(want)) promiseOk.add(r.expression); // Q130
     if (!want) { const t = expr(this, r.expression); this.onlyPromise(r.expression, t); this.fx.returns.push(t); return; }
-    if (isVoidish(want)) { expr(this, r.expression); this.at("E2002", r.expression, "a void function cannot return a value"); return; }
+    if (isVoidish(want)) { expr(this, r.expression); this.at("E2002", r.expression, "a void function cannot return a value", { expected: "void" }); return; }
     checkTo(this, r.expression, unref(want)); // a `Ref` / `Mut` return type is P3's E3004 (§5.5)
   }
 
@@ -732,6 +743,24 @@ export class Checker {
         ? labels.flatMap((l) => (l.k === "lit" && !seen.has(l.value) ? [l.value] : []))
         : isBool(t) ? ["true", "false"].filter((v) => !seen.has(v)) : undefined;
       this.report("E2005", kw, kw + "switch".length, "switch is not exhaustive", missing?.length ? { missing } : undefined);
+      if (missing?.length) {
+        const d = this.prog.rep.out.at(-1);
+        const sf = this.mod.sf;
+        const swLineStart = sf.text.lastIndexOf("\n", x.getStart(sf)) + 1;
+        const indent = sf.text.slice(swLineStart, x.getStart(sf)).replace(/[^\t ]/g, " ");
+        const caseIndent = `${indent}  `;
+        const cbClose = x.caseBlock.end - 1;
+        const closePos = this.mod.pf.position(cbClose);
+        const fmt = (v: string) => (isBool(t) ? v : JSON.stringify(v));
+        const snippets = missing.map((v) => `${caseIndent}case ${fmt(v)}: panic("unhandled");`).join("\n");
+        const lastLineStart = sf.text.lastIndexOf("\n", cbClose) + 1;
+        const closeOnOwnLine = lastLineStart > x.caseBlock.getStart(sf) && /^[ \t]*$/.test(sf.text.slice(lastLineStart, cbClose));
+        const startPos = closeOnOwnLine ? this.mod.pf.position(lastLineStart) : closePos;
+        const newText = `${closeOnOwnLine ? "" : "\n"}${snippets}\n${indent}`;
+        if (d?.code === "E2005") {
+          d.fixes = [{ title: `add missing case(s): ${missing.map(fmt).join(", ")}`, edits: [{ range: { start: startPos, end: closePos }, newText }] }];
+        }
+      }
     }
     return !exhaustive || reachEnd || clauses.length === 0 || hasBreak(x.caseBlock, true);
   }
@@ -807,15 +836,40 @@ export class Checker {
     }
   }
 
-  /** Q073 (E5001 fix): the authority a global maps to, and a fix that adds it as a parameter of the enclosing function. */
-  authorityFix(global: string): { authority: string; fixes?: { title: string; edits: { range: { start: { line: number; col: number }; end: { line: number; col: number } }; newText: string }[] }[] } | undefined {
+  /** Q073 (E5001 fix): the authority a global maps to, and a fix that adds it as a parameter and rewrites the call. */
+  authorityFix(global: string, exprNode?: ts.Expression): { authority: string; fixes?: { title: string; edits: { range: { start: { line: number; col: number }; end: { line: number; col: number } }; newText: string }[] }[] } | undefined {
     const authority = ({ console: "Log", Date: "Clock", performance: "Clock", random: "Random" } as Record<string, string>)[global];
     if (!authority) return undefined;
     const ps = this.fx.params;
-    if (!ps) return { authority };
     const name = authority.toLowerCase();
-    const pos = this.mod.pf.position(ps.end);
-    return { authority, fixes: [{ title: `take '${name}: ${authority}' as a parameter`, edits: [{ range: { start: pos, end: pos }, newText: `${ps.length ? ", " : ""}${name}: ${authority}` }] }] };
+    const hasParam = ps?.some((p) => isId(p.name) && p.name.text === name) ?? false;
+    if (!ps && !this.scope.lookup(name)) return { authority };
+    const edits: { range: { start: { line: number; col: number }; end: { line: number; col: number } }; newText: string }[] = [];
+    if (ps && !hasParam) {
+      const pos = this.mod.pf.position(ps.end);
+      edits.push({ range: { start: pos, end: pos }, newText: `${ps.length ? ", " : ""}${name}: ${authority}` });
+    }
+    if (exprNode) {
+      const sf = this.mod.sf;
+      let target: ts.PropertyAccessExpression | undefined;
+      if (exprNode.kind === K.PropertyAccessExpression) target = exprNode as ts.PropertyAccessExpression;
+      else if (exprNode.parent?.kind === K.PropertyAccessExpression && (exprNode.parent as ts.PropertyAccessExpression).expression === exprNode) {
+        target = exprNode.parent as ts.PropertyAccessExpression;
+      }
+      const m = target && isId(target.name) ? target.name.text : undefined;
+      const map: Record<string, Record<string, string>> = {
+        console: { log: `${name}.info`, info: `${name}.info`, warn: `${name}.warn`, error: `${name}.error` },
+        Date: { now: `${name}.nowMs` },
+        performance: { now: `${name}.nowMs` },
+        random: { random: `${name}.nextF64` },
+      };
+      const rep = m ? map[global]?.[m] : undefined;
+      if (target && rep) {
+        edits.push({ range: { start: this.mod.pf.position(target.getStart(sf)), end: this.mod.pf.position(target.end) }, newText: rep });
+      }
+    }
+    if (!edits.length) return { authority };
+    return { authority, fixes: [{ title: `take '${name}: ${authority}' as a parameter`, edits }] };
   }
 
   /** The layer of a called value symbol (E4001); undefined for non-functions. */
@@ -931,8 +985,8 @@ export class Checker {
     const first = d.parameters[0];
     const ft = sig.params[0];
     if (!first || !(ft?.k === "opaque" && ft.name === "Ffi")) {
-      if (first) this.at("E4007", first.name, "the first parameter of a C function must be 'ffi: Ffi'");
-      else this.at("E4007", d.name!, "the first parameter of a C function must be 'ffi: Ffi'");
+      if (first) this.at("E4007", first.name, "the first parameter of a C function must be 'ffi: Ffi'", { kind: "missing-ffi-param" });
+      else this.at("E4007", d.name!, "the first parameter of a C function must be 'ffi: Ffi'", { kind: "missing-ffi-param" });
     }
     d.parameters.forEach((p, i) => { if (i > 0 && p.type) this.checkBoundary(p.type, sig.params[i] ?? ERROR, false); });
     if (d.type) this.checkBoundary(d.type, sig.ret, true);
@@ -945,12 +999,12 @@ export class Checker {
       if (argNode) this.checkPointee(argNode, t.args[0]!);
       return;
     }
-    this.at("E4007", node, `'${show(t)}' cannot cross the C boundary`);
+    this.at("E4007", node, `'${show(t)}' cannot cross the C boundary`, { actual: show(t) });
   }
   /** A pointee maps to void* whatever it is (§14.2), except `usize` anywhere inside it and an
    * unmappable function type's own parameters / return. */
   private checkPointee(node: ts.TypeNode, t: Type): void {
-    if (t.k === "num" && t.name === "usize") { this.at("E4007", node, "'usize' cannot sit behind a pointer at the C boundary"); return; }
+    if (t.k === "num" && t.name === "usize") { this.at("E4007", node, "'usize' cannot sit behind a pointer at the C boundary", { actual: "usize" }); return; }
     if (t.k === "gen" && (t.name === "Ptr" || t.name === "ConstPtr")) {
       const argNode = (node as ts.TypeReferenceNode).typeArguments?.[0];
       if (argNode) this.checkPointee(argNode, t.args[0]!);
@@ -1015,9 +1069,9 @@ export class Checker {
           // belong to the `c:` specifier instead, so cdecl is excluded).
           if (!ctx.cdecl && place !== "field" && place !== "cstructfield" && place !== "typearg" && place !== "alias" && place !== "chandlearg") this.noteUnsafeOp(r.typeName);
           if (place === "field" || place === "typearg" || place === "alias" || place === "chandlearg") {
-            this.at("E4008", r.typeName, `'${name}' cannot be written in this position`);
+            this.at("E4008", r.typeName, `'${name}' cannot be written in this position`, { type: name, place });
           } else if (!ctx.cdecl && !ctx.unsafe) {
-            this.at("E4008", r.typeName, `'${name}' can only be written in a function with 'use unsafe'`);
+            this.at("E4008", r.typeName, `'${name}' can only be written in a function with 'use unsafe'`, { type: name });
           }
           if (arg) {
             if (!ctx.cdecl) {
@@ -1055,9 +1109,9 @@ export class Checker {
         if (resolved?.k === "cstruct") {
           if (!ctx.cdecl && place !== "field" && place !== "cstructfield" && place !== "typearg" && place !== "alias" && place !== "chandlearg") this.noteUnsafeOp(r.typeName);
           if (place === "field" || place === "typearg" || place === "alias") {
-            this.at("E4008", r.typeName, `'${name}' cannot be written in this position`);
+            this.at("E4008", r.typeName, `'${name}' cannot be written in this position`, { type: name, place });
           } else if (!ctx.cdecl && !ctx.unsafe && place !== "chandlearg" && place !== "cstructfield") {
-            this.at("E4008", r.typeName, `'${name}' can only be written in a function with 'use unsafe'`);
+            this.at("E4008", r.typeName, `'${name}' can only be written in a function with 'use unsafe'`, { type: name });
           }
           return;
         }

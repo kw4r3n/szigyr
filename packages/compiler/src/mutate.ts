@@ -220,14 +220,15 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
         return rt.trap("T006", `${name}: ${e instanceof Error ? e.message : String(e)}`, pos);
       }
     },
-    mArith(id: number, t: string, orig: string, mut: string, l: number, r: number, pos?: rt.Pos): number {
+    mArith(id: number, t: string, orig: string, mut: string, l: rt.NumVal, r: rt.NumVal, pos?: rt.Pos): rt.NumVal {
       const o = mutState.m === id ? mut : orig;
       if (t !== "f32" && t !== "f64") {
         if (o === "+") return rt.add(t as rt.IntType, l, r, pos);
         if (o === "-") return rt.sub(t as rt.IntType, l, r, pos);
         return rt.mul(t as rt.IntType, l, r, pos);
       }
-      const res = o === "+" ? l + r : o === "-" ? l - r : l * r;
+      const ln = l as number, rn = r as number;
+      const res = o === "+" ? ln + rn : o === "-" ? ln - rn : ln * rn;
       return t === "f32" ? rt.f32(res) : res;
     },
     mCmp(id: number, orig: string, mut: string, l: unknown, r: unknown): boolean {
@@ -524,6 +525,7 @@ function computeCacheKey(decls: Decls, entryMod: Module, target: { readonly fnSy
 
 function formatJsonVal(v: unknown): unknown {
   if (typeof v === "number") return Number.isFinite(v) ? (Object.is(v, -0) ? "-0" : v) : String(v);
+  if (typeof v === "bigint") return v.toString();
   if (v === undefined) return null;
   if (v === null || typeof v !== "object") return v;
   if (v instanceof rt.Vec || v instanceof rt.Slice) return Array.from({ length: v.length }, (_, i) => formatJsonVal(v.get(i)));

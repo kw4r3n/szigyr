@@ -43,21 +43,33 @@ type FnKind = "function" | "method" | "other";
 export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[] {
   const sf = pf.sourceFile;
   const out: Diagnostic[] = [];
-  const report = (code: string, start: number, end: number, message: string): void => {
-    out.push({ code, severity: "error", message, file, range: { start: pf.position(start), end: pf.position(end) } });
+  const report = (code: string, start: number, end: number, message: string, data?: Record<string, unknown>): void => {
+    out.push({ code, severity: "error", message, file, range: { start: pf.position(start), end: pf.position(end) }, ...(data ? { data } : {}) });
   };
-  const at = (code: string, n: Node, message: string): void => report(code, n.getStart(sf), n.end, message);
+  const at = (code: string, n: Node, message: string, data?: Record<string, unknown>): void => report(code, n.getStart(sf), n.end, message, data);
   /** Attaches a single-edit fix to the diagnostic just reported. */
   const fix = (title: string, start: number, end: number, newText: string): void => {
     out.at(-1)!.fixes = [{ title, edits: [{ range: { start: pf.position(start), end: pf.position(end) }, newText }] }];
   };
   /** `x++` / `x--` whose value is unused (statement or for-incrementor): `x += 1` is an exact rewrite. */
   const unusedIncs = new Set<Node>();
-  const e1000 = (n: Node, what: string): void => at("E1000", n, `${what} is not allowed`);
+  const e1000 = (n: Node, what: string, data?: Record<string, unknown>): void => at("E1000", n, `${what} is not allowed`, data);
+  const nullableFix = (qTok: Node, tNode: ts.TypeNode | undefined): void => {
+    if (!tNode) return;
+    const txt = sf.text.slice(tNode.getStart(sf), tNode.end);
+    const wrapped = tNode.kind === K.FunctionType ? `(${txt})` : txt;
+    fix("use '| null'", qTok.getStart(sf), tNode.end, `: ${wrapped} | null`);
+  };
+  const strictDirectiveDiag = (lit: ts.StringLiteral): boolean => {
+    if (lit.text !== "use strict") return false;
+    at("E1000", lit, "'use strict' is not a Szigyr directive; use '\"use owned\"' for the strict layer or omit for managed", { kind: "directive", directive: "use strict", suggested: "use owned" });
+    fix("replace with '\"use owned\"'", lit.getStart(sf), lit.end, '"use owned"');
+    return true;
+  };
 
   // Q070: a parse error is E1000 at the error; the file's AST is not walked further.
   if (pf.syntaxErrors.length) {
-    for (const d of pf.syntaxErrors) report("E1000", d.start, Math.max(d.end, d.start), `syntax error: ${d.message}`);
+    for (const d of pf.syntaxErrors) report("E1000", d.start, Math.max(d.end, d.start), `syntax error: ${d.message}`, { kind: "syntax" });
     return out;
   }
 
@@ -73,22 +85,22 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     return { call: c as ts.CallExpression, name: ((c as ts.CallExpression).expression as ts.Identifier).text };
   };
   const declName = (id: ts.Identifier): void => {
-    if (BUILTIN_NAMES.has(id.text) || CAPABILITY_NAMES.has(id.text)) at("E1000", id, `'${id.text}' is a builtin name`);
-    else if (RESERVED_WORDS.has(id.text)) at("E1000", id, `'${id.text}' is a reserved word`);
-    else if (id.text.startsWith(RUNTIME_GLOBAL)) at("E1000", id, `names starting with '${RUNTIME_GLOBAL}' are reserved`);
+    if (BUILTIN_NAMES.has(id.text) || CAPABILITY_NAMES.has(id.text)) at("E1000", id, `'${id.text}' is a builtin name`, { kind: "reserved-name", name: id.text });
+    else if (RESERVED_WORDS.has(id.text)) at("E1000", id, `'${id.text}' is a reserved word`, { kind: "reserved-name", name: id.text });
+    else if (id.text.startsWith(RUNTIME_GLOBAL)) at("E1000", id, `names starting with '${RUNTIME_GLOBAL}' are reserved`, { kind: "reserved-name", name: id.text });
   };
   const mods = (n: Node, allowed: K[]): void => {
     const ms = (n as Node & { modifiers?: ts.NodeArray<ts.ModifierLike> }).modifiers;
     for (const m of ms ?? []) {
-      if (m.kind === K.DefaultKeyword) at("E1003", ms![0]!, "default export is not allowed");
-      else if (!allowed.includes(m.kind)) e1000(m, "this modifier");
+      if (m.kind === K.DefaultKeyword) at("E1003", ms![0]!, "default export is not allowed", { kind: "default-export" });
+      else if (!allowed.includes(m.kind)) e1000(m, "this modifier", { kind: "modifier" });
     }
   };
 
   // ---- same-name declarations in one scope (Q004 declaration merging, Q087)
   const scopes: Set<string>[] = [];
   const claim = (seen: Set<string>, id: ts.Identifier): void => {
-    if (seen.has(id.text)) at("E1000", id, `declaration merging ('${id.text}' declared twice)`);
+    if (seen.has(id.text)) at("E1000", id, `declaration merging ('${id.text}' declared twice)`, { kind: "duplicate-declaration", name: id.text });
     seen.add(id.text);
   };
   const bind = (id: ts.Identifier): void => { const s = scopes.at(-1); if (s) claim(s, id); };
@@ -98,7 +110,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
   const topNames = new Set<string>();
   const topName = (id: ts.Identifier | undefined): void => {
     if (!id) return;
-    if (topNames.has(id.text)) at("E1000", id, `declaration merging ('${id.text}' declared twice)`);
+    if (topNames.has(id.text)) at("E1000", id, `declaration merging ('${id.text}' declared twice)`, { kind: "duplicate-declaration", name: id.text });
     topNames.add(id.text);
   };
   /** The file-level layer directive, for functions that only add "use unsafe" (§14.4). */
@@ -122,10 +134,10 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       case K.ImportDeclaration: importDecl(s as ts.ImportDeclaration); break;
       case K.ExportDeclaration: exportDecl(s as ts.ExportDeclaration); break;
       case K.ExportAssignment:
-        if ((s as ts.ExportAssignment).isExportEquals) at("E7001", s, "'export =' is not allowed");
-        else at("E1003", s, "default export is not allowed");
+        if ((s as ts.ExportAssignment).isExportEquals) at("E7001", s, "'export =' is not allowed", { kind: "export-equals" });
+        else at("E1003", s, "default export is not allowed", { kind: "default-export" });
         break;
-      case K.ImportEqualsDeclaration: at("E7001", s, "'import =' is not allowed"); break;
+      case K.ImportEqualsDeclaration: at("E7001", s, "'import =' is not allowed", { kind: "import-equals" }); break;
       case K.FunctionDeclaration:
         if ((s as ts.FunctionDeclaration).body) topName((s as ts.FunctionDeclaration).name);
         fn(s as ts.FunctionDeclaration, "function");
@@ -141,14 +153,14 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       case K.ModuleDeclaration: break; // handled above
       case K.ExpressionStatement: {
         const x0 = (s as ts.ExpressionStatement).expression;
-        if (x0.kind === K.StringLiteral && (x0 as ts.StringLiteral).text === UNSAFE_DIRECTIVE) { at("E1009", x0, `'${UNSAFE_DIRECTIVE}' at module level`); break; }
+        if (x0.kind === K.StringLiteral && (x0 as ts.StringLiteral).text === UNSAFE_DIRECTIVE) { at("E1009", x0, `'${UNSAFE_DIRECTIVE}' at module level`, { directive: UNSAFE_DIRECTIVE }); break; }
         const c = calleeName(s);
         if (c?.name === "test") allowedCalls.add(c.call);
-        else if (c?.name !== "forAll") { e1000(s, "this statement at module level"); break; }
+        else if (c?.name !== "forAll") { e1000(s, "this statement at module level", { kind: "module-statement" }); break; }
         stmt(s);
         break;
       }
-      default: e1000(s, "this statement at module level");
+      default: e1000(s, "this statement at module level", { kind: "module-statement" });
     }
   }
   return out;
@@ -171,13 +183,15 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     let unsafeSeen = false;
     lits.forEach((lit, j) => {
       if (DIRECTIVES.has(lit.text)) {
-        if (j !== layerAt) e1000(lit, `directive '${lit.text}' here`);
+        if (j !== layerAt) e1000(lit, `directive '${lit.text}' here`, { kind: "directive", directive: lit.text });
       } else if (lit.text === UNSAFE_DIRECTIVE) {
         if (isModule || !allowDirective || unsafeSeen || (layer ?? fileLayer) === undefined) {
-          at("E1009", lit, `'${UNSAFE_DIRECTIVE}' is only allowed once, in a strict or rt function`);
+          at("E1009", lit, `'${UNSAFE_DIRECTIVE}' is only allowed once, in a strict or rt function`, { directive: UNSAFE_DIRECTIVE });
         }
         unsafeSeen = true;
-      } else e1000(lit, `directive '${lit.text}' here`);
+      } else if (!strictDirectiveDiag(lit)) {
+        e1000(lit, `directive '${lit.text}' here`, { kind: "directive", directive: lit.text });
+      }
     });
     return i;
   }
@@ -193,9 +207,9 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     if (d.name.kind !== K.StringLiteral) { e1000(d.name, "this module name"); return; }
     const spec = (d.name as ts.StringLiteral).text;
     if (!spec.startsWith("c:")) { e1000(d, "this module declaration"); return; }
-    if (!cSpecifierOk(spec)) at("E7002", d.name, "a 'c:' specifier is 'c:<package>:<header>'");
-    else if (cDeclares.has(spec)) at("E7002", d.name, `duplicate 'declare module' for '${spec}'`);
-    if (!d.body || d.body.kind !== K.ModuleBlock) { at("E7002", d.name, "'declare module' needs a body of function declarations"); return; }
+    if (!cSpecifierOk(spec)) at("E7002", d.name, "a 'c:' specifier is 'c:<package>:<header>'", { specifier: spec });
+    else if (cDeclares.has(spec)) at("E7002", d.name, `duplicate 'declare module' for '${spec}'`, { specifier: spec });
+    if (!d.body || d.body.kind !== K.ModuleBlock) { at("E7002", d.name, "'declare module' needs a body of function declarations", { specifier: spec }); return; }
     const names = cDeclares.get(spec) ?? new Set<string>();
     if (!cDeclares.has(spec)) cDeclares.set(spec, names);
     for (const st of (d.body as ts.ModuleBlock).statements) {
@@ -248,23 +262,24 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     const nb = ic?.namedBindings;
     if (!ic || ic.phaseModifier || ic.name || nb?.kind !== K.NamedImports || d.attributes ||
         (nb as ts.NamedImports).elements.some((e) => e.isTypeOnly || (e.propertyName && !(isId(e.propertyName) && e.propertyName.text !== "default")))) {
-      at("E7001", d, "only 'import { a, b as c } from \"...\"' is allowed");
+      at("E7001", d, "only 'import { a, b as c } from \"...\"' is allowed", { kind: "invalid-import" });
       return;
     }
     if (d.moduleSpecifier.kind === K.StringLiteral && (d.moduleSpecifier as ts.StringLiteral).text.startsWith("c:")) {
       const spec = (d.moduleSpecifier as ts.StringLiteral).text;
-      if (!cSpecifierOk(spec)) { at("E7002", d.moduleSpecifier, "a 'c:' specifier is 'c:<package>:<header>'"); return; }
+      if (!cSpecifierOk(spec)) { at("E7002", d.moduleSpecifier, "a 'c:' specifier is 'c:<package>:<header>'", { specifier: spec }); return; }
       const declared = cDeclares.get(spec);
-      if (!declared) { at("E7002", d.moduleSpecifier, `no 'declare module "${spec}"' in this file`); return; }
+      if (!declared) { at("E7002", d.moduleSpecifier, `no 'declare module "${spec}"' in this file`, { specifier: spec }); return; }
       for (const e of (nb as ts.NamedImports).elements) {
         const orig = e.propertyName?.text ?? e.name.text;
-        if (!declared.has(orig)) at("E7002", e.propertyName ?? e.name, `'${orig}' is not declared in '${spec}'`);
+        if (!declared.has(orig)) at("E7002", e.propertyName ?? e.name, `'${orig}' is not declared in '${spec}'`, { specifier: spec, name: orig });
         declName(e.name); topName(e.name);
       }
       return;
     }
     if (d.moduleSpecifier.kind !== K.StringLiteral || !specifierOk((d.moduleSpecifier as ts.StringLiteral).text)) {
-      at("E7001", d.moduleSpecifier, "module specifier must be './x.szigyr', '../x.szigyr' or 'npm:name'");
+      const spec = d.moduleSpecifier.kind === K.StringLiteral ? (d.moduleSpecifier as ts.StringLiteral).text : undefined;
+      at("E7001", d.moduleSpecifier, "module specifier must be './x.szigyr', '../x.szigyr' or 'npm:name'", { kind: "invalid-specifier", ...(spec !== undefined ? { specifier: spec } : {}) });
       if (d.moduleSpecifier.kind === K.StringLiteral) {
         const s = (d.moduleSpecifier as ts.StringLiteral).text;
         if (s.startsWith("./") || s.startsWith("../")) {
@@ -276,7 +291,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     }
     const specText = (d.moduleSpecifier as ts.StringLiteral).text;
     if (!specText.startsWith("npm:") && canonPath(dirname(pf.path), specText) === DETMATH_PATH) { // §12 (Q191); by realpath, so a symlink does not hide it (Q253)
-      at("E7001", d.moduleSpecifier, "the bundled DetMath module cannot be imported; use the DetMath namespace");
+      at("E7001", d.moduleSpecifier, "the bundled DetMath module cannot be imported; use the DetMath namespace", { kind: "detmath-import", specifier: specText });
       return;
     }
     for (const e of (nb as ts.NamedImports).elements) { declName(e.name); topName(e.name); }
@@ -284,16 +299,16 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
 
   function exportDecl(d: ts.ExportDeclaration): void {
     if (d.moduleSpecifier) {
-      if (!d.exportClause || d.exportClause.kind === K.NamespaceExport) at("E1003", d, "'export *' is not allowed");
-      else at("E7001", d, "re-export is not allowed");
+      if (!d.exportClause || d.exportClause.kind === K.NamespaceExport) at("E1003", d, "'export *' is not allowed", { kind: "export-star" });
+      else at("E7001", d, "re-export is not allowed", { kind: "re-export" });
     } else if (d.isTypeOnly || d.exportClause?.kind !== K.NamedExports) {
-      at("E7001", d, "only 'export { a, b as c }' is allowed");
+      at("E7001", d, "only 'export { a, b as c }' is allowed", { kind: "invalid-export" });
     } else {
       for (const e of (d.exportClause as ts.NamedExports).elements) {
-        if (isId(e.name) && e.name.text === "default") { at("E1003", d, "default export is not allowed"); return; }
-        if (e.isTypeOnly || !isId(e.name) || (e.propertyName && !isId(e.propertyName))) { at("E7001", d, "only 'export { a, b as c }' is allowed"); return; }
+        if (isId(e.name) && e.name.text === "default") { at("E1003", d, "default export is not allowed", { kind: "default-export" }); return; }
+        if (e.isTypeOnly || !isId(e.name) || (e.propertyName && !isId(e.propertyName))) { at("E7001", d, "only 'export { a, b as c }' is allowed", { kind: "invalid-export" }); return; }
         const local = (e.propertyName ?? e.name) as ts.Identifier;
-        if (cImports.has(local.text)) at("E7001", local, `cannot re-export C function '${local.text}' (§14.1)`);
+        if (cImports.has(local.text)) at("E7001", local, `cannot re-export C function '${local.text}' (§14.1)`, { kind: "c-reexport", name: local.text });
       }
     }
   }
@@ -376,17 +391,21 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       if (!isId(p.name)) { e1000(p.name, "parameter destructuring"); continue; }
       if (p.name.text === "this") { e1000(p.name, "'this' parameter"); continue; }
       declName(p.name);
-      if (p.questionToken) at("E1008", p.name, "optional parameter is not allowed");
-      else if (p.initializer) at("E1008", p.name, "default parameter is not allowed");
+      if (p.questionToken) {
+        at("E1008", p.name, "optional parameter is not allowed", { kind: "optional-param", name: p.name.text });
+        nullableFix(p.questionToken, p.type);
+      } else if (p.initializer) at("E1008", p.name, "default parameter is not allowed", { kind: "default-param", name: p.name.text });
       if (p.type) type(p.type);
     }
   }
 
-  function memberName(n: Node & { name: ts.PropertyName; postfixToken?: Node }): void {
+  function memberName(n: Node & { name: ts.PropertyName; postfixToken?: Node; type?: ts.TypeNode }): void {
     if (!isId(n.name)) e1000(n.name, "this member name");
-    else if (SPECIAL_MEMBERS.has(n.name.text) || n.name.text.startsWith(RUNTIME_GLOBAL)) e1000(n.name, `member name '${n.name.text}'`); // Q123
-    if (n.postfixToken?.kind === K.QuestionToken) at("E1008", n.name, "optional member is not allowed");
-    else if (n.postfixToken) e1000(n.postfixToken, "definite assignment assertion");
+    else if (SPECIAL_MEMBERS.has(n.name.text) || n.name.text.startsWith(RUNTIME_GLOBAL)) e1000(n.name, `member name '${n.name.text}'`, { kind: "reserved-name", name: n.name.text }); // Q123
+    if (n.postfixToken?.kind === K.QuestionToken) {
+      at("E1008", n.name, "optional member is not allowed", { kind: "optional-member", ...(isId(n.name) ? { name: n.name.text } : {}) });
+      if (n.kind === K.PropertyDeclaration || n.kind === K.PropertySignature) nullableFix(n.postfixToken, n.type);
+    } else if (n.postfixToken) e1000(n.postfixToken, "definite assignment assertion");
   }
 
   function classDecl(c: ts.ClassDeclaration): void {
@@ -412,7 +431,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
           if (p.type) type(p.type);
           const has = (k: K) => !!p.modifiers?.some((x) => x.kind === k);
           if (has(K.StaticKeyword) && (!has(K.ReadonlyKeyword) || !p.initializer || !immutable(p.initializer, p.type))) {
-            at("E5002", p.initializer ?? p.name, "static field must be readonly with a literal initializer");
+            at("E5002", p.initializer ?? p.name, "static field must be readonly with a literal initializer", { kind: "static-mutable" });
           }
           if (p.initializer) expr(p.initializer);
           break;
@@ -483,7 +502,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       fix(`use '${where === "local" || where === "for" ? "let" : "const"}'`, s, s + 3, where === "local" || where === "for" ? "let" : "const"); // 'let' is not allowed at module level or in for-of
       return;
     }
-    if (isLet && where === "module") { at("E5002", list, "module-level 'let' is not allowed"); return; }
+    if (isLet && where === "module") { at("E5002", list, "module-level 'let' is not allowed", { kind: "module-let" }); return; }
     if (isLet && where === "for-of") { e1000(list, "'for (let ... of ...)'"); return; }
     for (const d of list.declarations) {
       if (d.exclamationToken) e1000(d.exclamationToken, "definite assignment assertion");
@@ -492,7 +511,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       else e1000(d.name, "this destructuring");
       if (d.type) type(d.type);
       if (!d.initializer) { if (where !== "for-of") e1000(d.name, "declaration without initializer"); continue; }
-      if (where === "module" && !immutable(d.initializer, d.type)) at("E5002", d.initializer, "module-level const must be an immutable literal");
+      if (where === "module" && !immutable(d.initializer, d.type)) at("E5002", d.initializer, "module-level const must be an immutable literal", { kind: "module-nonliteral-const" });
       expr(d.initializer);
     }
   }
@@ -504,7 +523,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       if (!isId(el.name)) { e1000(el.name ?? el, "nested destructuring"); continue; }
       declName(el.name);
       bind(el.name);
-      if (el.initializer) at("E1008", el.name, "destructuring default is not allowed");
+      if (el.initializer) at("E1008", el.name, "destructuring default is not allowed", { kind: "destructure-default", name: el.name.text });
     }
   }
 
@@ -560,8 +579,9 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       case K.ExpressionStatement: {
         const x = (s as ts.ExpressionStatement).expression;
         if (x.kind === K.StringLiteral) {
-          if ((x as ts.StringLiteral).text === UNSAFE_DIRECTIVE) at("E1009", x, `'${UNSAFE_DIRECTIVE}' is only allowed as a directive of a strict or rt function`);
-          else e1000(x, "a string statement after the directive prologue"); // Q176: a misplaced directive is not silently ignored
+          const lit = x as ts.StringLiteral;
+          if (lit.text === UNSAFE_DIRECTIVE) at("E1009", lit, `'${UNSAFE_DIRECTIVE}' is only allowed as a directive of a strict or rt function`, { directive: UNSAFE_DIRECTIVE });
+          else if (!strictDirectiveDiag(lit)) e1000(lit, "a string statement after the directive prologue", { kind: "misplaced-directive", directive: lit.text }); // Q176: a misplaced directive is not silently ignored
           return;
         }
         unusedIncs.add(x); expr(x); return;
@@ -609,8 +629,8 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         return;
       }
       case K.ReturnStatement: { const e = (s as ts.ReturnStatement).expression; if (e) expr(e); return; }
-      case K.ThrowStatement: at("E1007", s, "'throw' is not allowed"); return;
-      case K.TryStatement: at("E1007", s, "'try' is not allowed"); return;
+      case K.ThrowStatement: at("E1007", s, "'throw' is not allowed", { syntax: "throw" }); return;
+      case K.TryStatement: at("E1007", s, "'try' is not allowed", { syntax: "try" }); return;
       default: e1000(s, "this statement"); // includes labels, for-in, with, nested declarations (Q055)
     }
   }
@@ -624,12 +644,18 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     switch (e.kind) {
       case K.Identifier: {
         const t = (e as ts.Identifier).text;
-        if (t === "arguments" || t === "eval") e1000(e, `'${t}'`);
+        if (t === "arguments" || t === "eval") e1000(e, `'${t}'`, { kind: "reserved-name", name: t });
         return;
       }
       case K.NumericLiteral: case K.StringLiteral: case K.NoSubstitutionTemplateLiteral:
       case K.TrueKeyword: case K.FalseKeyword: case K.NullKeyword:
         return;
+      case K.BigIntLiteral: {
+        const raw = sf.text.slice(e.getStart(sf), e.end);
+        at("E1000", e, "BigInt literals ('1n') are not allowed; use plain numeric literals for i64/u64", { kind: "bigint-literal", text: raw });
+        if (/n$/i.test(raw)) fix("remove 'n' suffix", e.getStart(sf), e.end, raw.slice(0, -1));
+        return;
+      }
       case K.ThisKeyword: if (!fc.thisOk) e1000(e, "'this' outside an instance method or constructor"); return; // Q120
       case K.TemplateExpression: for (const sp of (e as ts.TemplateExpression).templateSpans) expr(sp.expression); return;
       case K.ParenthesizedExpression: expr((e as ts.ParenthesizedExpression).expression); return;
@@ -645,8 +671,12 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       case K.BinaryExpression: {
         const b = e as ts.BinaryExpression;
         const op = b.operatorToken;
-        if (op.kind === K.EqualsEqualsToken || op.kind === K.ExclamationEqualsToken) { at("E1002", op, "use '===' / '!=='"); fix(`use '${op.kind === K.EqualsEqualsToken ? "===" : "!=="}'`, op.getStart(sf), op.end, op.kind === K.EqualsEqualsToken ? "===" : "!=="); }
-        else if (!BINARY_OPS.has(op.kind)) e1000(op, "this operator");
+        if (op.kind === K.EqualsEqualsToken || op.kind === K.ExclamationEqualsToken) {
+          const opStr = op.kind === K.EqualsEqualsToken ? "==" : "!=";
+          const repStr = op.kind === K.EqualsEqualsToken ? "===" : "!==";
+          at("E1002", op, "use '===' / '!=='", { op: opStr });
+          fix(`use '${repStr}'`, op.getStart(sf), op.end, repStr);
+        } else if (!BINARY_OPS.has(op.kind)) e1000(op, "this operator");
         if (op.kind === K.EqualsToken && (b.left.kind === K.ArrayLiteralExpression || b.left.kind === K.ObjectLiteralExpression)) e1000(b.left, "destructuring assignment");
         else expr(b.left);
         expr(b.right);
@@ -662,12 +692,12 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         const c = e as ts.CallExpression;
         if (c.questionDotToken) e1000(c, "optional call");
         const callee = c.expression;
-        if (callee.kind === K.ImportKeyword) at("E7001", callee, "dynamic import is not allowed");
-        else if (isId(callee) && callee.text === "require") at("E7001", callee, "'require' is not allowed");
+        if (callee.kind === K.ImportKeyword) at("E7001", callee, "dynamic import is not allowed", { kind: "dynamic-import" });
+        else if (isId(callee) && callee.text === "require") at("E7001", callee, "'require' is not allowed", { kind: "require" });
         else {
-          if (isId(callee) && CONTRACTS.has(callee.text) && !allowedCalls.has(c)) at("E6001", callee, `'${callee.text}' is not allowed here`);
-          if (isId(callee) && callee.text === "test" && !allowedCalls.has(c)) at("E6003", callee, "'test' must be at module level");
-          if (isId(callee) && callee.text === "forAll" && !fc.inTest) at("E6004", callee, "'forAll' must be inside a top-level 'test' callback");
+          if (isId(callee) && CONTRACTS.has(callee.text) && !allowedCalls.has(c)) at("E6001", callee, `'${callee.text}' is not allowed here`, { contract: callee.text });
+          if (isId(callee) && callee.text === "test" && !allowedCalls.has(c)) at("E6003", callee, "'test' must be at module level", { kind: "misplaced-test" });
+          if (isId(callee) && callee.text === "forAll" && !fc.inTest) at("E6004", callee, "'forAll' must be inside a top-level 'test' callback", { kind: "misplaced-forAll" });
           expr(callee);
         }
         for (const t of c.typeArguments ?? []) type(t);
@@ -722,19 +752,19 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       case K.FunctionExpression: fn(e as ts.FunctionExpression, "other"); return;
       case K.AsExpression: {
         const a = e as ts.AsExpression;
-        const s = pf.tokenAfter(a.expression.end); report("E1005", s, s + 2, "'as' is not allowed"); // including `as const` (Q026)
+        const s = pf.tokenAfter(a.expression.end); report("E1005", s, s + 2, "'as' is not allowed", { syntax: "as" }); // including `as const` (Q026)
         expr(a.expression);
         return;
       }
       case K.SatisfiesExpression: {
         const x = e as ts.SatisfiesExpression;
         const s = pf.tokenAfter(x.expression.end);
-        report("E1000", s, s + "satisfies".length, "'satisfies' is not allowed");
+        report("E1000", s, s + "satisfies".length, "'satisfies' is not allowed", { syntax: "satisfies" });
         expr(x.expression);
         return;
       }
       case K.NonNullExpression:
-        report("E1006", e.end - 1, e.end, "non-null assertion is not allowed");
+        report("E1006", e.end - 1, e.end, "non-null assertion is not allowed", { syntax: "non-null" });
         expr((e as ts.NonNullExpression).expression);
         return;
       case K.PostfixUnaryExpression: {
@@ -750,7 +780,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
   // ---- types (§3)
   function type(t: ts.TypeNode): void {
     switch (t.kind) {
-      case K.AnyKeyword: at("E1004", t, "'any' is not allowed"); return;
+      case K.AnyKeyword: at("E1004", t, "'any' is not allowed", { syntax: "any" }); return;
       case K.BooleanKeyword: case K.StringKeyword: case K.NumberKeyword: case K.VoidKeyword: case K.UnknownKeyword: case K.NeverKeyword:
         return;
       case K.BigIntKeyword: case K.UndefinedKeyword: return; // names, not syntax: E2000 in P2 (Q011)

@@ -3,10 +3,11 @@ import type { NumType } from "./num.ts";
 
 const inBounds = (i: number, len: number): boolean => Number.isInteger(i) && i >= 0 && i < len;
 
-type Buf<T> = T[] | Float64Array | Float32Array | Int8Array | Int16Array | Int32Array | Uint8Array | Uint16Array | Uint32Array;
+type Buf<T> = T[] | Float64Array | Float32Array | Int8Array | Int16Array | Int32Array | Uint8Array | Uint16Array | Uint32Array | BigInt64Array | BigUint64Array;
 type TypedCtor = new (n: number) => Exclude<Buf<never>, never[]>;
 const TYPED: Record<NumType, TypedCtor> = {
-  i8: Int8Array, i16: Int16Array, i32: Int32Array, u8: Uint8Array, u16: Uint16Array, u32: Uint32Array,
+  i8: Int8Array, i16: Int16Array, i32: Int32Array, i64: BigInt64Array,
+  u8: Uint8Array, u16: Uint16Array, u32: Uint32Array, u64: BigUint64Array,
   usize: Uint32Array, f32: Float32Array, f64: Float64Array,
 };
 /** Element kind the translator passes to Vec.create: a number type, the JSON of a byte layout (SPEC §10.2, D105), or "other" for a plain array. */
@@ -18,12 +19,13 @@ type Lay =
   | { t: "hdl"; z: number } | { t: "abuf"; z: number };
 interface Codec { readonly z: number; rd(d: DataView, p: number): unknown; wr(d: DataView, p: number, x: unknown): void }
 const LE = true;
-const NUM_RW: Record<NumType, [(d: DataView, p: number) => number, (d: DataView, p: number, x: number) => void]> = {
-  i8: [(d, p) => d.getInt8(p), (d, p, x) => d.setInt8(p, x)], u8: [(d, p) => d.getUint8(p), (d, p, x) => d.setUint8(p, x)],
-  i16: [(d, p) => d.getInt16(p, LE), (d, p, x) => d.setInt16(p, x, LE)], u16: [(d, p) => d.getUint16(p, LE), (d, p, x) => d.setUint16(p, x, LE)],
-  i32: [(d, p) => d.getInt32(p, LE), (d, p, x) => d.setInt32(p, x, LE)], u32: [(d, p) => d.getUint32(p, LE), (d, p, x) => d.setUint32(p, x, LE)],
-  usize: [(d, p) => d.getUint32(p, LE), (d, p, x) => d.setUint32(p, x, LE)],
-  f32: [(d, p) => d.getFloat32(p, LE), (d, p, x) => d.setFloat32(p, x, LE)], f64: [(d, p) => d.getFloat64(p, LE), (d, p, x) => d.setFloat64(p, x, LE)],
+const NUM_RW: Record<NumType, [(d: DataView, p: number) => number | bigint, (d: DataView, p: number, x: number | bigint) => void]> = {
+  i8: [(d, p) => d.getInt8(p), (d, p, x) => d.setInt8(p, x as number)], u8: [(d, p) => d.getUint8(p), (d, p, x) => d.setUint8(p, x as number)],
+  i16: [(d, p) => d.getInt16(p, LE), (d, p, x) => d.setInt16(p, x as number, LE)], u16: [(d, p) => d.getUint16(p, LE), (d, p, x) => d.setUint16(p, x as number, LE)],
+  i32: [(d, p) => d.getInt32(p, LE), (d, p, x) => d.setInt32(p, x as number, LE)], u32: [(d, p) => d.getUint32(p, LE), (d, p, x) => d.setUint32(p, x as number, LE)],
+  i64: [(d, p) => d.getBigInt64(p, LE), (d, p, x) => d.setBigInt64(p, x as bigint, LE)], u64: [(d, p) => d.getBigUint64(p, LE), (d, p, x) => d.setBigUint64(p, x as bigint, LE)],
+  usize: [(d, p) => d.getUint32(p, LE), (d, p, x) => d.setUint32(p, x as number, LE)],
+  f32: [(d, p) => d.getFloat32(p, LE), (d, p, x) => d.setFloat32(p, x as number, LE)], f64: [(d, p) => d.getFloat64(p, LE), (d, p, x) => d.setFloat64(p, x as number, LE)],
 };
 function codec(l: Lay): Codec {
   switch (l.t) {
@@ -179,7 +181,7 @@ export class Vec<T = unknown> {
     }
     if (this.elem !== "other" && this.len === this.buf.length) {
       const bigger = new TYPED[this.elem as NumType](Math.max(this.len * 2, 4)); // an unpacked empty Vec has a 0-length buffer (§15.2)
-      bigger.set(this.buf as Float64Array);
+      bigger.set(this.buf as never);
       this.buf = bigger as Buf<T>;
     }
     (this.buf as T[])[this.len++] = x;
@@ -381,8 +383,8 @@ export class Pool<T = unknown> {
 /** An ArenaBuf handle (Q188 (b)): arena id, generation, head byte position, element count. A plain object; STS code sees only `length`. */
 export interface ArenaBuf { arena: number; gen: number; off: number; length: number }
 
-const NUM_SIZE: Record<string, number> = { i8: 1, u8: 1, i16: 2, u16: 2, i32: 4, u32: 4, usize: 4, f32: 4, f64: 8 };
-type TypedView = { [i: number]: number; fill(v: number): void };
+const NUM_SIZE: Record<string, number> = { i8: 1, u8: 1, i16: 2, u16: 2, i32: 4, u32: 4, i64: 8, u64: 8, usize: 4, f32: 4, f64: 8 };
+type TypedView = { [i: number]: number | bigint; fill(v: never): void };
 const typedView = (elem: string, buf: Uint8Array, off: number, n: number): TypedView =>
   new (TYPED[elem as NumType] as unknown as new (b: ArrayBufferLike, o: number, n: number) => TypedView)(buf.buffer, off, n);
 
@@ -435,7 +437,7 @@ export class Arena {
     const b: ArenaBuf = { arena: this.id, gen: this.gen, off, length: n };
     this.recs.set(off, { elem, arr: elem === "other" ? new Array(n).fill(init) : null });
     if (elem.startsWith("{")) { const c = codecOf(elem), d = dvOf(this.buf); for (let i = 0; i < n; i++) c.wr(d, off + i * z, init); }
-    else if (elem !== "other") typedView(elem, this.buf, off, n).fill(init as number);
+    else if (elem !== "other") typedView(elem, this.buf, off, n).fill(init as never);
     return b;
   }
   /** C boundary: a buf the C side allocated at `off`; its values live in the bytes as `elem` (read back by a type-parameter view). */
@@ -492,7 +494,7 @@ function ringAttach<T>(s: RingShared<T>, sab: ArrayBufferLike, elem: ElemKind): 
 }
 function ringWrite<T>(s: RingShared<T>, slot: number, x: T): void {
   if (s.cod) s.cod.wr(s.dv!, RING_ELEMS + slot * s.cod.z, x);
-  else s.view![slot] = x as number;
+  else s.view![slot] = x as number | bigint;
 }
 function ringRead<T>(s: RingShared<T>, slot: number): T {
   if (s.cod) return s.cod.rd(s.dv!, RING_ELEMS + slot * s.cod.z) as T;

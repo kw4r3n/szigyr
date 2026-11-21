@@ -111,3 +111,65 @@ describe("bit ops", () => {
     expect(toU32(0xf0f0f0f0 & 0x80000000)).toBe(2147483648);
   });
 });
+
+describe("64-bit integers (i64 / u64)", () => {
+  const I64_MIN = -(1n << 63n);
+  const I64_MAX = (1n << 63n) - 1n;
+  const U64_MAX = (1n << 64n) - 1n;
+
+  it("checked arithmetic & boundaries", () => {
+    expect(add("i64", I64_MAX - 1n, 1n)).toBe(I64_MAX);
+    expect(trapOf(() => add("i64", I64_MAX, 1n, pos)).code).toBe("T001");
+    expect(trapOf(() => sub("i64", I64_MIN, 1n)).code).toBe("T001");
+    expect(trapOf(() => neg("i64", I64_MIN)).code).toBe("T001");
+    expect(neg("i64", I64_MAX)).toBe(-I64_MAX);
+    expect(mul("i64", 1n << 32n, 1n << 30n)).toBe(1n << 62n);
+    expect(trapOf(() => mul("i64", 1n << 32n, 1n << 31n)).code).toBe("T001");
+    expect(add("u64", U64_MAX - 1n, 1n)).toBe(U64_MAX);
+    expect(trapOf(() => add("u64", U64_MAX, 1n)).code).toBe("T001");
+    expect(trapOf(() => sub("u64", 0n, 1n)).code).toBe("T001");
+    expect(mul("u64", 0xffffffffn, 0xffffffffn)).toBe(0xfffffffe00000001n);
+    expect(trapOf(() => mul("u64", 1n << 63n, 2n)).code).toBe("T001");
+  });
+
+  it("wrapping & division", () => {
+    expect(wrapAdd("i64", I64_MAX, 1n)).toBe(I64_MIN);
+    expect(wrapSub("i64", I64_MIN, 1n)).toBe(I64_MAX);
+    expect(wrapMul("i64", I64_MIN, -1n)).toBe(I64_MIN);
+    expect(wrapAdd("u64", U64_MAX, 1n)).toBe(0n);
+    expect(wrapSub("u64", 0n, 1n)).toBe(U64_MAX);
+    expect(wrapMul("u64", U64_MAX, U64_MAX)).toBe(1n);
+    expect([divTrunc("i64", -7n, 2n), rem("i64", -7n, 2n)]).toEqual([-3n, -1n]);
+    expect(divTrunc("i64", I64_MIN, 1n)).toBe(I64_MIN);
+    expect(rem("i64", I64_MIN, -1n)).toBe(0n);
+    expect(trapOf(() => divTrunc("i64", I64_MIN, -1n, pos)).code).toBe("T001");
+    expect(trapOf(() => divTrunc("u64", 1n, 0n, pos)).code).toBe("T007");
+    expect(trapOf(() => rem("i64", 1n, 0n)).code).toBe("T007");
+    expect(divTrunc("u64", U64_MAX, 3n)).toBe(6148914691236517205n);
+  });
+
+  it("bitwise & shifts (0..63)", () => {
+    expect(shl("u64", 1n, 63n)).toBe(1n << 63n);
+    expect(shl("i64", 1n, 63n)).toBe(I64_MIN);
+    expect(shr(I64_MIN, 63n)).toBe(-1n);
+    expect(ushr(U64_MAX, 63n)).toBe(1n);
+    expect(trapOf(() => shl("u64", 1n, 64n, pos)).code).toBe("T009");
+    expect(trapOf(() => shr(1n, -1n)).code).toBe("T009");
+    expect(trapOf(() => ushr(1n, 64n)).code).toBe("T009");
+  });
+
+  it("conversions & single-rounded f32", () => {
+    expect(convert("i64", 9007199254740992)).toBe(9007199254740992n);
+    expect(convert("u64", 18446744073709551615 - 2048)).toBe(18446744073709551616n - 2048n);
+    expect(trapOf(() => convert("i64", 9223372036854775808)).code).toBe("T003");
+    expect(trapOf(() => convert("u64", 18446744073709551616)).code).toBe("T003");
+    expect(trapOf(() => convert("u64", -1)).code).toBe("T003");
+    expect(trapOf(() => convert("u64", -1n)).code).toBe("T003");
+    expect(trapOf(() => convert("i64", U64_MAX)).code).toBe("T003");
+    expect(trapOf(() => convert("i32", I64_MAX)).code).toBe("T003");
+    expect(convert("i32", 42n)).toBe(42);
+    // Avoids binary64 intermediate rounding: (2^63 + 2^39 + 1) rounds up to 2^63 + 2^40 in binary32.
+    const stickyEdge = (1n << 63n) + (1n << 39n) + 1n;
+    expect(convert("f32", stickyEdge)).toBe(Number((1n << 63n) + (1n << 40n)));
+  });
+});

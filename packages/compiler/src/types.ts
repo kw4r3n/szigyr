@@ -2,8 +2,8 @@
 import type { ts } from "./parse.ts";
 import { layout } from "./layout.ts";
 
-export type NumName = "f64" | "f32" | "i8" | "i16" | "i32" | "u8" | "u16" | "u32" | "usize";
-export const NUM_NAMES: readonly NumName[] = ["f64", "f32", "i8", "i16", "i32", "u8", "u16", "u32", "usize"];
+export type NumName = "f64" | "f32" | "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "usize";
+export const NUM_NAMES: readonly NumName[] = ["f64", "f32", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "usize"];
 type PrimName = "boolean" | "string" | "null" | "void" | "unknown" | "never";
 /** Builtin generic types (§3.2, §3.3). */
 export type GenName = "Array" | "ReadonlyArray" | "Map" | "Set" | "Promise" | "Vec" | "Slice" | "Pool" | "Handle" | "Arena" | "ArenaBuf" | "RingTx" | "RingRx" | "Ref" | "Mut" | "OwnedCell" | "Ptr" | "ConstPtr" | "CType" | "CHandle" | "Port";
@@ -404,7 +404,7 @@ export function castable(t: Type): boolean {
     case "prim": return t.name === "boolean" || t.name === "string" || t.name === "null";
     case "record": return (!t.struct || t.fields.every((f) => f.readonly)) && t.fields.every((f) => castable(f.type));
     case "union": return t.members.every(castable);
-    case "gen": return t.name === "Array" && castable(t.args[0]!);
+    case "gen": return (t.name === "Array" || t.name === "ReadonlyArray") && castable(t.args[0]!);
     default: return false;
   }
 }
@@ -413,7 +413,7 @@ export function castable(t: Type): boolean {
 export function comparable(t: Type): boolean {
   switch (t.k) {
     case "error": return true;
-    case "tparam": return tparamHasCap(t.p, "Copy");
+    case "tparam": return tparamHasCap(t.p, "Copy") || tparamHasCap(t.p, "Codec");
     case "fn": case "opaque": case "ns": case "iter": case "cstruct": return false;
     case "record": return !isOwned(t) && t.fields.every((f) => comparable(f.type));
     case "union": return t.members.every(comparable);
@@ -454,16 +454,58 @@ export function hasCap(t: Type, cap: Capability, allowNever = false): boolean {
 export const borrowOk = (t: Type): boolean =>
   t.k === "error" || isOwned(t) || (t.k === "gen" && t.name === "Slice") || (t.k === "tparam" && tparamHasCap(t.p, "Owned"));
 
+export const I64_MIN = -(1n << 63n);
+export const I64_MAX = (1n << 63n) - 1n;
+export const U64_MAX = (1n << 64n) - 1n;
+export const isInt64 = (n: NumName): n is "i64" | "u64" => n === "i64" || n === "u64";
+
+/** Parses a TS numeric literal exactly as a bigint integer when exact, else null. `-0` normalizes to `0n`. */
+export function parseExactInt(text: string, neg = false): bigint | null {
+  const s = text.replace(/_/g, "");
+  if (/^0[xXbBoO]/.test(s)) {
+    try {
+      const v = BigInt(s);
+      return neg && v !== 0n ? -v : v;
+    } catch { return null; }
+  }
+  const m = /^(?:(\d+)(?:\.(\d*))?|\.(\d+))(?:[eE]([+-]?\d+))?$/.exec(s);
+  if (!m) return null;
+  const intPart = m[1] ?? "", fracPart = m[2] ?? m[3] ?? "", exp = m[4] ? Number(m[4]) : 0;
+  if (!Number.isSafeInteger(exp)) return null;
+  const all = intPart + fracPart;
+  const nz = all.replace(/^0+/, "");
+  if (!nz) return 0n;
+  const k = exp - fracPart.length;
+  let digits: string;
+  if (k < 0) {
+    const shift = -k;
+    if (shift >= all.length) return null;
+    const cut = all.length - shift;
+    if (/[^0]/.test(all.slice(cut))) return null;
+    digits = all.slice(0, cut).replace(/^0+/, "");
+  } else {
+    if (nz.length + k > 21) return null;
+    digits = nz + "0".repeat(k);
+  }
+  const v = digits ? BigInt(digits) : 0n;
+  return neg && v !== 0n ? -v : v;
+}
+
 /** Integer ranges (§3.1). */
-const INT_RANGE: Partial<Record<NumName, [number, number]>> = {
-  i8: [-128, 127], i16: [-32768, 32767], i32: [-2147483648, 2147483647],
-  u8: [0, 255], u16: [0, 65535], u32: [0, 4294967295], usize: [0, 4294967295],
+export const INT_RANGE: Partial<Record<NumName, readonly [bigint, bigint]>> = {
+  i8: [-128n, 127n], i16: [-32768n, 32767n], i32: [-2147483648n, 2147483647n], i64: [I64_MIN, I64_MAX],
+  u8: [0n, 255n], u16: [0n, 65535n], u32: [0n, 4294967295n], u64: [0n, U64_MAX], usize: [0n, 4294967295n],
 };
+/** Whether an exact bigint value fits integer type `t` (E2008). */
+export function intLiteralFits(value: bigint | null, t: NumName): boolean {
+  const r = INT_RANGE[t];
+  return value !== null && !!r && value >= r[0] && value <= r[1];
+}
 /** Whether a literal value fits the numeric type (E2008, Q015). */
 export function literalFits(value: number, t: NumName): boolean {
   if (!Number.isFinite(value)) return false; // Q255: `1e400` would be a back door to Infinity
   const r = INT_RANGE[t];
-  if (r) return Number.isInteger(value) && value >= r[0] && value <= r[1];
+  if (r) return Number.isInteger(value) && value >= Number(r[0]) && value <= Number(r[1]);
   if (t === "f32") return Number.isFinite(Math.fround(value));
   return true;
 }

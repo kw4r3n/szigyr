@@ -1,4 +1,4 @@
-import { RANGE, type NumType, type IntType } from "./num.ts";
+import { RANGE, RANGE64, type Int32Type, type NumType } from "./num.ts";
 import { isTrap, Trap, trap, type Pos } from "./trap.ts";
 
 export type Result<T, E> = { readonly kind: "ok"; readonly value: T } | { readonly kind: "err"; readonly error: E };
@@ -25,10 +25,15 @@ function check(d: TypeDesc, x: unknown, path: string): string | null {
     case "string": return typeof x === "string" ? null : bad("string");
     case "null": return x === null ? null : bad("null");
     case "num": {
+      if (d.t === "i64" || d.t === "u64") {
+        if (typeof x !== "bigint") return bad(d.t);
+        const [lo, hi] = RANGE64[d.t];
+        return x >= lo && x <= hi ? null : bad(d.t);
+      }
       if (typeof x !== "number") return bad(d.t);
       if (d.t === "f64") return null;
       if (d.t === "f32") return Number.isNaN(x) || Math.fround(x) === x ? null : bad("f32");
-      const [lo, hi] = RANGE[d.t as IntType];
+      const [lo, hi] = RANGE[d.t as Int32Type];
       return Number.isInteger(x) && x >= lo && x <= hi && !Object.is(x, -0) ? null : bad(d.t); // -0 is not an integer value (Q090, Q141)
     }
     case "lit": return typeof x === "string" && d.v.includes(x) ? null : bad(d.v.map((s) => JSON.stringify(s)).join(" | "));

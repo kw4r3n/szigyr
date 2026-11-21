@@ -10,11 +10,17 @@ vi.mock("../src/index.ts", async (orig) => ({
 }));
 const { main } = await import("../src/cli.ts");
 
-it("test --backend=both reports a differing result count as a mismatch and exits 1 (Q266)", async () => {
+it("test --backend=both runs each test cleanly when stubbed mismatch fires in json and text modes (Q266)", async () => {
   let out = "";
   const f = join(mkdtempSync(join(tmpdir(), "szigyr-both-")), "t.szigyr");
   writeFileSync(f, 'test("a", (t: Test) => {\n  t.ok(true);\n});\n'); // the real analysis runs on this tiny STS file; the stub supplies the results
   const code = await main(["test", "--json", "--backend=both", f], (s) => (out += s), () => {});
   expect(code).toBe(1);
   expect(out).toContain('"kind":"mismatch"');
+
+  let textOut = "";
+  const textCode = await main(["test", "--backend=both", f], (s) => (textOut += s), () => {});
+  expect(textCode).toBe(1);
+  expect(textOut).toContain("MISMATCH");
+  expect(textOut).not.toContain('"kind":"mismatch"');
 });

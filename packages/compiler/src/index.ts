@@ -206,7 +206,7 @@ export function deterministicFunctions(entryFile: string): Record<string, boolea
   const prog = loadProgram(entryFile);
   const decls = new Decls(prog.files, displayPath, new Reporter());
   const entry = decls.mods.find((m) => m.pf.path === canonPath(entryFile))!;
-  return Object.fromEntries(decls.fns.filter((f) => f.mod === entry).map((f) => [f.name, isDeterministic(f.sig, f.layer === "rt" && f.unsafe)]));
+  return Object.fromEntries(decls.fns.filter((f) => f.mod === entry).map((f) => [f.name, isDeterministic(f.sig, f.unsafe)]));
 }
 
 /** §6 (stage 2): for each rt function of the entry file, where it can trap. Throws if the program does not check. */
@@ -373,6 +373,19 @@ async function runTestFileNow(entryFile: string, backend?: Backend, analysis?: A
 /** `sts mutate`: JS-only mutation testing with diff cache and witness search (SPEC §16.2, Q275–Q277). */
 export const mutate = (entryFile: string, opts: MutateOptions = {}): Promise<MutateResult> => exclusive(() => mutateFile(entryFile, opts));
 
+export interface QueryField {
+  readonly name: string;
+  readonly type: string;
+  readonly readonly: boolean;
+  readonly private: boolean;
+  readonly static: boolean;
+}
+
+export interface QueryMethod {
+  readonly name: string;
+  readonly type: string;
+}
+
 export interface QuerySymbol {
   readonly name: string;
   readonly kind: "function" | "cfn" | "const" | "type" | "class" | "method" | "interface";
@@ -384,6 +397,10 @@ export interface QuerySymbol {
   readonly mutatable?: boolean;
   readonly caps?: readonly string[];
   readonly rtTrapSites?: readonly TrapSite[];
+  readonly ctor?: string;
+  readonly implements?: readonly string[];
+  readonly fields?: readonly QueryField[];
+  readonly methods?: readonly QueryMethod[];
   readonly range: Range;
 }
 
@@ -420,7 +437,7 @@ export function queryFile(entryFile: string, parser?: Parser): QueryResult {
       type: show(f.sig),
       layer: f.layer,
       unsafe: f.unsafe,
-      pure: isDeterministic(f.sig, f.layer === "rt" && f.unsafe),
+      pure: isDeterministic(f.sig, f.unsafe),
       mutatable: isMutatable(f.sig, f.unsafe),
       ...(f.layer === "rt" && traps ? { rtTrapSites: traps[f.name] ?? [] } : {}),
       range: rangeOf(f.decl),
@@ -468,7 +485,17 @@ export function queryFile(entryFile: string, parser?: Parser): QueryResult {
       symbols.push({ name, kind: "type", exported: exportedSet.has(name), type: show(t), caps: capsOf(t), range: rangeOf(sym.decl) });
     } else if (sym.k === "class") {
       const ct: Type = { k: "class", cls: sym.cls, args: sym.cls.tparams.map((p) => ({ k: "tparam", p })) };
-      symbols.push({ name, kind: "class", exported: exportedSet.has(name), type: show(ct), caps: capsOf(ct), range: rangeOf(sym.cls.decl) });
+      symbols.push({
+        name,
+        kind: "class",
+        exported: exportedSet.has(name),
+        type: show(ct),
+        caps: capsOf(ct),
+        ctor: show({ ...sym.cls.ctor, ret: ct }),
+        implements: sym.cls.implements.map(show),
+        fields: [...sym.cls.fields.entries()].map(([fname, f]) => ({ name: fname, type: show(f.type), readonly: f.readonly, private: f.private, static: f.static })),
+        range: rangeOf(sym.cls.decl),
+      });
       for (const [mName, m] of sym.cls.methods) {
         const extra = m.static ? [] : [ct];
         symbols.push({
@@ -484,7 +511,16 @@ export function queryFile(entryFile: string, parser?: Parser): QueryResult {
         });
       }
     } else {
-      symbols.push({ name, kind: "interface", exported: exportedSet.has(name), type: sym.iface.name, caps: [], range: rangeOf(sym.decl) });
+      const ifaceType = sym.iface.tparams.length ? `${sym.iface.name}<${sym.iface.tparams.map((p) => p.name).join(", ")}>` : sym.iface.name;
+      symbols.push({
+        name,
+        kind: "interface",
+        exported: exportedSet.has(name),
+        type: ifaceType,
+        caps: [],
+        methods: [...sym.iface.methods.entries()].map(([mname, sig]) => ({ name: mname, type: show(sig) })),
+        range: rangeOf(sym.decl),
+      });
     }
   }
   symbols.sort((x, y) => x.range.start.line - y.range.start.line || x.range.start.col - y.range.start.col);

@@ -65,7 +65,9 @@ export class Test {
     throw new TestFailure(`t.traps: expected ${code}, no trap`, pos, { kind: "traps", expectedCode: code, actualCode: null });
   }
 }
-const show = (x: unknown): string => { try { return JSON.stringify(x) ?? String(x); } catch { return String(x); } };
+const show = (x: unknown): string => {
+  try { return JSON.stringify(x, (_, v) => (typeof v === "bigint" ? String(v) : v)) ?? String(x); } catch { return String(x); }
+};
 function safeDetailVal(v: unknown, seen = new Set<unknown>()): unknown {
   if (v === null || typeof v === "boolean" || typeof v === "string") return v;
   if (typeof v === "number") return Number.isFinite(v) ? v : String(v);

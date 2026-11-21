@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import { SyntaxKind as K, type ts } from "./parse.ts";
 import type { Module, Program, Reporter } from "./modules.ts";
 import { ccCommand, cTypeOf, parseCSpec, splitFlags } from "./cdecl.ts";
-import { isBool, isErr, type NumName, type Type } from "./types.ts";
+import { INT_RANGE, I64_MIN, isBool, isErr, type Type } from "./types.ts";
 
 interface ProbeRes { ok: boolean; stderr: string }
 
@@ -79,11 +79,6 @@ function canProbePointee(t: Type): boolean {
   return true;
 }
 
-const CONST_RANGE: Partial<Record<NumName, [number, number]>> = {
-  i8: [-128, 127], i16: [-32768, 32767], i32: [-2147483648, 2147483647],
-  u8: [0, 255], u16: [0, 65535], u32: [0, 4294967295], usize: [0, 4294967295],
-};
-
 const STS_TYPE_MACROS =
   `#define STS_IS_INT(x) _Generic((x), _Bool: 1, char: 1, signed char: 1, unsigned char: 1, short: 1, unsigned short: 1, int: 1, unsigned int: 1, long: 1, unsigned long: 1, long long: 1, unsigned long long: 1, default: 0)\n` +
   `#define STS_IS_FLT(x) _Generic((x), float: 1, double: 1, long double: 1, default: 0)\n`;
@@ -144,11 +139,13 @@ export function checkHeaders(prog: Program, rep: Reporter): void {
         } else if (cc.type.k === "num" && (cc.type.name === "f32" || cc.type.name === "f64")) {
           check = `_Static_assert(STS_IS_INT(+(${n})) || STS_IS_FLT(+(${n})), "${n}");\n`;
         } else if (cc.type.k === "num") {
-          const [lo, hi] = CONST_RANGE[cc.type.name]!;
+          const [lo, hi] = INT_RANGE[cc.type.name]!;
           const ct = cTypeOf(cc.type);
-          const rangeExpr = lo < 0
-            ? `(((__typeof__(+(${n})))-1 < 0) ? ((long long)(${n}) >= ${lo}LL && (long long)(${n}) <= ${hi}LL) : ((unsigned long long)(${n}) <= ${hi}ULL))`
-            : `(((__typeof__(+(${n})))-1 < 0) ? ((long long)(${n}) >= 0 && (unsigned long long)(${n}) <= ${hi}ULL) : ((unsigned long long)(${n}) <= ${hi}ULL))`;
+          const loC = lo === I64_MIN ? "(-9223372036854775807LL - 1LL)" : `${lo}LL`;
+          const hiU = `${hi}ULL`;
+          const rangeExpr = lo < 0n
+            ? `(((__typeof__(+(${n})))-1 < 0) ? ((long long)(${n}) >= ${loC} && (long long)(${n}) <= ${hi}LL) : ((unsigned long long)(${n}) <= ${hiU}))`
+            : `(((__typeof__(+(${n})))-1 < 0) ? ((long long)(${n}) >= 0 && (unsigned long long)(${n}) <= ${hiU}) : ((unsigned long long)(${n}) <= ${hiU}))`;
           const extExpr = `(sizeof(${n}) <= sizeof(${ct}) && (((__typeof__(+(${n})))-1 < 0) == ((${ct})-1 < 0) || (sizeof(${n}) < sizeof(${ct}) && ((${ct})-1 < 0))))`;
           check = `_Static_assert(STS_IS_INT(+(${n})), "${n}");\n_Static_assert(__builtin_constant_p(${n}) ? (${rangeExpr}) : (${extExpr}), "${n}");\n`;
         }

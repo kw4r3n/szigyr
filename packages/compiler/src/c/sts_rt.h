@@ -62,26 +62,19 @@ static void sts_ftrap_reset(sts_prog_t *g) {
   pthread_mutex_unlock(&g->mu);
 }
 
-typedef struct { void (*fn)(void *); void *data; } sts_defer;
-static _Thread_local sts_defer *sts_defers;
-static _Thread_local size_t sts_ndefers, sts_capdefers, sts_defer_base;
+typedef struct sts_defer { void (*fn)(void *); void *data; struct sts_defer *prev; } sts_defer;
+static _Thread_local sts_defer *sts_defer_head, *sts_defer_base;
 static _Thread_local int sts_unwinding;
 _Noreturn static void sts_fail(const char *msg);
-static size_t sts_defer_push(void (*fn)(void *), void *data) {
-  if (sts_ndefers == sts_capdefers) {
-    size_t c_ = sts_capdefers ? sts_capdefers * 2 : 16;
-    void *p_ = realloc(sts_defers, c_ * sizeof *sts_defers);
-    if (!p_) sts_fail("out of memory");
-    sts_defers = p_; sts_capdefers = c_;
-  }
-  size_t m = sts_ndefers++;
-  sts_defers[m] = (sts_defer){ fn, data };
-  return m;
+static void sts_defer_push(sts_defer *node, void (*fn)(void *), void *data) {
+  node->fn = fn; node->data = data; node->prev = sts_defer_head;
+  sts_defer_head = node;
 }
-static void sts_defer_pop_run(size_t mark) {
-  while (sts_ndefers > mark) {
-    sts_defer d = sts_defers[--sts_ndefers];
-    if (d.fn) d.fn(d.data);
+static void sts_defer_pop_run(sts_defer *mark) {
+  while (sts_defer_head && sts_defer_head != mark) {
+    sts_defer *d = sts_defer_head;
+    sts_defer_head = d->prev;
+    if (d->fn) d->fn(d->data);
   }
 }
 static void sts_defer_unwind(void) {
@@ -128,7 +121,7 @@ static napi_value sts_get(napi_value o, const char *k) { napi_value r; STS_OK(na
 static void sts_set(napi_value o, const char *k, napi_value v) { STS_OK(napi_set_named_property(sts_env, o, k, v)); }
 static napi_value sts_mkobj(void) { napi_value o; STS_OK(napi_create_object(sts_env, &o)); return o; }
 static uint32_t sts_tbytes(napi_typedarray_type tt) {
-  switch (tt) { case napi_int8_array: case napi_uint8_array: return 1; case napi_int16_array: case napi_uint16_array: return 2; case napi_float64_array: return 8; default: return 4; }
+  switch (tt) { case napi_int8_array: case napi_uint8_array: return 1; case napi_int16_array: case napi_uint16_array: return 2; case napi_float64_array: case napi_bigint64_array: case napi_biguint64_array: return 8; default: return 4; }
 }
 static napi_value sts_hostf(const char *k, napi_value *host) { STS_OK(napi_get_reference_value(sts_env, sts_host, host)); return sts_get(*host, k); }
 /** `esize` and `desc` come from the static element type: a number type's name or a layout's JSON (SPEC §10.2, D105). */
@@ -386,6 +379,7 @@ typedef float __attribute__((may_alias)) sts_ma_float; typedef double __attribut
 typedef int8_t __attribute__((may_alias)) sts_ma_int8_t; typedef uint8_t __attribute__((may_alias)) sts_ma_uint8_t;
 typedef int16_t __attribute__((may_alias)) sts_ma_int16_t; typedef uint16_t __attribute__((may_alias)) sts_ma_uint16_t;
 typedef int32_t __attribute__((may_alias)) sts_ma_int32_t; typedef uint32_t __attribute__((may_alias)) sts_ma_uint32_t;
+typedef int64_t __attribute__((may_alias)) sts_ma_int64_t; typedef uint64_t __attribute__((may_alias)) sts_ma_uint64_t;
 #define STS_LD(T, p) (*(const sts_ma_##T *)(p))
 #define STS_ST(p, T, v) (*(sts_ma_##T *)(p) = (v))
 static uint32_t sts_lidx(const int32_t *tbl, uint32_t n, int32_t id) { for (uint32_t i = 0; i < n; i++) if (tbl[i] == id) return i; sts_fail("bad literal"); return 0; }
@@ -404,6 +398,8 @@ static sts_slice sts_sub(sts_slice s, uint32_t a, uint32_t b, size_t es, int pos
 // Integers: computed wide, then range-checked (T001); never C signed overflow.
 /** Integer +, -, * with T001 on a result outside T (the builtin compares the exact result). */
 #define STS_AOP(op, T, a, b, pos) ({ T r_; if (__builtin_expect(__builtin_##op##_overflow((a), (b), &r_), 0)) sts_trap(1, (pos)); r_; })
+#define STS_MULI64(a, b, pos) STS_AOP(mul, int64_t, (a), (b), (pos))
+#define STS_MULU64(a, b, pos) STS_AOP(mul, uint64_t, (a), (b), (pos))
 static int64_t sts_rng(int64_t r, int64_t lo, int64_t hi, int pos) { if (__builtin_expect(r < lo || r > hi, 0)) sts_trap(1, pos); return r; }
 /** divTrunc / rem in T: T007 on a zero divisor; for signed T, x / -1 is a checked negation (MIN / -1 is T001) and x % -1 is 0. */
 #define STS_DIV(T, a, b, pos) ({ T a_ = (a), b_ = (b); if (__builtin_expect(b_ == 0, 0)) sts_trap(7, (pos)); ((T)-1 < 0 && b_ == (T)-1) ? STS_AOP(sub, T, (T)0, a_, (pos)) : (T)(a_ / b_); })
@@ -411,9 +407,14 @@ static int64_t sts_rng(int64_t r, int64_t lo, int64_t hi, int pos) { if (__built
 static int64_t sts_wrap(int64_t r, int64_t lo, int64_t hi) { int64_t m = hi - lo + 1; return ((r - lo) % m + m) % m + lo; }
 static int64_t sts_wmul32(int64_t a, int64_t b, int64_t lo, int64_t hi) { return sts_wrap((int64_t)(uint32_t)((uint32_t)a * (uint32_t)b), lo, hi); }
 static uint32_t sts_amt(int64_t n, int pos) { if (n < 0 || n > 31) sts_trap(9, pos); return (uint32_t)n; }
+static uint32_t sts_amt64(uint64_t n, int pos) { if (n > 63ULL) sts_trap(9, pos); return (uint32_t)n; }
 /** i32(x) etc. from a floating value: integral and in range, else T003. */
 static int64_t sts_cvt(double x, int64_t lo, int64_t hi, int pos) { if (!(x >= (double)lo && x <= (double)hi) || x != trunc(x)) sts_trap(3, pos); return (int64_t)x; }
+static int64_t sts_cvt_i64(double x, int pos) { if (!(x >= -9223372036854775808.0 && x < 9223372036854775808.0) || x != trunc(x)) sts_trap(3, pos); return (int64_t)x; }
+static uint64_t sts_cvt_u64(double x, int pos) { if (!(x >= 0.0 && x < 18446744073709551616.0) || x != trunc(x)) sts_trap(3, pos); return (uint64_t)x; }
 static int64_t sts_cvti(int64_t x, int64_t lo, int64_t hi, int pos) { if (x < lo || x > hi) sts_trap(3, pos); return x; }
+static int64_t sts_cvtu(uint64_t x, uint64_t hi, int pos) { if (x > hi) sts_trap(3, pos); return (int64_t)x; }
+static uint64_t sts_cvti_u64(int64_t x, int pos) { if (x < 0) sts_trap(3, pos); return (uint64_t)x; }
 
 // Math with JS semantics (§10.1).
 static double sts_round(double x) {
@@ -424,6 +425,9 @@ static double sts_round(double x) {
 static double sts_min(double a, double b) { if (isnan(a) || isnan(b)) return NAN; if (a == b) return signbit(a) ? a : b; return a < b ? a : b; }
 static double sts_max(double a, double b) { if (isnan(a) || isnan(b)) return NAN; if (a == b) return signbit(a) ? b : a; return a > b ? a : b; }
 static double sts_sign(double x) { return isnan(x) ? x : x > 0 ? 1 : x < 0 ? -1 : x; }
+static inline bool sts_isfinite(double x) { return !isnan(x) && !isinf(x); }
+static inline bool sts_isnan(double x) { return isnan(x); }
+static inline bool sts_isint(double x) { return !isnan(x) && !isinf(x) && trunc(x) == x; }
 
 
 // §14.4 / §14.5: a raw C pointer crossing the JS boundary is a BigInt of its address.

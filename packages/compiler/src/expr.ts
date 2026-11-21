@@ -8,8 +8,8 @@ import { isDeterministic } from "./determinism.ts";
 import { isGeneratable } from "./gendesc.ts";
 import {
   AUDIO_CONFIG_RECORD, BOOL, ERROR, ERROR_RECORD, F64, NEVER, NULL, NUM_NAMES, STR, UNKNOWN, USIZE, VOID, assignable, audioStateOk, bindTParams, borrowOk, boxable, comparable, field, fn, gen, hasArenaBuf, hasAuthority, hasCap, hasLayout, hasPtr, hasRawPtr, hasTParam,
-  isAuthority, isBool, isCopy, isInt, isNative, isNull, isNum, isOwned, isOwnedCap, isStr, movesLike, holdsOwned, ownedDeep, ptrTargetOk, isTaggedUnion, kindOf, keyOk, literalFits, nonNull, nullable, num, opaque, result, resultParts,
-  same, sendable, show, subst, unify, union, unref, castable, collectTParams, layerOk, type FnType, type NumName, type Type,
+  isAuthority, isBool, isCopy, isInt, isNative, isNull, isNum, isOwned, isOwnedCap, isStr, movesLike, holdsOwned, ownedDeep, ptrTargetOk, isTaggedUnion, kindOf, keyOk, intLiteralFits, literalFits, nonNull, nullable, num, opaque, parseExactInt, result, resultParts,
+  same, sendable, show, subst, tparamHasCap, unify, union, unref, castable, collectTParams, layerOk, type FnType, type NumName, type Type,
   hasLoneSurrogate,
 } from "./types.ts";
 
@@ -115,7 +115,7 @@ export function expr(c: Checker, e: ts.Expression, want?: Type): Type {
 function exprUnrecorded(c: Checker, e: ts.Expression, want?: Type): Type {
   switch (e.kind) {
     case K.Identifier: return ident(c, e as ts.Identifier);
-    case K.NumericLiteral: return numLit(c, e, numValue(e as ts.NumericLiteral), want);
+    case K.NumericLiteral: return numLit(c, e, e as ts.NumericLiteral, false, want);
     case K.StringLiteral: case K.NoSubstitutionTemplateLiteral: return strLit((e as ts.StringLiteral).text, want);
     case K.TrueKeyword: case K.FalseKeyword: return BOOL;
     case K.NullKeyword: return NULL;
@@ -162,9 +162,19 @@ function exprUnrecorded(c: Checker, e: ts.Expression, want?: Type): Type {
 
 const numValue = (n: ts.NumericLiteral): number => Number(n.text.replace(/_/g, ""));
 
-function numLit(c: Checker, anchor: Node, value: number, want: Type | undefined): Type {
+function numLit(c: Checker, anchor: Node, lit: ts.NumericLiteral, neg: boolean, want: Type | undefined): Type {
   const t = (numCtx(want) ?? F64) as { k: "num"; name: NumName };
-  if (!literalFits(value, t.name)) c.at("E2008", anchor, `literal ${value} does not fit '${t.name}'`);
+  if (isInt(t)) {
+    const raw = lit.getText(c.fx.mod.sf);
+    const v = parseExactInt(raw, neg);
+    if (!intLiteralFits(v, t.name)) {
+      const shown = v !== null ? String(v) : `${neg ? "-" : ""}${raw}`;
+      c.at("E2008", anchor, `literal ${shown} does not fit '${t.name}'`, { value: shown, type: t.name });
+    }
+    return t;
+  }
+  const value = neg ? -numValue(lit) : numValue(lit);
+  if (!literalFits(value, t.name)) c.at("E2008", anchor, `literal ${value} does not fit '${t.name}'`, { value: String(value), type: t.name });
   return t;
 }
 
@@ -216,15 +226,15 @@ function ident(c: Checker, id: ts.Identifier): Type {
 function unresolved(c: Checker, id: ts.Identifier): void {
   const name = id.text;
   if (GLOBAL_AUTHORITIES.has(name)) {
-    const fix = c.authorityFix(name);
+    const fix = c.authorityFix(name, id);
     c.at("E5001", id, `'${name}' is a global authority; take it as a parameter`, { name, ...(fix ? { authority: fix.authority } : {}) });
     if (fix?.fixes) c.prog.rep.out.at(-1)!.fixes = fix.fixes;
     return;
   }
-  if (name === "Resource") { c.at("E2002", id, "'Resource' is a namespace"); return; }
-  if (NAMESPACES.has(name) && !RESERVED.has(name)) { c.at("E2000", id, `'${name}' can only be used as a member access receiver`); return; }
-  if (BUILTIN_FUNCTIONS.has(name)) { c.at("E2002", id, `builtin '${name}' can only be called`); return; }
-  c.at("E2000", id, `unknown name '${name}'`);
+  if (name === "Resource") { c.at("E2002", id, "'Resource' is a namespace", { name }); return; }
+  if (NAMESPACES.has(name) && !RESERVED.has(name)) { c.at("E2000", id, `'${name}' can only be used as a member access receiver`, { name }); return; }
+  if (BUILTIN_FUNCTIONS.has(name)) { c.at("E2002", id, `builtin '${name}' can only be called`, { name }); return; }
+  c.at("E2000", id, `unknown name '${name}'`, { name });
 }
 
 /** E6002 (Q056): what a contract may refer to. */
@@ -252,14 +262,14 @@ function member(c: Checker, p: ts.PropertyAccessExpression, inCall: boolean): Me
   }
   if (isId(recvNode) && isNamespace(c, recvNode)) {
     if (recvNode.text === "Math" && name.text === "random") {
-      const fix = c.authorityFix("random");
+      const fix = c.authorityFix("random", p);
       c.at("E5001", name, "Math.random is a global authority; take a Random", { name: "Math.random", authority: "Random" });
       if (fix?.fixes) c.prog.rep.out.at(-1)!.fixes = fix.fixes;
       return MERR;
     }
     const m = nsMember(recvNode.text, name.text);
-    if (m === undefined) { c.at("E2001", name, `'${recvNode.text}.${name.text}' is not in the allowlist`); return MERR; }
-    if (m === "variadic") return inCall ? { kind: "variadic" } : (c.at("E2002", name, "a method can only be called"), MERR);
+    if (m === undefined) { c.at("E2001", name, `'${recvNode.text}.${name.text}' is not in the allowlist`, { namespace: recvNode.text, member: name.text }); return MERR; }
+    if (m === "variadic") return inCall ? { kind: "variadic" } : (c.at("E2002", name, "a method can only be called", { member: name.text }), MERR);
     return fromMember(c, m, name, inCall);
   }
   if (isId(recvNode) && !c.scope.lookup(recvNode.text)) {
@@ -295,7 +305,7 @@ function fromMember(c: Checker, m: Member, name: ts.Identifier, inCall: boolean)
 
 function lookupMember(c: Checker, t: Type, name: ts.Identifier, inCall: boolean): MemberResult {
   const n = name.text;
-  const missing = (code: string): MemberResult => { c.at(code, name, `'${show(t)}' has no member '${n}'`); return MERR; };
+  const missing = (code: string): MemberResult => { c.at(code, name, `'${show(t)}' has no member '${n}'`, { receiver: show(t), member: n }); return MERR; };
   switch (t.k) {
     case "record": case "cstruct": {
       const f = field(t, n);
@@ -442,12 +452,33 @@ function arith(c: Checker, op: Node, kind: K, lt: Type, rt: Type): Type {
   if (isNum(lt) && isNum(rt)) {
     if (lt.name !== rt.name) { c.at("E2003", op, `cannot mix '${lt.name}' and '${rt.name}'`, { left: lt.name, right: rt.name }); return ERROR; }
     if (kind === K.SlashToken && isInt(lt)) { c.at("E2007", op, "integer '/' is not allowed; use divTrunc", { type: lt.name }); return ERROR; }
-    if ((kind === K.PercentToken || kind === K.AsteriskAsteriskToken) && isInt(lt)) { c.at("E2002", op, "this operator is for floating-point types only"); return ERROR; }
+    if (kind === K.PercentToken && isInt(lt)) { c.at("E2002", op, "integer '%' is not allowed; use 'rem(a, b)'", { kind: "int-rem", type: lt.name }); return ERROR; }
+    if (kind === K.AsteriskAsteriskToken && isInt(lt)) { c.at("E2002", op, "integer '**' is not allowed; convert to f64 or use Math.pow", { kind: "int-pow", type: lt.name }); return ERROR; }
     if (kind === K.AsteriskAsteriskToken && !c.callAllowed("managed")) c.at("E4001", op, "'**' is managed-only", { callerLayer: c.fx.layer, calleeLayer: "managed" }); // Q180: pow is not exact (§10.1)
     return lt;
   }
-  c.at("E2002", op, `operator cannot be applied to '${show(lt)}' and '${show(rt)}'`);
+  c.at("E2002", op, `operator cannot be applied to '${show(lt)}' and '${show(rt)}'`, { left: show(lt), right: show(rt) });
   return ERROR;
+}
+
+function attachIntOpFix(c: Checker, b: ts.BinaryExpression, op: Node, code: string, fnName: string, compound: boolean): void {
+  const d = c.prog.rep.out.at(-1);
+  const sf = c.fx.mod.sf;
+  const pos = c.fx.mod.pf.position(op.getStart(sf));
+  if (d?.code !== code || d.range.start.line !== pos.line || d.range.start.col !== pos.col) return;
+  if (compound) {
+    const tgt = assignTarget(b.left);
+    if (!isId(tgt)) return;
+    (d.fixes ??= []).push({
+      title: `use ${fnName}`,
+      edits: [{ range: { start: c.fx.mod.pf.position(b.getStart(sf)), end: c.fx.mod.pf.position(b.end) }, newText: `${tgt.text} = ${fnName}(${tgt.text}, ${b.right.getText(sf)})` }],
+    });
+  } else {
+    (d.fixes ??= []).push({
+      title: `use ${fnName}`,
+      edits: [{ range: { start: c.fx.mod.pf.position(b.getStart(sf)), end: c.fx.mod.pf.position(b.end) }, newText: `${fnName}(${b.left.getText(sf)}, ${b.right.getText(sf)})` }],
+    });
+  }
 }
 
 function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Type {
@@ -464,6 +495,8 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
     const lt = lvalue(c, b.left);
     const rt = expr(c, b.right, isNum(lt) ? lt : undefined);
     const r = arith(c, op, base, lt, rt);
+    if (k === K.SlashEqualsToken) attachIntOpFix(c, b, op, "E2007", "divTrunc", true);
+    else if (k === K.PercentEqualsToken) attachIntOpFix(c, b, op, "E2002", "rem", true);
     numFix(c, op, b.left, b.right, lt, rt);
     return r;
   }
@@ -471,9 +504,9 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
     case K.AmpersandAmpersandToken: case K.BarBarToken: {
       const m0 = c.mark();
       const lt = expr(c, b.left);
-      if (!isBool(lt) && !isErr(lt)) c.at("E2004", b.left, "operand must be boolean");
+      if (!isBool(lt) && !isErr(lt)) c.at("E2004", b.left, "operand must be boolean", { actual: show(lt) });
       const rt = c.branch(() => expr(c, b.right), c.facts(b.left, k === K.AmpersandAmpersandToken), m0);
-      if (!isBool(rt) && !isErr(rt)) c.at("E2004", b.right, "operand must be boolean");
+      if (!isBool(rt) && !isErr(rt)) c.at("E2004", b.right, "operand must be boolean", { actual: show(rt) });
       return BOOL;
     }
     case K.QuestionQuestionToken: {
@@ -507,26 +540,37 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
       const [lt, rt] = operands(c, b.left, b.right, want);
       if (isErr(lt) || isErr(rt)) return ERROR;
       if (isNum(lt) && isNum(rt) && lt.name !== rt.name) { c.at("E2003", op, `cannot mix '${lt.name}' and '${rt.name}'`, { left: lt.name, right: rt.name }); return ERROR; }
-      const okTypes = k === K.GreaterThanGreaterThanToken ? ["i32"] : k === K.GreaterThanGreaterThanGreaterThanToken ? ["u32"] : ["i32", "u32"];
+      const okTypes = k === K.GreaterThanGreaterThanToken ? ["i32", "i64"] : k === K.GreaterThanGreaterThanGreaterThanToken ? ["u32", "u64"] : ["i32", "u32", "i64", "u64"];
       if (!isNum(lt) || !isNum(rt) || !okTypes.includes(lt.name)) { c.at("E2002", op, `bit operator cannot be applied to '${show(lt)}' and '${show(rt)}'`); return ERROR; }
       return lt;
     }
   }
   if (ARITH.has(k)) {
     const [lt, rt] = operands(c, b.left, b.right, want);
-    if (k === K.PlusToken && isStr(lt) && isStr(rt)) { c.at("E2002", op, "use a template literal to concatenate strings"); return ERROR; } // Q019
-    const r = arith(c, op, k, lt, rt);
-    if (k === K.SlashToken) {
-      const d = c.prog.rep.out.at(-1);
-      const sf = c.fx.mod.sf;
-      const pos = c.fx.mod.pf.position(op.getStart(sf));
-      if (d?.code === "E2007" && d.range.start.line === pos.line && d.range.start.col === pos.col) {
-        (d.fixes ??= []).push({
-          title: "use divTrunc",
-          edits: [{ range: { start: c.fx.mod.pf.position(b.getStart(sf)), end: c.fx.mod.pf.position(b.end) }, newText: `divTrunc(${b.left.getText(sf)}, ${b.right.getText(sf)})` }],
-        });
+    if (k === K.PlusToken && isStr(lt) && isStr(rt)) { // Q019
+      c.at("E2002", op, "use a template literal to concatenate strings", { kind: "string-concat" });
+      const simpleSide = (s: ts.Expression): boolean =>
+        s.kind === K.Identifier || s.kind === K.StringLiteral || s.kind === K.NoSubstitutionTemplateLiteral ||
+        s.kind === K.PropertyAccessExpression || s.kind === K.CallExpression || s.kind === K.ParenthesizedExpression;
+      if (b.parent?.kind !== K.BinaryExpression && simpleSide(b.left) && simpleSide(b.right)) {
+        const sf = c.fx.mod.sf;
+        const part = (s: ts.Expression): string => {
+          const u = assignTarget(s);
+          if (u.kind === K.StringLiteral || u.kind === K.NoSubstitutionTemplateLiteral) {
+            return (u as ts.StringLiteral).text.replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$\{/g, "\\${").replace(/\r/g, "\\r").replace(/\n/g, "\\n");
+          }
+          return `\${${u.getText(sf)}}`;
+        };
+        const d = c.prog.rep.out.at(-1);
+        if (d?.code === "E2002") {
+          d.fixes = [{ title: "use a template literal", edits: [{ range: { start: c.fx.mod.pf.position(b.getStart(sf)), end: c.fx.mod.pf.position(b.end) }, newText: `\`${part(b.left)}${part(b.right)}\`` }] }];
+        }
       }
+      return ERROR;
     }
+    const r = arith(c, op, k, lt, rt);
+    if (k === K.SlashToken) attachIntOpFix(c, b, op, "E2007", "divTrunc", false);
+    else if (k === K.PercentToken) attachIntOpFix(c, b, op, "E2002", "rem", false);
     numFix(c, op, b.left, b.right, lt, rt);
     return r;
   }
@@ -536,7 +580,7 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
 /** Q017: element types for which `===` works (the `T` of `T | null` counts). */
 function eqable(t: Type): boolean {
   const a = nonNull(t) ?? t;
-  return isNum(a) || isBool(a) || isStr(a) || a.k === "class" || (a.k === "gen" && a.name === "Handle");
+  return isNum(a) || isBool(a) || isStr(a) || a.k === "class" || (a.k === "gen" && a.name === "Handle") || (a.k === "tparam" && tparamHasCap(a.p, "Key"));
 }
 
 /** Q058: the first argument of `t.traps` is a string literal naming an implemented trap (T001 - T015). */
@@ -555,30 +599,30 @@ function equality(c: Checker, op: Node, lt: Type, rt: Type): void {
   }
   const a = nonNull(lt) ?? lt, b = nonNull(rt) ?? rt;
   if (isNum(a) && isNum(b)) { if (a.name !== b.name) c.at("E2003", op, `cannot compare '${a.name}' and '${b.name}'`, { left: a.name, right: b.name }); return; }
-  if ((isBool(a) && isBool(b)) || (isStr(a) && isStr(b)) || ((a.k === "class" || (a.k === "gen" && a.name === "Handle")) && same(a, b))) return;
+  if ((isBool(a) && isBool(b)) || (isStr(a) && isStr(b)) || ((a.k === "class" || (a.k === "gen" && a.name === "Handle") || (a.k === "tparam" && tparamHasCap(a.p, "Key"))) && same(a, b))) return;
   c.at("E2002", op, `cannot compare '${show(lt)}' and '${show(rt)}'`);
 }
 
 function prefix(c: Checker, u: ts.PrefixUnaryExpression, want: Type | undefined): Type {
   if (u.operator === K.MinusToken && isLitOnly(u.operand)) { // negative literal (Q015): anchor at '-'
-    if (u.operand.kind === K.NumericLiteral) return numLit(c, u, -numValue(u.operand as ts.NumericLiteral), want);
+    if (u.operand.kind === K.NumericLiteral) return numLit(c, u, u.operand as ts.NumericLiteral, true, want);
     const t = expr(c, u.operand, numCtx(want) ?? F64);
     return negate(c, u, t);
   }
   if (u.operator === K.ExclamationToken) {
     const t = expr(c, u.operand);
-    if (!isBool(t) && !isErr(t)) c.at("E2004", u.operand, "operand must be boolean");
+    if (!isBool(t) && !isErr(t)) c.at("E2004", u.operand, "operand must be boolean", { actual: show(t) });
     return BOOL;
   }
   const t = expr(c, u.operand, want);
   if (u.operator === K.MinusToken) return negate(c, u, t);
   if (isErr(t)) return ERROR;
-  if (!isNum(t) || (t.name !== "i32" && t.name !== "u32")) { c.at("E2002", u, `'~' cannot be applied to '${show(t)}'`); return ERROR; }
+  if (!isNum(t) || !["i32", "u32", "i64", "u64"].includes(t.name)) { c.at("E2002", u, `'~' cannot be applied to '${show(t)}'`); return ERROR; }
   return t;
 }
 function negate(c: Checker, u: Node, t: Type): Type {
   if (isErr(t)) return ERROR;
-  if (!isNum(t) || ["u8", "u16", "u32", "usize"].includes(t.name)) { c.at("E2002", u, `unary '-' cannot be applied to '${show(t)}'`); return ERROR; }
+  if (!isNum(t) || ["u8", "u16", "u32", "u64", "usize"].includes(t.name)) { c.at("E2002", u, `unary '-' cannot be applied to '${show(t)}'`); return ERROR; }
   return t;
 }
 
@@ -723,19 +767,19 @@ export const forAllMeta = new WeakMap<Node, { params: Type[]; checkBool: boolean
 function audioOpenCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpression): Type {
   if (!c.callAllowed("managed")) c.at("E4001", p.name, `'open' is managed-only`, { callerLayer: c.fx.layer, calleeLayer: "managed" });
   const args = e.arguments;
-  if (args.length !== 3) { c.at("E2013", p.name, `'open' takes 3 arguments (config, state, render)`); return ERROR; }
+  if (args.length !== 3) { c.at("E2013", p.name, `'open' takes 3 arguments (config, state, render)`, { reason: "arity" }); return ERROR; }
   let S: Type | undefined;
   if (e.typeArguments) {
-    if (e.typeArguments.length !== 1) { c.at("E2013", p.name, `'open' takes 1 type argument`); return ERROR; }
+    if (e.typeArguments.length !== 1) { c.at("E2013", p.name, `'open' takes 1 type argument`, { reason: "type-arity" }); return ERROR; }
     S = c.typeOf(e.typeArguments[0]!);
-    if (!isErr(S) && !audioStateOk(S)) { c.at("E2013", e.typeArguments[0]!, `'${show(S)}' cannot be passed as audio callback state (§15.5)`); return ERROR; }
+    if (!isErr(S) && !audioStateOk(S)) { c.at("E2013", e.typeArguments[0]!, `'${show(S)}' cannot be passed as audio callback state (§15.5)`, { reason: "invalid-state", actual: show(S) }); return ERROR; }
   }
   checkTo(c, args[0]!, AUDIO_CONFIG_RECORD, true);
   const stRaw = S ? checkTo(c, args[1]!, S, true) : expr(c, args[1]!);
   const st = S ?? unref(stRaw);
-  if (!S && !isErr(st) && !audioStateOk(st)) { c.at("E2013", args[1]!, `'${show(st)}' cannot be passed as audio callback state (§15.5)`); return ERROR; }
+  if (!S && !isErr(st) && !audioStateOk(st)) { c.at("E2013", args[1]!, `'${show(st)}' cannot be passed as audio callback state (§15.5)`, { reason: "invalid-state", actual: show(st) }); return ERROR; }
   const a = args[2]!;
-  const bad = (msg: string): Type => { c.at("E2013", a, msg); return ERROR; };
+  const bad = (msg: string, reason = "invalid-callback"): Type => { c.at("E2013", a, msg, { reason }); return ERROR; };
   if (!isId(a) || c.scope.lookup(a.text)) return bad(`'open' takes the name of a module-level 'use rt' function`);
   const sym = c.prog.lookupValue(c.mod, a.text);
   if (sym?.k !== "fn") return bad(`'${a.text}' is not a module-level function`);
@@ -860,21 +904,21 @@ function resourceCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpr
  * expression or signature is E2011 at the argument. Explicit type arguments name the caller's
  * `Port<S, R>` and must match the entry's own parameter. */
 function isolateCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpression): Type {
-  if (e.arguments.length !== 1) { c.at("E2011", p.name, `'isolate' takes one argument: the entry function's name`); return ERROR; }
+  if (e.arguments.length !== 1) { c.at("E2011", p.name, `'isolate' takes one argument: the entry function's name`, { reason: "arity" }); return ERROR; }
   const a = e.arguments[0]!;
-  const bad = (msg: string): Type => { c.at("E2011", a, msg); return ERROR; };
+  const bad = (msg: string, reason = "invalid-entry"): Type => { c.at("E2011", a, msg, { reason }); return ERROR; };
   let S: Type | undefined, R: Type | undefined;
   if (e.typeArguments) {
-    if (e.typeArguments.length !== 2) { c.at("E2002", p.name, `'isolate' takes 2 type argument(s)`); return ERROR; }
+    if (e.typeArguments.length !== 2) { c.at("E2002", p.name, `'isolate' takes 2 type argument(s)`, { expected: "2", actual: String(e.typeArguments.length) }); return ERROR; }
     S = c.typeOf(e.typeArguments[0]!); R = c.typeOf(e.typeArguments[1]!);
-    [S, R].forEach((t, i) => { if (!isErr(t) && !sendable(t)) c.at("E2010", e.typeArguments![i]!, `'${show(t)}' cannot be sent to an isolate (§15.2)`); });
+    [S, R].forEach((t, i) => { if (!isErr(t) && !sendable(t)) c.at("E2010", e.typeArguments![i]!, `'${show(t)}' cannot be sent to an isolate (§15.2)`, { actual: show(t) }); });
     if (isErr(S) || isErr(R)) return ERROR;
   }
-  if (!isId(a) || c.scope.lookup(a.text)) return bad(`'isolate' takes the name of a module-level managed function`);
+  if (!isId(a) || c.scope.lookup(a.text)) return bad(`'isolate' takes the name of a module-level managed function`, "not-module-fn");
   const sym = c.prog.lookupValue(c.mod, a.text);
-  if (sym?.k !== "fn") return bad(`'${a.text}' is not a module-level function`);
-  if (sym.sig.tparams.length) return bad(`the isolate entry '${sym.name}' cannot be generic`);
-  if (sym.layer !== "managed") return bad(`the isolate entry '${sym.name}' is a ${sym.layer} function; isolates run managed functions`);
+  if (sym?.k !== "fn") return bad(`'${a.text}' is not a module-level function`, "not-module-fn");
+  if (sym.sig.tparams.length) return bad(`the isolate entry '${sym.name}' cannot be generic`, "generic-entry");
+  if (sym.layer !== "managed") return bad(`the isolate entry '${sym.name}' is a ${sym.layer} function; isolates run managed functions`, "non-managed-entry");
   const sig = sym.sig;
   const portT = sig.params.length === 1 ? unref(sig.params[0]!) : undefined;
   if (portT && isErr(portT)) return ERROR; // the entry's own signature already reported (e.g. its E2010)
@@ -901,16 +945,16 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
       if (!c.callCheck(sym)) c.at("E4001", callee, `a ${c.fx.layer} function cannot call the ${sym.layer} function '${sym.name}'`, { callerLayer: c.fx.layer, calleeLayer: sym.layer });
       if (sym.sig.params.some(hasRawPtr) || hasRawPtr(sym.sig.ret)) { // §14.4.3: an unsafe operation (Q218: a CHandle in the signature does not count)
         c.noteUnsafeOp(callee);
-        if (!c.fx.unsafe) c.at("E4008", callee, `'${sym.name}' has Ptr in its signature; calling it is an unsafe operation`);
+        if (!c.fx.unsafe) c.at("E4008", callee, `'${sym.name}' has Ptr in its signature; calling it is an unsafe operation`, { op: sym.name });
       }
-      if (c.fx.contract && !isDeterministic(sym.sig, sym.layer === "rt" && sym.unsafe)) c.at("E6002", callee, `a contract can only call deterministic functions ('${sym.name}' is not)`);
+      if (c.fx.contract && !isDeterministic(sym.sig, sym.unsafe)) c.at("E6002", callee, `a contract can only call deterministic functions ('${sym.name}' is not)`, { kind: "nondet-call", name: sym.name });
       const got = callSig(c, sym.sig, e, callee, want, sym.layer === "managed" ? undefined : sym.layer);
       if (sym.layer !== "managed") c.fnSites.push({ from: c.fn, callee: sym, refs: callFnArgs.get(e) ?? new Map(), node: callee, mod: c.mod, targs: callTArgs.get(e) }); // Q189 (b): E4005 per instantiation
       return got;
     }
     if (sym?.k === "cfn") { // §14.1 / §14.3: unsafe callers only; rt + unsafe drops the Ffi argument
       c.noteUnsafeOp(callee); // §14.4.2
-      if (!c.fx.unsafe) c.at("E4008", callee, `the C function '${sym.name}' can only be called from a function with 'use unsafe'`);
+      if (!c.fx.unsafe) c.at("E4008", callee, `the C function '${sym.name}' can only be called from a function with 'use unsafe'`, { op: sym.name });
       const sig = c.fx.layer === "rt" ? { ...sym.sig, params: sym.sig.params.slice(1) } : sym.sig;
       return callSig(c, sig, e, callee, want);
     }
@@ -932,9 +976,9 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
       const pool = isId(p.expression) && p.expression.text === "Pool" && isNamespace(c, p.expression);
       const arena = isId(p.expression) && p.expression.text === "Arena" && isNamespace(c, p.expression);
       const ring = isId(p.expression) && p.expression.text === "Ring" && isNamespace(c, p.expression);
-      if (((vec || pool || arena || ring) && p.name.text === "create") || (rt && unref(rt).k === "gen" && (unref(rt) as { name: string }).name === "Vec" && p.name.text === "push")) c.at("E4004", p.name, `'${p.name.text}' allocates`);
-      if (isId(p.expression) && p.expression.text === "Ptr" && isNamespace(c, p.expression) && p.name.text === "box") c.at("E4004", p.name, "'Ptr.box' allocates"); // §14.4
-      if (rt && unref(rt).k === "gen" && (unref(rt) as { name: string }).name === "Ptr" && p.name.text === "unbox") c.at("E4004", p.name, "'unbox' allocates"); // §14.4
+      if (((vec || pool || arena || ring) && p.name.text === "create") || (rt && unref(rt).k === "gen" && (unref(rt) as { name: string }).name === "Vec" && p.name.text === "push")) c.at("E4004", p.name, `'${p.name.text}' allocates`, { op: p.name.text });
+      if (isId(p.expression) && p.expression.text === "Ptr" && isNamespace(c, p.expression) && p.name.text === "box") c.at("E4004", p.name, "'Ptr.box' allocates", { op: "Ptr.box" }); // §14.4
+      if (rt && unref(rt).k === "gen" && (unref(rt) as { name: string }).name === "Ptr" && p.name.text === "unbox") c.at("E4004", p.name, "'unbox' allocates", { op: "unbox" }); // §14.4
     }
     if (m.kind === "error") return ERROR;
     if (m.kind === "variadic") { // Math.min / Math.max (Q033)
@@ -1034,13 +1078,13 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
   });
   const unbound = sig.tparams.filter((p) => !m.has(p.id));
   if (unbound.length) {
-    c.at("E2006", anchor, `cannot infer type argument(s) ${unbound.map((p) => p.name).join(", ")}`);
+    c.at("E2006", anchor, `cannot infer type argument(s) ${unbound.map((p) => p.name).join(", ")}`, { kind: "infer-type-args", tparams: unbound.map((p) => p.name) });
     return ERROR;
   }
   for (const [i, p] of sig.tparams.entries()) { // `T extends I` (§3.2)
     const b = m.get(p.id)!;
     if (p.constraint && !isErr(b) && !assignable(b, subst(p.constraint, m))) {
-      c.at("E2002", e.typeArguments?.[i] ?? anchor, `'${show(b)}' does not implement '${show(p.constraint)}'`);
+      c.at("E2002", e.typeArguments?.[i] ?? anchor, `'${show(b)}' does not implement '${show(p.constraint)}'`, { expected: show(p.constraint), actual: show(b) });
       return ERROR;
     }
   }
@@ -1049,35 +1093,44 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
     const b = m.get(sig.tparams[0].id)!;
     const targ = e.typeArguments?.[0] ?? anchor;
     if (tc === "box") { // the anchor is the type argument, or the boxed value (DIAGNOSTICS E4007)
-      if (!isErr(b) && !boxable(b)) { c.at("E4007", e.typeArguments?.[0] ?? args[1] ?? anchor, `'${show(b)}' cannot be boxed`); return ERROR; }
+      if (!isErr(b) && !boxable(b)) { c.at("E4007", e.typeArguments?.[0] ?? args[1] ?? anchor, `'${show(b)}' cannot be boxed`, { actual: show(b) }); return ERROR; }
     } else if (tc === "chandle") {
-      if (!isErr(b) && (b.k === "fn" || hasPtr(b))) { c.at("E4008", targ, `'${show(b)}' cannot sit inside CHandle`); return ERROR; }
-      if (!isErr(b) && !ptrTargetOk(b)) { c.at("E4007", targ, `'${show(b)}' cannot sit inside CHandle`); return ERROR; }
+      if (!isErr(b) && (b.k === "fn" || hasPtr(b))) { c.at("E4008", targ, `'${show(b)}' cannot sit inside CHandle`, { actual: show(b) }); return ERROR; }
+      if (!isErr(b) && !ptrTargetOk(b)) { c.at("E4007", targ, `'${show(b)}' cannot sit inside CHandle`, { actual: show(b) }); return ERROR; }
     } else if (tc === "castptr") {
-      if (!isErr(b) && (b.k === "fn" || !ptrTargetOk(b))) { c.at("E2001", targ, `cannot cast a pointer to '${show(b)}'`); return ERROR; }
+      if (!isErr(b) && (b.k === "fn" || !ptrTargetOk(b))) { c.at("E2001", targ, `cannot cast a pointer to '${show(b)}'`, { actual: show(b) }); return ERROR; }
     } else if (tc === "ptrnull") {
-      if (!isErr(b) && b.k !== "fn" && !ptrTargetOk(b)) { c.at("E4007", targ, `'${show(b)}' cannot sit behind Ptr`); return ERROR; }
+      if (!isErr(b) && b.k !== "fn" && !ptrTargetOk(b)) { c.at("E4007", targ, `'${show(b)}' cannot sit behind Ptr`, { actual: show(b) }); return ERROR; }
     } else if (tc === "ptrsizeof") {
       const okSize = isErr(b) || b.k === "cstruct" || (b.k === "gen" && (b.name === "CType" || b.name === "Ptr" || b.name === "ConstPtr")) ||
         (hasCap(b, "Copy") && hasCap(b, "Native") && hasLayout(b));
-      if (!okSize) { c.at("E4007", targ, `'Ptr.sizeOf' cannot size '${show(b)}'`); return ERROR; }
+      if (!okSize) { c.at("E4007", targ, `'Ptr.sizeOf' cannot size '${show(b)}'`, { actual: show(b) }); return ERROR; }
       if (b.k === "gen" && b.name === "CType" && b.args[0]?.k === "lit") c.prog.ptrSizeOfs.push({ mod: c.mod, node: targ, cname: b.args[0].value });
     } else if (tc === "ring") { // §15.1 (Q199, Q210): the element is Copy+Native (E4002) and not ArenaBuf (and generic ring elements need Send)
-      if (!isErr(b) && (!hasCap(b, "Copy") || !hasCap(b, "Native") || !hasLayout(b))) { c.at("E4002", targ, `'${show(b)}' is not allowed as the type argument here`); return ERROR; }
-      if (!isErr(b) && (hasArenaBuf(b) || (collectTParams(b).length > 0 && !sendable(b)))) { c.at("E2002", targ, `a ring element cannot be or contain an ArenaBuf, and generic ring elements need 'Send', not '${show(b)}'`); return ERROR; }
+      if (!isErr(b) && (!hasCap(b, "Copy") || !hasCap(b, "Native") || !hasLayout(b))) { c.at("E4002", targ, `'${show(b)}' is not allowed as the type argument here`, { requiredCap: "Copy & Native", actual: show(b) }); return ERROR; }
+      if (!isErr(b) && (hasArenaBuf(b) || (collectTParams(b).length > 0 && !sendable(b)))) { c.at("E2002", targ, `a ring element cannot be or contain an ArenaBuf, and generic ring elements need 'Send', not '${show(b)}'`, { actual: show(b) }); return ERROR; }
     } else if (tc === "alloc") { // Q215 (c): no type parameter in the element, so JS and C size it alike; then Copy+Native (E4002)
-      if (!isErr(b) && collectTParams(b).length) { c.at("E2002", targ, `the element of 'alloc' cannot be or contain a type parameter, not '${show(b)}'`); return ERROR; }
-      if (!isErr(b) && (!isCopy(b) || !isNative(b) || !hasLayout(b))) { c.at("E4002", targ, `'${show(b)}' is not allowed as the type argument here`); return ERROR; }
+      if (!isErr(b) && collectTParams(b).length) { c.at("E2002", targ, `the element of 'alloc' cannot be or contain a type parameter, not '${show(b)}'`, { reason: "concrete-type-required", actual: show(b) }); return ERROR; }
+      if (!isErr(b) && (!isCopy(b) || !isNative(b) || !hasLayout(b))) { c.at("E4002", targ, `'${show(b)}' is not allowed as the type argument here`, { requiredCap: "Copy & Native", actual: show(b) }); return ERROR; }
     } else if (tc === "copy") {
-      if (!isErr(b) && (!hasCap(b, "Copy") || !hasCap(b, "Native") || !hasLayout(b))) { c.at("E4002", targ, `'${show(b)}' is not allowed as the type argument here`); return ERROR; }
+      if (!isErr(b) && (!hasCap(b, "Copy") || !hasCap(b, "Native") || !hasLayout(b))) { c.at("E4002", targ, `'${show(b)}' is not allowed as the type argument here`, { requiredCap: "Copy & Native", actual: show(b) }); return ERROR; }
     } else if (tc === "eq") {
-      if (!isErr(b) && !comparable(b)) { c.at("E2002", targ, `'${show(b)}' is not allowed as the type argument here`); return ERROR; }
+      if (!isErr(b) && !comparable(b)) { c.at("E2002", targ, `'${show(b)}' is not allowed as the type argument here`, { requiredCap: "Copy", actual: show(b) }); return ERROR; }
     } else if (tc === "codec") {
-      if (!isErr(b) && !castable(b)) { c.at("E2002", targ, `'${show(b)}' is not allowed as the type argument here`); return ERROR; }
+      if (!isErr(b) && !castable(b)) { c.at("E2002", targ, `'${show(b)}' is not allowed as the type argument here`, { requiredCap: "Codec", actual: show(b) }); return ERROR; }
     } else if (tc === "cast") {
-      if (!isErr(b) && (collectTParams(b).length > 0 || !castable(b))) { c.at("E2002", targ, `'${show(b)}' is not allowed as the type argument here`); return ERROR; }
+      if (!isErr(b)) {
+        if (collectTParams(b).length > 0) {
+          c.at("E2002", targ, `'${show(b)}' contains a type parameter; a concrete Codec type is required here (managed generics are erased)`, { reason: "concrete-type-required", actual: show(b), requiredCap: "Codec" });
+          return ERROR;
+        }
+        if (!castable(b)) {
+          c.at("E2002", targ, `'${show(b)}' does not satisfy 'Codec' and cannot be checked or decoded at run time`, { reason: "missing-capability", actual: show(b), requiredCap: "Codec" });
+          return ERROR;
+        }
+      }
     } else if (tc === "owned") {
-      if (!isErr(b) && !isOwnedCap(b)) { c.at("E2002", targ, `'${show(b)}' must be an Owned type`); return ERROR; }
+      if (!isErr(b) && !isOwnedCap(b)) { c.at("E2002", targ, `'${show(b)}' must be an Owned type`, { requiredCap: "Owned", actual: show(b) }); return ERROR; }
     }
   }
   args.forEach((a, i) => {
@@ -1155,7 +1208,7 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
     }
     case "cfn": { // §14.6: the name of a module-level rt function, as a Ptr to it
       c.noteUnsafeOp(callee); // §14.4.4
-      if (!c.fx.unsafe) c.at("E4008", callee, "'cfn' can only be used in a function with 'use unsafe'");
+      if (!c.fx.unsafe) c.at("E4008", callee, "'cfn' can only be used in a function with 'use unsafe'", { op: "cfn" });
       if (!arity(1)) return ERROR;
       const a = args[0]!;
       const pointeeOk = (t: Type): boolean => {
@@ -1166,13 +1219,13 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
       };
       const boundary = (t: Type): boolean =>
         t.k === "num" || isBool(t) || (t.k === "gen" && (t.name === "Ptr" || t.name === "ConstPtr") && pointeeOk(t));
-      if (!isId(a) || c.scope.lookup(a.text)) { c.at("E4003", a, "'cfn' takes the name of a module-level rt function"); return ERROR; }
+      if (!isId(a) || c.scope.lookup(a.text)) { c.at("E4003", a, "'cfn' takes the name of a module-level rt function", { kind: "cfn-arg" }); return ERROR; }
       const sym = c.prog.lookupValue(c.mod, a.text);
-      if (sym?.k !== "fn") { c.at("E4003", a, "'cfn' takes the name of a module-level rt function"); return ERROR; }
-      if (sym.sig.tparams.length) { c.at("E4003", a, `'cfn' cannot take the generic function '${sym.name}'`); return ERROR; }
+      if (sym?.k !== "fn") { c.at("E4003", a, "'cfn' takes the name of a module-level rt function", { kind: "cfn-arg" }); return ERROR; }
+      if (sym.sig.tparams.length) { c.at("E4003", a, `'cfn' cannot take the generic function '${sym.name}'`, { kind: "generic-fn", name: sym.name }); return ERROR; }
       if (sym.layer !== "rt") { c.at("E4001", a, `'cfn' takes an rt function, not the ${sym.layer} function '${sym.name}'`, { callerLayer: c.fx.layer, calleeLayer: sym.layer }); return ERROR; }
       if (sym.sig.params.some((p) => !boundary(p)) || !(boundary(sym.sig.ret) || (sym.sig.ret.k === "prim" && sym.sig.ret.name === "void"))) {
-        c.at("E4007", a, `the signature of '${sym.name}' cannot cross the C boundary`);
+        c.at("E4007", a, `the signature of '${sym.name}' cannot cross the C boundary`, { actual: show(sym.sig) });
         return ERROR;
       }
       return gen("Ptr", sym.sig);
@@ -1188,9 +1241,19 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
       if (e.typeArguments?.length === 1) t = c.typeOf(e.typeArguments[0]!);
       else if (want) t = resultParts(want)?.ok;
       checkTo(c, args[0]!, UNKNOWN);
-      if (!t) { c.at("E2006", callee, "cannot infer the type argument of 'cast'"); return ERROR; }
+      if (!t) { c.at("E2006", callee, "cannot infer the type argument of 'cast'", { kind: "cast" }); return ERROR; }
       if (!isErr(t) && ownedDeep(t)) return ERROR; // P2 (modules.ts) already reported E3007 on the type argument
-      if (!isErr(t) && (collectTParams(t).length > 0 || !castable(t))) { c.at("E2002", e.typeArguments?.[0] ?? callee, `'${show(t)}' cannot be checked at run time`); return ERROR; } // Q084
+      if (!isErr(t)) {
+        const targ = e.typeArguments?.[0] ?? callee;
+        if (collectTParams(t).length > 0) {
+          c.at("E2002", targ, `'${show(t)}' contains a type parameter; a concrete Codec type is required here (managed generics are erased)`, { reason: "concrete-type-required", actual: show(t), requiredCap: "Codec" });
+          return ERROR;
+        }
+        if (!castable(t)) {
+          c.at("E2002", targ, `'${show(t)}' does not satisfy 'Codec' and cannot be checked or decoded at run time`, { reason: "missing-capability", actual: show(t), requiredCap: "Codec" });
+          return ERROR;
+        }
+      }
       return result(t, ERROR_RECORD);
     }
     case "requires": case "invariant": case "ensures": {
@@ -1222,7 +1285,7 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
       return VOID;
     }
     case "forAll": { // §16.1, Q273, Q274
-      if (c.fx.contract) { c.at("E6002", callee, "'forAll' cannot be used inside a contract"); return ERROR; }
+      if (c.fx.contract) { c.at("E6002", callee, "'forAll' cannot be used inside a contract", { kind: "forAll-in-contract" }); return ERROR; }
       if (e.typeArguments) { c.at("E2002", callee, "'forAll' takes no type arguments"); return VOID; }
       if (!arity(1)) return VOID;
       const a = args[0]!;
@@ -1230,7 +1293,7 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
         let bad = false;
         ps.forEach((p, i) => {
           if (!hasErr(p) && !isGeneratable(p)) {
-            c.at("E6005", anchor(i), `parameter type '${show(p)}' cannot be generated by 'forAll'`);
+            c.at("E6005", anchor(i), `parameter type '${show(p)}' cannot be generated by 'forAll'`, { type: show(p) });
             bad = true;
           }
         });
@@ -1240,11 +1303,11 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
         if (c.scope.lookup(a.text)) { c.at("E2002", a, "'forAll' takes a module-level function name or a function expression"); return VOID; }
         const sym = c.prog.lookupValue(c.mod, a.text);
         if (!sym) { unresolved(c, a); return VOID; }
-        if (sym.k === "cfn") { c.at("E4003", a, `the C function '${sym.name}' cannot be passed to 'forAll'`); return VOID; }
+        if (sym.k === "cfn") { c.at("E4003", a, `the C function '${sym.name}' cannot be passed to 'forAll'`, { kind: "cfn-in-forAll", name: sym.name }); return VOID; }
         if (sym.k !== "fn") { c.at("E2002", a, `'${a.text}' is not a function`); return VOID; }
         if (sym.sig.tparams.length) { c.at("E2002", a, `'forAll' cannot take generic function '${sym.name}'`); return VOID; }
         if (sym.layer === "rt" && sym.unsafe) { c.at("E4001", a, `the rt + unsafe function '${sym.name}' cannot be passed to 'forAll'`, { callerLayer: c.fx.layer, calleeLayer: sym.layer }); return VOID; }
-        if (sym.unsafe) { c.at("E4008", a, `the unsafe function '${sym.name}' cannot be passed to 'forAll'`); return VOID; }
+        if (sym.unsafe) { c.at("E4008", a, `the unsafe function '${sym.name}' cannot be passed to 'forAll'`, { op: sym.name }); return VOID; }
         if (hasPromise(sym.sig.ret)) { c.at("E2002", a, "'forAll' does not support async functions or Promise returns"); return VOID; }
         if (!sym.sig.params.length) { c.at("E2002", a, "'forAll' function must have at least one parameter"); return VOID; }
         if (checkParams(sym.sig.params, () => a)) forAllMeta.set(e, { params: sym.sig.params, checkBool: false });

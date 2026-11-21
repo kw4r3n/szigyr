@@ -21,7 +21,7 @@ Normative reference for **Szigyr** (`szigyr`, `.szigyr`). Unlisted syntax/types/
 
 ## 2. Layers, Directives & Functions
 
-File-top directives (before `import`) set default layer for top-level `function` decls (not methods/`test`); fn-top overrides. Bad directives: `E1000` (`"use unsafe"` errs: `E1009`).
+File-top directives (before `import`) set default layer for top-level `function` decls (not methods/`test`); fn-top overrides. Bad directives: `E1000` (`"use unsafe"` errs: `E1009`; `"use strict"` is NOT a Szigyr directive—use `"use owned"` or omit for `managed`).
 
 |Directive|Layer/Mod|Rules|
 |---|---|---|
@@ -42,10 +42,10 @@ Calls (`E4001`): `managed`->{`managed`,`strict`,`rt`}; `strict`->{`strict`,`rt`}
 ### 3.1 Primitives & Numerics
 
 - **Primitives**: `boolean`, `string` (`managed`), `null` (1B layout, all layers), `void` (return only `E2002`, plus `Ptr<void>`/`ConstPtr<void>` in §9), `unknown` (`managed`), `never` (bottom/return only; no `strict`/`rt` param `E4002`). No `undefined` (`E2000`).
-- **Numerics**: `i8`, `i16`, `i32`, `u8`, `u16`, `u32`, `usize` (`0..2^32-1`, distinct from `u32`), `f32`, `f64` (`number` alias). (`i64`/`u64` reserved).
-- **Explicit casts**: `i32(x)`, `f32(x)`, `usize(x)`, etc. (bad int cast traps `T003`; `f32` rounds binary32).
+- **Numerics**: `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `usize` (`0..2^32-1`, distinct from `u32`), `f32`, `f64` (`number` alias). `i64`/`u64` use plain contextual literals (no `1n` `bigint` suffix, `E1000`), map to JS `bigint` via `js.decode`/`encode`, and trap `T006` in `JSON.stringify`.
+- **Explicit casts**: `i32(x)`, `i64(x)`, `f32(x)`, `usize(x)`, etc. (bad int cast traps `T003`; `f32` rounds binary32).
 - **Literals**: Contextually typed (annotation, sibling, cmp `===`/`!==`/`<`/`<=`/`>`/`>=`, param, element, index=`usize`, ternary); else `f64`. Unary `-`+lit is one literal (`-0`->`+0` in ints). Non-int in int ctx, out-of-range, or non-finite (`1e400`) -> `E2008` (use `Number.POSITIVE_INFINITY`/`NEGATIVE_INFINITY`/`NaN`).
-- **Ops**: `+ - *` same numeric (`E2003`, int ovf `T001`); `/ % **` float-only (int `/` `E2007`, `%`/`**` `E2002`, `**` `strict`/`rt` `E4001`); same-int (`i8..u32,usize`) `divTrunc(a,b)` (`T007`/`T001`), `rem(a,b)` (`T007`, `rem(MIN,-1)===0`), `wrapAdd/Sub/Mul`; unary `-` signed int/float (`T001`, unsigned `E2002`). `f32` rounds each op. No `++`/`--` (`E1000`, use `+= 1`). Bitwise `& | ^ ~ << >> >>>`: `i32`/`u32` (`>>` `i32`, `>>>` `u32`, shift outside `0..31` traps `T009`, `<<` truncates). `< <= > >=`: same numeric (`E2002`). Conditions: `boolean` (`E2004`).
+- **Ops**: `+ - *` same numeric (`E2003`, int ovf `T001`); `/ % **` float-only (int `/` `E2007`, `%`/`**` `E2002`, `**` `strict`/`rt` `E4001`); same-int (`i8..u64,usize`) `divTrunc(a,b)` (`T007`/`T001`), `rem(a,b)` (`T007`, `rem(MIN,-1)===0`), `wrapAdd/Sub/Mul`; unary `-` signed int/float (`T001`, unsigned `E2002`). `f32` rounds each op. No `++`/`--` (`E1000`, use `+= 1`). Bitwise `& | ^ ~ << >> >>>`: `i32`/`u32`/`i64`/`u64` (`>>` `i32`/`i64`, `>>>` `u32`/`u64`, shift outside `0..31`/`0..63` traps `T009`, `<<` truncates). `< <= > >=`: same numeric (`E2002`). Conditions: `boolean` (`E2004`).
 
 ### 3.2 Built-in Capabilities & Explicit Bounds
 
@@ -58,16 +58,16 @@ Bounds are **never inferred** from bodies. Write `T extends C` or `T extends C1 
 
 |Type|L|Copy|Native|Owned|Send|Key|Codec|
 |---|---|---|---|---|---|---|---|
-|Numerics (`i8..u32,usize,f32,f64`)|A|Y|Y|-|Y|Y|Y|
+|Numerics (`i8..u64,usize,f32,f64`)|A|Y|Y|-|Y|Y|Y|
 |`boolean`|A|Y|Y|-|Y|Y|Y|
 |`null` (1B)|A|Y|Y|-|Y|-|Y|
 |String lit/union (`E2012` surr)|A|Y|Y|-|Y|Y|Y|
 |`string`|M|Y|-|-|Y|Y|Y|
 |`{readonly f:T}`|A|∀f:Copy|∀f:Native&Copy|-|∀f:Send|-|∀f:Codec|
 |Mutable `{f:T}` (`!Owned`)|M|-|-|-|-|-|∀f:Codec|
-|`Struct<{...}>` (fields `Native`)|A|ro&Copy|Y|!Copy|∀f:Send|-|∀f:Codec|
+|`Struct<{...}>` (fields `Native`)|A|ro&Copy|Y|!Copy|∀f:Send|-|ro&∀f:Codec|
 |Tagged union/`T\|null`/`Result`|A|∀m:Copy|∀m:Native&Copy|-|∀m:Send|-|∀m:Codec|
-|`Array`/`ReadonlyArray` (`!Owned`)|M|-|-|-|-|-|Array&Codec|
+|`Array`/`ReadonlyArray` (`!Owned`)|M|-|-|-|-|-|∀T:Codec|
 |`Map<K,V>`/`Set<K>` (`!Owned` V)|M|-|-|-|-|-|-|
 |`Vec<T>` / `Pool<T>`|A|-|Y|Y|T:Send|-|-|
 |`Handle<T>` (`===`)|A|Y|Y|-|T:Send|-|-|
@@ -86,7 +86,7 @@ Bounds are **never inferred** from bodies. Write `T extends C` or `T extends C1 
 - `Ring*`: `T extends Native & Copy & Send`. `Port`/`spawn.isolate`: `S extends Send, R extends Send`. `audio.open<S>`: `S extends Native & Send`.
 - `Ref<T>`/`Mut<T>`/`OwnedCell<T>`: `T extends Owned` (`Ref`/`Mut` also `Slice<U extends Native & Copy>`).
 - `strict`/`rt` vals & `Struct` fields: `Native` (authorities `strict`-only, `rt` `E4006`).
-- `Map`/`Set`/`.includes`/`.indexOf`: `K extends Key`. `cast`/`js.decode`/`js.encode`/`JSON.stringify`: `T extends Codec`.
+- `Map`/`Set`/`.includes`/`.indexOf`: `K extends Key`. `cast`/`js.decode`/`js.callback`: **concrete** `T extends Codec` (no type params; managed generics erased, `E2002`). `js.encode`/`JSON.stringify`: `T extends Codec`.
 - `===`/`!==`: `Key`, `Handle<T>`, `class` (ref), `null`, or `T|null` of those (`E2002`; `==`/`!=` `E1002`).
 - `t.eq<T>`: Generic `Codec` or `Copy`. Direct: `Codec`, `Map`, `Set`, `Handle`, `ArenaBuf`, `class` (no `Owned`/fn/authority).
 - `Ptr.box<T>` (unsafe): JS-free `Native` (`Copy`, `Ring*`, `CHandle`, or `Struct` of them; no `Vec`/`Pool`/`Arena` `E4007`).
@@ -109,13 +109,13 @@ Bounds are **never inferred** from bodies. Write `T extends C` or `T extends C1 
 
 ## 5. Ownership, Borrowing & `using`
 
-- **Moves (`E3001`–`E3003`, `E3007`)**: `Owned` moves on assign, by-val arg, `return`, `Struct` field, spread source, or `const {a,b}=x` (partial `Owned` `Struct` move/destructure: `E3003`). Use-after-move: `E3001` (`let` reassignable). Loop move without same-iter reassign: `E3002`. `Owned` in `managed` data/`ok`/`err` or capture: `E3007`. Unmoved `Owned` drops on exit.
+- **Moves (`E3001`–`E3003`, `E3007`)**: `Owned` moves on assign, by-val arg, `return`, `Struct` field, spread source, or `const {a,b}=x` (partial `Owned` `Struct` move/destructure: `E3003`). Use-after-move: `E3001` (`let` reassignable). Loop move without same-iter reassign: `E3002`. `Owned` in `managed` data/`ok`/`err` or capture: `E3007`. Unmoved `Owned` runtime containers release on exit, except raw C handles (`CHandle`, `Ptr.box`) which have no auto-destructor and require `using` / `Resource`.
 - **Borrows (`E3004`–`E3006`, `E3008`)**: `Ref<T>`/`Mut<T>` allowed **only** as full param type of non-`async` fns (`E3004` elsewhere, incl. bare `Slice<U>`). Args require places (`E3008`): local, borrow param, field path, `v.slice(a,b)`, `a.view(b)`, `p.slice(n)`, `p.borrow()`, `r.borrow()`. Slice/view/borrow valid only in arg/recv slot (`E3004`, incl. `v.slice(0,2)[0]=1`). `Ref->Mut`: `E3006`.
   - **Exclusivity (`E3005`)**: `Mut` arg forbids overlapping prefix paths of same root in call (recv=arg 0). Same root+path `v.slice`/`a.view` check byte overlap at runtime (`T013`). `Ptr.slice` is static `E3005`.
 - **`OwnedCell<T extends Owned>`** (`managed`): `OwnedCell.create<T>(v)`, `c.take():T`, `c.put(v:T)`, `c.isEmpty():boolean` (`T008`).
 - **`using` / `await using`**: LIFO cleanup on any exit (normal, `break`/`continue`/`return`, trap).
   - **`managed`**: `using` takes `Disposable`; `await using` takes `AsyncDisposable` (e.g. `AudioStream`).
-  - **`strict` & `managed`**: `Resource.own<T>(val:T, cleanup:(v:T)=>void):Resource<T>` and `Resource.ownWith<T,C>(val:T, ctx:C, cleanup:(ctx:C,v:T)=>void):Resource<T>` valid **only** in `using r = ...`. `T`: `Owned` or (`"use unsafe"`) `Ptr`/`ConstPtr`. In `strict`, `cleanup` is module-level non-generic `strict`/`rt` fn (unsafe if caller unsafe); `ctx` is `Ffi`/`Alloc` or `Native & Copy`. Ops: `r.borrow()` (`Ref`/`Mut` arg/recv for `Owned` `T`), `r.get():T` (`Ptr`/`ConstPtr`/`Copy`), `r.take():T` (disarms cleanup, moves `T`; post-take `E3001`).
+  - **`strict`, `rt` & `managed`**: `Resource.own<T>(val:T, cleanup:(v:T)=>void):Resource<T>` and `Resource.ownWith<T,C>(val:T, ctx:C, cleanup:(ctx:C,v:T)=>void):Resource<T>` valid **only** in `using r = ...` (`rt` uses a zero-alloc stack defer list). `Resource<T>` bindings cannot escape (`const x=r`, `return r`, `f(r)`, capture: `E3004`). `T`: `Owned` or (`"use unsafe"`) `Ptr`/`ConstPtr`. In `strict`/`rt`, `cleanup` is module-level non-generic `strict`/`rt` fn (unsafe if caller unsafe); `ctx` is `Ffi`/`Alloc` (`strict`-only) or `Native & Copy`. Ops: `r.borrow()` (`Ref`/`Mut` arg/recv for `Owned` `T`), `r.get():T` (`Ptr`/`ConstPtr`/`Copy`), `r.take():T` (disarms cleanup, moves `T`; post-take `E3001`).
 
 ## 6. Native Containers (`strict` / `rt`)
 
@@ -136,7 +136,7 @@ Bad index: `T002`; `.create` OOM: `T006`. Process-unique Pool/Arena IDs; `u32` g
 - `Spawn` *(managed)*: `isolate<S extends Send,R extends Send>(entry:(port:Port<R,S>)=>void|Promise<void>):Port<S,R>`.
 - `Audio` *(managed)*: `open<S extends Native & Send>(cfg:AudioConfig, state:S, render):Promise<Result<AudioStream,IoError>>`. `AudioStream` (`AsyncDisposable`): `sampleRate:u32`, `channels:u32`, `close():Promise<void>`, `isOpen():boolean`, `disposeAsync():Promise<void>`.
 - **Fakes** *(cap-assignable)*: `FakeClock.create(startMs)` (`+ advance(ms)`), `SeededRandom.create(seed:u32)`, `MemoryLog.create()` (`+ entries():Array<{readonly level:"info"|"warn"|"error";readonly message:string}>`), `FakeFs.create()`, `TestAlloc.create():Alloc`, `FakeAudio.create()` (`+ renderFrames(frames:usize):Array<f32>`, advances active open stream; `T006` if none open).
-- **`Pure`**: Safe, not `rt+unsafe`, local mut (`let`/`Set`/`Array`) OK, no authority/fn/`interface`/`unknown`/`JsRef`/`Ptr*`/`CHandle`/`Ring*`/`Port`/`AudioStream`/fake params.
+- **`Pure`**: Safe (no `"use unsafe"`), local mut (`let`/`Set`/`Array`) OK, no authority/fn/`interface`/`unknown`/`JsRef`/`Ptr*`/`CHandle`/`Ring*`/`Port`/`AudioStream`/fake params.
 - **`Mutatable`**: Safe top-level fns/`class` methods not touching `Test`, no `Ffi`/`Spawn`/`Js`/`JsRef`/`Ptr*`/`CHandle`/`Port` params (`Alloc`/fakeables/single-thread `Ring*` OK).
 - **`npm:` (`managed`)**: `import { parse } from "npm:yaml"` binds `parse:JsRef`. Throws -> `JsError`; `js.callback` traps unwind to host.
 
@@ -149,7 +149,7 @@ Bad index: `T002`; `.create` OOM: `T006`. Process-unique Pool/Arena IDs; `u32` g
 
 ## 9. C FFI & `"use unsafe"`
 
-- `declare module "c:<pkg>:<header>" { ... }` (`pkg`/`header` non-empty, no space/ctrl/`:`/`<`/`>`/`"`/`\`: `E7002`; 1/spec/file; must import in declaring file, cross-file `E7002`). Allowed: `function f(ffi:Ffi,...):R;` (`Ffi` omitted in C and `"use rt"; "use unsafe"` calls, passed in `strict+unsafe`; rest numeric/`boolean`/`Ptr`/`ConstPtr`, ret same/`void`: `E4007`); `const NAME:T;` (`i8..u32|usize|f32|f64|boolean`); `type S=CStruct<{field:FieldT;...}>;` (`FieldT`: numeric/`boolean`/`Ptr`/`ConstPtr`/`CType`/`CStruct`). Pointees allow `void` (`Ptr<void>`/`ConstPtr<void>`).
+- `declare module "c:<pkg>:<header>" { ... }` (`pkg`/`header` non-empty, no space/ctrl/`:`/`<`/`>`/`"`/`\`: `E7002`; 1/spec/file; must import in declaring file, cross-file `E7002`). Allowed: `function f(ffi:Ffi,...):R;` (`Ffi` omitted in C and `"use rt"; "use unsafe"` calls, passed in `strict+unsafe`; rest numeric/`boolean`/`Ptr`/`ConstPtr`, ret same/`void`: `E4007`); `const NAME:T;` (`i8..u64|usize|f32|f64|boolean`); `type S=CStruct<{field:FieldT;...}>;` (`FieldT`: numeric/`boolean`/`Ptr`/`ConstPtr`/`CType`/`CStruct`). Pointees allow `void` (`Ptr<void>`/`ConstPtr<void>`).
 - **C map (LP64)**: ints->`intN_t`/`uintN_t`, `usize`->`size_t` (C ret/`cfn` param `<=2^32-1`, `T003`), `f32`/`f64`->`float`/`double`, `boolean`->`bool`, `Ptr`/`ConstPtr`->`P*`/`const P*` (`void`->`void`, `CType<"X">`->`X`, `CStruct`->struct, fn->fn*, `Owned` box->`void`). Pointee `usize`: `E4007`.
 - **P4 (`E2009`)**: `check` runs `pkg-config`+`cc -std=gnu11` `_Static_assert`s on prototypes (no `()`), `const`s, `CStruct` layout; attaches `cc` stderr.
 - **Unsafe (`E4008` outside `"use unsafe"`)**: Safe code calls `"use unsafe"` `strict` fns whose sigs lack raw `Ptr`/`ConstPtr`/`CType`/`CStruct` (`CHandle<CStruct|CType>` OK). Inside `"use unsafe"`:
@@ -173,13 +173,13 @@ Bad index: `T002`; `.create` OOM: `T006`. Process-unique Pool/Arena IDs; `u32` g
 - **CLI**: `szigyr <check|run|test|mutate|build|query|explain|mcp> [--json] [--watch] [--backend=js|c|wasm|both] [--target=node|browser] [--mode=app|lib] [-o <dir>] [--no-cache] <args>`
   - **Exit**: `0` ok, `1` error/fail/mismatch, `2` CLI/`CUnsupported`/`CBuildError`/nesting, `3` trap, `70` internal.
   - **Recovery**: `check`: P1->P2->P3->P4 past recoverable errors (no `<error>` cascades).
-  - **`--json`**: Pure JSONL (exit 2/70, `forAll`/`t.eq`/trap/mismatch details, `{code,severity,message,file,range,data,fixes}`). `check`/`test`/`mutate`/`query`/`explain`->stdout; `run`/`build`->stdout, errs/traps stderr. `query`: symbols/types/caps/`Pure`/`Mutatable`/`rt`; `explain <code>`: docs.
+  - **`--json` & MCP**: Pure JSONL (`kind: "diagnostic"` on diagnostics; exit 2/70, `forAll`/`t.eq`/trap/mismatch details). `query` includes `class` (`ctor`/`implements`/`fields`) & `interface` (`methods`); `explain <code>`: docs. `szigyr mcp`: 6 tools (`szigyr_check`/`query`/`explain`/`test`/`mutate`/`run`), `overlays`, isolated exec.
 
 ## 12. Built-in Allowlist
 
 - **Types**: §3.3, §5–§7, §9 (plus `RingPair`, `Resource`).
 - **Globals**: `i8`..`f64`, `wrapAdd/Sub/Mul`, `divTrunc`, `rem`, `ok`, `err`, `panic(msg):never`, `cast<T extends Codec>(x):Result<T,CastError>`, `requires`, `ensures`, `invariant`, `test`, `forAll`, `cfn`.
-- **Namespaces**: `Math` (`abs/sqrt/floor/ceil/trunc/round/sign(f64):f64`, `fround(f64):f32`, `min/max(1+ f64):f64`, `PI`, `E`; *managed:* `sin/cos/tan/asin/acos/atan/atan2/exp/log/log2/log10/pow/hypot/cbrt`); `DetMath` (*all layers, `rt`-safe:* `sin/cos/tan/atan/exp/log/log10/tanh(f64):f64`, `atan2/pow(f64,f64):f64`); `Number` (`isFinite`/`isNaN`/`isInteger`, `parseFloat(s):f64`, `MAX_SAFE_INTEGER`, `EPSILON`, `POSITIVE_INFINITY`, `NEGATIVE_INFINITY`, `NaN`); `JSON` *(managed:* `parse(s):Result<unknown,JsError>`, `stringify<T extends Codec>(v:T):string`); `String.fromCodePoint(c:u32):string`; `Promise.all<T>(ps:Array<Promise<T>>):Promise<Array<T>>`; §5–§9 namespaces & fakes.
+- **Namespaces**: `Math` (`abs/sqrt/floor/ceil/trunc/round/sign(f64):f64`, `fround(f64):f32`, `min/max(1+ f64):f64`, `PI`, `E`; *managed:* `sin/cos/tan/asin/acos/atan/atan2/exp/log/log2/log10/pow/hypot/cbrt`); `DetMath` (*all layers, `rt`-safe:* `sin/cos/tan/atan/exp/log/log10/tanh(f64):f64`, `atan2/pow(f64,f64):f64`); `Number` (*all layers:* `isFinite`/`isNaN`/`isInteger`, `MAX_SAFE_INTEGER`, `EPSILON`, `POSITIVE_INFINITY`, `NEGATIVE_INFINITY`, `NaN`; *managed:* `parseFloat(s):f64`); `JSON` *(managed:* `parse(s):Result<unknown,JsError>`, `stringify<T extends Codec>(v:T):string`, traps `T006` on `i64`/`u64`); `String.fromCodePoint(c:u32):string`; `Promise.all<T>(ps:Array<Promise<T>>):Promise<Array<T>>`; §5–§9 namespaces & fakes.
 - **Members** (`[]` only `Array`/`ReadonlyArray`/`Vec`/`Slice`):
   - `string`: `length:usize`, `slice(s,e?)`, `indexOf(s):usize|null`, `includes`/`startsWith`/`endsWith`, `split(sep):Array<string>`, `trim`/`toUpperCase`/`toLowerCase`, `padStart`/`padEnd(n,f)`, `replaceAll(a,b)`, `charCodeAt(i):u16` (`T002`), `codePointAt(i):u32|null`.
   - `Array<T>`: `length:usize`, `push(x):usize`, `pop():T|null`, `slice(s?,e?)`, `map((x,i)=>U)`, `filter((x,i)=>bool)`, `reduce((a,x,i)=>A,init)`, `forEach((x,i)=>void)`, `find():T|null`, `findIndex():usize|null`, `some`/`every`/`includes`, `indexOf():usize|null`, `join(sep?)`, `concat(roArr)`, `reverse`, `sort(cmp)`, `fill(x,s?,e?)` (`ReadonlyArray`: no `push/pop/reverse/sort/fill`).
@@ -187,8 +187,8 @@ Bad index: `T002`; `.create` OOM: `T006`. Process-unique Pool/Arena IDs; `u32` g
 
 ## 13. Codes, Reserved & Examples
 
-- **Reserved (`E1000` decl/`E2000` ref)**: `i64`,`u64`,`bigint`,`undefined`,`FixedArray`,`Rc`,`Weak`,`Net`,`decreases`.
-- **Errors**: E1000 syntax, E1001 var, E1002 `==`/`!=`, E1003 def/`*`-exp, E1004 any, E1005 as, E1006 `!`, E1007 throw/try, E1008 opt/def, E1009 bad-unsafe; E2000 global, E2001 member, E2002 type/cap, E2003 mix-num, E2004 cond, E2005 switch, E2006 annot/ctx, E2007 int`/`, E2008 lit, E2009 C-hdr, E2010 Port, E2011 isolate, E2012 surr, E2013 audio; E3001 moved, E3002 loop-move, E3003 part-move, E3004 borrow, E3005 excl, E3006 Ref->Mut, E3007 Owned-mng, E3008 non-place; E4001 layer, E4002 non-Native, E4003 strict/rt-fn, E4004 rt-alloc, E4005 rt-rec, E4006 rt-auth, E4007 C-type, E4008 unsafe, E4009 C-only, E4010 poly-rec; E5001 global-auth, E5002 top-mut; E6001 ctr-pos, E6002 ctr-ref/mut, E6003 test-pos, E6004 forAll-pos, E6005 forAll-param; E7001 imp/exp, E7002 `c:`-mod; W8001 loop-bnd.
+- **Reserved (`E1000` decl/`E2000` ref)**: `bigint`,`undefined`,`FixedArray`,`Rc`,`Weak`,`Net`,`decreases`.
+- **Errors**: E1000 syntax, E1001 var, E1002 `==`/`!=`, E1003 def/`*`-exp, E1004 any, E1005 as, E1006 `!`, E1007 throw/try, E1008 opt/def, E1009 bad-unsafe; E2000 global, E2001 member, E2002 type/cap, E2003 mix-num, E2004 cond, E2005 switch, E2006 annot/ctx, E2007 int`/`, E2008 lit, E2009 C-hdr, E2010 Port, E2011 isolate, E2012 surr, E2013 audio; E3001 moved, E3002 loop-move, E3003 part-move, E3004 borrow, E3005 excl, E3006 Ref->Mut, E3007 Owned-mng, E3008 non-place; E4001 layer, E4002 non-Native, E4003 strict/rt-fn, E4004 rt-alloc, E4005 rt-rec, E4006 rt-auth, E4007 C-type, E4008 unsafe, E4009 C-only, E4010 poly-rec; E5001 global-auth, E5002 top-mut; E6001 ctr-pos, E6002 ctr-ref/mut, E6003 test-pos, E6004 forAll-pos, E6005 forAll-param; E7001 imp/exp, E7002 `c:`-mod; W8001 managed-loop-boundary-call.
 - **Traps**: T001 ovf, T002 bounds, T003 cast/usize, T004 requires, T005 ensures, T006 panic/OOM/stack/JS, T007 div0, T008 OwnedCell, T009 shift, T010 invariant, T011 Handle, T012 ArenaBuf, T013 overlap, T014 Ring, T015 null-Ptr.
 
 ```ts

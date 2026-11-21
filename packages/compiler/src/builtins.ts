@@ -6,7 +6,7 @@ import {
 import { DETMATH_BINARY, DETMATH_UNARY } from "./detmath.ts";
 
 /** Names reserved by §13 / Q011 that resolve to nothing (E2000). */
-export const RESERVED = new Set(["i64", "u64", "bigint", "undefined", "Net"]); // Ffi resolves since §14, Spawn since §15.2 (opaque authority types)
+export const RESERVED = new Set(["bigint", "undefined", "Net"]); // Ffi resolves since §14, Spawn since §15.2, i64/u64 in §3.1
 
 /** Q006: unresolved names that are global authorities (E5001). */
 export const GLOBAL_AUTHORITIES = new Set([
@@ -20,7 +20,7 @@ export const NAMESPACES = new Set(["Math", "Number", "JSON", "String", "Promise"
 /** Builtin functions handled by the checker (§12). */
 export const BUILTIN_FUNCTIONS = new Set([...NUM_NAMES, "wrapAdd", "wrapSub", "wrapMul", "divTrunc", "rem", "ok", "err", "panic", "cast", "requires", "ensures", "invariant", "test", "forAll", "cfn"]);
 /** §13: the identifier-like names it reserves (declaring or referencing one is E1000 / E2000, Q231). */
-export const SPEC_RESERVED = ["i64", "u64", "bigint", "undefined", "FixedArray", "Rc", "Weak", "Net", "decreases"];
+export const SPEC_RESERVED = ["bigint", "undefined", "FixedArray", "Rc", "Weak", "Net", "decreases"];
 /** §12 global names, §13 reserved names; declaring any of them is E1000 (Q010, Q231). The tables here plus the names only the resolver and §7.1 know. */
 export const CAPABILITY_NAMES = new Set(["Copy", "Native", "Owned", "Send", "Key", "Codec"]);
 
@@ -272,10 +272,10 @@ export function nsMembers(ns: string): Record<string, Member | "variadic"> {
         ...each(["atan2", "pow", "hypot"], () => mo(m(RD, [F64, F64], F64))), fround: m(RD, [F64], num("f32")),
         min: "variadic", max: "variadic", PI: prop(F64), E: prop(F64),
       };
-    case "Number": return mapValues({
-      isFinite: m(RD, [F64], BOOL), isNaN: m(RD, [F64], BOOL), isInteger: m(RD, [F64], BOOL), parseFloat: m(RD, [STR], F64),
+    case "Number": return {
+      isFinite: m(RD, [F64], BOOL), isNaN: m(RD, [F64], BOOL), isInteger: m(RD, [F64], BOOL), parseFloat: mo(m(RD, [STR], F64)),
       MAX_SAFE_INTEGER: prop(F64), EPSILON: prop(F64), POSITIVE_INFINITY: prop(F64), NEGATIVE_INFINITY: prop(F64), NaN: prop(F64),
-    }, mo);
+    };
     case "JSON": return {
       parse: mo(m(RD, [STR], result(UNKNOWN, ERROR_RECORD))), // Q035
       stringify: mo(m(RD, [tT], STR, { tparams: [T], tcheck: "codec" })),

@@ -55,8 +55,12 @@ STS_IMP(sts_get) sts_val sts_get(sts_val o, const char *k);
 STS_IMP(sts_set) void sts_set(sts_val o, const char *k, sts_val v);
 STS_IMP(sts_mkobj) sts_val sts_mkobj(void);
 STS_IMP(sts_num) double sts_num(sts_val v);
+STS_IMP(sts_i64) int64_t sts_i64(sts_val v);
+STS_IMP(sts_u64) uint64_t sts_u64(sts_val v);
 STS_IMP(sts_bool) int32_t sts_js_bool(sts_val v);
 STS_IMP(sts_mknum) sts_val sts_mknum(double d);
+STS_IMP(sts_mki64) sts_val sts_mki64(int64_t x);
+STS_IMP(sts_mku64) sts_val sts_mku64(uint64_t x);
 STS_IMP(sts_mkbool) sts_val sts_js_mkbool(int32_t b);
 STS_IMP(sts_mknull) sts_val sts_mknull(void);
 STS_IMP(sts_isnull) int32_t sts_js_isnull(sts_val v);
@@ -222,24 +226,17 @@ STS_EXP(sts_dealloc) void sts_wasm_dealloc(void *p) { sts_free(p); }
 #define realloc sts_realloc
 #define free sts_free
 
-typedef struct { void (*fn)(void *); void *data; } sts_defer;
-static sts_defer *sts_defers;
-static size_t sts_ndefers, sts_capdefers, sts_defer_base;
-static size_t sts_defer_push(void (*fn)(void *), void *data) {
-  if (sts_ndefers == sts_capdefers) {
-    size_t c_ = sts_capdefers ? sts_capdefers * 2 : 16;
-    void *p_ = realloc(sts_defers, c_ * sizeof *sts_defers);
-    if (!p_) sts_fail("out of memory");
-    sts_defers = p_; sts_capdefers = c_;
-  }
-  size_t m = sts_ndefers++;
-  sts_defers[m] = (sts_defer){ fn, data };
-  return m;
+typedef struct sts_defer { void (*fn)(void *); void *data; struct sts_defer *prev; } sts_defer;
+static sts_defer *sts_defer_head, *sts_defer_base;
+static void sts_defer_push(sts_defer *node, void (*fn)(void *), void *data) {
+  node->fn = fn; node->data = data; node->prev = sts_defer_head;
+  sts_defer_head = node;
 }
-static void sts_defer_pop_run(size_t mark) {
-  while (sts_ndefers > mark) {
-    sts_defer d = sts_defers[--sts_ndefers];
-    if (d.fn) d.fn(d.data);
+static void sts_defer_pop_run(sts_defer *mark) {
+  while (sts_defer_head && sts_defer_head != mark) {
+    sts_defer *d = sts_defer_head;
+    sts_defer_head = d->prev;
+    if (d->fn) d->fn(d->data);
   }
 }
 static void sts_defer_unwind(void) {
@@ -249,19 +246,19 @@ static void sts_defer_unwind(void) {
   sts_unwinding = 0;
 }
 STS_EXP(sts_defer_enter) uint32_t sts_defer_enter(void) {
-  uint32_t prev = (uint32_t)sts_defer_base;
-  sts_defer_base = sts_ndefers;
+  uint32_t prev = (uint32_t)(uintptr_t)sts_defer_base;
+  sts_defer_base = sts_defer_head;
   return prev;
 }
 STS_EXP(sts_defer_leave) void sts_defer_leave(uint32_t prev) {
-  size_t base = sts_defer_base;
-  sts_defer_base = prev;
-  if (!sts_unwinding && sts_ndefers > base) {
+  sts_defer *base = sts_defer_base;
+  sts_defer_base = (sts_defer *)(uintptr_t)prev;
+  if (!sts_unwinding && sts_defer_head != base) {
     sts_unwinding = 1;
     sts_defer_pop_run(base);
     sts_unwinding = 0;
   }
-  if (sts_ndefers > base) sts_ndefers = base;
+  if (sts_defer_head != base) sts_defer_head = base;
 }
 
 // Vec handles live until the boundary call returns; the list slice [v0..n) is synced in finally.
@@ -469,6 +466,7 @@ typedef float __attribute__((may_alias)) sts_ma_float; typedef double __attribut
 typedef int8_t __attribute__((may_alias)) sts_ma_int8_t; typedef uint8_t __attribute__((may_alias)) sts_ma_uint8_t;
 typedef int16_t __attribute__((may_alias)) sts_ma_int16_t; typedef uint16_t __attribute__((may_alias)) sts_ma_uint16_t;
 typedef int32_t __attribute__((may_alias)) sts_ma_int32_t; typedef uint32_t __attribute__((may_alias)) sts_ma_uint32_t;
+typedef int64_t __attribute__((may_alias)) sts_ma_int64_t; typedef uint64_t __attribute__((may_alias)) sts_ma_uint64_t;
 #define STS_LD(T, p) (*(const sts_ma_##T *)(p))
 #define STS_ST(p, T, v) (*(sts_ma_##T *)(p) = (v))
 static uint32_t sts_lidx(const int32_t *tbl, uint32_t n, int32_t id) { for (uint32_t i = 0; i < n; i++) if (tbl[i] == id) return i; sts_fail("bad literal"); return 0; }
@@ -484,14 +482,47 @@ static sts_slice sts_sub(sts_slice s, uint32_t a, uint32_t b, size_t es, int pos
 }
 
 #define STS_AOP(op, T, a, b, pos) ({ T r_; if (__builtin_expect(__builtin_##op##_overflow((a), (b), &r_), 0)) sts_trap(1, (pos)); r_; })
+// Split 64-bit multiplies into 32-bit half-products to avoid compiler-rt `__multi3` under freestanding wasm32.
+static uint64_t sts_mulu64(uint64_t a, uint64_t b, int pos) {
+  uint64_t ah = a >> 32, al = (uint32_t)a, bh = b >> 32, bl = (uint32_t)b;
+  if (ah && bh) sts_trap(1, pos);
+  uint64_t p0 = al * bl, p1 = ah * bl, p2 = al * bh;
+  if ((p1 >> 32) || (p2 >> 32)) sts_trap(1, pos);
+  uint64_t mid = (p0 >> 32) + (uint32_t)p1 + (uint32_t)p2;
+  if (mid >> 32) sts_trap(1, pos);
+  return (mid << 32) | (uint32_t)p0;
+}
+static int64_t sts_muli64(int64_t a, int64_t b, int pos) {
+  if (a == 0 || b == 0) return 0;
+  bool neg = (a < 0) != (b < 0);
+  uint64_t ua = a < 0 ? (uint64_t)0 - (uint64_t)a : (uint64_t)a;
+  uint64_t ub = b < 0 ? (uint64_t)0 - (uint64_t)b : (uint64_t)b;
+  uint64_t ah = ua >> 32, al = (uint32_t)ua, bh = ub >> 32, bl = (uint32_t)ub;
+  if (ah && bh) sts_trap(1, pos);
+  uint64_t p0 = al * bl, p1 = ah * bl, p2 = al * bh;
+  if ((p1 >> 32) || (p2 >> 32)) sts_trap(1, pos);
+  uint64_t mid = (p0 >> 32) + (uint32_t)p1 + (uint32_t)p2;
+  if (mid >> 32) sts_trap(1, pos);
+  uint64_t ur = (mid << 32) | (uint32_t)p0;
+  uint64_t lim = neg ? ((uint64_t)INT64_MAX + 1ULL) : (uint64_t)INT64_MAX;
+  if (ur > lim) sts_trap(1, pos);
+  return neg ? (int64_t)((uint64_t)0 - ur) : (int64_t)ur;
+}
+#define STS_MULI64 sts_muli64
+#define STS_MULU64 sts_mulu64
 static int64_t sts_rng(int64_t r, int64_t lo, int64_t hi, int pos) { if (__builtin_expect(r < lo || r > hi, 0)) sts_trap(1, pos); return r; }
 #define STS_DIV(T, a, b, pos) ({ T a_ = (a), b_ = (b); if (__builtin_expect(b_ == 0, 0)) sts_trap(7, (pos)); ((T)-1 < 0 && b_ == (T)-1) ? STS_AOP(sub, T, (T)0, a_, (pos)) : (T)(a_ / b_); })
 #define STS_REM(T, a, b, pos) ({ T a_ = (a), b_ = (b); if (__builtin_expect(b_ == 0, 0)) sts_trap(7, (pos)); ((T)-1 < 0 && b_ == (T)-1) ? (T)0 : (T)(a_ % b_); })
 static int64_t sts_wrap(int64_t r, int64_t lo, int64_t hi) { int64_t m = hi - lo + 1; return ((r - lo) % m + m) % m + lo; }
 static int64_t sts_wmul32(int64_t a, int64_t b, int64_t lo, int64_t hi) { return sts_wrap((int64_t)(uint32_t)((uint32_t)a * (uint32_t)b), lo, hi); }
 static uint32_t sts_amt(int64_t n, int pos) { if (n < 0 || n > 31) sts_trap(9, pos); return (uint32_t)n; }
+static uint32_t sts_amt64(uint64_t n, int pos) { if (n > 63ULL) sts_trap(9, pos); return (uint32_t)n; }
 static int64_t sts_cvt(double x, int64_t lo, int64_t hi, int pos) { if (!(x >= (double)lo && x <= (double)hi) || x != trunc(x)) sts_trap(3, pos); return (int64_t)x; }
+static int64_t sts_cvt_i64(double x, int pos) { if (!(x >= -9223372036854775808.0 && x < 9223372036854775808.0) || x != trunc(x)) sts_trap(3, pos); return (int64_t)x; }
+static uint64_t sts_cvt_u64(double x, int pos) { if (!(x >= 0.0 && x < 18446744073709551616.0) || x != trunc(x)) sts_trap(3, pos); return (uint64_t)x; }
 static int64_t sts_cvti(int64_t x, int64_t lo, int64_t hi, int pos) { if (x < lo || x > hi) sts_trap(3, pos); return x; }
+static int64_t sts_cvtu(uint64_t x, uint64_t hi, int pos) { if (x > hi) sts_trap(3, pos); return (int64_t)x; }
+static uint64_t sts_cvti_u64(int64_t x, int pos) { if (x < 0) sts_trap(3, pos); return (uint64_t)x; }
 
 static double sts_round(double x) {
   if (isnan(x) || isinf(x)) return x;
@@ -501,6 +532,9 @@ static double sts_round(double x) {
 static double sts_min(double a, double b) { if (isnan(a) || isnan(b)) return NAN; if (a == b) return signbit(a) ? a : b; return a < b ? a : b; }
 static double sts_max(double a, double b) { if (isnan(a) || isnan(b)) return NAN; if (a == b) return signbit(a) ? b : a; return a > b ? a : b; }
 static double sts_sign(double x) { return isnan(x) ? x : x > 0 ? 1 : x < 0 ? -1 : x; }
+static inline bool sts_isfinite(double x) { return !isnan(x) && !isinf(x); }
+static inline bool sts_isnan(double x) { return isnan(x); }
+static inline bool sts_isint(double x) { return !isnan(x) && !isinf(x) && trunc(x) == x; }
 
 static void *sts_ptr_in(sts_val v) { (void)v; sts_fail("Ptr is C-only"); return 0; }
 static sts_val sts_ptr_out(void *p) { (void)p; sts_fail("Ptr is C-only"); return 0; }

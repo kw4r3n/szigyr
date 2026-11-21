@@ -8,7 +8,7 @@ import { genFx } from "./builtins.ts";
 
 export interface TrapSite { code: string; line: number; col: number }
 
-const INT_CONV = new Set(["i8", "i16", "i32", "u8", "u16", "u32", "usize"]);
+const INT_CONV = new Set(["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "usize"]);
 const CALL_TRAPS: Record<string, string[]> = { divTrunc: ["T001", "T007"], rem: ["T007"], panic: ["T006"], requires: ["T004"], ensures: ["T005"], invariant: ["T010"] };
 const INT_OPS = new Set<K>([K.PlusToken, K.MinusToken, K.AsteriskToken, K.PlusEqualsToken, K.MinusEqualsToken, K.AsteriskEqualsToken]);
 const SHIFTS = new Set<K>([K.LessThanLessThanToken, K.GreaterThanGreaterThanToken, K.GreaterThanGreaterThanGreaterThanToken]);

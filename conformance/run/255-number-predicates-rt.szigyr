@@ -1,0 +1,27 @@
+// expect-output: fin:true:false:true:false:false
+// expect-output: inf:false:false:false:false:false
+// expect-output: nan:false:true:false:false:false
+// stage: 1
+function classify(x: f64): i32 {
+  "use rt";
+  if (Number.isNaN(x)) return 2;
+  if (!Number.isFinite(x)) return 1;
+  if (Number.isInteger(x)) return 3;
+  return 0;
+}
+
+function showFlags(x: f64): { readonly fin: boolean; readonly nan: boolean; readonly isInt: boolean } {
+  "use rt";
+  return { fin: Number.isFinite(x), nan: Number.isNaN(x), isInt: Number.isInteger(x) };
+}
+
+export function main(sys: System): void {
+  const a = showFlags(42.0);
+  const b = showFlags(1.5);
+  const c = showFlags(Number.POSITIVE_INFINITY);
+  const d = showFlags(Number.NEGATIVE_INFINITY);
+  const e = showFlags(Number.NaN);
+  sys.log.info(`fin:${a.fin}:${a.nan}:${a.isInt}:${b.isInt}:${classify(1.5) !== 0}`);
+  sys.log.info(`inf:${c.fin}:${c.nan}:${c.isInt}:${d.fin}:${classify(Number.POSITIVE_INFINITY) !== 1}`);
+  sys.log.info(`nan:${e.fin}:${e.nan}:${e.isInt}:${e.fin || e.isInt}:${classify(Number.NaN) !== 2}`);
+}

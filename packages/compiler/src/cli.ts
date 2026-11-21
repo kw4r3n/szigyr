@@ -42,7 +42,7 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
   const outDir = args.values["out-dir"] as string;
   const backends: Backend[] = backend === "both" ? ["js", "c"] : [backend as Backend];
   const line = (o: unknown): string => `${JSON.stringify(o)}\n`;
-  const diags = (ds: readonly Diagnostic[]): string => ds.map((d) => json ? line(d) : `${d.file}:${d.range.start.line}:${d.range.start.col}: ${d.severity} ${d.code}: ${d.message}\n`).join("");
+  const diags = (ds: readonly Diagnostic[]): string => ds.map((d) => json ? line({ kind: "diagnostic", ...d }) : `${d.file}:${d.range.start.line}:${d.range.start.col}: ${d.severity} ${d.code}: ${d.message}\n`).join("");
   const parser = createParser(); // D161: one tsgo process for every file of this command (spawned on first use)
   try {
     if (cmd !== "check" && cmd !== "run" && cmd !== "test" && cmd !== "mutate" && cmd !== "query" && cmd !== "explain" && cmd !== "build" && cmd !== "mcp") {
@@ -109,6 +109,10 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
               sym.pure !== undefined ? `pure=${sym.pure}` : "",
               sym.mutatable !== undefined ? `mutatable=${sym.mutatable}` : "",
               sym.caps?.length ? `caps=${sym.caps.join(",")}` : "",
+              sym.implements?.length ? `implements=${sym.implements.join(",")}` : "",
+              sym.fields?.length ? `fields=${sym.fields.length}` : "",
+              sym.methods?.length ? `methods=${sym.methods.length}` : "",
+              sym.ctor ? `ctor=${sym.ctor}` : "",
               sym.rtTrapSites?.length ? `traps=${sym.rtTrapSites.map((t) => `${t.code}@${t.line}:${t.col}`).join(",")}` : "",
             ].filter(Boolean).join(" ");
             out(`${sym.exported ? "export " : ""}${sym.kind} ${sym.name}: ${sym.type}${tags ? ` [${tags}]` : ""}\n`);
@@ -176,7 +180,12 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
       }
       const r = rs[0]!;
       if (rs.length === 2 && JSON.stringify([rs[0]!.stdout, rs[0]!.trap]) !== JSON.stringify([rs[1]!.stdout, rs[1]!.trap])) { // D101: --backend=both
-        err(line({ kind: "mismatch", js: { stdout: rs[0]!.stdout, trap: rs[0]!.trap }, c: { stdout: rs[1]!.stdout, trap: rs[1]!.trap } }));
+        if (json) {
+          err(line({ kind: "mismatch", js: { stdout: rs[0]!.stdout, trap: rs[0]!.trap }, c: { stdout: rs[1]!.stdout, trap: rs[1]!.trap } }));
+        } else {
+          const fmt = (x: RunResult) => `stdout=${JSON.stringify(x.stdout)} trap=${x.trap ? `${x.trap.code}@${x.trap.file}:${x.trap.line}:${x.trap.col}` : "none"}`;
+          err(`mismatch between js and c backends:\n  js: ${fmt(rs[0]!)}\n  c:  ${fmt(rs[1]!)}\n`);
+        }
         return 1;
       }
       out(r.stdout);

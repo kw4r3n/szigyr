@@ -9,7 +9,7 @@ import { sliceGroups, type SliceGroupEntry } from "./ownership.ts";
 import { elemDesc } from "./layout.ts";
 import { emitGenDesc, genDescOf } from "./gendesc.ts";
 import { canonPath, declBindings } from "./modules.ts";
-import { NUM_NAMES, bindTParams, field, isInt, isStr, literalFits, movesLike, nonNull, resultParts, same, subst, unref, type FnType, type NumName, type Type } from "./types.ts";
+import { NUM_NAMES, bindTParams, field, isInt, isInt64, isStr, literalFits, movesLike, nonNull, parseExactInt, resultParts, same, subst, unref, type FnType, type NumName, type Type } from "./types.ts";
 import { CLI_NAME, RUNTIME_GLOBAL } from "./names.ts";
 import { DETMATH_PATH, dmBinding } from "./detmath.ts";
 import type { Pos } from "../../runtime-js/src/index.ts";
@@ -287,9 +287,16 @@ export function emitFile(
     switch (n.kind) {
       case K.TypeAliasDeclaration: case K.InterfaceDeclaration: case K.ModuleDeclaration: return ""; // ModuleDeclaration: `declare module "c:..."` (§14.1) declares C functions and has no runtime form
       case K.NumericLiteral: {
-        const orig = numName(n) === "f32" ? `${RT}.f32(${splice(n)})` : splice(n); // Q015
+        const nt = numName(n) as NumName | undefined;
+        const orig = nt === "f32" ? `${RT}.f32(${splice(n)})` : nt && isInt64(nt) ? `${parseExactInt(n.getText(sf), false)!}n` : splice(n); // Q015
         const t = canMutate() && !isCaseExpr(n) ? typeOf(n) : undefined;
         if (t?.k === "num") {
+          if (isInt64(t.name)) {
+            const v = parseExactInt(n.getText(sf), false)!;
+            const mutVal = v === 0n ? "1n" : "0n";
+            const id = addMutant(v === 0n ? "0 -> 1" : "num -> 0", n);
+            return `(${RT}.m === ${id} ? ${mutVal} : ${orig})`;
+          }
           const v = numValue(n as ts.NumericLiteral);
           const mutVal = v === 0 ? 1 : 0;
           if (literalFits(mutVal, t.name)) {
@@ -445,9 +452,19 @@ export function emitFile(
   }
 
   function prefix(u: ts.PrefixUnaryExpression): string {
-    const t = numName(u);
+    const t = numName(u) as NumName | undefined;
     if (u.operator === K.MinusToken && u.operand.kind === K.NumericLiteral) { // negative literal (Q015); `-0` of an integer type is +0 (Q090)
       const rawText = u.getText(sf);
+      if (t && isInt64(t)) {
+        const v = parseExactInt(u.operand.getText(sf), true)!;
+        const orig = `${v}n`;
+        if (canMutate() && !isCaseExpr(u)) {
+          const mutVal = v === 0n ? "1n" : "0n";
+          const id = addMutant(v === 0n ? "0 -> 1" : "num -> 0", u);
+          return `(${RT}.m === ${id} ? ${mutVal} : ${orig})`;
+        }
+        return orig;
+      }
       const orig = t === "f32" ? `${RT}.f32(${rawText})` : t && isInt(typeOf(u)!) ? `(${rawText} + 0)` : rawText;
       if (canMutate() && !isCaseExpr(u) && t) {
         const v = -numValue(u.operand as ts.NumericLiteral);
@@ -461,6 +478,7 @@ export function emitFile(
     }
     if (u.operator === K.MinusToken && t && isInt(typeOf(u)!)) return `${RT}.neg(${JSON.stringify(t)}, ${gen(u.operand)}, ${at(u)})`;
     if (u.operator === K.TildeToken && t === "u32") return `${RT}.toU32(${splice(u)})`;
+    if (u.operator === K.TildeToken && t === "u64") return `${RT}.toU64(${splice(u)})`;
     return splice(u);
   }
 

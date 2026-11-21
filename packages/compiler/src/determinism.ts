@@ -51,8 +51,8 @@ const badMutLeaf = (t: Type): boolean =>
   (t.k === "opaque" && UNMUTATABLE_OPAQUE.has(t.name)) ||
   (t.k === "gen" && UNMUTATABLE_GEN.has(t.name));
 
-export function isDeterministic(sig: FnType, rtUnsafe = false, extraTypes: readonly Type[] = []): boolean {
-  return !rtUnsafe && !hasForbidden([...sig.params, ...extraTypes], badDetLeaf, true); // §7.3: rt + unsafe is never deterministic
+export function isDeterministic(sig: FnType, unsafe = false, extraTypes: readonly Type[] = []): boolean {
+  return !unsafe && !hasForbidden([...sig.params, ...extraTypes], badDetLeaf, true); // §7.3 / §14: unsafe functions are never deterministic
 }
 
 /** SPEC-v1 §7: safe functions and class methods excluding System/Ffi/Spawn/Js/JsRef/Test/Ptr/ConstPtr/CHandle/Port. */

@@ -17,17 +17,21 @@
 //   (packages/compiler/test/audio-demo.test.ts) uses that to inspect what
 //   would have been heard.
 declare module "c:sdl3:SDL3/SDL.h" {
+  const SDL_INIT_AUDIO: u32;
+  const SDL_AUDIO_F32: u32;
+  const SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK: u32;
+  type SDL_AudioSpec = CStruct<{ format: u32; channels: i32; freq: i32 }>;
   function SDL_Init(ffi: Ffi, flags: u32): boolean;
   function SDL_Quit(ffi: Ffi): void;
   function SDL_Delay(ffi: Ffi, ms: u32): void;
   function SDL_malloc(ffi: Ffi, size: usize): Ptr<void>;
   function SDL_free(ffi: Ffi, mem: Ptr<void>): void;
-  function SDL_OpenAudioDeviceStream(ffi: Ffi, dev: u32, spec: ConstPtr<CType<"SDL_AudioSpec">>, callback: Ptr<(user: Ptr<void>, stream: Ptr<CType<"SDL_AudioStream">>, additional: i32, total: i32) => void>, userdata: Ptr<void>): Ptr<CType<"SDL_AudioStream">>;
+  function SDL_OpenAudioDeviceStream(ffi: Ffi, dev: u32, spec: ConstPtr<SDL_AudioSpec>, callback: Ptr<(user: Ptr<void>, stream: Ptr<CType<"SDL_AudioStream">>, additional: i32, total: i32) => void>, userdata: Ptr<void>): Ptr<CType<"SDL_AudioStream">>;
   function SDL_ResumeAudioStreamDevice(ffi: Ffi, stream: Ptr<CType<"SDL_AudioStream">>): boolean;
   function SDL_DestroyAudioStream(ffi: Ffi, stream: Ptr<CType<"SDL_AudioStream">>): void;
   function SDL_PutAudioStreamData(ffi: Ffi, stream: Ptr<CType<"SDL_AudioStream">>, buf: ConstPtr<void>, len: i32): boolean;
 }
-import { SDL_Init, SDL_Quit, SDL_Delay, SDL_malloc, SDL_free, SDL_OpenAudioDeviceStream, SDL_ResumeAudioStreamDevice, SDL_DestroyAudioStream, SDL_PutAudioStreamData } from "c:sdl3:SDL3/SDL.h";
+import { SDL_INIT_AUDIO, SDL_AUDIO_F32, SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, SDL_AudioSpec, SDL_Init, SDL_Quit, SDL_Delay, SDL_malloc, SDL_free, SDL_OpenAudioDeviceStream, SDL_ResumeAudioStreamDevice, SDL_DestroyAudioStream, SDL_PutAudioStreamData } from "c:sdl3:SDL3/SDL.h";
 
 // One parameter change, sent from managed to the callback over the ring.
 type Param = Struct<{ readonly freq: f64; readonly gain: f64 }>;
@@ -103,25 +107,15 @@ function start(ffi: Ffi, alloc: Alloc, rx: RingRx<Param>): Session {
   "use unsafe";
   const buf = SDL_malloc(ffi, 32768);
   if (buf.isNull()) panic("audio: SDL_malloc failed");
-  const spec = SDL_malloc(ffi, 16);
-  if (spec.isNull()) panic("audio: SDL_malloc failed");
-  // SDL_AudioSpec, written field by field (14.2 cannot carry C structs by
-  // value): three i32-wide fields, format at offset 0 (a C enum, so a full
-  // i32: a narrower store would leave the high bytes uninitialized),
-  // channels at offset 4, freq at offset 8. 33056 = 0x8120 = SDL_AUDIO_F32
-  // on the little-endian hosts the C backend targets (10.2).
-  const spec32 = spec.cast<i32>();
-  spec32.offset(0).write(33056);
-  spec32.offset(1).write(2);
-  spec32.offset(2).write(48000);
+  const specPtr = SDL_malloc(ffi, Ptr.sizeOf<SDL_AudioSpec>()).cast<SDL_AudioSpec>();
+  if (specPtr.isNull()) panic("audio: SDL_malloc failed");
+  specPtr.write({ format: SDL_AUDIO_F32, channels: 2, freq: 48000 });
   const state: AudioState = { rx, buf: CHandle.create(buf.cast<f32>()), phase: 0, freq: 440, gain: 0.5 };
   const boxed = Ptr.box(alloc, state);
-  if (!SDL_Init(ffi, 16)) panic("audio: SDL_Init failed"); // 16 = SDL_INIT_AUDIO
-  // open-question: Q219 (a cast target is a pointee position)
-  const specPtr = spec.cast<CType<"SDL_AudioSpec">>();
-  const stream = SDL_OpenAudioDeviceStream(ffi, 4294967295, specPtr, cfn(onAudio), boxed.cast<void>());
+  if (!SDL_Init(ffi, SDL_INIT_AUDIO)) panic("audio: SDL_Init failed");
+  const stream = SDL_OpenAudioDeviceStream(ffi, SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, specPtr, cfn(onAudio), boxed.cast<void>());
   if (stream.isNull()) panic("audio: SDL_OpenAudioDeviceStream failed");
-  SDL_free(ffi, spec);
+  SDL_free(ffi, specPtr.cast<void>());
   if (!SDL_ResumeAudioStreamDevice(ffi, stream)) panic("audio: resume failed");
   return { state: CHandle.create(boxed.cast<void>()), stream: CHandle.create(stream) };
 }
@@ -147,11 +141,10 @@ function delay(ffi: Ffi, ms: u32): void {
 export function main(sys: System): void {
   const { tx, rx } = Ring.create<Param>(sys.alloc, 64);
   tx.push({ freq: 440, gain: 0.5 });
-  const session = start(sys.ffi, sys.alloc, rx);
+  using _session = Resource.ownWith(start(sys.ffi, sys.alloc, rx), sys.ffi, stop);
   delay(sys.ffi, 300);
   tx.push({ freq: 660, gain: 0.5 });
   delay(sys.ffi, 300);
   tx.push({ freq: 880, gain: 0.5 });
   delay(sys.ffi, 300);
-  stop(sys.ffi, session);
 }

@@ -1,5 +1,5 @@
 import { Vec, type ElemKind } from "./collections.ts";
-import type { NumType } from "./num.ts";
+import type { Int32Type, NumType, NumVal } from "./num.ts";
 
 /** Descriptor for generating, materializing, shrinking, and formatting STS values (SPEC §16.1, §16.2). */
 export type GenDesc =
@@ -28,7 +28,7 @@ export function createRng(seed = 0x9e3779b9): () => number {
   };
 }
 
-const INT_BOUNDS: Record<Exclude<NumType, "f32" | "f64">, readonly [number, number, readonly number[]]> = {
+const INT_BOUNDS: Record<Int32Type, readonly [number, number, readonly number[]]> = {
   i8: [-128, 127, [0, 1, -1, -128, 127, -127, 126]],
   i16: [-32768, 32767, [0, 1, -1, -32768, 32767, -32767, 32766]],
   i32: [-2147483648, 2147483647, [0, 1, -1, -2147483648, 2147483647, -2147483647, 2147483646]],
@@ -37,6 +37,9 @@ const INT_BOUNDS: Record<Exclude<NumType, "f32" | "f64">, readonly [number, numb
   u32: [0, 4294967295, [0, 1, 2, 4294967294, 4294967295]],
   usize: [0, 4294967295, [0, 1, 2, 4294967294, 4294967295]],
 };
+const I64_MIN = -(1n << 63n), I64_MAX = (1n << 63n) - 1n, U64_MAX = (1n << 64n) - 1n;
+const I64_BOUNDS: readonly bigint[] = [0n, 1n, -1n, I64_MIN, I64_MAX, I64_MIN + 1n, I64_MAX - 1n, 9007199254740992n, -9007199254740992n];
+const U64_BOUNDS: readonly bigint[] = [0n, 1n, 2n, U64_MAX - 1n, U64_MAX, 9007199254740992n, 1n << 63n];
 const F64_BOUNDS = [0, -0, 1, -1, 0.5, -0.5, Number.MAX_VALUE, -Number.MAX_VALUE, Number.MIN_VALUE, Number.EPSILON, Infinity, -Infinity, NaN];
 const F32_BOUNDS = [0, -0, 1, -1, 0.5, -0.5, 3.4028234663852886e+38, -3.4028234663852886e+38, 1.401298464324817e-45, 1.1920928955078125e-7, Infinity, -Infinity, NaN];
 const STR_BOUNDS = ["", "a", " ", "\n", "0", "あ", "😀"];
@@ -48,12 +51,24 @@ const randInt = (lo: number, hi: number, rng: () => number): number => {
   return v === 0 ? 0 : v;
 };
 
-function genNum(t: NumType, rng: () => number, size: number): number {
+function genNum(t: NumType, rng: () => number, size: number): NumVal {
   if (t === "f64" || t === "f32") {
     const r = rng();
     if (r < 0.35) return pick(t === "f32" ? F32_BOUNDS : F64_BOUNDS, rng);
     const v = r < 0.7 ? (rng() * 2 - 1) * Math.max(1, size * 4) : (rng() * 2 - 1) * Math.pow(2, (rng() * 2 - 1) * (t === "f32" ? 30 : 50));
     return t === "f32" ? Math.fround(v) : v;
+  }
+  if (t === "i64" || t === "u64") {
+    const r = rng();
+    if (r < 0.3) return pick(t === "i64" ? I64_BOUNDS : U64_BOUNDS, rng);
+    if (r < 0.75) {
+      const span = Math.max(1, size * 4);
+      return BigInt(randInt(t === "u64" ? 0 : -span, span, rng));
+    }
+    const hi = BigInt(Math.floor(rng() * 0x100000000));
+    const lo = BigInt(Math.floor(rng() * 0x100000000));
+    const u = (hi << 32n) | lo;
+    return t === "i64" ? BigInt.asIntN(64, u) : u;
   }
   const [min, max, bounds] = INT_BOUNDS[t];
   const r = rng();
@@ -123,7 +138,23 @@ export function materializeArgs(descs: readonly GenDesc[], raw: readonly unknown
   return descs.map((d, i) => materializeOne(d, raw[i]));
 }
 
-function shrinkNum(t: NumType, v: number): number[] {
+function shrinkBigInt(t: "i64" | "u64", v: bigint): bigint[] {
+  if (v === 0n) return [];
+  const min = t === "i64" ? I64_MIN : 0n, max = t === "i64" ? I64_MAX : U64_MAX;
+  const raw: bigint[] = [0n];
+  if (v < 0n) raw.push(-v);
+  for (let step = v / 2n; step !== 0n; step = step / 2n) raw.push(v - step);
+  raw.push(v / 2n, v > 0n ? v - 1n : v + 1n);
+  const out: bigint[] = [];
+  for (const c of raw) {
+    if (c >= min && c <= max && c !== v && !out.includes(c)) out.push(c);
+  }
+  return out;
+}
+
+function shrinkNum(t: NumType, v: NumVal): NumVal[] {
+  if (t === "i64" || t === "u64") return shrinkBigInt(t, v as bigint);
+  const vn = v as number;
   const norm = (x: number): number =>
     t === "f32" ? (x === 0 ? 0 : Math.fround(x)) : t === "f64" ? (x === 0 ? 0 : x) : x === 0 ? 0 : Math.trunc(x);
   const fits = (x: number): boolean => {
@@ -132,24 +163,24 @@ function shrinkNum(t: NumType, v: number): number[] {
     return Number.isInteger(x) && x >= min && x <= max;
   };
   const raw: number[] = [];
-  if (Number.isNaN(v) || !Number.isFinite(v)) raw.push(0, 1, -1);
-  else if (Object.is(v, -0)) raw.push(0);
-  else if (v !== 0) {
+  if (Number.isNaN(vn) || !Number.isFinite(vn)) raw.push(0, 1, -1);
+  else if (Object.is(vn, -0)) raw.push(0);
+  else if (vn !== 0) {
     raw.push(0);
-    if (v < 0) raw.push(-v);
+    if (vn < 0) raw.push(-vn);
     if (t === "f64" || t === "f32") {
-      if (!Number.isInteger(v)) raw.push(Math.trunc(v));
-      raw.push(v > 0 ? 1 : -1, v / 2);
-      if (Math.abs(v) > 1) raw.push(v > 0 ? v - 1 : v + 1);
+      if (!Number.isInteger(vn)) raw.push(Math.trunc(vn));
+      raw.push(vn > 0 ? 1 : -1, vn / 2);
+      if (Math.abs(vn) > 1) raw.push(vn > 0 ? vn - 1 : vn + 1);
     } else {
-      for (let step = Math.trunc(v / 2); step !== 0; step = Math.trunc(step / 2)) raw.push(v - step);
-      raw.push(Math.trunc(v / 2), v > 0 ? v - 1 : v + 1);
+      for (let step = Math.trunc(vn / 2); step !== 0; step = Math.trunc(step / 2)) raw.push(vn - step);
+      raw.push(Math.trunc(vn / 2), vn > 0 ? vn - 1 : vn + 1);
     }
   }
   const out: number[] = [];
   for (const c of raw) {
     const n = norm(c);
-    if (fits(n) && !Object.is(n, v) && !out.some((x) => Object.is(x, n))) out.push(n);
+    if (fits(n) && !Object.is(n, vn) && !out.some((x) => Object.is(x, n))) out.push(n);
   }
   return out;
 }
@@ -188,7 +219,7 @@ function shrinkList<T>(xs: readonly T[], elemShrink: (x: T) => T[]): T[][] {
 
 function shrinkOne(d: GenDesc, v: unknown): unknown[] {
   switch (d.k) {
-    case "num": return shrinkNum(d.t, v as number);
+    case "num": return shrinkNum(d.t, v as NumVal);
     case "bool": return v ? [false] : [];
     case "str": return shrinkStr(v as string);
     case "null": return [];
@@ -258,6 +289,7 @@ export async function shrinkRawAsync(descs: readonly GenDesc[], raw: readonly un
 function formatOne(d: GenDesc, raw: unknown): unknown {
   switch (d.k) {
     case "num": {
+      if (typeof raw === "bigint") return raw.toString();
       const x = raw as number;
       if (Number.isNaN(x)) return "NaN";
       if (x === Infinity) return "Infinity";

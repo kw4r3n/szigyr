@@ -59,9 +59,15 @@ it("E5001 for a global authority carries a fix that takes the authority as a par
   const [d] = check(join(dir, "main.szigyr"));
   expect(d?.code).toBe("E5001");
   expect(d?.data).toEqual({ name: "console", authority: "Log" });
-  expect(d?.fixes?.[0]?.edits).toEqual([{ range: { start: { line: 1, col: 18 }, end: { line: 1, col: 18 } }, newText: ", log: Log" }]);
+  expect(d?.fixes?.[0]?.edits).toEqual([
+    { range: { start: { line: 1, col: 18 }, end: { line: 1, col: 18 } }, newText: ", log: Log" },
+    { range: { start: { line: 2, col: 3 }, end: { line: 2, col: 14 } }, newText: "log.info" },
+  ]);
   writeFileSync(join(dir, "main.szigyr"), 'function s(): void {\n  console.log("hi");\n}\n');
-  expect(check(join(dir, "main.szigyr"))[0]?.fixes?.[0]?.edits).toEqual([{ range: { start: { line: 1, col: 12 }, end: { line: 1, col: 12 } }, newText: "log: Log" }]);
+  expect(check(join(dir, "main.szigyr"))[0]?.fixes?.[0]?.edits).toEqual([
+    { range: { start: { line: 1, col: 12 }, end: { line: 1, col: 12 } }, newText: "log: Log" },
+    { range: { start: { line: 2, col: 3 }, end: { line: 2, col: 14 } }, newText: "log.info" },
+  ]);
 });
 
 it("answers which functions are deterministic (§7.3, Q062)", () => {

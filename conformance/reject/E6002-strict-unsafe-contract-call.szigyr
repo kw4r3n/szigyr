@@ -1,0 +1,11 @@
+// expect: E6002 @ 9:12
+// stage: 3
+function isZeroNull(): boolean {
+  "use owned";
+  "use unsafe";
+  return Ptr.null<i32>().isNull();
+}
+export function f(x: i32): i32 {
+  requires(isZeroNull());
+  return x;
+}

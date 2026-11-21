@@ -8,7 +8,7 @@ import type { CFnSym, FnSym, Module, Program } from "./modules.ts";
 import { layout, elemDesc, type Lay } from "./layout.ts";
 import { DETMATH_PATH } from "./detmath.ts";
 import { cPointeeOf, cTypeOf, parseCSpec } from "./cdecl.ts";
-import { AUTHORITIES, isCopy, isCopyValueRecord, isInt, isOwned, isTaggedUnion, kindOf, nonNull, isNull, isBool, unref, show, subst, type Field, type NumName, type Type } from "./types.ts";
+import { AUTHORITIES, I64_MIN, isCopy, isCopyValueRecord, isInt, isInt64, isOwned, isTaggedUnion, kindOf, nonNull, isNull, isBool, parseExactInt, unref, show, subst, type Field, type NumName, type Type } from "./types.ts";
 
 /** A construct the C backend does not translate yet: the run stops with this error (never a silent fallback to JS). */
 export class CUnsupported extends Error {
@@ -27,7 +27,7 @@ const RANGE: Record<string, [string, string]> = {
   i8: ["-128LL", "127LL"], i16: ["-32768LL", "32767LL"], i32: ["-2147483648LL", "2147483647LL"],
   u8: ["0LL", "255LL"], u16: ["0LL", "65535LL"], u32: ["0LL", "4294967295LL"], usize: ["0LL", "4294967295LL"],
 };
-const CNUM: Record<NumName, string> = { f64: "double", f32: "float", i8: "int8_t", i16: "int16_t", i32: "int32_t", u8: "uint8_t", u16: "uint16_t", u32: "uint32_t", usize: "uint32_t" };
+const CNUM: Record<NumName, string> = { f64: "double", f32: "float", i8: "int8_t", i16: "int16_t", i32: "int32_t", i64: "int64_t", u8: "uint8_t", u16: "uint16_t", u32: "uint32_t", u64: "uint64_t", usize: "uint32_t" };
 // Q271: `<math.h>` macros; the finite ones are the JS values.
 const NUMBER_CONSTS: Record<string, string> = { POSITIVE_INFINITY: "INFINITY", NEGATIVE_INFINITY: "(-INFINITY)", NaN: "NAN", EPSILON: "2.220446049250313e-16", MAX_SAFE_INTEGER: "9007199254740991.0" };
 const numText = (n: ts.NumericLiteral): number => Number(n.text.replace(/_/g, ""));
@@ -402,7 +402,7 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
   const memberOf = (u: Extract<Type, { k: "union" }>, k: string): number => umembers(u).findIndex((m) => kindOf(m) === k);
 
   function inConv(t: Type, v: string, where: string): string {
-    if (t.k === "num") return `(${CNUM[t.name]})sts_num(${v})`;
+    if (t.k === "num") return t.name === "i64" ? `sts_i64(${v})` : t.name === "u64" ? `sts_u64(${v})` : `(${CNUM[t.name]})sts_num(${v})`;
     if (isBool(t)) return `sts_bool(${v})`;
     if (isNull(t)) return `((void)(${v}), (sts_null){ .some = false })`;
     if (t.k === "lit" || (t.k === "union" && t.members.every((m) => m.k === "lit"))) { ctype(t, where); return `sts_lit_in(${v})`; }
@@ -421,7 +421,7 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
     throw new CUnsupported(where, `passing '${show(t)}' between managed code and C`);
   }
   function outConv(t: Type, v: string, where: string): string {
-    if (t.k === "num") return `sts_mknum((double)(${v}))`;
+    if (t.k === "num") return t.name === "i64" ? `sts_mki64(${v})` : t.name === "u64" ? `sts_mku64(${v})` : `sts_mknum((double)(${v}))`;
     if (isBool(t)) return `sts_mkbool(${v})`;
     if (isNull(t)) return `((void)(${v}), sts_mknull())`;
     if (t.k === "lit" || (t.k === "union" && t.members.every((m) => m.k === "lit"))) return `sts_mklit(${v})`;
@@ -530,8 +530,8 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
       `  size_t argc = ${n}; napi_value argv[${Math.max(n, 1)}]; napi_get_cb_info(env, info, &argc, argv, 0, 0);`,
       `  struct { int ok; ${frame.join(" ")} } *volatile fr = calloc(1, sizeof *fr);`,
       `  if (!fr) { sts_err = "out of memory"; return sts_throw(); }`, // no jump target yet, so not sts_fail
-      `  size_t sts_prev_db = sts_defer_base, sts_prev_nd = sts_ndefers; sts_defer_base = sts_prev_nd;`,
-      `  if (setjmp(sts_jb)) { if (fr->ok) { fr->ok = 0; ${wb.join(" ")} } sts_ndefers = sts_prev_nd; sts_defer_base = sts_prev_db; sts_vec_sync(); sts_pool_sync(); sts_arena_sync(); free(fr); return sts_throw(); }`,
+      `  sts_defer *sts_prev_db = sts_defer_base, *sts_prev_dh = sts_defer_head; sts_defer_base = sts_prev_dh;`,
+      `  if (setjmp(sts_jb)) { if (fr->ok) { fr->ok = 0; ${wb.join(" ")} } sts_defer_head = sts_prev_dh; sts_defer_base = sts_prev_db; sts_vec_sync(); sts_pool_sync(); sts_arena_sync(); free(fr); return sts_throw(); }`,
       `  if (!sts_stack_lim) sts_stack_init();`, // after setjmp: its sts_fail jumps to sts_jb
       ...lines,
       `  fr->ok = 1;`,
@@ -539,7 +539,7 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
       `  fr->ok = 0; ${wb.join(" ")}`,
       `  napi_value res = ${isVoid ? "0" : outConv(ret, "r", where)};`,
       `  if (!res) napi_get_undefined(env, &res);`,
-      `  sts_ndefers = sts_prev_nd; sts_defer_base = sts_prev_db;`,
+      `  sts_defer_head = sts_prev_dh; sts_defer_base = sts_prev_db;`,
       `  sts_vec_sync(); sts_pool_sync(); sts_arena_sync();`,
       `  { int fc, fp; if (sts_take_ftrap(&fc, &fp)) { sts_trap_code = fc; sts_trap_pos = fp; free(fr); return sts_throw(); } }`, // §15.4 (1): a foreign trap surfaces as this call returns
       `  free(fr); return res;`,
@@ -570,7 +570,7 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
       const f = this.f;
       this.scopes.push(new Map());
       this.hasUsing = hasUsingStmt(f.decl.body!);
-      if (this.hasUsing) { this.fnDm = `sts_dm_${this.tmp++}`; this.emit(`size_t ${this.fnDm} = sts_ndefers;`); }
+      if (this.hasUsing) { this.fnDm = `sts_dm_${this.tmp++}`; this.emit(`sts_defer *${this.fnDm} = sts_defer_head;`); }
       f.decl.parameters.forEach((p, i) => {
         if (p.name.kind !== K.Identifier) throw this.no(p, "a destructured parameter");
         const t = this.i.params[i]!, a = unref(t);
@@ -641,7 +641,7 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
       this.emit("{");
       this.scopes.push(new Map());
       const dm = this.hasUsing ? `sts_dm_${this.tmp++}` : undefined;
-      if (dm) this.emit(`size_t ${dm} = sts_ndefers;`);
+      if (dm) this.emit(`sts_defer *${dm} = sts_defer_head;`);
       f();
       if (dm) this.emit(`sts_defer_pop_run(${dm});`);
       this.scopes.pop();
@@ -680,12 +680,12 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
         case K.WhileStatement: {
           const w = s as ts.WhileStatement, cont = `sts_L${this.label++}`;
           const dmLoop = this.hasUsing ? `sts_dm_${this.tmp++}` : undefined;
-          if (dmLoop) this.emit(`size_t ${dmLoop} = sts_ndefers;`);
+          if (dmLoop) this.emit(`sts_defer *${dmLoop} = sts_defer_head;`);
           this.emit("for (;;) {");
           this.emit(`${cont}: ;`);
           const c = this.ex(w.expression); this.emit(`if (!${c}) break;`);
           const dmBody = this.hasUsing ? `sts_dm_${this.tmp++}` : undefined;
-          if (dmBody) this.emit(`size_t ${dmBody} = sts_ndefers;`);
+          if (dmBody) this.emit(`sts_defer *${dmBody} = sts_defer_head;`);
           this.loops.push({ cont, dm: dmBody });
           this.breaks.push(dmLoop);
           this.block(() => this.stmt(w.statement));
@@ -697,10 +697,10 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
         case K.DoStatement: {
           const w = s as ts.DoStatement, cont = `sts_L${this.label++}`;
           const dmLoop = this.hasUsing ? `sts_dm_${this.tmp++}` : undefined;
-          if (dmLoop) this.emit(`size_t ${dmLoop} = sts_ndefers;`);
+          if (dmLoop) this.emit(`sts_defer *${dmLoop} = sts_defer_head;`);
           this.emit("for (;;) {");
           const dmBody = this.hasUsing ? `sts_dm_${this.tmp++}` : undefined;
-          if (dmBody) this.emit(`size_t ${dmBody} = sts_ndefers;`);
+          if (dmBody) this.emit(`sts_defer *${dmBody} = sts_defer_head;`);
           this.loops.push({ cont, dm: dmBody });
           this.breaks.push(dmLoop);
           this.block(() => this.stmt(w.statement));
@@ -719,11 +719,11 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
               else this.exVoid(fo.initializer as ts.Expression);
             }
             const dmLoop = this.hasUsing ? `sts_dm_${this.tmp++}` : undefined;
-            if (dmLoop) this.emit(`size_t ${dmLoop} = sts_ndefers;`);
+            if (dmLoop) this.emit(`sts_defer *${dmLoop} = sts_defer_head;`);
             this.emit("for (;;) {");
             if (fo.condition) { const c = this.ex(fo.condition); this.emit(`if (!${c}) break;`); }
             const dmBody = this.hasUsing ? `sts_dm_${this.tmp++}` : undefined;
-            if (dmBody) this.emit(`size_t ${dmBody} = sts_ndefers;`);
+            if (dmBody) this.emit(`sts_defer *${dmBody} = sts_defer_head;`);
             this.loops.push({ cont, dm: dmBody });
             this.breaks.push(dmLoop);
             this.block(() => this.stmt(fo.statement));
@@ -772,7 +772,7 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
             return this.ex(e);
           });
           const dmSw = this.hasUsing ? `sts_dm_${this.tmp++}` : undefined;
-          if (dmSw) this.emit(`size_t ${dmSw} = sts_ndefers;`);
+          if (dmSw) this.emit(`sts_defer *${dmSw} = sts_defer_head;`);
           this.breaks.push(dmSw);
           const float = dt.k === "num" && !isInt(dt);
           if (float) { // C `case` needs integers: pick the clause with `==` (as `===`: NaN matches nothing, -0 matches 0), then switch on its index
@@ -811,11 +811,11 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
         const ctxInit = ctxT ? this.conv(this.ex(call.arguments[1]!), this.typeOf(call.arguments[1]!), ctxT) : undefined;
         const cleanInst = inst(meta.cleanupFn, [], new Map(), this.where);
         const id = cleanId++;
-        const rtName = `sts_RT_${id}`, cfName = `sts_clean_${id}`, resVar = `sts_res_${id}`;
+        const rtName = `sts_RT_${id}`, cfName = `sts_clean_${id}`, resVar = `sts_res_${id}`, dnVar = `sts_dn_${id}`;
         cleanProtos.push(`typedef struct { bool a; ${ctype(valT, this.where)} v;${ctxT ? ` ${ctype(ctxT, this.where)} c;` : ""} } ${rtName};`, `static void ${cfName}(void *p);`);
         cleanBodies.push(`static void ${cfName}(void *p) { ${rtName} *r = (${rtName} *)p; if (!r->a) return; r->a = false; if (++sts_depth > 10000 || STS_STACK_LOW()) sts_trap(6, ${this.pos(call)}); ${cleanInst.name}(${ctxT ? "r->c, r->v" : "r->v"}); sts_depth--; }`);
         this.emit(`${rtName} ${resVar} = { true, ${valInit}${ctxInit !== undefined ? `, ${ctxInit}` : ""} };`);
-        this.emit(`sts_defer_push(${cfName}, &${resVar});`);
+        this.emit(`sts_defer ${dnVar}; sts_defer_push(&${dnVar}, ${cfName}, &${resVar});`);
         this.scopes.at(-1)!.set((d.name as ts.Identifier).text, { c: resVar, t, ptr: false });
         return;
       }
@@ -885,7 +885,7 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
     ex(e: ts.Expression): string {
       switch (e.kind) {
         case K.ParenthesizedExpression: return this.ex((e as ts.ParenthesizedExpression).expression);
-        case K.NumericLiteral: return this.lit(numText(e as ts.NumericLiteral), this.typeOf(e));
+        case K.NumericLiteral: return this.lit(e as ts.NumericLiteral, false, this.typeOf(e));
         case K.TrueKeyword: return "true";
         case K.StringLiteral: case K.NoSubstitutionTemplateLiteral: return `((int32_t)${litId((e as ts.StringLiteral).text)})`; // Q043: a `kind` value
         case K.FalseKeyword: return "false";
@@ -916,9 +916,15 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
       throw this.no(e, `the expression kind ${K[e.kind]}`);
     }
 
-    lit(x: number, t: Type): string {
+    lit(n: ts.NumericLiteral, neg: boolean, t: Type): string {
       if (t.k !== "num") throw new CUnsupported(this.where, `a literal of type ${show(t)}`);
-      if (isInt(t)) return `((${CNUM[t.name]})${x}LL)`;
+      if (isInt(t)) {
+        const v = parseExactInt(n.getText(this.sf), neg)!;
+        if (t.name === "i64" && v === I64_MIN) return "((int64_t)(-9223372036854775807LL - 1LL))";
+        if (t.name === "u64") return `((uint64_t)${v}ULL)`;
+        return `((${CNUM[t.name]})${v}LL)`;
+      }
+      const x0 = numText(n), x = neg ? -x0 : x0;
       const s = !Number.isFinite(x) ? (x > 0 ? "INFINITY" : "(-INFINITY)") : Object.is(x, -0) ? "-0.0" : /[.e]/.test(`${x}`) ? `${x}` : `${x}.0`; // 1e999 is Infinity in JS
       return t.name === "f32" ? `((float)${s})` : s;
     }
@@ -968,13 +974,13 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
 
     prefix(u: ts.PrefixUnaryExpression): string {
       const t = this.typeOf(u);
-      if (u.operator === K.MinusToken && u.operand.kind === K.NumericLiteral) return this.lit(-numText(u.operand as ts.NumericLiteral), t);
+      if (u.operator === K.MinusToken && u.operand.kind === K.NumericLiteral) return this.lit(u.operand as ts.NumericLiteral, true, t);
       const v = this.ex(u.operand);
       switch (u.operator) {
         case K.ExclamationToken: return this.t(t, `!${v}`, u);
-        case K.TildeToken: return this.t(t, `~${v}`, u);
+        case K.TildeToken: return this.t(t, `(${CNUM[(t as { k: "num"; name: NumName }).name]})~${v}`, u);
         case K.MinusToken:
-          if (t.k === "num" && isInt(t)) { const [lo, hi] = RANGE[t.name]!; return this.t(t, `(${CNUM[t.name]})sts_rng(-(int64_t)${v}, ${lo}, ${hi}, ${this.pos(u)})`, u); }
+          if (t.k === "num" && isInt(t)) return this.t(t, `STS_AOP(sub, ${CNUM[t.name]}, (${CNUM[t.name]})0, ${v}, ${this.pos(u)})`, u);
           return this.t(t, `-${v}`, u);
       }
       throw this.no(u, "this prefix operator");
@@ -987,10 +993,19 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
       if (isInt(t)) {
         switch (o) {
           // the builtins check the exact result against the range of `c`; unlike a widened compare they keep loop-carried values in registers (D108)
-          case "+": case "-": case "*": return `STS_AOP(${o === "+" ? "add" : o === "-" ? "sub" : "mul"}, ${c}, ${l}, ${r}, ${this.pos(anchor)})`;
+          case "+": case "-": return `STS_AOP(${o === "+" ? "add" : "sub"}, ${c}, ${l}, ${r}, ${this.pos(anchor)})`;
+          case "*":
+            if (t.name === "i64") return `STS_MULI64(${l}, ${r}, ${this.pos(anchor)})`;
+            if (t.name === "u64") return `STS_MULU64(${l}, ${r}, ${this.pos(anchor)})`;
+            return `STS_AOP(mul, ${c}, ${l}, ${r}, ${this.pos(anchor)})`;
           case "&": case "|": case "^": return `(${c})(${l} ${o} ${r})`;
-          case "<<": return t.name === "i32" ? `(int32_t)((uint32_t)${l} << sts_amt(${r}, ${this.pos(anchor)}))` : `(uint32_t)(${l} << sts_amt(${r}, ${this.pos(anchor)}))`;
-          case ">>": case ">>>": return `(${c})(${l} >> sts_amt(${r}, ${this.pos(anchor)}))`;
+          case "<<":
+            if (t.name === "i64") return `(int64_t)((uint64_t)${l} << sts_amt64((uint64_t)${r}, ${this.pos(anchor)}))`;
+            if (t.name === "u64") return `(uint64_t)(${l} << sts_amt64((uint64_t)${r}, ${this.pos(anchor)}))`;
+            return t.name === "i32" ? `(int32_t)((uint32_t)${l} << sts_amt(${r}, ${this.pos(anchor)}))` : `(uint32_t)(${l} << sts_amt(${r}, ${this.pos(anchor)}))`;
+          case ">>": case ">>>":
+            if (isInt64(t.name)) return `(${c})(${l} >> sts_amt64((uint64_t)${r}, ${this.pos(anchor)}))`;
+            return `(${c})(${l} >> sts_amt(${r}, ${this.pos(anchor)}))`;
         }
       } else {
         switch (o) {
@@ -1220,14 +1235,32 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
         const name = (callee as ts.Identifier).text;
         if (!this.lookup(name)) {
           if (num && (CNUM as Record<string, string>)[name] && name === num.name) {
-            const at = this.typeOf(e.arguments[0]!), v = this.ex(e.arguments[0]!);
+            const at = this.typeOf(e.arguments[0]!), v = this.ex(e.arguments[0]!), pos = this.pos(callee);
             if (!isInt(num)) return this.t(num, `(${CNUM[num.name]})${v}`, e);
+            if (!isInt(at)) {
+              if (num.name === "i64") return this.t(num, `sts_cvt_i64(${v}, ${pos})`, e);
+              if (num.name === "u64") return this.t(num, `sts_cvt_u64(${v}, ${pos})`, e);
+              const [lo, hi] = RANGE[num.name]!;
+              return this.t(num, `(${CNUM[num.name]})sts_cvt(${v}, ${lo}, ${hi}, ${pos})`, e);
+            }
+            if (at.k === "num" && at.name === "u64") {
+              if (num.name === "u64") return this.t(num, `(${v})`, e);
+              const hiU = num.name === "i64" ? "9223372036854775807ULL" : RANGE[num.name]![1].replace(/LL$/, "ULL");
+              return this.t(num, `(${CNUM[num.name]})sts_cvtu(${v}, ${hiU}, ${pos})`, e);
+            }
+            if (num.name === "u64") return this.t(num, `sts_cvti_u64((int64_t)${v}, ${pos})`, e);
+            if (num.name === "i64") return this.t(num, `(int64_t)(${v})`, e);
             const [lo, hi] = RANGE[num.name]!;
-            return this.t(num, `(${CNUM[num.name]})${isInt(at) ? "sts_cvti" : "sts_cvt"}(${v}, ${lo}, ${hi}, ${this.pos(callee)})`, e);
+            return this.t(num, `(${CNUM[num.name]})sts_cvti((int64_t)${v}, ${lo}, ${hi}, ${pos})`, e);
           }
           switch (name) {
             case "wrapAdd": case "wrapSub": case "wrapMul": {
-              const a = this.ex(e.arguments[0]!), b = this.ex(e.arguments[1]!), [lo, hi] = RANGE[num!.name]!;
+              const a = this.ex(e.arguments[0]!), b = this.ex(e.arguments[1]!);
+              if (isInt64(num!.name)) {
+                const wop = name === "wrapAdd" ? "+" : name === "wrapSub" ? "-" : "*";
+                return this.t(num!, `(${CNUM[num!.name]})((uint64_t)${a} ${wop} (uint64_t)${b})`, e);
+              }
+              const [lo, hi] = RANGE[num!.name]!;
               const r = name === "wrapMul" ? (["i32", "u32", "usize"].includes(num!.name) ? `sts_wmul32(${a}, ${b}, ${lo}, ${hi})` : `sts_wrap((int64_t)${a} * ${b}, ${lo}, ${hi})`)
                 : `sts_wrap((int64_t)${a} ${name === "wrapAdd" ? "+" : "-"} (int64_t)${b}, ${lo}, ${hi})`;
               return this.t(num!, `(${CNUM[num!.name]})${r}`, e);
@@ -1274,6 +1307,11 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
           if (F[m]) return this.t(t, `${F[m]}(${as[0]})`, e);
           if (m === "fround") return this.t(t, `(float)${as[0]}`, e);
           if (m === "min" || m === "max") { let acc = as[0]!; for (const x of as.slice(1)) acc = this.t(t, `sts_${m}(${acc}, ${x})`, e); return acc; }
+        }
+        if (ns === "Number") {
+          const a0 = this.ex(e.arguments[0]!);
+          const F: Record<string, string> = { isFinite: "sts_isfinite", isNaN: "sts_isnan", isInteger: "sts_isint" };
+          if (F[m]) return this.t(t, `${F[m]}(${a0})`, e);
         }
         if (ns === "DetMath") { // §12 (Q191): a direct call of the bundled module's rt function
           const dm = prog.mods.find((x) => x.pf.path === DETMATH_PATH);
@@ -1634,10 +1672,10 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
     const lines: string[] = [
       `static ${abiType(ret)} ${name}(${ps.join(", ") || "void"}) {`,
       `  if (atomic_load(&sts_cur()->done)) ${zero}`,
-      `  struct { jmp_buf jb; int depth; size_t db, nd; } *fr = calloc(1, sizeof *fr); if (!fr) ${zero}`,
-      `  memcpy(fr->jb, sts_jb, sizeof fr->jb); fr->depth = sts_depth; fr->db = sts_defer_base; fr->nd = sts_ndefers; sts_defer_base = fr->nd;`,
+      `  struct { jmp_buf jb; int depth; sts_defer *db, *dh; } *fr = calloc(1, sizeof *fr); if (!fr) ${zero}`,
+      `  memcpy(fr->jb, sts_jb, sizeof fr->jb); fr->depth = sts_depth; fr->db = sts_defer_base; fr->dh = sts_defer_head; sts_defer_base = fr->dh;`,
       `  if (!sts_stack_lim) sts_tramp_stack_init();`,
-      `  if (setjmp(sts_jb)) { memcpy(sts_jb, fr->jb, sizeof sts_jb); sts_depth = fr->depth; sts_ndefers = fr->nd; sts_defer_base = fr->db; free(fr); ${zero} }`,
+      `  if (setjmp(sts_jb)) { memcpy(sts_jb, fr->jb, sizeof sts_jb); sts_depth = fr->depth; sts_defer_head = fr->dh; sts_defer_base = fr->db; free(fr); ${zero} }`,
     ];
     i.params.forEach((pt, k) => {
       if (pt.k === "num" && pt.name === "usize") lines.push(`  if (a${k} > (size_t)4294967295ULL) sts_trap(3, ${posOf(f.mod, f.decl.parameters[k]!.name)});`);
@@ -1645,7 +1683,7 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
     lines.push(`  if (++sts_depth > 10000 || STS_STACK_LOW()) sts_trap(6, ${posOf(f.mod, f.decl.name!)});`);
     const args = i.params.map((pt, k) => (pt.k === "num" && pt.name === "usize" ? `(uint32_t)a${k}` : `a${k}`));
     lines.push(isVoid ? `  ${i.name}(${args.join(", ")});` : `  ${ctype(ret, where)} r = ${i.name}(${args.join(", ")});`);
-    lines.push(`  memcpy(sts_jb, fr->jb, sizeof sts_jb); sts_depth = fr->depth; sts_ndefers = fr->nd; sts_defer_base = fr->db; free(fr);`);
+    lines.push(`  memcpy(sts_jb, fr->jb, sizeof sts_jb); sts_depth = fr->depth; sts_defer_head = fr->dh; sts_defer_base = fr->db; free(fr);`);
     if (!isVoid) lines.push(`  return r;`);
     lines.push(`}`);
     return lines.join("\n");
@@ -1749,12 +1787,12 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
         `    while (rem) { uint32_t n = rem < maxF ? rem : maxF; sts_sdl.PutAudioStreamData(stream, tmp, (int)(n * fb)); rem -= n; }`,
         `    return;`,
         `  }`,
-        `  sts_prog_t *prev_pg = sts_pg; jmp_buf prev_jb; memcpy(prev_jb, sts_jb, sizeof prev_jb); int prev_depth = sts_depth; size_t prev_db = sts_defer_base, prev_nd = sts_ndefers;`,
-        `  sts_pg = ctx->pg; sts_defer_base = prev_nd; if (!sts_stack_lim) sts_tramp_stack_init();`,
+        `  sts_prog_t *prev_pg = sts_pg; jmp_buf prev_jb; memcpy(prev_jb, sts_jb, sizeof prev_jb); int prev_depth = sts_depth; sts_defer *prev_db = sts_defer_base, *prev_dh = sts_defer_head;`,
+        `  sts_pg = ctx->pg; sts_defer_base = prev_dh; if (!sts_stack_lim) sts_tramp_stack_init();`,
         `  if (setjmp(sts_jb)) {`,
         `    atomic_store(&ctx->trapped, 1); memset(tmp, 0, sizeof tmp);`,
         `    while (rem) { uint32_t n = rem < maxF ? rem : maxF; sts_sdl.PutAudioStreamData(stream, tmp, (int)(n * fb)); rem -= n; }`,
-        `    memcpy(sts_jb, prev_jb, sizeof sts_jb); sts_depth = prev_depth; sts_ndefers = prev_nd; sts_defer_base = prev_db; sts_pg = prev_pg; return;`,
+        `    memcpy(sts_jb, prev_jb, sizeof sts_jb); sts_depth = prev_depth; sts_defer_head = prev_dh; sts_defer_base = prev_db; sts_pg = prev_pg; return;`,
         `  }`,
         `  while (rem) {`,
         `    uint32_t n = rem < maxF ? rem : maxF, samples = n * ctx->channels;`,
@@ -1763,7 +1801,7 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
         `    sts_sdl.PutAudioStreamData(stream, tmp, (int)(n * fb));`,
         `    rem -= n;`,
         `  }`,
-        `  memcpy(sts_jb, prev_jb, sizeof sts_jb); sts_depth = prev_depth; sts_ndefers = prev_nd; sts_defer_base = prev_db; sts_pg = prev_pg;`,
+        `  memcpy(sts_jb, prev_jb, sizeof sts_jb); sts_depth = prev_depth; sts_defer_head = prev_dh; sts_defer_base = prev_db; sts_pg = prev_pg;`,
         `}`,
         `static void sts_audio_fin_${id}(napi_env env, void *data, void *hint) {`,
         `  (void)hint; sts_ACtx_${id} *ctx = (sts_ACtx_${id} *)data;`,
@@ -1781,14 +1819,14 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
         `  const char *ec = 0, *em = 0; if (!sts_sdl_load(&ec, &em)) return sts_audio_err(env, ec, em);`,
         `  sts_ACtx_${id} *volatile ctx = calloc(1, sizeof *ctx);`,
         `  if (!ctx) { sts_err = "out of memory"; return sts_throw(); }`,
-        `  size_t prev_db = sts_defer_base, prev_nd = sts_ndefers; sts_defer_base = prev_nd;`,
-        `  if (setjmp(sts_jb)) { sts_ndefers = prev_nd; sts_defer_base = prev_db; sts_vec_sync(); sts_pool_sync(); sts_arena_sync(); free(ctx); return sts_throw(); }`,
+        `  sts_defer *prev_db = sts_defer_base, *prev_dh = sts_defer_head; sts_defer_base = prev_dh;`,
+        `  if (setjmp(sts_jb)) { sts_defer_head = prev_dh; sts_defer_base = prev_db; sts_vec_sync(); sts_pool_sync(); sts_arena_sync(); free(ctx); return sts_throw(); }`,
         `  if (!sts_stack_lim) sts_stack_init();`,
         `  ctx->sampleRate = rate; ctx->channels = ch; ctx->pg = sts_cur();`,
         `  ctx->st = ${inConv(ac.state, "argv[2]", where)};`,
         ...(fixKeep ? [`  ${fixKeep}`] : []),
         `  sts_vec_sync(); sts_pool_sync(); sts_arena_sync();`,
-        `  sts_ndefers = prev_nd; sts_defer_base = prev_db;`,
+        `  sts_defer_head = prev_dh; sts_defer_base = prev_db;`,
         `  if (!sts_sdl.InitSubSystem(0x10u)) { const char *m = sts_sdl.GetError(); ${fixUnref} free(ctx); return sts_audio_err(env, "EIO", m && *m ? m : "SDL_InitSubSystem failed"); }`,
         `  sts_sdl_spec spec = { 0x8120u, (int)ch, (int)rate };`,
         `  ctx->stream = sts_sdl.OpenAudioDeviceStream(0xFFFFFFFFu, &spec, sts_acb_${id}, ctx);`,
@@ -1811,13 +1849,13 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
         `  size_t argc = 1; napi_value argv[1]; napi_get_cb_info(env, info, &argc, argv, 0, 0);`,
         `  sts_ACtx_${id} *volatile ctx = calloc(1, sizeof *ctx);`,
         `  if (!ctx) { sts_err = "out of memory"; return sts_throw(); }`,
-        `  size_t prev_db = sts_defer_base, prev_nd = sts_ndefers; sts_defer_base = prev_nd;`,
-        `  if (setjmp(sts_jb)) { sts_ndefers = prev_nd; sts_defer_base = prev_db; sts_vec_sync(); sts_pool_sync(); sts_arena_sync(); free(ctx); return sts_throw(); }`,
+        `  sts_defer *prev_db = sts_defer_base, *prev_dh = sts_defer_head; sts_defer_base = prev_dh;`,
+        `  if (setjmp(sts_jb)) { sts_defer_head = prev_dh; sts_defer_base = prev_db; sts_vec_sync(); sts_pool_sync(); sts_arena_sync(); free(ctx); return sts_throw(); }`,
         `  if (!sts_stack_lim) sts_stack_init();`,
         `  ctx->pg = sts_cur(); ctx->st = ${inConv(ac.state, "argv[0]", where)};`,
         ...(fixKeep ? [`  ${fixKeep}`] : []),
         `  sts_vec_sync(); sts_pool_sync(); sts_arena_sync();`,
-        `  sts_ndefers = prev_nd; sts_defer_base = prev_db;`,
+        `  sts_defer_head = prev_dh; sts_defer_base = prev_db;`,
         `  napi_value ext; STS_OK(napi_create_external(env, ctx, sts_audio_fin_${id}, 0, &ext)); return ext;`,
         `}`,
         `static napi_value sts_audio_fake_render_${id}(napi_env env, napi_callback_info info) {`,
@@ -1830,11 +1868,11 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
         `  uint32_t frames = 0; STS_OK(napi_get_value_uint32(env, argv[2], &frames));`,
         `  sts_prog_t fake_pg = { .mu = PTHREAD_MUTEX_INITIALIZER }; sts_prog_t *prev_pg = sts_pg;`,
         `  sts_pg = &fake_pg;`,
-        `  size_t prev_db = sts_defer_base, prev_nd = sts_ndefers; sts_defer_base = prev_nd;`,
-        `  if (setjmp(sts_jb)) { sts_ndefers = prev_nd; sts_defer_base = prev_db; sts_pg = prev_pg; return sts_throw(); }`,
+        `  sts_defer *prev_db = sts_defer_base, *prev_dh = sts_defer_head; sts_defer_base = prev_dh;`,
+        `  if (setjmp(sts_jb)) { sts_defer_head = prev_dh; sts_defer_base = prev_db; sts_pg = prev_pg; return sts_throw(); }`,
         `  if (!sts_stack_lim) sts_stack_init();`,
         `  ${ai.name}(${stArg}, (sts_slice){ data, (uint32_t)len }, frames);`,
-        `  sts_ndefers = prev_nd; sts_defer_base = prev_db; sts_pg = prev_pg; return 0;`,
+        `  sts_defer_head = prev_dh; sts_defer_base = prev_db; sts_pg = prev_pg; return 0;`,
         `}`,
         `static napi_value sts_audio_fake_free_${id}(napi_env env, napi_callback_info info) {`,
         `  return sts_audio_close_${id}(env, info);`,
@@ -1864,8 +1902,12 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
     `static const size_t STS_LITLEN[] = {${lits.map((x) => Buffer.byteLength(x)).join(",") || "0"}};`,
     ...[...hdrs].map((h) => `#include <${h}>`),
     `static double sts_num(napi_value v) { double d; STS_OK(napi_get_value_double(sts_env, v, &d)); return d; }`,
+    `static int64_t sts_i64(napi_value v) { int64_t x; bool l; STS_OK(napi_get_value_bigint_int64(sts_env, v, &x, &l)); if (!l) sts_fail("bad i64"); return x; }`,
+    `static uint64_t sts_u64(napi_value v) { uint64_t x; bool l; STS_OK(napi_get_value_bigint_uint64(sts_env, v, &x, &l)); if (!l) sts_fail("bad u64"); return x; }`,
     `static bool sts_bool(napi_value v) { bool b; STS_OK(napi_get_value_bool(sts_env, v, &b)); return b; }`,
     `static napi_value sts_mknum(double d) { napi_value r; STS_OK(napi_create_double(sts_env, d, &r)); return r; }`,
+    `static napi_value sts_mki64(int64_t x) { napi_value r; STS_OK(napi_create_bigint_int64(sts_env, x, &r)); return r; }`,
+    `static napi_value sts_mku64(uint64_t x) { napi_value r; STS_OK(napi_create_bigint_uint64(sts_env, x, &r)); return r; }`,
     `static napi_value sts_mkbool(bool b) { napi_value r; STS_OK(napi_get_boolean(sts_env, b, &r)); return r; }`,
     `static napi_value sts_mknull(void) { napi_value r; STS_OK(napi_get_null(sts_env, &r)); return r; }`,
     `static bool sts_isnull(napi_value v) { napi_valuetype t; STS_OK(napi_typeof(sts_env, v, &t)); return t == napi_null; }`,

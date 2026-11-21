@@ -13,7 +13,7 @@ export type Lay =
   | { t: "hdl"; z: 12; a: 4 }
   | { t: "abuf"; z: 16; a: 4 };
 
-const NUM_SIZE: Record<NumName, number> = { i8: 1, u8: 1, i16: 2, u16: 2, i32: 4, u32: 4, usize: 4, f32: 4, f64: 8 };
+const NUM_SIZE: Record<NumName, number> = { i8: 1, u8: 1, i16: 2, u16: 2, i32: 4, u32: 4, i64: 8, u64: 8, usize: 4, f32: 4, f64: 8 };
 const up = (n: number, a: number): number => Math.ceil(n / a) * a;
 const byUnits = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 

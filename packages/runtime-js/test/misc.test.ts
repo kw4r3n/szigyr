@@ -43,6 +43,11 @@ describe("cast", () => {
     expect(cast("1", { k: "num", t: "f64" }).kind).toBe("err");
     expect(cast(0.1, { k: "num", t: "f32" }).kind).toBe("err");
     expect(cast(0.5, { k: "num", t: "f32" }).kind).toBe("ok");
+    expect(cast(-(1n << 63n), { k: "num", t: "i64" })).toEqual(ok(-(1n << 63n)));
+    expect(cast(1n << 63n, { k: "num", t: "i64" }).kind).toBe("err");
+    expect(cast((1n << 64n) - 1n, { k: "num", t: "u64" })).toEqual(ok((1n << 64n) - 1n));
+    expect(cast(-1n, { k: "num", t: "u64" }).kind).toBe("err");
+    expect(cast(123, { k: "num", t: "i64" }).kind).toBe("err");
   });
   it("records are exact", () => {
     expect(cast({ x: 1, y: 2.5 }, point).kind).toBe("ok");

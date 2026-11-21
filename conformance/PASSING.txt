@@ -18,6 +18,7 @@ accept/17-contracts.szigyr
 accept/18-test-fakes.szigyr
 accept/19-destructure-spread.szigyr
 accept/193-traps-t015-literal.szigyr
+accept/194-key-equality-and-codec-generics.szigyr
 accept/20-template-strings.szigyr
 accept/21-imports
 accept/22-class-across-files
@@ -158,7 +159,6 @@ reject/E2000-bare-namespace-call.szigyr
 reject/E2000-new-array-builtin.szigyr
 reject/E2000-number-conversion-function.szigyr
 reject/E2000-reexport-cycle
-reject/E2000-reserved-i64-type.szigyr
 reject/E2000-undefined-variable.szigyr
 reject/E2000-unknown-type-name.szigyr
 reject/E2001-arena-clear.szigyr
@@ -457,6 +457,7 @@ reject/E3004-ptr-borrow-field-write.szigyr
 reject/E3004-ptr-borrow-ring-returned.szigyr
 reject/E3004-ptr-slice-index-write.szigyr
 reject/E3004-ptr-slice-stored.szigyr
+reject/E3004-resource-escape.szigyr
 reject/E3004-slice-bound-to-local.szigyr
 reject/E3004-slice-by-value-parameter.szigyr
 reject/E3004-slice-index-write.szigyr
@@ -683,6 +684,7 @@ reject/E6002-requires-port-send.szigyr
 reject/E6002-requires-ptr-box.szigyr
 reject/E6002-requires-ring-nondeterministic.szigyr
 reject/E6002-requires-spawn-isolate.szigyr
+reject/E6002-strict-unsafe-contract-call.szigyr
 reject/E6003-test-in-function.szigyr
 reject/E6003-test-in-test.szigyr
 reject/E6004-forAll-at-module-level.szigyr
@@ -856,12 +858,13 @@ run/246-clock-sleep-and-fake-audio.szigyr
 run/247-null-layout-strict-rt.szigyr
 run/248-struct-record-norm.szigyr
 run/249-handle-equality.szigyr
+run/25-trap-panic.szigyr
 run/250-port-pool-arena-send.szigyr
 run/251-capability-bounds.szigyr
 run/252-using-disposable-and-resource.szigyr
 run/253-audio-owned-containers.szigyr
 run/254-cffi-cstruct-const-ptr.szigyr
-run/25-trap-panic.szigyr
+run/255-number-predicates-rt.szigyr
 run/26-trap-div-by-zero.szigyr
 run/27-trap-ownedcell-empty.szigyr
 run/28-trap-shift-range.szigyr

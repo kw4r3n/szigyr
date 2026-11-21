@@ -65,13 +65,17 @@ export async function runTestPass(params: TestPassParams): Promise<TestPassResul
     const key = (t: (typeof r.results)[number] | undefined): string => JSON.stringify(t && [t.name, t.ok, t.trap ? null : t.failure, t.trap?.code, t.pos?.file, t.pos?.line, t.pos?.col]);
     if (rs.length === 2 && rs[1]!.results.length !== r.results.length) { // Q266: a result count that differs is a mismatch too
       failed++;
-      out(jsonLine({ kind: "mismatch", file: f, js: r.results.length, c: rs[1]!.results.length }));
+      out(json
+        ? jsonLine({ kind: "mismatch", file: f, js: r.results.length, c: rs[1]!.results.length })
+        : `MISMATCH ${f}: backend test count differs (js=${r.results.length}, c=${rs[1]!.results.length})\n`);
     }
     for (const [i, t] of r.results.entries()) {
       const other = rs[1]?.results[i];
       if (rs.length === 2 && key(t) !== key(other)) {
         failed++;
-        out(jsonLine({ kind: "mismatch", file: f, name: t.name, js: t, c: other ?? null }));
+        out(json
+          ? jsonLine({ kind: "mismatch", file: f, name: t.name, js: t, c: other ?? null })
+          : `MISMATCH ${t.name}: js and c backends disagree\n  js: ${t.ok ? "ok" : `FAIL ${t.failure ?? t.trap?.code ?? ""}`}\n  c:  ${other ? (other.ok ? "ok" : `FAIL ${other.failure ?? other.trap?.code ?? ""}`) : "missing"}\n`);
         continue;
       }
       if (t.ok) passed++; else failed++;
@@ -91,7 +95,7 @@ export async function startWatch(opts: WatchOptions): Promise<number> {
   const parser = opts.parser ?? createParser();
   const ownParser = !opts.parser;
   const diags = (ds: readonly Diagnostic[]): string => ds.map((d) =>
-    json ? jsonLine(d) : `${d.file}:${d.range.start.line}:${d.range.start.col}: ${d.severity} ${d.code}: ${d.message}\n`,
+    json ? jsonLine({ kind: "diagnostic", ...d }) : `${d.file}:${d.range.start.line}:${d.range.start.col}: ${d.severity} ${d.code}: ${d.message}\n`,
   ).join("");
 
   const watchers = new Map<string, FSWatcher>();

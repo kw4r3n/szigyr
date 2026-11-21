@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -179,7 +179,7 @@ describe("resident incremental checker, --watch mode, and stdio MCP server", () 
     expect((await runCli(["mcp", entry])).code).toBe(2);
   });
 
-  it("serves JSON-RPC 2.0 MCP tools in-process (all 5 tools, overlays, errors) and via real stdio CLI subprocess", async () => {
+  it("serves JSON-RPC 2.0 MCP tools in-process (all 6 tools, multi-file overlays, errors) and via isolated stdio CLI subprocess", async () => {
     const dir = makeTmp("szigyr-mcp-");
     const file = join(dir, "sample.szigyr");
     writeFileSync(file, `export function add(a: i32, b: i32): i32 {\n  "use rt";\n  return a + b;\n}\ntest("add", (t: Test) => {\n  t.eq(add(2, 3), 5);\n});\n`);
@@ -217,9 +217,9 @@ describe("resident incremental checker, --watch mode, and stdio MCP server", () 
 
     const list = await rpc({ jsonrpc: "2.0", id: 3, method: "tools/list" });
     const names = (list.result.tools as { name: string }[]).map((t) => t.name);
-    expect(names).toEqual(["szigyr_check", "szigyr_query", "szigyr_explain", "szigyr_test", "szigyr_mutate"]);
+    expect(names).toEqual(["szigyr_check", "szigyr_query", "szigyr_explain", "szigyr_test", "szigyr_mutate", "szigyr_run"]);
 
-    // szigyr_check (disk + unsaved overlay + verify overlay did not leak)
+    // szigyr_check (disk + unsaved single/multi-file overlays + verify overlays did not leak)
     const chkDisk = await rpc({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "szigyr_check", arguments: { file } } });
     expect(chkDisk.result.structuredContent).toMatchObject({ ok: true, diagnostics: [] });
 
@@ -230,13 +230,65 @@ describe("resident incremental checker, --watch mode, and stdio MCP server", () 
     expect(chkBadOverlay.result.structuredContent.ok).toBe(false);
     expect(chkBadOverlay.result.structuredContent.diagnostics[0].code).toBe("E2002");
 
+    const virtMain = join(dir, "virtual-main.szigyr");
+    const virtDep = join(dir, "virtual-dep.szigyr");
+    const chkMultiOverlay = await rpc({
+      jsonrpc: "2.0", id: 51, method: "tools/call",
+      params: {
+        name: "szigyr_check",
+        arguments: {
+          file: virtMain,
+          overlays: {
+            [virtMain]: `import { helper } from "./virtual-dep.szigyr";\nexport function runVirt(n: i32): i32 { return helper(n) + 1; }\n`,
+            [virtDep]: `export function helper(n: i32): i32 { return n * 2; }\n`,
+          },
+        },
+      },
+    });
+    expect(chkMultiOverlay.result.structuredContent).toMatchObject({ ok: true, diagnostics: [] });
+
     const chkAfterOverlay = await rpc({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "szigyr_check", arguments: { file } } });
     expect(chkAfterOverlay.result.structuredContent.ok).toBe(true);
 
-    // szigyr_query
+    // szigyr_query (class ctor/implements/fields, interface methods, strict+unsafe pure: false)
     const qry = await rpc({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "szigyr_query", arguments: { file } } });
     expect(qry.result.structuredContent.symbols.find((s: Record<string, unknown>) => s.name === "add")).toMatchObject({
       kind: "function", layer: "rt", pure: true, mutatable: true,
+    });
+    const qryRich = await rpc({
+      jsonrpc: "2.0", id: 71, method: "tools/call",
+      params: {
+        name: "szigyr_query",
+        arguments: {
+          file: virtMain,
+          content: [
+            `export interface Greeter { greet(who: string): string; }`,
+            `export class Bot implements Greeter {`,
+            `  readonly name: string;`,
+            `  private count: i32 = 0;`,
+            `  constructor(name: string) { this.name = name; }`,
+            `  greet(who: string): string { return \`\${this.name}:\${who}\`; }`,
+            `}`,
+            `export function rawNull(): boolean { "use owned"; "use unsafe"; return Ptr.null<i32>().isNull(); }`,
+          ].join("\n"),
+        },
+      },
+    });
+    const richSyms = qryRich.result.structuredContent.symbols as Record<string, any>[];
+    expect(richSyms.find((s) => s.name === "Greeter")).toMatchObject({
+      kind: "interface", methods: [{ name: "greet", type: "(string) => string" }],
+    });
+    expect(richSyms.find((s) => s.name === "Bot")).toMatchObject({
+      kind: "class",
+      ctor: "(string) => Bot",
+      implements: ["Greeter"],
+      fields: [
+        { name: "name", type: "string", readonly: true, private: false, static: false },
+        { name: "count", type: "i32", readonly: false, private: true, static: false },
+      ],
+    });
+    expect(richSyms.find((s) => s.name === "rawNull")).toMatchObject({
+      kind: "function", layer: "strict", unsafe: true, pure: false, mutatable: false,
     });
 
     // szigyr_explain
@@ -246,12 +298,17 @@ describe("resident incremental checker, --watch mode, and stdio MCP server", () 
     const expErr = await rpc({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "szigyr_explain", arguments: { code: "E9999" } } });
     expect(expErr.result.isError).toBe(true);
 
-    // szigyr_test & szigyr_mutate
+    // szigyr_test, szigyr_mutate & szigyr_run (subprocess-isolated)
     const tst = await rpc({ jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "szigyr_test", arguments: { file, backend: "js" } } });
     expect(tst.result.structuredContent).toMatchObject({ ok: true, results: [{ name: "add", ok: true }] });
 
     const mut = await rpc({ jsonrpc: "2.0", id: 11, method: "tools/call", params: { name: "szigyr_mutate", arguments: { file, noCache: true } } });
     expect(mut.result.structuredContent.summary.killed).toBeGreaterThan(0);
+
+    const runFile = join(dir, "run-main.szigyr");
+    writeFileSync(runFile, `export function main(sys: System): void {\n  sys.log.info("hello-mcp");\n}\n`);
+    const runRes = await rpc({ jsonrpc: "2.0", id: 14, method: "tools/call", params: { name: "szigyr_run", arguments: { file: runFile, backend: "js" } } });
+    expect(runRes.result.structuredContent).toMatchObject({ ok: true, stdout: "hello-mcp\n", diagnostics: [] });
 
     // Protocol errors (-32700, -32601, -32602)
     inStream.write("{bad json\n");
@@ -263,7 +320,28 @@ describe("resident incremental checker, --watch mode, and stdio MCP server", () 
     rl.close();
     expect(await mcpPromise).toBe(0);
 
-    // Real subprocess test: `node packages/compiler/src/cli.ts mcp`
+    // Real subprocess test: `node packages/compiler/src/cli.ts mcp` + noisy npm console.log isolation
+    const modDir = join(dir, "node_modules/noisy");
+    mkdirSync(modDir, { recursive: true });
+    writeFileSync(join(modDir, "package.json"), JSON.stringify({ name: "noisy", version: "1.0.0", type: "module", main: "index.mjs" }));
+    writeFileSync(join(modDir, "index.mjs"), `console.log("NOISE_ON_STDOUT"); export function poke() { console.log("NOISE_ON_CALL"); return 42; }\n`);
+    const noisyTest = join(dir, "noisy.test.szigyr");
+    writeFileSync(noisyTest, [
+      `import { poke } from "npm:noisy";`,
+      `test("noisy npm isolated", (t: Test) => {`,
+      `  t.ok(true);`,
+      `});`,
+      `export function keepPoke(sys: System): void { sys.js.call(poke, []); }`,
+    ].join("\n"));
+    const noisyRun = join(dir, "noisy-run.szigyr");
+    writeFileSync(noisyRun, [
+      `import { poke } from "npm:noisy";`,
+      `export function main(sys: System): void {`,
+      `  const r = sys.js.call(poke, []);`,
+      `  if (r.kind === "ok") sys.log.info("ran");`,
+      `}`,
+    ].join("\n"));
+
     const cliPath = join(import.meta.dirname, "../src/cli.ts");
     const child = spawn(process.execPath, [cliPath, "mcp"], { stdio: ["pipe", "pipe", "pipe"] });
     let subOut = "", subErr = "";
@@ -271,13 +349,21 @@ describe("resident incremental checker, --watch mode, and stdio MCP server", () 
     child.stderr.on("data", (d) => { subErr += d.toString("utf8"); });
     child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} })}\n`);
     child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "szigyr_check", arguments: { file } } })}\n`);
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "szigyr_test", arguments: { file: noisyTest, backend: "js" } } })}\n`);
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "szigyr_run", arguments: { file: noisyRun, backend: "js" } } })}\n`);
     child.stdin.end();
     const exitCode = await new Promise<number | null>((res) => child.on("close", res));
     expect(exitCode, subErr).toBe(0);
+    expect(subOut).not.toContain("NOISE_ON_STDOUT");
+    expect(subOut).not.toContain("NOISE_ON_CALL");
     const subLines = jsonLines(subOut);
-    expect(subLines).toHaveLength(2);
+    expect(subLines).toHaveLength(4);
     expect(subLines[0]!.id).toBe(1);
     expect(subLines[1]!.id).toBe(2);
     expect(subLines[1]!.result.structuredContent.ok).toBe(true);
+    expect(subLines[2]!.id).toBe(3);
+    expect(subLines[2]!.result.structuredContent).toMatchObject({ ok: true, results: [{ name: "noisy npm isolated", ok: true }] });
+    expect(subLines[3]!.id).toBe(4);
+    expect(subLines[3]!.result.structuredContent).toMatchObject({ ok: true, stdout: "ran\n" });
   }, 60000);
 });
