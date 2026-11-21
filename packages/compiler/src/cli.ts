@@ -4,13 +4,13 @@ import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from 
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
-import { analyze, buildBrowser, buildNode, check, CLI_NAME, CliError, createParser, explainCode, mutate, queryFile, run, type Backend, type BrowserBuildMode, type Diagnostic, type NodeBuildBackend, type NodeBuildMode, type RunResult } from "./index.ts";
+import { analyze, buildBrowser, buildNode, check, CLI_NAME, CliError, createParser, explainCode, mutate, prove, queryFile, run, shutdownSmt, type Backend, type BrowserBuildMode, type Diagnostic, type NodeBuildBackend, type NodeBuildMode, type RunResult } from "./index.ts";
 import { serveMcp } from "./mcp.ts";
 import { runTestPass, startWatch } from "./watch.ts";
 import { CUnsupported } from "./emit-c.ts";
 import { CBuildError } from "./native.ts";
 
-const USAGE = `usage: ${CLI_NAME} <check|run|test|mutate|query|explain|build|mcp> [--json] [--watch] [--fix] [--no-cache] [--all] [--fail-on-survived] [--backend=js|c|both|wasm|all] [--target=node|browser] [--mode=app|lib] [-o <dir>] <file...|code>`;
+const USAGE = `usage: ${CLI_NAME} <check|run|test|mutate|prove|query|explain|build|mcp> [--json] [--watch] [--fix] [--no-cache] [--all] [--strict] [--timeout=<ms>] [--fail-on-survived] [--backend=js|c|both|wasm|all] [--target=node|browser] [--mode=app|lib] [--release] [-o <dir>] <file...|code>`;
 
 function lineStartsOf(text: string): number[] {
   const starts = [0];
@@ -96,6 +96,9 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
         fix: { type: "boolean" },
         "no-cache": { type: "boolean" },
         all: { type: "boolean" },
+        strict: { type: "boolean" },
+        release: { type: "boolean" },
+        timeout: { type: "string" },
         "fail-on-survived": { type: "boolean" },
         backend: { type: "string" },
         target: { type: "string" },
@@ -113,6 +116,9 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
   const fix = !!args.values.fix;
   const noCache = !!args.values["no-cache"];
   const all = !!args.values.all;
+  const strict = !!args.values.strict;
+  const release = !!args.values.release;
+  const rawTimeout = args.values.timeout as string | undefined;
   const failOnSurvived = !!args.values["fail-on-survived"];
   const rawBackend = args.values.backend as string | undefined;
   const target = args.values.target as string | undefined;
@@ -124,11 +130,18 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
   const diags = (ds: readonly Diagnostic[]): string => ds.map((d) => json ? line({ kind: "diagnostic", ...d }) : `${d.file}:${d.range.start.line}:${d.range.start.col}: ${d.severity} ${d.code}: ${d.message}\n`).join("");
   const parser = createParser(); // D161: one tsgo process for every file of this command (spawned on first use)
   try {
-    if (cmd !== "check" && cmd !== "run" && cmd !== "test" && cmd !== "mutate" && cmd !== "query" && cmd !== "explain" && cmd !== "build" && cmd !== "mcp") {
+    if (cmd !== "check" && cmd !== "run" && cmd !== "test" && cmd !== "mutate" && cmd !== "prove" && cmd !== "query" && cmd !== "explain" && cmd !== "build" && cmd !== "mcp") {
       throw new CliError(cmd ? `unknown command '${cmd}'\n${USAGE}` : USAGE);
     }
+    let timeoutMs: number | undefined;
+    if (rawTimeout !== undefined) {
+      if (!/^\d+$/.test(rawTimeout) || Number(rawTimeout) <= 0) {
+        throw new CliError(`--timeout must be a positive integer (ms), got '${rawTimeout}'\n${USAGE}`);
+      }
+      timeoutMs = Number(rawTimeout);
+    }
     if (cmd === "mcp") {
-      if (files.length || rawBackend !== undefined || noCache || watch || fix || all || failOnSurvived || target !== undefined) {
+      if (files.length || rawBackend !== undefined || noCache || watch || fix || all || strict || release || rawTimeout !== undefined || failOnSurvived || target !== undefined) {
         throw new CliError(`mcp: takes no positional arguments or build/watch/backend flags\n${USAGE}`);
       }
     } else if (cmd === "explain") {
@@ -141,8 +154,14 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
     if (fix && watch) throw new CliError(`check: --fix cannot be combined with --watch\n${USAGE}`);
     if (!["js", "c", "both", "wasm", "all"].includes(backend)) throw new CliError(`unknown backend '${backend}'\n${USAGE}`);
     if ((cmd === "mutate" || cmd === "query" || cmd === "explain") && backend !== "js") throw new CliError(`${cmd}: JS backend only (--backend=${backend} is not supported)\n${USAGE}`);
-    if (noCache && cmd !== "mutate") throw new CliError(`${cmd}: --no-cache is only supported for mutate\n${USAGE}`);
-    if (all && cmd !== "mutate") throw new CliError(`${cmd}: --all is only supported for mutate\n${USAGE}`);
+    if (cmd === "prove" && (rawBackend !== undefined || watch || fix || failOnSurvived || target !== undefined || release)) {
+      throw new CliError(`prove: unsupported flag(s)\n${USAGE}`);
+    }
+    if (release && cmd !== "build") throw new CliError(`${cmd}: --release is only supported for build\n${USAGE}`);
+    if (strict && cmd !== "prove") throw new CliError(`${cmd}: --strict is only supported for prove\n${USAGE}`);
+    if (rawTimeout !== undefined && cmd !== "prove" && cmd !== "build") throw new CliError(`${cmd}: --timeout is only supported for prove and build\n${USAGE}`);
+    if (noCache && cmd !== "mutate" && cmd !== "prove" && !(cmd === "build" && release)) throw new CliError(`${cmd}: --no-cache is only supported for mutate, prove, and build --release\n${USAGE}`);
+    if (all && cmd !== "mutate" && cmd !== "prove") throw new CliError(`${cmd}: --all is only supported for mutate and prove\n${USAGE}`);
     if (failOnSurvived && cmd !== "mutate") throw new CliError(`${cmd}: --fail-on-survived is only supported for mutate\n${USAGE}`);
     if (cmd === "build") {
       if (target !== "browser" && target !== "node") throw new CliError(`build: missing or unknown --target '${target ?? ""}' (expected --target=node or --target=browser)\n${USAGE}`);
@@ -164,14 +183,62 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
     for (const f of files) { if (!existsSync(f)) throw new CliError(`no such file: ${f}`); if (!statSync(f).isFile()) throw new CliError(`not a file: ${f}`); }
 
     if (cmd === "build") {
+      const analysis = analyze(files[0]!, parser);
+      if (analysis.diagnostics.length) { err(diags(analysis.diagnostics)); return 1; }
+      const provedRes = release && (target === "browser" || backend !== "js")
+        ? await prove(files[0]!, { analysis, all: true, cache: !noCache, parser, ...(timeoutMs !== undefined ? { timeoutMs } : {}) })
+        : undefined;
+      if (provedRes && provedRes.diagnostics.length) { err(diags(provedRes.diagnostics)); return 1; }
       const r = target === "browser"
-        ? buildBrowser(files[0]!, { outDir, mode: mode as BrowserBuildMode, parser })
-        : buildNode(files[0]!, { outDir, mode: mode as NodeBuildMode, backend: backend as NodeBuildBackend, parser });
+        ? buildBrowser(files[0]!, { outDir, mode: mode as BrowserBuildMode, analysis, parser, ...(provedRes ? { proved: provedRes.proved } : {}) })
+        : buildNode(files[0]!, { outDir, mode: mode as NodeBuildMode, backend: backend as NodeBuildBackend, analysis, parser, ...(provedRes ? { proved: provedRes.proved } : {}) });
       if (r.diagnostics.length) { err(diags(r.diagnostics)); return 1; }
       out(json
-        ? line({ kind: "build", target, mode, ...(target === "node" ? { backend } : {}), outDir: r.outDir, files: r.files })
-        : `${r.outDir} (${r.files.length} files)\n`);
+        ? line({
+          kind: "build",
+          target,
+          mode,
+          ...(target === "node" ? { backend } : {}),
+          ...(release ? { release: true, provedEliminated: r.provedEliminated ?? 0 } : {}),
+          outDir: r.outDir,
+          files: r.files,
+        })
+        : `${r.outDir} (${r.files.length} files${release ? `, release: ${r.provedEliminated ?? 0} checks eliminated` : ""})\n`);
       return 0;
+    }
+
+    if (cmd === "prove") {
+      let solver = "";
+      let fnCount = 0, proved = 0, failed = 0, unknown = 0, timeout = 0, cached = 0;
+      for (const f of files) {
+        const r = await prove(f, { cache: !noCache, all, parser, ...(timeoutMs !== undefined ? { timeoutMs } : {}) });
+        if (r.diagnostics.length) { out(diags(r.diagnostics)); return 1; }
+        solver = r.solver;
+        fnCount += r.summary.functions;
+        proved += r.summary.proved;
+        failed += r.summary.failed;
+        unknown += r.summary.unknown;
+        timeout += r.summary.timeout;
+        cached += r.summary.cached;
+        for (const fn of r.functions) {
+          if (json) {
+            out(line({ kind: "prove-fn", ...fn }));
+          } else {
+            const s = fn.summary;
+            out(`FN ${fn.file} ${fn.fn} [${fn.layer}] proved=${s.proved} failed=${s.failed} unknown=${s.unknown} timeout=${s.timeout}${fn.cached ? " cached" : ""}\n`);
+            for (const o of fn.obligations) {
+              if (o.status !== "proved") {
+                const cx = o.counterexample ? ` model=${JSON.stringify(o.counterexample)}` : "";
+                out(`  ${o.status.toUpperCase()} ${fn.file}:${o.range.start.line}:${o.range.start.col} ${o.kind} (${o.label})${cx}\n`);
+              }
+            }
+          }
+        }
+      }
+      out(json
+        ? line({ kind: "prove-summary", solver, functions: fnCount, proved, failed, unknown, timeout, cached })
+        : `proved=${proved} failed=${failed} unknown=${unknown} timeout=${timeout} (${cached} cached; ${fnCount} functions, solver=${solver})\n`);
+      return failed > 0 || (strict && (unknown > 0 || timeout > 0)) ? 1 : 0;
     }
 
     if (cmd === "query") {
@@ -308,6 +375,7 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
     err(rawJson ? line({ kind: "error", code: "CLI_ERROR", message: (e as Error).message }) : `${CLI_NAME}: ${(e as Error).message}\n`);
     return 2;
   } finally {
+    await shutdownSmt();
     parser.close();
   }
 }

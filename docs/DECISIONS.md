@@ -863,3 +863,19 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - **確かめ方**:
   - 適合テスト 6 件追加（`conformance/run/258-fs-binary-io.szigyr`、`259-isolate-alloc-and-fake-spawn.szigyr`、`conformance/reject/E2011-isolate-bad-second-param.szigyr`、`E3006-fs-readbytes-ref.szigyr`、`E3008-fs-readbytes-temp.szigyr`、`E6002-fs-readbytes-in-contract.szigyr`）。
   - `pnpm typecheck` 通過、`pnpm conformance:update-passing`・`pnpm verify:conformance` 通過（`accept=84 reject=637 run=212`、`PASSING.txt` 933 件）、`pnpm test` 通過（43 ファイル 429/429、`std.test.ts`・`builtins.test.ts`・`recovery-soundness.test.ts`・`mutate.test.ts`・`browser.test.ts` Chromium 実機・`retouch-example.test.ts` 含む）、`rtk bypass pnpm conformance` 通過（1 ファイル 1,284/1,284、JS/C/Wasm 各バックエンド）。
+
+## D174: 段階 6 静的証明（SMT ソルバ連携、`szigyr prove`、`build --release` 検査除去）（2026-11-21）
+
+- **関連**: Q289〜Q292、SPEC §10・§11
+- **SMT ソルバアダプタと `z3-solver` 依存追加（Q289）**:
+  - `packages/compiler/src/smt.ts` を新設し、環境変数 `SZIGYR_SMT` または `PATH` 上の外部 `z3` / `cvc5` を優先検出し、不在時は npm の `z3-solver`（`5.4.1`、ルート `devDependencies`）へ自動フォールバックする標準 SMT-LIB2 バッチ実行器（`QF_LIA` / `QF_NIA`、反例向け遅延 `(get-value ...)`、スレッド終了用 `shutdownSmt()`）を実装した。
+  - `CLAUDE.md` の最小依存原則に対し、外部ソルバ未導入の環境でも `szigyr prove` / `build --release` / テストが設定不要で動作する要件を満たすため `z3-solver` を唯一の新規依存として追加した。
+- **検証条件生成と自動不変条件（Q290・Q291）**:
+  - `packages/compiler/src/prove.ts` を新設し、非 `unsafe`・非ジェネリック・関数引数なしの `strict` / `rt` 関数および契約・ループ付き関数を対象に、関数単位・非同期（外部バイナリは並列度 4、`z3-wasm` は直列）・`.szigyr-cache/prove.json` 差分キャッシュつきで `T001`（整数算術／単項 `-`／符号付き `divTrunc(MIN, -1)`）・`T002`（添字および `.slice(a, b)`）・`T003`（整数→整数変換）・`T004`（呼出側 `requires`）・`T005`（`ensures`）・`T007`（`divTrunc`/`rem` ゼロ除算）・`T009`（シフト量）・`T010`（ループ `invariant`）を検証する。
+  - 正規カウント `for` ループについては初期値・単調歩幅・終端条件から範囲不変条件候補を生成し、base case と帰納ステップの両方を SMT で証明できた候補だけを採用する。浮動小数演算・ビット演算・未モデル呼出は過近似フラグ（`exact: false` / `State.inexact`）により fail-closed で `"unknown"` 扱いとし、誤反例や誤除去を防ぐ。
+- **リリース限定検査除去と CLI/MCP 統合（Q292）**:
+  - `packages/compiler/src/emit-c.ts` に `{ proved }` オプションを追加し、`szigyr build --release`（`build-node.ts` / `build-browser.ts` 経由）時のみ、非ジェネリック実体で全義務が `"proved"` のアンカー（`sts_chk`・`sts_sub`・`STS_AOP`・`STS_DIV`・`STS_REM`・`sts_cvti`/`sts_cvtu`/`sts_cvti_u64`・`sts_amt`/`sts_amt64`・`T005`/`T010` トラップ）および全呼出元で `requires` が証明された非公開関数の先頭 `T004` を除去する（公開関数や `managed`／未証明呼出元を持つ関数の `requires` は保持し、符号付き `rem` は `b == -1 ? 0 : a % b` により C 未定義動作を回避する）。通常の `run` / `test` / 既定 `build` では全検査を維持する。
+  - `packages/compiler/src/cli.ts` に `szigyr prove [--json] [--no-cache] [--all] [--strict] [--timeout=<ms>]` および `build --release` を、`packages/compiler/src/mcp.ts` に `szigyr_prove` ツールを追加した（`index.ts` から `prove`・`shutdownSmt` 等を再エクスポート）。
+- **確かめ方**:
+  - `packages/compiler/test/prove.test.ts`（7 件通過）でソルバアダプタ、`dot`/`saxpy`/`prefix`/`stencil`/`particles` の範囲検査・添字算術除去（未証明データ演算・ジェネリック・公開 `requires` 保持を含む）、`T001`〜`T010` 全種、反例と `a[i]=b[i]` / `divTrunc(MIN,-1)` / ビット演算の健全性、`buildNode`（C/Wasm）・`buildBrowser` リリース実行一致、キャッシュ・CLI・MCP を検証。
+  - `pnpm typecheck` 通過、`pnpm verify:conformance` 通過（`accept=84 reject=637 run=212`）、`pnpm test` 通過（44 ファイル 436/436、`resident-watch-mcp.test.ts` の 7 ツール期待更新含む）、`rtk bypass pnpm conformance` 通過（1 ファイル 1,284/1,284）、`pnpm bench` 通過（`dot_f32` 1.02x、`saxpy_f32` 1.18x、`prefix_i32` 1.29x、`stencil_f64` 1.03x、`particles_aos_f32` 1.40x）。

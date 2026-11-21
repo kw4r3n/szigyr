@@ -1,6 +1,6 @@
 # ロードマップ
 
-**現在の段階: 5（完了・v1 再設計完了）**
+**現在の段階: 6（完了）**
 
 各段階は、単独で役に立つところで区切ってある。段階を終えたら、完了条件を満たした証拠をその段階の末尾に追記し、「現在の段階」を進める。
 数値はすべて目標値で、根拠のある見積もりではない。
@@ -226,10 +226,19 @@
 
 ## 段階 6: 静的証明
 
-- 契約を SMT ソルバで証明する。関数単位、非同期、キャッシュつき。
-- 証明できた範囲検査、溢れ検査、契約検査をリリースビルドから取り除く。
+- [x] 契約を SMT ソルバで証明する。関数単位、非同期、キャッシュつき。
+- [x] 証明できた範囲検査、溢れ検査、契約検査をリリースビルドから取り除く。
 
 完了条件: strict 層の関数で、証明により範囲検査が消える。
+
+### 完了の証拠（2026-11-21）
+
+- **決定・仕様**: `docs/OPEN_QUESTIONS.md`（Q289〜Q292）、`docs/SPEC.md`（§10・§11）、`docs/DECISIONS.md`（D174）。
+- **ソルバアダプタ・検証器**: `packages/compiler/src/smt.ts`（`SZIGYR_SMT` / `z3` / `cvc5` 自動検出および `z3-solver` Wasm フォールバック）と `packages/compiler/src/prove.ts`（関数単位・非同期・`.szigyr-cache/prove.json` キャッシュ付き SMT-LIB2 証明器。`T001`/`T002`/`T003`/`T004`/`T005`/`T007`/`T009`/`T010` 検証、正規カウント `for` ループの SMT 検証済み自動不変条件、反例モデル、`remainingRtTrapSites` 算出、未モデル演算の fail-closed `"unknown"`）。
+- **リリース限定検査除去と導線**: `emit-c.ts`（`{ proved }` 指定時かつ非ジェネリック関数のみ除去、公開関数 `requires` は保持）、`build-node.ts`、`build-browser.ts`、`cli.ts`（`szigyr prove [--json] [--no-cache] [--all] [--strict] [--timeout=<ms>]`、`szigyr build --release`）、`mcp.ts`（`szigyr_prove`）。通常の `run` / `test` / 既定 `build` は全実行時検査を保持。
+- **検証**:
+  - `packages/compiler/test/prove.test.ts`（7 件通過）で `dot`/`saxpy`/`prefix`/`stencil`/`particles` の範囲検査・添字算術検査の証明とリリース C コードからの `sts_chk(` 除去（`prefix` データ加算の未証明 `STS_AOP` やジェネリック具体化・公開 `requires` の保持を含む）、`T001`〜`T010`・反例出力・`buildNode`（C/Wasm）および `buildBrowser` リリース実行一致・キャッシュ・CLI・MCP を確認。
+  - `pnpm typecheck` 通過、`pnpm verify:conformance` 通過（`accept=84 reject=637 run=212`）、`pnpm test` 通過（44 ファイル 436/436）、`rtk bypass pnpm conformance` 通過（1 ファイル 1,284/1,284）、`pnpm bench` 通過（`dot_f32` 1.02x、`saxpy_f32` 1.18x、`prefix_i32` 1.29x、`stencil_f64` 1.03x、`particles_aos_f32` 1.40x）。
 
 ## 保留
 

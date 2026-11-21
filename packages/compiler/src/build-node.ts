@@ -13,6 +13,7 @@ import { analyze, cOnlyDiagnostic, checkMain, type Analysis } from "./index.ts";
 import { canonPath } from "./modules.ts";
 import { compileNativeAddon } from "./native.ts";
 import type { Parser } from "./parse.ts";
+import type { ProvedChecks } from "./prove.ts";
 import { compileWasm } from "./wasm.ts";
 
 export type NodeBuildMode = "app" | "lib";
@@ -24,12 +25,14 @@ export interface NodeBuildOptions {
   backend?: NodeBuildBackend;
   analysis?: Analysis;
   parser?: Parser;
+  proved?: ProvedChecks;
 }
 
 export interface NodeBuildResult {
   readonly diagnostics: Diagnostic[];
   readonly outDir: string;
   readonly files: string[];
+  readonly provedEliminated?: number;
 }
 
 const RT_SRC_DIR = fileURLToPath(new URL("../../runtime-js/src/", import.meta.url));
@@ -83,15 +86,16 @@ export function buildNode(entryFile: string, opts: NodeBuildOptions): NodeBuildR
   let hasNative = false;
   let wasmMeta: WasmMeta | null = null;
   let hasWasm = false;
+  const cOpts = opts.proved ? { proved: opts.proved } : undefined;
   if (backend === "c") {
-    c = emitC(a.decls!, "native");
+    c = emitC(a.decls!, "native", cOpts);
     if (c) {
       compileNativeAddon(c.c, join(outDir, "program.node"), c.pkgs);
       written.push("program.node");
       hasNative = true;
     }
   } else if (backend === "wasm") {
-    c = emitC(a.decls!, "wasm");
+    c = emitC(a.decls!, "wasm", cOpts);
     const meta = c?.meta && (Object.keys(c.meta.fns).length > 0 || (c.meta.audio && Object.keys(c.meta.audio).length > 0)) ? c.meta : null;
     if (c && meta) {
       const dispMap = new Map(a.decls!.mods.map((m) => [m.file, keyOf(m.pf.path)]));
@@ -319,5 +323,5 @@ export function buildNode(entryFile: string, opts: NodeBuildOptions): NodeBuildR
     chmodSync(join(outDir, "main.js"), 0o755);
   }
 
-  return { diagnostics: [], outDir, files: written };
+  return { diagnostics: [], outDir, files: written, ...(opts.proved ? { provedEliminated: c?.eliminated ?? 0 } : {}) };
 }

@@ -179,7 +179,7 @@ describe("resident incremental checker, --watch mode, and stdio MCP server", () 
     expect((await runCli(["mcp", entry])).code).toBe(2);
   });
 
-  it("serves JSON-RPC 2.0 MCP tools in-process (all 6 tools, multi-file overlays, errors) and via isolated stdio CLI subprocess", async () => {
+  it("serves JSON-RPC 2.0 MCP tools in-process (all 7 tools, multi-file overlays, errors) and via isolated stdio CLI subprocess", async () => {
     const dir = makeTmp("szigyr-mcp-");
     const file = join(dir, "sample.szigyr");
     writeFileSync(file, `export function add(a: i32, b: i32): i32 {\n  "use rt";\n  return a + b;\n}\ntest("add", (t: Test) => {\n  t.eq(add(2, 3), 5);\n});\n`);
@@ -221,7 +221,7 @@ describe("resident incremental checker, --watch mode, and stdio MCP server", () 
 
     const list = await rpc({ jsonrpc: "2.0", id: 3, method: "tools/list" });
     const names = (list.result.tools as { name: string }[]).map((t) => t.name);
-    expect(names).toEqual(["szigyr_check", "szigyr_query", "szigyr_explain", "szigyr_test", "szigyr_mutate", "szigyr_run"]);
+    expect(names).toEqual(["szigyr_check", "szigyr_query", "szigyr_explain", "szigyr_test", "szigyr_mutate", "szigyr_run", "szigyr_prove"]);
 
     // resources/list & resources/read
     const resList = await rpc({ jsonrpc: "2.0", id: 31, method: "resources/list" });

@@ -17,6 +17,8 @@ import { loadNative, nativePathOf, nativeProgOf } from "./native.ts";
 import { loadWasm } from "./wasm.ts";
 import { explainCode, type ExplainEntry } from "./explain.ts";
 import { hasTestType, mutateFile, type MutateOptions, type MutateResult } from "./mutate.ts";
+import { proveFile, type ObligationKind, type ObligationStatus, type ProvedChecks, type ProveFnResult, type ProveObligation, type ProveOptions, type ProveResult } from "./prove.ts";
+import { detectSolver, parseGetValue, runSmtBatch, shutdownSmt } from "./smt.ts";
 import { loadNpmModule } from "./bundle-npm.ts";
 import { hasCap, show, type Capability, type Type } from "./types.ts";
 import * as rt from "../../runtime-js/src/index.ts";
@@ -30,7 +32,9 @@ export * from "./diagnostics.ts";
 export * from "./names.ts";
 export { explainCode, type ExplainEntry };
 export { createParser, type Parser } from "./parse.ts";
+export { detectSolver, parseGetValue, runSmtBatch, shutdownSmt };
 export type { BaselineFailure, MutantReport, MutateOptions, MutateResult, MutateSummary, SkippedTarget, Witness } from "./mutate.ts";
+export type { ObligationKind, ObligationStatus, ProvedChecks, ProveFnResult, ProveObligation, ProveOptions, ProveResult };
 
 /** A user input mistake the CLI reports without a stack, exit 2 (Q252). */
 export class CliError extends Error {}
@@ -373,6 +377,9 @@ async function runTestFileNow(entryFile: string, backend?: Backend, analysis?: A
 
 /** `sts mutate`: JS-only mutation testing with diff cache and witness search (SPEC §16.2, Q275–Q277). */
 export const mutate = (entryFile: string, opts: MutateOptions = {}): Promise<MutateResult> => exclusive(() => mutateFile(entryFile, opts));
+
+/** `szigyr prove`: static SMT proof verification per function with `.szigyr-cache/prove.json` cache (Stage 6, Q289-Q292). */
+export const prove = (entryFile: string, opts: ProveOptions = {}): Promise<ProveResult> => exclusive(() => proveFile(entryFile, opts));
 
 export interface QueryField {
   readonly name: string;

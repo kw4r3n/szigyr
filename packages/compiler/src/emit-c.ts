@@ -8,6 +8,7 @@ import type { CFnSym, FnSym, Module, Program } from "./modules.ts";
 import { layout, elemDesc, type Lay } from "./layout.ts";
 import { DETMATH_PATH } from "./detmath.ts";
 import { cPointeeOf, cTypeOf, parseCSpec } from "./cdecl.ts";
+import type { ProvedChecks } from "./prove.ts";
 import { AUTHORITIES, I64_MIN, isCopy, isCopyValueRecord, isInt, isInt64, isOwned, isTaggedUnion, kindOf, nonNull, isNull, isBool, parseExactInt, unref, show, subst, type Field, type NumName, type Type } from "./types.ts";
 
 /** A construct the C backend does not translate yet: the run stops with this error (never a silent fallback to JS). */
@@ -21,7 +22,7 @@ export class CUnsupported extends Error {
 export type CTarget = "native" | "wasm";
 export interface WasmAudioSpec { init: string; render: string; free: string }
 export interface WasmMeta { files: string[]; poss: [number, number, number][]; lits: string[]; fns: Record<string, { nargs: number; isVoid: boolean }>; audio?: Record<string, WasmAudioSpec> }
-export interface EmittedC { c: string; keys: Map<Node, string>; pkgs: string[]; meta?: WasmMeta }
+export interface EmittedC { c: string; keys: Map<Node, string>; pkgs: string[]; meta?: WasmMeta; eliminated?: number }
 
 const RANGE: Record<string, [string, string]> = {
   i8: ["-128LL", "127LL"], i16: ["-32768LL", "32767LL"], i32: ["-2147483648LL", "2147483647LL"],
@@ -68,11 +69,12 @@ interface Inst { f: FnSym; m: Map<number, Type>; fns: Map<number, FnSym>; name: 
 const fnParamIdx = (f: FnSym): number[] => f.sig.params.flatMap((pt, i) => (unref(pt).k === "fn" ? [i] : []));
 
 
-export function emitC(prog: Program, target: CTarget = "native"): EmittedC | undefined {
+export function emitC(prog: Program, target: CTarget = "native", opts?: { proved?: ProvedChecks }): EmittedC | undefined {
   // §12 (D117): managed DetMath calls run the JS module directly; C compiles only DetMath functions reached from strict / rt.
   const resolveFn = (mod: Module, name: string): FnSym | undefined => { const v = prog.lookupValue(mod, name); return v?.k === "fn" ? v : undefined; }; // across imports and re-exports (Q226)
   const fns = prog.fns.filter((f) => f.layer !== "managed" && f.mod.pf.path !== DETMATH_PATH);
   if (!fns.length) return undefined;
+  let eliminated = 0;
   const keys = new Map<Node, string>();
   const insts = new Map<string, Inst>();
   const queue: Inst[] = [];
@@ -592,10 +594,17 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
     }
     isVoid(): boolean { return this.isVoidT(this.i.ret); }
     isVoidT(r: Type): boolean { return r.k === "prim" && (r.name === "void" || r.name === "never"); }
+    isProved(n: Node): boolean {
+      if (!opts?.proved || this.i.m.size > 0 || this.i.fns.size > 0) return false;
+      if (!opts.proved.anchors.has(n)) return false;
+      eliminated++;
+      return true;
+    }
 
     /** §9.1: every ensures predicate, with `r` bound to `rv` (absent for void). */
     checkEnsures(rv: string | undefined): void {
       for (const a of this.ensures) {
+        if (this.isProved((a.parent as ts.CallExpression).expression)) continue;
         const p = a.parameters[0]?.name as ts.Identifier | undefined;
         this.emit("{");
         this.scopes.push(new Map(p && rv !== undefined ? [[p.text, { c: rv, t: this.i.ret, ptr: false }]] : []));
@@ -656,7 +665,18 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
           if (e.kind === K.StringLiteral) return; // directive
           if (e.kind === K.CallExpression && (e as ts.CallExpression).expression.kind === K.Identifier) {
             const c = e as ts.CallExpression, name = (c.expression as ts.Identifier).text;
-            if (name === "requires" || name === "invariant") { const v = this.ex(c.arguments[0]!); this.emit(`if (!${v}) sts_trap(${name === "requires" ? 4 : 10}, ${this.pos(c.expression)});`); return; }
+            if (name === "requires") {
+              if (opts?.proved?.provedPrivateRequires.has(this.f) && this.i.m.size === 0 && this.i.fns.size === 0) { eliminated++; return; }
+              const v = this.ex(c.arguments[0]!);
+              this.emit(`if (!${v}) sts_trap(4, ${this.pos(c.expression)});`);
+              return;
+            }
+            if (name === "invariant") {
+              if (this.isProved(c.expression)) return;
+              const v = this.ex(c.arguments[0]!);
+              this.emit(`if (!${v}) sts_trap(10, ${this.pos(c.expression)});`);
+              return;
+            }
           }
           this.exVoid(e);
           return;
@@ -898,7 +918,7 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
           const a = e as ts.ElementAccessExpression;
           const { data, len, et } = this.seq(a.expression);
           const i = this.ex(a.argumentExpression);
-          this.emit(`sts_chk(${i}, ${len}, ${this.pos(a.argumentExpression)});`);
+          if (!this.isProved(a.argumentExpression)) this.emit(`sts_chk(${i}, ${len}, ${this.pos(a.argumentExpression)});`);
           return this.t(et, elem(et, this.where).ld(data, i), e);
         }
         case K.CallExpression: return this.call(e as ts.CallExpression, false)!;
@@ -980,7 +1000,10 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
         case K.ExclamationToken: return this.t(t, `!${v}`, u);
         case K.TildeToken: return this.t(t, `(${CNUM[(t as { k: "num"; name: NumName }).name]})~${v}`, u);
         case K.MinusToken:
-          if (t.k === "num" && isInt(t)) return this.t(t, `STS_AOP(sub, ${CNUM[t.name]}, (${CNUM[t.name]})0, ${v}, ${this.pos(u)})`, u);
+          if (t.k === "num" && isInt(t)) {
+            if (this.isProved(u)) return this.t(t, `(${CNUM[t.name]})(-(${CNUM[t.name]})(${v}))`, u);
+            return this.t(t, `STS_AOP(sub, ${CNUM[t.name]}, (${CNUM[t.name]})0, ${v}, ${this.pos(u)})`, u);
+          }
           return this.t(t, `-${v}`, u);
       }
       throw this.no(u, "this prefix operator");
@@ -993,19 +1016,25 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
       if (isInt(t)) {
         switch (o) {
           // the builtins check the exact result against the range of `c`; unlike a widened compare they keep loop-carried values in registers (D108)
-          case "+": case "-": return `STS_AOP(${o === "+" ? "add" : "sub"}, ${c}, ${l}, ${r}, ${this.pos(anchor)})`;
+          case "+": case "-":
+            if (this.isProved(anchor)) return `(${c})((${c})(${l}) ${o} (${c})(${r}))`;
+            return `STS_AOP(${o === "+" ? "add" : "sub"}, ${c}, ${l}, ${r}, ${this.pos(anchor)})`;
           case "*":
+            if (this.isProved(anchor)) return `(${c})((${c})(${l}) * (${c})(${r}))`;
             if (t.name === "i64") return `STS_MULI64(${l}, ${r}, ${this.pos(anchor)})`;
             if (t.name === "u64") return `STS_MULU64(${l}, ${r}, ${this.pos(anchor)})`;
             return `STS_AOP(mul, ${c}, ${l}, ${r}, ${this.pos(anchor)})`;
           case "&": case "|": case "^": return `(${c})(${l} ${o} ${r})`;
-          case "<<":
-            if (t.name === "i64") return `(int64_t)((uint64_t)${l} << sts_amt64((uint64_t)${r}, ${this.pos(anchor)}))`;
-            if (t.name === "u64") return `(uint64_t)(${l} << sts_amt64((uint64_t)${r}, ${this.pos(anchor)}))`;
-            return t.name === "i32" ? `(int32_t)((uint32_t)${l} << sts_amt(${r}, ${this.pos(anchor)}))` : `(uint32_t)(${l} << sts_amt(${r}, ${this.pos(anchor)}))`;
+          case "<<": {
+            const amt64 = this.isProved(anchor) ? `(uint32_t)(${r})` : `sts_amt64((uint64_t)${r}, ${this.pos(anchor)})`;
+            const amt32 = this.isProved(anchor) ? `(uint32_t)(${r})` : `sts_amt(${r}, ${this.pos(anchor)})`;
+            if (t.name === "i64") return `(int64_t)((uint64_t)${l} << ${amt64})`;
+            if (t.name === "u64") return `(uint64_t)(${l} << ${amt64})`;
+            return t.name === "i32" ? `(int32_t)((uint32_t)${l} << ${amt32})` : `(uint32_t)(${l} << ${amt32})`;
+          }
           case ">>": case ">>>":
-            if (isInt64(t.name)) return `(${c})(${l} >> sts_amt64((uint64_t)${r}, ${this.pos(anchor)}))`;
-            return `(${c})(${l} >> sts_amt(${r}, ${this.pos(anchor)}))`;
+            if (isInt64(t.name)) return `(${c})(${l} >> ${this.isProved(anchor) ? `(uint32_t)(${r})` : `sts_amt64((uint64_t)${r}, ${this.pos(anchor)})`})`;
+            return `(${c})(${l} >> ${this.isProved(anchor) ? `(uint32_t)(${r})` : `sts_amt(${r}, ${this.pos(anchor)})`})`;
         }
       } else {
         switch (o) {
@@ -1075,10 +1104,10 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
       if (left.kind === K.ElementAccessExpression) {
         const a = left as ts.ElementAccessExpression;
         const { data, len, et } = this.seq(a.expression);
-        const i = this.ex(a.argumentExpression), ip = this.pos(a.argumentExpression);
+        const i = this.ex(a.argumentExpression);
         const el = elem(et, this.where);
         if (op) {
-          this.emit(`sts_chk(${i}, ${len}, ${ip});`);
+          if (!this.isProved(a.argumentExpression)) this.emit(`sts_chk(${i}, ${len}, ${this.pos(a.argumentExpression)});`);
           const cur = this.t(et, el.ld(data, i), a);
           const r = this.ex(b.right);
           const nv = this.t(et, this.arith(et, op, cur, r, b.operatorToken), b);
@@ -1086,7 +1115,7 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
           return nv;
         }
         const r = this.t(et, this.conv(this.ex(b.right), this.typeOf(b.right), et), b);
-        this.emit(`sts_chk(${i}, ${len}, ${ip});`);
+        if (!this.isProved(a.argumentExpression)) this.emit(`sts_chk(${i}, ${len}, ${this.pos(a.argumentExpression)});`);
         this.emit(el.st(data, i, r));
         return r;
       }
@@ -1245,11 +1274,16 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
             }
             if (at.k === "num" && at.name === "u64") {
               if (num.name === "u64") return this.t(num, `(${v})`, e);
+              if (this.isProved(callee)) return this.t(num, `(${CNUM[num.name]})(${v})`, e);
               const hiU = num.name === "i64" ? "9223372036854775807ULL" : RANGE[num.name]![1].replace(/LL$/, "ULL");
               return this.t(num, `(${CNUM[num.name]})sts_cvtu(${v}, ${hiU}, ${pos})`, e);
             }
-            if (num.name === "u64") return this.t(num, `sts_cvti_u64((int64_t)${v}, ${pos})`, e);
+            if (num.name === "u64") {
+              if (this.isProved(callee)) return this.t(num, `(uint64_t)(${v})`, e);
+              return this.t(num, `sts_cvti_u64((int64_t)${v}, ${pos})`, e);
+            }
             if (num.name === "i64") return this.t(num, `(int64_t)(${v})`, e);
+            if (this.isProved(callee)) return this.t(num, `(${CNUM[num.name]})(${v})`, e);
             const [lo, hi] = RANGE[num.name]!;
             return this.t(num, `(${CNUM[num.name]})sts_cvti((int64_t)${v}, ${lo}, ${hi}, ${pos})`, e);
           }
@@ -1267,7 +1301,15 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
             }
             case "divTrunc": case "rem": {
               const a = this.ex(e.arguments[0]!), b = this.ex(e.arguments[1]!);
-              return this.t(num!, `STS_${name === "rem" ? "REM" : "DIV"}(${CNUM[num!.name]}, ${a}, ${b}, ${this.pos(callee)})`, e); // in the operand type, so loops can vectorize (D108)
+              const ct = CNUM[num!.name]!;
+              if (this.isProved(callee)) {
+                if (name === "divTrunc") return this.t(num!, `(${ct})((${a}) / (${b}))`, e);
+                if (num!.name.startsWith("i")) {
+                  return this.t(num!, `({ ${ct} a_ = (${a}), b_ = (${b}); b_ == (${ct})-1 ? (${ct})0 : (${ct})(a_ % b_); })`, e);
+                }
+                return this.t(num!, `(${ct})((${a}) % (${b}))`, e);
+              }
+              return this.t(num!, `STS_${name === "rem" ? "REM" : "DIV"}(${ct}, ${a}, ${b}, ${this.pos(callee)})`, e); // in the operand type, so loops can vectorize (D108)
             }
             case "cfn": { // §14.6: the trampoline for a module-level rt function, as a Ptr to it
               const a = e.arguments[0]!;
@@ -1585,7 +1627,10 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
           case "slice": {
             const base = s.vec ? `sts_vslice(${s.vec})` : s.slice!;
             const a = this.ex(e.arguments[0]!), b = this.ex(e.arguments[1]!);
-            return this.t({ k: "gen", name: "Slice", args: [s.et] }, `sts_sub(${base}, ${a}, ${b}, ${el.z}, ${this.pos(p.name)})`, e);
+            const subExpr = this.isProved(p.name)
+              ? `({ sts_slice s_ = ${base}; uint32_t a_ = (uint32_t)(${a}), b_ = (uint32_t)(${b}); (sts_slice){ (char *)s_.data + (size_t)a_ * ${el.z}, b_ - a_ }; })`
+              : `sts_sub(${base}, ${a}, ${b}, ${el.z}, ${this.pos(p.name)})`;
+            return this.t({ k: "gen", name: "Slice", args: [s.et] }, subExpr, e);
           }
         }
       }
@@ -1764,7 +1809,7 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
       `}`,
     ].join("\n");
     const c = [rtW, ...typedefs, ...helpers, ...wbTypes, ...protos, ...cleanProtos, ...out, ...cleanBodies, ...wrappers, ...audioW, runWb].join("\n");
-    return { c, keys, pkgs: [], meta: { files, poss: posList, lits, fns: wasmFns, ...(audioInsts.length ? { audio: wasmAudio } : {}) } };
+    return { c, keys, pkgs: [], meta: { files, poss: posList, lits, fns: wasmFns, ...(audioInsts.length ? { audio: wasmAudio } : {}) }, ...(opts?.proved ? { eliminated } : {}) };
   }
 
   // §15.5: SDL3 dynamic audio host bridges (native target, loaded at runtime via dlopen only if opened).
@@ -1935,7 +1980,7 @@ export function emitC(prog: Program, target: CTarget = "native"): EmittedC | und
     `  return exports;`,
     `}`,
   ].join("\n");
-  return { c, keys, pkgs: [...pkgs] };
+  return { c, keys, pkgs: [...pkgs], ...(opts?.proved ? { eliminated } : {}) };
 
 }
 

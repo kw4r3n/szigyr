@@ -6,7 +6,7 @@ import { performance } from "node:perf_hooks";
 import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { BUILTIN_FUNCTIONS, CAPABILITY_NAMES, NAMESPACES, SPEC_RESERVED, genMembers, nsMembers, opaqueMembers, stringMembers, type Member } from "./builtins.ts";
-import { analyze, check, CLI_NAME, createParser, explainCode, mutate, queryFile, run, runTestFile, type Backend, type Parser } from "./index.ts";
+import { analyze, check, CLI_NAME, createParser, explainCode, mutate, prove, queryFile, run, runTestFile, shutdownSmt, type Backend, type Parser } from "./index.ts";
 import { GEN_ARITY, OPAQUE_NAMES, show, type GenName, type Type } from "./types.ts";
 
 export interface McpOptions {
@@ -133,6 +133,25 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: "szigyr_prove",
+    description: "Run per-function static SMT verification on a Szigyr entry file using native z3/cvc5 or bundled Z3 Wasm, returning obligation statuses, counterexample models, and remaining runtime trap sites.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        file: { type: "string", description: "Path to the entry .szigyr file." },
+        content: { type: "string", description: "Optional unsaved buffer content (disables disk prove cache for this call)." },
+        overlays: OVERLAYS_SCHEMA,
+        all: { type: "boolean", description: "Also prove locally imported modules (default: false)." },
+        noCache: { type: "boolean", description: "Disable reading/writing .szigyr-cache/prove.json (default: false)." },
+        strict: { type: "boolean", description: "Set ok=false when any obligation is unknown or timed out (default: false)." },
+        proveTimeoutMs: { type: "integer", minimum: 1, maximum: 60000, default: 2000, description: "Per-query SMT solver timeout in milliseconds (default: 2000)." },
+        timeoutMs: TIMEOUT_SCHEMA,
+      },
+      required: ["file"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 function okTool(payload: unknown, isError = false) {
@@ -154,6 +173,7 @@ class RpcError extends Error {
 type WorkerReq =
   | { readonly op: "test"; readonly file: string; readonly backend: string; readonly content?: string; readonly overlays?: Record<string, string> }
   | { readonly op: "mutate"; readonly file: string; readonly noCache: boolean; readonly all?: boolean; readonly failOnSurvived?: boolean }
+  | { readonly op: "prove"; readonly file: string; readonly noCache: boolean; readonly all?: boolean; readonly strict?: boolean; readonly proveTimeoutMs?: number; readonly content?: string; readonly overlays?: Record<string, string> }
   | { readonly op: "run"; readonly file: string; readonly backend: string; readonly content?: string; readonly overlays?: Record<string, string> };
 
 function applyOverlays(parser: Parser, file: string, content: string | undefined, overlays: Record<string, string> | undefined): string[] {
@@ -227,10 +247,26 @@ async function handleWorker(req: WorkerReq): Promise<[unknown, boolean?]> {
       const ok = !mismatch && !r0.trap;
       return [{ ok, file: req.file, backend: req.backend, diagnostics: [], stdout: r0.stdout, ...(r0.trap ? { trap: r0.trap } : {}), ...(mismatch ? { mismatch } : {}), durationMs: ms() }];
     }
+    if (req.op === "prove") {
+      applyOverlays(parser, req.file, req.content, req.overlays);
+      const useCache = !req.noCache && req.content === undefined && req.overlays === undefined;
+      const r = await prove(req.file, {
+        cache: useCache,
+        parser,
+        ...(req.all ? { all: true } : {}),
+        ...(req.proveTimeoutMs !== undefined ? { timeoutMs: req.proveTimeoutMs } : {}),
+      });
+      const { proved: _proved, ...rest } = r;
+      const ok = r.diagnostics.length === 0
+        && r.summary.failed === 0
+        && (!req.strict || (r.summary.unknown === 0 && r.summary.timeout === 0));
+      return [{ ok, file: req.file, ...rest, durationMs: ms() }];
+    }
     const r = await mutate(req.file, { cache: !req.noCache, parser, ...(req.all ? { all: true } : {}) });
     const ok = r.diagnostics.length === 0 && !r.baselineFailure && !(req.failOnSurvived && r.summary.survived > 0);
     return [{ ok, file: req.file, ...r, durationMs: ms() }];
   } finally {
+    await shutdownSmt();
     parser.close();
   }
 }
@@ -435,6 +471,31 @@ export async function serveMcp(opts: McpOptions = {}): Promise<number> {
         noCache: !!noCache,
         ...(all ? { all: true } : {}),
         ...(failOnSurvived ? { failOnSurvived: true } : {}),
+      }, timeoutMs);
+    }
+    if (name === "szigyr_prove") {
+      const { file, content, overlays, inOverlays } = parseTargetWithOverlays(name, args);
+      const noCache = args.noCache;
+      const all = args.all;
+      const strict = args.strict;
+      const proveTimeoutMs = args.proveTimeoutMs;
+      const timeoutMs = parseTimeoutMs(args.timeoutMs, name);
+      if (noCache !== undefined && typeof noCache !== "boolean") throw new RpcError(-32602, "'szigyr_prove' 'noCache' must be a boolean");
+      if (all !== undefined && typeof all !== "boolean") throw new RpcError(-32602, "'szigyr_prove' 'all' must be a boolean");
+      if (strict !== undefined && typeof strict !== "boolean") throw new RpcError(-32602, "'szigyr_prove' 'strict' must be a boolean");
+      if (proveTimeoutMs !== undefined && (typeof proveTimeoutMs !== "number" || !Number.isInteger(proveTimeoutMs) || proveTimeoutMs < 1 || proveTimeoutMs > 60_000)) {
+        throw new RpcError(-32602, "'szigyr_prove' 'proveTimeoutMs' must be a finite integer in [1, 60000]");
+      }
+      if (!inOverlays && !existsSync(file)) return okTool({ ok: false, error: `no such file: ${file}` }, true);
+      return await runWorker({
+        op: "prove",
+        file,
+        noCache: !!noCache,
+        ...(all ? { all: true } : {}),
+        ...(strict ? { strict: true } : {}),
+        ...(proveTimeoutMs !== undefined ? { proveTimeoutMs } : {}),
+        ...(content !== undefined ? { content } : {}),
+        ...(overlays !== undefined ? { overlays } : {}),
       }, timeoutMs);
     }
     throw new RpcError(-32602, `unknown tool '${name}'`);

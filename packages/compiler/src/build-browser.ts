@@ -13,6 +13,7 @@ import { emitC, type WasmMeta } from "./emit-c.ts";
 import { canonPath } from "./modules.ts";
 import { CLI_NAME } from "./names.ts";
 import type { Parser } from "./parse.ts";
+import type { ProvedChecks } from "./prove.ts";
 import { compileWasm } from "./wasm.ts";
 
 export type BrowserBuildMode = "app" | "lib";
@@ -22,12 +23,14 @@ export interface BrowserBuildOptions {
   mode?: BrowserBuildMode;
   analysis?: Analysis;
   parser?: Parser;
+  proved?: ProvedChecks;
 }
 
 export interface BrowserBuildResult {
   readonly diagnostics: Diagnostic[];
   readonly outDir: string;
   readonly files: string[];
+  readonly provedEliminated?: number;
 }
 
 const RT_SRC_DIR = fileURLToPath(new URL("../../runtime-js/src/", import.meta.url));
@@ -64,7 +67,7 @@ export function buildBrowser(entryFile: string, opts: BrowserBuildOptions): Brow
   const entryDir = dirname(entry);
   const keyOf = (absPath: string): string => (absPath === DETMATH_PATH ? "@detmath" : relative(entryDir, absPath).split("\\").join("/"));
 
-  const c = emitC(a.decls!, "wasm");
+  const c = emitC(a.decls!, "wasm", opts.proved ? { proved: opts.proved } : undefined);
   const meta: WasmMeta | null = c?.meta && (Object.keys(c.meta.fns).length > 0 || (c.meta.audio && Object.keys(c.meta.audio).length > 0)) ? c.meta : null;
   const wasmBytes = c && meta ? compileWasm(c.c) : null;
 
@@ -221,7 +224,7 @@ export function buildBrowser(entryFile: string, opts: BrowserBuildOptions): Brow
   ].join("\n"));
 
   if (mode === "app") emitOut("index.html", INDEX_HTML);
-  return { diagnostics: [], outDir, files: written };
+  return { diagnostics: [], outDir, files: written, ...(opts.proved ? { provedEliminated: c?.eliminated ?? 0 } : {}) };
 }
 
 const WORKLET_JS = [
