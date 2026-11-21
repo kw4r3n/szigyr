@@ -389,4 +389,51 @@ export function useC(): i64 { "use rt"; return C64_UMAX + i64(C64_MIN); }
     const ds = check(badConst);
     expect(ds.filter((d) => d.code === "E2009").length).toBe(2);
   }, 60_000);
+
+  it("preserves exact 64-bit integer literals in i64(lit) and u64(lit) casts across js, c, and wasm", async () => {
+    const exactFile = writeMod(`
+export function exactCasts(): string {
+  const a = u64(5558979605539197941);
+  const b = u64(18446744073709551615);
+  const c = u64(0xffffffffffffffff);
+  const d = i64(-9223372036854775808);
+  const e = i64(9223372036854775807);
+  const f = i64((9007199254740993));
+  return \`\${a}|\${b}|\${c}|\${d}|\${e}|\${f}\`;
+}
+export function rtExact(): u64 {
+  "use rt";
+  return u64(5558979605539197941);
+}
+export function main(sys: System): void {
+  sys.log.info(\`\${exactCasts()}|\${rtExact()}\`);
+}
+`);
+    expect(check(exactFile)).toEqual([]);
+    const outs: string[] = [];
+    for (const backend of ["js", "c", "wasm"] as const) {
+      const r = await run(exactFile, { backend });
+      expect(r.diagnostics, backend).toEqual([]);
+      expect(r.trap, backend).toBeNull();
+      outs.push(r.stdout.trim());
+    }
+    expect(outs[0]).toBe("5558979605539197941|18446744073709551615|18446744073709551615|-9223372036854775808|9223372036854775807|9007199254740993|5558979605539197941");
+    expect(outs[1]).toBe(outs[0]);
+    expect(outs[2]).toBe(outs[0]);
+
+    const trapBodies = [
+      `export function main(sys: System): void { const x = u64(-1); sys.log.info(\`\${x}\`); }`,
+      `export function main(sys: System): void { const x = i64(9223372036854775808.0); sys.log.info(\`\${x}\`); }`,
+      `export function main(sys: System): void { const x = i64(9223372036854775808); sys.log.info(\`\${x}\`); }`,
+      `export function main(sys: System): void { const x = u64(1.5); sys.log.info(\`\${x}\`); }`,
+    ];
+    for (const src of trapBodies) {
+      const tf = writeMod(src);
+      expect(check(tf)).toEqual([]);
+      for (const backend of ["js", "c", "wasm"] as const) {
+        const r = await run(tf, { backend });
+        expect(r.trap?.code, `${src} (${backend})`).toBe("T003");
+      }
+    }
+  }, 60_000);
 });

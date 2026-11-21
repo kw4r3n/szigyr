@@ -4,7 +4,8 @@ import type { NumType } from "./num.ts";
 const inBounds = (i: number, len: number): boolean => Number.isInteger(i) && i >= 0 && i < len;
 
 type Buf<T> = T[] | Float64Array | Float32Array | Int8Array | Int16Array | Int32Array | Uint8Array | Uint16Array | Uint32Array | BigInt64Array | BigUint64Array;
-type TypedCtor = new (n: number) => Exclude<Buf<never>, never[]>;
+export type TypedArray = Exclude<Buf<never>, never[]>;
+type TypedCtor = new (n: number) => TypedArray;
 const TYPED: Record<NumType, TypedCtor> = {
   i8: Int8Array, i16: Int16Array, i32: Int32Array, i64: BigInt64Array,
   u8: Uint8Array, u16: Uint16Array, u32: Uint32Array, u64: BigUint64Array,
@@ -204,6 +205,28 @@ export class Vec<T = unknown> {
   }
   /** Whole-vector view, for passing a Vec where a Slice parameter is expected. */
   view(): Slice<T> { return new Slice(this.buf, 0, this.len, this.cod, this); }
+  /** JS host interop (`--mode=lib`): zero-copy view of the live `0..length` elements of a numeric `Vec`. Detached if the `Vec` later reallocates. */
+  asTypedArray(): TypedArray {
+    if (this.elem === "other" || this.cod) throw new TypeError(`Vec.asTypedArray() requires a numeric Vec (got '${this.elem}')`);
+    return (this.buf as Uint8Array).subarray(0, this.len) as unknown as TypedArray;
+  }
+  /** JS host interop (`--mode=lib`): creates a numeric `Vec` from a TypedArray or array-like in one bulk copy. */
+  static fromTypedArray<T>(_alloc: unknown, src: ArrayLike<number | bigint>, elem: NumType): Vec<T> {
+    const Ctor = Object.hasOwn(TYPED, elem) ? TYPED[elem] : undefined;
+    if (!Ctor) throw new TypeError(`Vec.fromTypedArray() requires a numeric element type (got '${String(elem)}')`);
+    const n = src.length;
+    const buf = new Ctor(Math.max(n, 4));
+    if (elem === "i64" || elem === "u64") {
+      const b = buf as BigInt64Array | BigUint64Array;
+      if (src instanceof BigInt64Array || src instanceof BigUint64Array) b.set(src as never);
+      else for (let i = 0; i < n; i++) b[i] = BigInt(src[i]!);
+    } else {
+      (buf as Uint8Array).set(src as ArrayLike<number>);
+    }
+    const v = new Vec<T>(buf as Buf<T>, elem);
+    v.len = n;
+    return v;
+  }
   /** §15.2: the wire form for an isolate boundary. Numeric / packed storage crosses as an exact-length
    * ArrayBuffer (the channel transfers it, so the region moves); "other" storage as its items. */
   pack(): { elem: ElemKind; buf?: ArrayBuffer; items?: unknown[] } {

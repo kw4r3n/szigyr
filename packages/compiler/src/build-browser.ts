@@ -209,7 +209,7 @@ export function buildBrowser(entryFile: string, opts: BrowserBuildOptions): Brow
     `  const createSystem = (sysOpts = {}) => std.createBrowserSystem({ workletUrl, wasmBytes, wasmMeta: WASM_META, ...sysOpts });`,
     `  const run = (mainFn = exports.main, sysOpts = {}) => std.runMainBrowser(mainFn, { workletUrl, wasmBytes, wasmMeta: WASM_META, ...sysOpts });`,
     `  const stop = () => Promise.all([rt.stopIsolates(), std.stopBrowserAudioStreams()]);`,
-    `  return { exports, native, wasmBytes, createSystem, run, stop };`,
+    `  return { exports, native, wasmBytes, Vec: rt.Vec, createSystem, run, stop };`,
     `}`,
     ...(mode === "app" ? [
       `export async function start(options = {}) {`,

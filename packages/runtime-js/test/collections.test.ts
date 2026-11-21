@@ -42,6 +42,37 @@ describe("Vec", () => {
     v.push(3);
     expect(v.get(0)).toBe(3);
   });
+  it("asTypedArray / fromTypedArray zero-copy view and errors", () => {
+    const u8v = Vec.fromTypedArray<number>(null, new Uint8ClampedArray([10, 20, 255]), "u8");
+    const view = u8v.asTypedArray();
+    expect(view).toBeInstanceOf(Uint8Array);
+    expect([...view]).toEqual([10, 20, 255]);
+    u8v.set(1, 99);
+    expect(view[1]).toBe(99); // live view over underlying TypedArray buffer
+
+    const f32v = Vec.fromTypedArray<number>(null, [0.5, -1.25], "f32");
+    expect(f32v.asTypedArray()).toBeInstanceOf(Float32Array);
+    expect([...f32v.asTypedArray()]).toEqual([0.5, -1.25]);
+
+    const u64FromNum = Vec.fromTypedArray<bigint>(null, [1, 42], "u64");
+    expect(u64FromNum.asTypedArray()).toBeInstanceOf(BigUint64Array);
+    expect([...u64FromNum.asTypedArray()]).toEqual([1n, 42n]);
+
+    const i64FromTa = Vec.fromTypedArray<bigint>(null, new BigInt64Array([-9007199254740993n, 7n]), "i64");
+    expect(i64FromTa.asTypedArray()).toBeInstanceOf(BigInt64Array);
+    expect([...i64FromTa.asTypedArray()]).toEqual([-9007199254740993n, 7n]);
+
+    const empty = Vec.fromTypedArray<number>(null, [], "u8");
+    expect(empty.length).toBe(0);
+    expect(empty.asTypedArray().length).toBe(0);
+
+    const other = Vec.create<{ x: number }>(null, 1);
+    expect(() => other.asTypedArray()).toThrow(TypeError);
+    const rec = JSON.stringify({ t: "rec", z: 4, a: 4, f: [{ n: "x", o: 0, l: { t: "num", n: "i32", z: 4, a: 4 } }] }) as `{${string}`;
+    const packed = Vec.create<{ x: number }>(null, 1, rec);
+    expect(() => packed.asTypedArray()).toThrow(TypeError);
+    expect(() => Vec.fromTypedArray(null, [1], "toString" as never)).toThrow(TypeError);
+  });
 });
 
 describe("Slice", () => {

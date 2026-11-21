@@ -9,7 +9,7 @@ import { isDeterministic } from "./determinism.ts";
 import { isGeneratable } from "./gendesc.ts";
 import {
   AUDIO_CONFIG_RECORD, BOOL, ERROR, ERROR_RECORD, F64, NEVER, NULL, NUM_NAMES, STR, UNKNOWN, USIZE, VOID, assignable, audioStateOk, bindTParams, borrowOk, boxable, comparable, field, fn, gen, hasArenaBuf, hasAuthority, hasCap, hasInt64, hasLayout, hasPtr, hasRawPtr, hasTParam,
-  isAuthority, isBool, isCopy, isInt, isNative, isNull, isNum, isOwned, isOwnedCap, isStr, movesLike, holdsOwned, ownedDeep, ptrTargetOk, isTaggedUnion, kindOf, keyOk, intLiteralFits, literalFits, nonNull, nullable, num, opaque, parseExactInt, result, resultParts,
+  isAuthority, isBool, isCopy, isInt, isInt64, isNative, isNull, isNum, isOwned, isOwnedCap, isStr, movesLike, holdsOwned, ownedDeep, ptrTargetOk, isTaggedUnion, kindOf, keyOk, intLiteralFits, literalFits, nonNull, nullable, num, opaque, parseExactInt, result, resultParts,
   same, sendable, show, subst, tparamHasCap, unify, union, unref, castable, collectTParams, layerOk, type FnType, type NumName, type Type,
   hasLoneSurrogate,
 } from "./types.ts";
@@ -1381,6 +1381,20 @@ function fnArgRef(c: Checker, a: ts.Expression, target: Layer): { ref: FnArgRef;
   return undefined;
 }
 
+function exactInt64Lit(c: Checker, e: ts.Expression, target: "i64" | "u64"): boolean {
+  let cur = e;
+  while (cur.kind === K.ParenthesizedExpression) cur = (cur as ts.ParenthesizedExpression).expression;
+  let neg = false;
+  if (cur.kind === K.PrefixUnaryExpression && (cur as ts.PrefixUnaryExpression).operator === K.MinusToken) {
+    neg = true;
+    cur = (cur as ts.PrefixUnaryExpression).operand;
+  }
+  if (cur.kind !== K.NumericLiteral) return false;
+  const raw = cur.getText(c.fx.mod.sf);
+  if (raw.includes(".") || (!/^0[xXbBoO]/.test(raw) && /[eE]/.test(raw))) return false;
+  return intLiteralFits(parseExactInt(raw, neg), target);
+}
+
 function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, want: Type | undefined): Type {
   const name = callee.text;
   const args = e.arguments;
@@ -1391,9 +1405,11 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
   };
   if ((NUM_NAMES as readonly string[]).includes(name)) { // conversions (§3.1, Q034)
     if (!arity(1)) return ERROR;
-    const t = expr(c, args[0]!);
+    const target = name as NumName;
+    const wantArg = isInt64(target) && exactInt64Lit(c, args[0]!, target) ? num(target) : undefined;
+    const t = expr(c, args[0]!, wantArg);
     if (!isErr(t) && !isNum(t)) c.at("E2002", args[0]!, `cannot convert '${show(t)}'`);
-    return num(name as NumName);
+    return num(target);
   }
   switch (name) {
     case "wrapAdd": case "wrapSub": case "wrapMul": case "divTrunc": case "rem": {

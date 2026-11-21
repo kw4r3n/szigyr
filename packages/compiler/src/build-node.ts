@@ -286,7 +286,7 @@ export function buildNode(entryFile: string, opts: NodeBuildOptions): NodeBuildR
     `    const trap = own ? (cTrap ?? own) : (iso ?? cTrap);`,
     `    return { stdout, stderr, trap };`,
     `  };`,
-    `  return { exports, native, createSystem, run, stop };`,
+    `  return { exports, native, Vec: rt.Vec, createSystem, run, stop };`,
     `}`,
     ...(mode === "app" ? [
       `export async function start(options = {}) {`,
