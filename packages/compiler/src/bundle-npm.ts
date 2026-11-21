@@ -17,7 +17,7 @@ export interface NpmBundleResult {
 export function emitNpmPreamble(entries: ReadonlyMap<string, string>): { header: string[]; mapDecl: string } {
   const list = [...entries.entries()];
   const header = list.map(([, rel], i) => `import * as __npm${i} from ${JSON.stringify(rel)};`);
-  const unwrap = list.length ? `const __unwrap = (m) => (m && m.__stsCjs ? m.default : m);\n` : "";
+  const unwrap = list.length ? `const __unwrap = (m) => (m && m.__szCjs ? m.default : m);\n` : "";
   const pairs = list.map(([spec], i) => `${JSON.stringify(spec)}: __unwrap(__npm${i})`).join(", ");
   return { header, mapDecl: `${unwrap}const BUNDLED_NPM = { ${pairs} };` };
 }
@@ -230,7 +230,7 @@ export function bundleNpmImports(
 
     let code: string;
     if (classified.kind === "json") {
-      code = `export const __stsCjs = true;\nexport default ${classified.src.trim()};\n`;
+      code = `export const __szCjs = true;\nexport default ${classified.src.trim()};\n`;
     } else if (classified.kind === "cjs") {
       code = rewriteCjs(absPath, classified.src, origLabel);
     } else {
@@ -286,7 +286,7 @@ export function bundleNpmImports(
       `(function (module, exports, require) {`,
       body,
       `})(__mod, __mod.exports, __req);`,
-      `export const __stsCjs = true;`,
+      `export const __szCjs = true;`,
       `export default __mod.exports;`,
       "",
     ].join("\n");
@@ -406,7 +406,7 @@ export function bundleNpmImports(
 export function unwrapImportedNpm(mod: unknown): unknown {
   if (!mod || typeof mod !== "object") return mod;
   const rec = mod as Record<string, unknown>;
-  if (rec.__stsCjs) return rec.default;
+  if (rec.__szCjs) return rec.default;
   const def = rec.default;
   if (def !== null && (typeof def === "object" || typeof def === "function")) {
     const keys = Object.keys(rec);

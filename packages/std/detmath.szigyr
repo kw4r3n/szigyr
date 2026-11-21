@@ -1,4 +1,4 @@
-// DetMath: the deterministic f64 math library of SPEC §12 (Q191), written in strict STS.
+// DetMath: the deterministic f64 math library of SPEC §12 (Q191), written in strict Szigyr.
 // The compiler adds this module to a program that uses `DetMath.<name>`, imported under a
 // name users cannot write; users cannot import this module (§1, §12). Every function is
 // "use rt" and, by construction, has an empty trap list: only f64 arithmetic, comparisons,

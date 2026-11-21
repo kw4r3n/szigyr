@@ -3,18 +3,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import { check } from "../src/index.ts";
-import { ensureStscb } from "./stscb.ts";
+import { ensureSzcb } from "./szcb.ts";
 
 // D160: the pkg-config answers are cached per process; a changed PKG_CONFIG_PATH must not return the earlier answer.
 it("the header check follows PKG_CONFIG_PATH changes within one process (D160)", () => {
-  const dir = mkdtempSync(join(tmpdir(), "sts-hc-"));
+  const dir = mkdtempSync(join(tmpdir(), "szigyr-hc-"));
   const f = join(dir, "main.szigyr");
-  writeFileSync(f, `declare module "c:stscb:stscb.h" {\n  function stscb_call(ffi: Ffi, f: Ptr<(ud: Ptr<void>, x: i32) => i32>, ud: Ptr<void>, x: i32): i32;\n}\nimport { stscb_call } from "c:stscb:stscb.h";\nexport function g(ffi: Ffi, f: Ptr<(ud: Ptr<void>, x: i32) => i32>, ud: Ptr<void>): i32 {\n  "use owned";\n  "use unsafe";\n  return stscb_call(ffi, f, ud, 1);\n}\n`);
+  writeFileSync(f, `declare module "c:szcb:szcb.h" {\n  function szcb_call(ffi: Ffi, f: Ptr<(ud: Ptr<void>, x: i32) => i32>, ud: Ptr<void>, x: i32): i32;\n}\nimport { szcb_call } from "c:szcb:szcb.h";\nexport function g(ffi: Ffi, f: Ptr<(ud: Ptr<void>, x: i32) => i32>, ud: Ptr<void>): i32 {\n  "use owned";\n  "use unsafe";\n  return szcb_call(ffi, f, ud, 1);\n}\n`);
   const saved = process.env.PKG_CONFIG_PATH;
   try {
     delete process.env.PKG_CONFIG_PATH;
-    if (!check(f).some((d) => d.code === "E2009")) return; // stscb is installed system-wide: nothing to observe
-    ensureStscb();
+    if (!check(f).some((d) => d.code === "E2009")) return; // szcb is installed system-wide: nothing to observe
+    ensureSzcb();
     if (!process.env.PKG_CONFIG_PATH) return; // the fixture could not be built (README: such cases skip)
     expect(check(f).filter((d) => d.severity === "error")).toEqual([]);
   } finally {
@@ -23,7 +23,7 @@ it("the header check follows PKG_CONFIG_PATH changes within one process (D160)",
 });
 
 it("attaches ccStderr in E2009 data when header probe fails compilation", () => {
-  const dir = mkdtempSync(join(tmpdir(), "sts-hc-err-"));
+  const dir = mkdtempSync(join(tmpdir(), "szigyr-hc-err-"));
   const incDir = join(dir, "inc");
   const pcDir = join(dir, "pc");
   writeFileSync(join(dir, "main.szigyr"), `declare module "c:badhdr:bad.h" {\n  function bad_fn(ffi: Ffi, x: i32): i32;\n}\nimport { bad_fn } from "c:badhdr:bad.h";\nexport function g(ffi: Ffi): i32 { "use owned"; "use unsafe"; return bad_fn(ffi, 1); }\n`);

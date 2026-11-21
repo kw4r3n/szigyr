@@ -12,7 +12,7 @@ Put it in `accept/`, `reject/` or `run/`. The header lives in the entry file, fr
      (trap code and position; stdout up to the trap is still compared). Run also requires zero diagnostics.
      No trap line means no trap is allowed. A case with only `expect-trap` (no output lines) does not compare stdout.
 2. `// stage: N` directly after: the ROADMAP stage that must pass this case (required).
-   `STS_STAGE=N` runs only cases with stage <= N.
+   `SZIGYR_STAGE=N` runs only cases with stage <= N.
 3. Optional `// backend: c` directly after the `// stage: N` line (SPEC §14.7): the case is
    C-only. A run case then runs on the C backend alone; on the JS backend it must execute
    nothing and stop with E4009. If a pkg-config package named by the case's `c:` specifiers

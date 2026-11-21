@@ -10,7 +10,7 @@
 typedef struct { float x, y, vx, vy; } P;
 
 static double now_ms(void) { struct timespec t; clock_gettime(CLOCK_REALTIME, &t); return t.tv_sec * 1e3 + t.tv_nsec / 1e6; }
-// noipa: like the STS kernels, each call is a real call the compiler cannot hoist out of the timing loop
+// noipa: like the Szigyr kernels, each call is a real call the compiler cannot hoist out of the timing loop
 __attribute__((noipa)) static float dot(const float *a, const float *b, uint32_t n) { float acc = 0; for (uint32_t i = 0; i < n; i++) acc += a[i] * b[i]; return acc; }
 __attribute__((noipa)) static void saxpy(float k, const float *x, float *y, uint32_t n) { for (uint32_t i = 0; i < n; i++) y[i] = k * x[i] + y[i]; }
 __attribute__((noipa)) static int32_t prefix(int32_t *s, uint32_t n) { for (uint32_t i = 1; i < n; i++) s[i] = s[i] + s[i - 1]; return s[n - 1]; }

@@ -139,12 +139,12 @@ describe("fakes", () => {
 
 describe("node authorities", () => {
   it("Fs: errors become IoError, success round-trips", () => {
-    const dir = mkdtempSync(join(tmpdir(), "sts-"));
+    const dir = mkdtempSync(join(tmpdir(), "szigyr-"));
     const p = join(dir, "f.txt");
     expect(nodeFs.writeText(p, "héllo")).toEqual({ kind: "ok", value: null });
     expect(nodeFs.readText(p)).toEqual({ kind: "ok", value: "héllo" });
     expect(nodeFs.readText(p + ".missing")).toEqual({ kind: "err", error: { code: "ENOENT", message: expect.any(String) } });
-    expect(nodeFs.writeText("/nonexistent-dir-sts/x", "")).toMatchObject({ kind: "err" });
+    expect(nodeFs.writeText("/nonexistent-dir-szigyr/x", "")).toMatchObject({ kind: "err" });
 
     const bp = join(dir, "all.bin");
     const src = Vec.create<number>(ALLOC, 256, "u8");

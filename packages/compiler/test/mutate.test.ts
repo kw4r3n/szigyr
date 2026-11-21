@@ -7,7 +7,7 @@ import { mutate } from "../src/index.ts";
 import { CLI_NAME } from "../src/names.ts";
 
 const CLI = new URL("../src/cli.ts", import.meta.url).pathname;
-const sts = (cwd: string, ...a: string[]) => {
+const szigyr = (cwd: string, ...a: string[]) => {
   const r = spawnSync("node", [CLI, ...a], { cwd, encoding: "utf8" });
   return { code: r.status, out: r.stdout, err: r.stderr };
 };
@@ -650,14 +650,14 @@ test("g zero", (t: Test) => {
   });
 });
 
-describe("mutate: CLI (sts mutate)", () => {
+describe("mutate: CLI (szigyr mutate)", () => {
   it("supports multiple files and human-readable text mode", () => {
     const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-multi-`));
     const a = join(dir, "a.szigyr");
     const b = join(dir, "b.szigyr");
     writeFileSync(a, 'function add(x: i32, y: i32): i32 { return x + y; }\ntest("add", (t: Test) => { t.eq(add(2, 3), 5); });\n');
     writeFileSync(b, 'function neg(x: i32): i32 { return x - 1; }\ntest("neg", (t: Test) => { t.eq(neg(5), 4); });\n');
-    const rJson = sts(dir, "mutate", "--json", "--no-cache", a, b);
+    const rJson = szigyr(dir, "mutate", "--json", "--no-cache", a, b);
     expect(rJson.code).toBe(0);
     const ls = jsonLines(rJson.out);
     const summary = ls.at(-1);
@@ -665,7 +665,7 @@ describe("mutate: CLI (sts mutate)", () => {
     expect(summary.killed + summary.survived + summary.timeout).toBe(ls.length - 1);
     expect(new Set(ls.slice(0, -1).map((m) => m.fn))).toEqual(new Set(["add", "neg"]));
 
-    const rText = sts(dir, "mutate", "--no-cache", a);
+    const rText = szigyr(dir, "mutate", "--no-cache", a);
     expect(rText.code).toBe(0);
     expect(rText.out).toMatch(/killed.*timeout.*survived/);
   });
@@ -679,7 +679,7 @@ test("pos", (t: Test) => {
 });
 `;
     const { dir, file } = tmpFile("abs.szigyr", src);
-    const r1 = sts(dir, "mutate", "--json", file);
+    const r1 = szigyr(dir, "mutate", "--json", file);
     expect(r1.code).toBe(0);
     const ls1 = jsonLines(r1.out);
     const summary1 = ls1.at(-1);
@@ -690,20 +690,20 @@ test("pos", (t: Test) => {
     expect(Object.keys(saved).length).toBeGreaterThan(0);
 
     // Second run is cached
-    const r2 = sts(dir, "mutate", "--json", file);
+    const r2 = szigyr(dir, "mutate", "--json", file);
     expect(r2.code).toBe(0);
     const summary2 = jsonLines(r2.out).at(-1);
     expect(summary2.cached).toBe(ls1.length - 1);
 
     // --no-cache bypasses cache
-    const r3 = sts(dir, "mutate", "--json", "--no-cache", file);
+    const r3 = szigyr(dir, "mutate", "--json", "--no-cache", file);
     expect(r3.code).toBe(0);
     expect(jsonLines(r3.out).at(-1).cached).toBe(0);
   });
 
   it("exits 1 on compile errors and on baseline m=0 test failure, and 2 on CLI errors", () => {
     const { dir, file: badType } = tmpFile("bad.szigyr", "function f(x: i32): f64 { return x; }\n");
-    const rCompile = sts(dir, "mutate", "--json", badType);
+    const rCompile = szigyr(dir, "mutate", "--json", badType);
     expect(rCompile.code).toBe(1);
     expect(jsonLines(rCompile.out)[0]).toMatchObject({ code: "E2002" });
 
@@ -711,16 +711,16 @@ test("pos", (t: Test) => {
       "fail.szigyr",
       'function add(a: i32, b: i32): i32 { return a + b; }\ntest("broken", (t: Test) => { t.eq(add(1, 2), 99); });\n'
     );
-    const rFail = sts(dir2, "mutate", "--json", badTest);
+    const rFail = szigyr(dir2, "mutate", "--json", badTest);
     expect(rFail.code).toBe(1);
 
     // CLI errors -> exit 2
-    expect(sts(dir, "mutate").code).toBe(2);
-    expect(sts(dir, "mutate", "/no/such/file.szigyr").code).toBe(2);
-    expect(sts(dir, "mutate", "--backend=c", badType).code).toBe(2);
+    expect(szigyr(dir, "mutate").code).toBe(2);
+    expect(szigyr(dir, "mutate", "/no/such/file.szigyr").code).toBe(2);
+    expect(szigyr(dir, "mutate", "--backend=c", badType).code).toBe(2);
   });
 
-  it("supports forAll(...) tests inside sts mutate and kills mutants with property tests", async () => {
+  it("supports forAll(...) tests inside szigyr mutate and kills mutants with property tests", async () => {
     const src = `function absSafe(x: i32): i32 {
   requires(x > -2147483648);
   ensures((r: i32) => r >= 0);

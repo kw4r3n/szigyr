@@ -13,7 +13,7 @@ const { main } = await import("../src/cli.ts");
 it("test --backend=both runs each test cleanly when stubbed mismatch fires in json and text modes (Q266)", async () => {
   let out = "";
   const f = join(mkdtempSync(join(tmpdir(), "szigyr-both-")), "t.szigyr");
-  writeFileSync(f, 'test("a", (t: Test) => {\n  t.ok(true);\n});\n'); // the real analysis runs on this tiny STS file; the stub supplies the results
+  writeFileSync(f, 'test("a", (t: Test) => {\n  t.ok(true);\n});\n'); // the real analysis runs on this tiny Szigyr file; the stub supplies the results
   const code = await main(["test", "--json", "--backend=both", f], (s) => (out += s), () => {});
   expect(code).toBe(1);
   expect(out).toContain('"kind":"mismatch"');

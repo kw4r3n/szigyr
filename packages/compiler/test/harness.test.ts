@@ -116,7 +116,7 @@ describe("runCase", () => {
 
 describe("C library skip (§14.7)", () => {
   it("collects the pkg-config packages of a case's c: specifiers", () => {
-    const dir = mkdtempSync(join(tmpdir(), "sts-harness-"));
+    const dir = mkdtempSync(join(tmpdir(), "szigyr-harness-"));
     const f = join(dir, "x.szigyr");
     writeFileSync(f, 'declare module "c:foo:foo.h" {\n}\nimport { g } from "c:bar:bar.h";\nimport { g as g2 } from "c:foo:foo.h";\n');
     const spec: CaseSpec = { name: "run/x.szigyr", kind: "run", entry: f, stage: 3, backend: "c" };

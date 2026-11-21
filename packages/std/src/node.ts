@@ -49,7 +49,7 @@ const jsError = (e: unknown): JsError => ({
   code: e instanceof Error ? e.name : "Error",
   message: e instanceof Error ? e.message : String(e),
 });
-// Traps are not catchable from STS code (§8): they pass through the Js boundary.
+// Traps are not catchable from Szigyr code (§8): they pass through the Js boundary.
 const guard = <T>(f: () => T): Result<T, JsError> => { try { return ok(f()); } catch (e) { if (isTrap(e)) throw e; return err(jsError(e)); } };
 
 export const nodeJs: Js = {

@@ -1,8 +1,8 @@
-/* stscb_names.h: a header that defines macros with short names, like real headers do (U8, S16, ...).
+/* szcb_names.h: a header that defines macros with short names, like real headers do (U8, S16, ...).
  * The generated C includes it, so its own names (struct, union, nullable, function pointer and
  * pointer-pack typedefs, labels, functions) must not use these spellings. Header only. */
-#ifndef STSCB_NAMES_H
-#define STSCB_NAMES_H
+#ifndef SZCB_NAMES_H
+#define SZCB_NAMES_H
 
 #include <stdint.h>
 
@@ -16,6 +16,6 @@
 #define L1 unsigned char
 #define F0_f unsigned char
 
-static inline int32_t stscb_names_call(int32_t (*f)(int32_t), int32_t x) { return f(x); }
+static inline int32_t szcb_names_call(int32_t (*f)(int32_t), int32_t x) { return f(x); }
 
 #endif

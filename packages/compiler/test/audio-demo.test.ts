@@ -36,7 +36,7 @@ function estimateFreq(left: Float32Array, from: number, to: number): number {
 
 describe.skipIf(!hasSdl3())("audio demo (examples/audio)", () => {
   it("plays three sine segments whose parameters arrive over the ring", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "sts-audio-"));
+    const dir = mkdtempSync(join(tmpdir(), "szigyr-audio-"));
     const file = join(dir, "out.raw");
     process.env.SDL_AUDIO_DRIVER = "disk";
     process.env.SDL_AUDIO_DISK_OUTPUT_FILE = file;

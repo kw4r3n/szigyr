@@ -1,5 +1,5 @@
 // The C side of a `c:` declaration (SPEC §14.2): the specifier's shape and the mapping from
-// STS types to the C types the header check probes for and the C backend emits. Shared by
+// Szigyr types to the C types the header check probes for and the C backend emits. Shared by
 // headercheck.ts (the _Static_assert probe) and emit-c.ts (Ptr / ConstPtr values and calls).
 import type { NumName, Type } from "./types.ts";
 
@@ -48,7 +48,7 @@ export function cTypeOf(t: Type): string {
   return cDecl(t, "");
 }
 
-/** The C declaration of `d` with the STS type `t`, built inside out so nested pointers compose:
+/** The C declaration of `d` with the Szigyr type `t`, built inside out so nested pointers compose:
  * `ConstPtr<Ptr<i32>>` is `int32_t *const *`, `Ptr<Ptr<(x: i32) => i32>>` is `int32_t (**)(int32_t)`.
  * `const` qualifies the pointee of a `ConstPtr` (a function has no qualifier). */
 function cDecl(t: Type, d: string): string {
@@ -67,7 +67,7 @@ function cDecl(t: Type, d: string): string {
 
 /** The C type a Ptr / ConstPtr points at (§14.2): the table again for numbers and boolean,
  * `void` for void, the literal name for CType, the struct name for CStruct, the full type for a nested pointer or a function
- * pointer, and `void` for any other STS type. */
+ * pointer, and `void` for any other Szigyr type. */
 export function cPointeeOf(t: Type): string {
   switch (t.k) {
     case "num": return CINT[t.name];

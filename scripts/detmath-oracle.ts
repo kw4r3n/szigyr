@@ -1,6 +1,6 @@
 // DetMath oracle test (Q191): NOT part of `pnpm test`. Run: node scripts/detmath-oracle.ts
 // For each DetMath function: 100,000 seeded random points plus a hard set (special values,
-// reduction boundaries, near-pi multiples, subnormals). An STS program evaluates the points
+// reduction boundaries, near-pi multiples, subnormals). A Szigyr program evaluates the points
 // under both backends; the two outputs must agree exactly (bit identity, with the sign of
 // zero read off the reciprocal column). Every result is then compared against the correctly
 // rounded value from MPFR (53-bit, round-to-nearest) via the test-only C oracle in
@@ -14,7 +14,7 @@ import { run } from "../packages/compiler/src/index.ts";
 import { CFLAGS } from "../packages/compiler/src/native.ts";
 
 const here = import.meta.dirname;
-const dir = mkdtempSync(join(tmpdir(), "sts-detmath-oracle-"));
+const dir = mkdtempSync(join(tmpdir(), "szigyr-detmath-oracle-"));
 const exe = join(dir, "oracle");
 execFileSync(process.env.CC ?? "cc", [...CFLAGS.filter((f) => f !== "-shared" && f !== "-fPIC"), join(here, "detmath-oracle.c"), "-lmpfr", "-lgmp", "-o", exe], { stdio: "inherit" });
 
@@ -147,7 +147,7 @@ const powGen = (rnd: () => number): [number, number][] => {
   return out.concat(hard);
 };
 
-// ---- STS evaluation ----
+// ---- Szigyr evaluation ----
 const lit = (v: number): string => {
   if (Number.isNaN(v)) return "(0 / 0)";
   if (v === Infinity) return "(1 / 0)";

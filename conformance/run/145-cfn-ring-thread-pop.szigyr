@@ -3,11 +3,11 @@
 // backend: c
 // open-question: Q217
 // open-question: Q218
-declare module "c:stscb:stscb.h" {
-  function stscb_start(ffi: Ffi, f: Ptr<(ud: Ptr<void>, x: i32) => i32>, ud: Ptr<void>, x: i32, delay: i32, after: Ptr<(ud: Ptr<void>, x: i32) => i32>, aud: Ptr<void>): void;
-  function stscb_join(ffi: Ffi): void;
+declare module "c:szcb:szcb.h" {
+  function szcb_start(ffi: Ffi, f: Ptr<(ud: Ptr<void>, x: i32) => i32>, ud: Ptr<void>, x: i32, delay: i32, after: Ptr<(ud: Ptr<void>, x: i32) => i32>, aud: Ptr<void>): void;
+  function szcb_join(ffi: Ffi): void;
 }
-import { stscb_start, stscb_join } from "c:stscb:stscb.h";
+import { szcb_start, szcb_join } from "c:szcb:szcb.h";
 
 type State = Struct<{ rx: RingRx<i32>; sum: i32 }>;
 
@@ -39,7 +39,7 @@ function arm(ffi: Ffi, alloc: Alloc, rx: RingRx<i32>): CHandle<State> {
   "use unsafe";
   const st: State = { rx, sum: 0 };
   const p = Ptr.box(alloc, st);
-  stscb_start(ffi, cfn(popper), p.cast<void>(), 0, 0, cfn(noop), p.cast<void>());
+  szcb_start(ffi, cfn(popper), p.cast<void>(), 0, 0, cfn(noop), p.cast<void>());
   return CHandle.create(p);
 }
 function readSum(s: Ref<State>): i32 {
@@ -49,7 +49,7 @@ function readSum(s: Ref<State>): i32 {
 function finish(ffi: Ffi, h: CHandle<State>): i32 {
   "use owned";
   "use unsafe";
-  stscb_join(ffi);
+  szcb_join(ffi);
   const p = h.get();
   return readSum(p.borrow());
 }

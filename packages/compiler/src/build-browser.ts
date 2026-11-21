@@ -1,4 +1,4 @@
-// Browser target builder (`sts build --target=browser [--mode=app|lib] [-o <dir>]`, Q285).
+// Browser target builder (`szigyr build --target=browser [--mode=app|lib] [-o <dir>]`, Q285).
 // Emits static ES modules (CSP-safe, zero `node:*` imports), compiled `.wasm`, AudioWorklet & Worker adapters.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
@@ -229,7 +229,7 @@ export function buildBrowser(entryFile: string, opts: BrowserBuildOptions): Brow
 
 const WORKLET_JS = [
   `import * as rt from "./rt/browser.js";`,
-  `class StsAudioProcessor extends AudioWorkletProcessor {`,
+  `class SzigyrAudioProcessor extends AudioWorkletProcessor {`,
   `  constructor(options) {`,
   `    super();`,
   `    const po = options.processorOptions ?? {};`,
@@ -262,17 +262,17 @@ const WORKLET_JS = [
   `  async initWasm(po) {`,
   `    try {`,
   `      const api = await rt.instantiateWasmAsync(po.wasmBytes, po.wasmMeta, rt.NATIVE_HOST);`,
-  `      this.audioMod = api["sts_audio_" + this.cbId];`,
-  `      if (!this.audioMod) throw new Error("missing sts_audio_" + this.cbId);`,
+  `      this.audioMod = api["sz_audio_" + this.cbId];`,
+  `      if (!this.audioMod) throw new Error("missing sz_audio_" + this.cbId);`,
   `      const memo = new Map();`,
   `      const unpack = (v) => {`,
   `        if (v !== null && typeof v === "object") {`,
-  `          if ("$stsVec" in v) return rt.Vec.unpack(v.$stsVec);`,
-  `          if ("$stsPool" in v) return rt.Pool.unpack(v.$stsPool);`,
-  `          if ("$stsArena" in v) return rt.Arena.unpack(v.$stsArena);`,
+  `          if ("$szVec" in v) return rt.Vec.unpack(v.$szVec);`,
+  `          if ("$szPool" in v) return rt.Pool.unpack(v.$szPool);`,
+  `          if ("$szArena" in v) return rt.Arena.unpack(v.$szArena);`,
   `        }`,
-  `        if (v !== null && typeof v === "object" && "$stsRing" in v) {`,
-  `          const spec = v.$stsRing;`,
+  `        if (v !== null && typeof v === "object" && "$szRing" in v) {`,
+  `          const spec = v.$szRing;`,
   `          let sh = memo.get(spec);`,
   `          if (!sh) {`,
   `            const end = spec.atomic`,
@@ -336,7 +336,7 @@ const WORKLET_JS = [
   `    return !this.closed;`,
   `  }`,
   `}`,
-  `registerProcessor("sts-audio-processor", StsAudioProcessor);`,
+  `registerProcessor("szigyr-audio-processor", SzigyrAudioProcessor);`,
   "",
 ].join("\n");
 
@@ -344,11 +344,11 @@ const INDEX_HTML = `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>STS Browser App</title>
+  <title>Szigyr Browser App</title>
   <style>body{font-family:system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem}pre{background:#f4f4f6;padding:1rem;border-radius:6px;white-space:pre-wrap}.warn{color:#9a6700;font-size:.9rem}</style>
 </head>
 <body>
-  <h1>STS Browser App</h1>
+  <h1>Szigyr Browser App</h1>
   <p id="coi" class="warn"></p>
   <button id="start" type="button">Start</button>
   <pre id="out"></pre>

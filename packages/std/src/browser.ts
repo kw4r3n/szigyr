@@ -108,23 +108,23 @@ export function createBrowserAudio(opts: BrowserAudioOptions): Audio {
       const fallbackRings = new Map<number, RingShared<unknown>>();
       let nextRingId = 1;
       const packState = (v: unknown, memo = new Map<object, unknown>()): unknown => {
-        if (v instanceof Vec) return { $stsVec: v.pack() };
-        if (v instanceof Pool) return { $stsPool: v.pack() };
-        if (v instanceof Arena) return { $stsArena: v.pack() };
+        if (v instanceof Vec) return { $szVec: v.pack() };
+        if (v instanceof Pool) return { $szPool: v.pack() };
+        if (v instanceof Arena) return { $szArena: v.pack() };
         if (v instanceof RingTx || v instanceof RingRx) {
           const hit = memo.get(v.shared);
-          if (hit) return { $stsRing: hit, tx: v instanceof RingTx };
+          if (hit) return { $szRing: hit, tx: v instanceof RingTx };
           if (v.shared.atomic) {
             const spec = { atomic: true, sab: v.sab, cap: v.cap, elem: v.shared.elem };
             memo.set(v.shared, spec);
-            return { $stsRing: spec, tx: v instanceof RingTx };
+            return { $szRing: spec, tx: v instanceof RingTx };
           }
           const id = nextRingId++;
           fallbackRings.set(id, v.shared as RingShared<unknown>);
           const copy = v.sab ? v.sab.slice(0) : null;
           const spec = { atomic: false, id, buf: copy, cap: v.cap, elem: v.shared.elem };
           memo.set(v.shared, spec);
-          return { $stsRing: spec, tx: v instanceof RingTx };
+          return { $szRing: spec, tx: v instanceof RingTx };
         }
         if (v !== null && typeof v === "object") {
           if (Array.isArray(v)) return v.map((x) => packState(x, memo));
@@ -136,7 +136,7 @@ export function createBrowserAudio(opts: BrowserAudioOptions): Audio {
       };
 
       const stateWire = packState(state);
-      const node = new AudioWorkletNode(ctx, "sts-audio-processor", {
+      const node = new AudioWorkletNode(ctx, "szigyr-audio-processor", {
         numberOfInputs: 0,
         numberOfOutputs: 1,
         outputChannelCount: [channels],

@@ -1,9 +1,9 @@
 // expect: ok
 // stage: 3
-declare module "c:stscb:stscb.h" {
-  function stscb_call(ffi: Ffi, f: Ptr<(ud: Ptr<void>, x: i32) => i32>, ud: Ptr<void>, x: i32): i32;
+declare module "c:szcb:szcb.h" {
+  function szcb_call(ffi: Ffi, f: Ptr<(ud: Ptr<void>, x: i32) => i32>, ud: Ptr<void>, x: i32): i32;
 }
-import { stscb_call } from "c:stscb:stscb.h";
+import { szcb_call } from "c:szcb:szcb.h";
 
 function cb(ud: Ptr<void>, x: i32): i32 {
   "use rt";
@@ -14,5 +14,5 @@ export function reg(ffi: Ffi, ud: Ptr<void>): i32 {
   "use owned";
   "use unsafe";
   const p: Ptr<(ud: Ptr<void>, x: i32) => i32> = cfn(cb);
-  return stscb_call(ffi, p, ud, 1) + stscb_call(ffi, p, ud, 2);
+  return szcb_call(ffi, p, ud, 1) + szcb_call(ffi, p, ud, 2);
 }

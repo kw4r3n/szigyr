@@ -240,7 +240,7 @@ async function load(files: ParsedFile[], entryFile: string, tests: boolean, decl
   // (emit wraps each await in rt.task; Port.recv checks too). The first one recorded wins.
   rt.setForeignTrapCheck(() => {
     if (native) {
-      const v = native.sts_poll!();
+      const v = native.sz_poll!();
       if (Array.isArray(v)) rt.trap(`T${String(v[0]).padStart(3, "0")}` as rt.TrapCode, "trap in C", v[1] ? { file: v[1] as string, line: v[2] as number, col: v[3] as number } : undefined);
     }
     const t = rt.takeIsolateTrap();
@@ -312,7 +312,7 @@ async function loadChecked(files: ParsedFile[], entryFile: string, tests: boolea
   return out;
 }
 
-/** Q061: `sts run` entry must be an exported managed `function main(sys: System): void | Promise<void>`. */
+/** Q061: `szigyr run` entry must be an exported managed `function main(sys: System): void | Promise<void>`. */
 export function checkMain(decls: Decls, entryFile: string): void {
   const mod = decls.mods.find((m) => m.pf.path === canonPath(entryFile));
   const local = mod?.exports.get("main");
@@ -342,7 +342,7 @@ async function runNow(entryFile: string, backend?: Backend, analysis?: Analysis)
   // runs, and claims the C record. A C record there claimed the flag before main ended, so it wins over
   // main's own trap; a C trap after that is never recorded (§15.4: not observed after main ends).
   let v: unknown;
-  const finish = (): void => { v ??= native?.sts_finish!() ?? null; };
+  const finish = (): void => { v ??= native?.sz_finish!() ?? null; };
   const m = main as (sys: unknown) => unknown;
   const r = await runMain((sys) => {
     let p: unknown;
@@ -363,7 +363,7 @@ async function runNow(entryFile: string, backend?: Backend, analysis?: Analysis)
   return { diagnostics: [], stdout: r.stdout, trap };
 }
 
-/** `sts test`: checks, emits the entry file's `test(...)` calls and runs them in order (§9.2, D022). */
+/** `szigyr test`: checks, emits the entry file's `test(...)` calls and runs them in order (§9.2, D022). */
 export const runTestFile = (entryFile: string, opts: RunOptions = {}): Promise<{ diagnostics: Diagnostic[]; results: rt.TestResult[] }> => exclusive(() => runTestFileNow(entryFile, opts.backend, opts.analysis));
 async function runTestFileNow(entryFile: string, backend?: Backend, analysis?: Analysis): Promise<{ diagnostics: Diagnostic[]; results: rt.TestResult[] }> {
   const a = analysis ?? analyze(entryFile);
@@ -375,7 +375,7 @@ async function runTestFileNow(entryFile: string, backend?: Backend, analysis?: A
   try { return { diagnostics: [], results: await rt.runTests() }; } finally { rt.stopFakeIsolates(); await stopAudioStreams(); rt.clearTests(); }
 }
 
-/** `sts mutate`: JS-only mutation testing with diff cache and witness search (SPEC §16.2, Q275–Q277). */
+/** `szigyr mutate`: JS-only mutation testing with diff cache and witness search (SPEC §16.2, Q275–Q277). */
 export const mutate = (entryFile: string, opts: MutateOptions = {}): Promise<MutateResult> => exclusive(() => mutateFile(entryFile, opts));
 
 /** `szigyr prove`: static SMT proof verification per function with `.szigyr-cache/prove.json` cache (Stage 6, Q289-Q292). */

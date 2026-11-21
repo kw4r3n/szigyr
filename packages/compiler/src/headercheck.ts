@@ -79,9 +79,9 @@ function canProbePointee(t: Type): boolean {
   return true;
 }
 
-const STS_TYPE_MACROS =
-  `#define STS_IS_INT(x) _Generic((x), _Bool: 1, char: 1, signed char: 1, unsigned char: 1, short: 1, unsigned short: 1, int: 1, unsigned int: 1, long: 1, unsigned long: 1, long long: 1, unsigned long long: 1, default: 0)\n` +
-  `#define STS_IS_FLT(x) _Generic((x), float: 1, double: 1, long double: 1, default: 0)\n`;
+const SZ_TYPE_MACROS =
+  `#define SZ_IS_INT(x) _Generic((x), _Bool: 1, char: 1, signed char: 1, unsigned char: 1, short: 1, unsigned short: 1, int: 1, unsigned int: 1, long: 1, unsigned long: 1, long long: 1, unsigned long long: 1, default: 0)\n` +
+  `#define SZ_IS_FLT(x) _Generic((x), float: 1, double: 1, long double: 1, default: 0)\n`;
 
 /** The string literal of the file's `declare module "<spec>"` (the E2009 anchor for a missing package or header). */
 function specifierOf(mod: Module, spec: string): ts.StringLiteral | undefined {
@@ -107,7 +107,7 @@ export function checkHeaders(prog: Program, rep: Reporter): void {
         continue;
       }
       const cflags = cflagsOf(cs.pkg);
-      const prelude = `#include <stdint.h>\n#include <stdbool.h>\n#include <stddef.h>\n#include <${cs.header}>\n${STS_TYPE_MACROS}struct sts_probe { int x; };\n`;
+      const prelude = `#include <stdint.h>\n#include <stdbool.h>\n#include <stddef.h>\n#include <${cs.header}>\n${SZ_TYPE_MACROS}struct sz_probe { int x; };\n`;
       const inc = probe(prelude, cflags);
       if (!inc.ok) {
         anyHeaderFailed = true;
@@ -122,7 +122,7 @@ export function checkHeaders(prog: Program, rep: Reporter): void {
         if (!retOk || !cf.sig.params.slice(1).every(canProbeCType)) continue;
         const ps = cf.sig.params.slice(1).map(cTypeOf); // the Ffi parameter is not passed to C (§14.2)
         const want = `${cTypeOf(cf.sig.ret)} (*)(${ps.join(", ") || "void"})`;
-        const more = `${cTypeOf(cf.sig.ret)} (*)(${[...ps, "struct sts_probe"].join(", ")})`;
+        const more = `${cTypeOf(cf.sig.ret)} (*)(${[...ps, "struct sz_probe"].join(", ")})`;
         const source = `${prelude}_Static_assert(__builtin_types_compatible_p(__typeof__(&${cf.name}), ${want}), "${cf.name}");\n_Static_assert(!__builtin_types_compatible_p(__typeof__(&${cf.name}), ${more}), "${cf.name}");\n`;
         const res = probe(source, cflags);
         if (!res.ok) {
@@ -135,9 +135,9 @@ export function checkHeaders(prog: Program, rep: Reporter): void {
         const n = cc.name;
         let check = "";
         if (isBool(cc.type)) {
-          check = `_Static_assert(STS_IS_INT(+(${n})), "${n}");\n_Static_assert(!__builtin_constant_p(${n}) || ((${n}) == 0 || (${n}) == 1), "${n}");\n`;
+          check = `_Static_assert(SZ_IS_INT(+(${n})), "${n}");\n_Static_assert(!__builtin_constant_p(${n}) || ((${n}) == 0 || (${n}) == 1), "${n}");\n`;
         } else if (cc.type.k === "num" && (cc.type.name === "f32" || cc.type.name === "f64")) {
-          check = `_Static_assert(STS_IS_INT(+(${n})) || STS_IS_FLT(+(${n})), "${n}");\n`;
+          check = `_Static_assert(SZ_IS_INT(+(${n})) || SZ_IS_FLT(+(${n})), "${n}");\n`;
         } else if (cc.type.k === "num") {
           const [lo, hi] = INT_RANGE[cc.type.name]!;
           const ct = cTypeOf(cc.type);
@@ -147,7 +147,7 @@ export function checkHeaders(prog: Program, rep: Reporter): void {
             ? `(((__typeof__(+(${n})))-1 < 0) ? ((long long)(${n}) >= ${loC} && (long long)(${n}) <= ${hi}LL) : ((unsigned long long)(${n}) <= ${hiU}))`
             : `(((__typeof__(+(${n})))-1 < 0) ? ((long long)(${n}) >= 0 && (unsigned long long)(${n}) <= ${hiU}) : ((unsigned long long)(${n}) <= ${hiU}))`;
           const extExpr = `(sizeof(${n}) <= sizeof(${ct}) && (((__typeof__(+(${n})))-1 < 0) == ((${ct})-1 < 0) || (sizeof(${n}) < sizeof(${ct}) && ((${ct})-1 < 0))))`;
-          check = `_Static_assert(STS_IS_INT(+(${n})), "${n}");\n_Static_assert(__builtin_constant_p(${n}) ? (${rangeExpr}) : (${extExpr}), "${n}");\n`;
+          check = `_Static_assert(SZ_IS_INT(+(${n})), "${n}");\n_Static_assert(__builtin_constant_p(${n}) ? (${rangeExpr}) : (${extExpr}), "${n}");\n`;
         }
         const res = probe(prelude + check, cflags);
         if (!res.ok) {
@@ -168,7 +168,7 @@ export function checkHeaders(prog: Program, rep: Reporter): void {
             const ct = cTypeOf(f.type);
             lines.push(
               `_Static_assert(sizeof(((${S} *)0)->${f.name}) == sizeof(${ct}), "${S}.${f.name}");`,
-              `_Static_assert(STS_IS_INT(+(((${S} *)0)->${f.name})), "${S}.${f.name}");`,
+              `_Static_assert(SZ_IS_INT(+(((${S} *)0)->${f.name})), "${S}.${f.name}");`,
               `_Static_assert(((__typeof__(((${S} *)0)->${f.name}))-1 < 0) == ((${ct})-1 < 0), "${S}.${f.name}");`,
             );
           } else {

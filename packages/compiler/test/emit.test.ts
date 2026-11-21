@@ -9,7 +9,7 @@ import { check, run, runTestFile } from "../src/index.ts";
 import { loadCases } from "./harness.ts";
 
 function project(files: Record<string, string>): string {
-  const dir = mkdtempSync(join(tmpdir(), "sts-emit-"));
+  const dir = mkdtempSync(join(tmpdir(), "szigyr-emit-"));
   for (const [p, t] of Object.entries(files)) {
     mkdirSync(dirname(join(dir, p)), { recursive: true });
     writeFileSync(join(dir, p), t);
@@ -274,7 +274,7 @@ test("traps", (t: Test) => {
 });
 
 describe("D060: Js boundary, optional chains, cycles, JS limits, concurrent runs", () => {
-  it("js.encode refuses a function, so no STS code can run inside js.call (Q128); the boundary guard is tested in std", async () => {
+  it("js.encode refuses a function, so no Szigyr code can run inside js.call (Q128); the boundary guard is tested in std", async () => {
     const main = project({
       "main.szigyr": `export function main(sys: System): void {
   const f = sys.js.encode<() => void>((): void => {

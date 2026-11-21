@@ -16,7 +16,7 @@ export const WASM_CFLAGS = [
   "-Wl,--no-entry", "-Wl,--allow-undefined", "-Wl,--stack-first", "-Wl,-z,stack-size=1048576", "-Wl,--export=__stack_pointer",
 ];
 
-const wasmCcEnv = (): string | undefined => process.env.SZIGYR_WASM_CC || process.env.STS_WASM_CC;
+const wasmCcEnv = (): string | undefined => process.env.SZIGYR_WASM_CC;
 
 function wasmCommand(): [string, string[]] {
   const wasmCc = wasmCcEnv();

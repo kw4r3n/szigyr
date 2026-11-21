@@ -7,40 +7,40 @@ import { CLI_NAME } from "../src/names.ts";
 
 const CLI = new URL("../src/cli.ts", import.meta.url).pathname;
 const CONF = new URL("../../../conformance/", import.meta.url).pathname;
-const sts = (...a: string[]) => { const r = spawnSync("node", [CLI, ...a], { encoding: "utf8" }); return { code: r.status, out: r.stdout, err: r.stderr }; };
+const szigyr = (...a: string[]) => { const r = spawnSync("node", [CLI, ...a], { encoding: "utf8" }); return { code: r.status, out: r.stdout, err: r.stderr }; };
 const jsonLines = (s: string): any[] => s.trim().split("\n").map((l) => JSON.parse(l));
 
 it("check --json prints one JSON diagnostic per line and exits 1", () => {
-  const r = sts("check", "--json", `${CONF}reject/E2003-default-f64-let-vs-usize.szigyr`);
+  const r = szigyr("check", "--json", `${CONF}reject/E2003-default-f64-let-vs-usize.szigyr`);
   expect(r.code).toBe(1);
   const [d] = jsonLines(r.out);
   expect(d).toMatchObject({ code: "E2003", range: { start: { line: 6, col: 12 } } });
 });
 
 it("check exits 0 with no output on an accepted file", () => {
-  expect(sts("check", `${CONF}accept/02-record-readonly.szigyr`)).toEqual({ code: 0, out: "", err: "" });
+  expect(szigyr("check", `${CONF}accept/02-record-readonly.szigyr`)).toEqual({ code: 0, out: "", err: "" });
 });
 
 it("run passes the program's stdout through", () => {
-  const r = sts("run", `${CONF}run/01-arith-basic.szigyr`);
+  const r = szigyr("run", `${CONF}run/01-arith-basic.szigyr`);
   expect(r.code).toBe(0);
   expect(r.out).toContain("22");
 });
 
 it("run exits 3 on a trap and reports it as JSON on stderr (Q060)", () => {
-  const r = sts("run", "--json", `${CONF}run/26-trap-div-by-zero.szigyr`);
+  const r = szigyr("run", "--json", `${CONF}run/26-trap-div-by-zero.szigyr`);
   expect(r.code).toBe(3);
   expect(jsonLines(r.err)[0]).toMatchObject({ kind: "trap", code: "T007" });
 });
 
 it("run exits 1 with diagnostics on stderr and empty stdout when the file does not check", () => {
-  const r = sts("run", "--json", `${CONF}reject/E1001-var-in-function.szigyr`);
+  const r = szigyr("run", "--json", `${CONF}reject/E1001-var-in-function.szigyr`);
   expect(r).toMatchObject({ code: 1, out: "" });
   expect(jsonLines(r.err)[0].code).toBe("E1001");
 });
 
 it("test reports each test and a summary; failures exit 1", () => {
-  const ok = sts("test", "--json", `${CONF}accept/02-record-readonly.szigyr`);
+  const ok = szigyr("test", "--json", `${CONF}accept/02-record-readonly.szigyr`);
   expect(ok.code).toBe(0);
   expect(jsonLines(ok.out)).toEqual([
     expect.objectContaining({ kind: "test", name: "records", ok: true }),
@@ -48,14 +48,14 @@ it("test reports each test and a summary; failures exit 1", () => {
   ]);
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-`));
   writeFileSync(join(dir, "t.szigyr"), 'test("bad", (t: Test) => {\n  t.ok(false);\n});\n');
-  const bad = sts("test", "--json", join(dir, "t.szigyr"));
+  const bad = szigyr("test", "--json", join(dir, "t.szigyr"));
   expect(bad.code).toBe(1);
   expect(jsonLines(bad.out)[0]).toMatchObject({ kind: "test", name: "bad", ok: false });
 });
 
 it("usage errors and missing files exit 2 with a message", () => {
   for (const a of [[], ["nope"], ["check"], ["check", "/no/such.szigyr"], ["run", "--bogus", "x"]]) {
-    const r = sts(...a);
+    const r = szigyr(...a);
     expect(r.code).toBe(2);
     expect(r.err).toContain(CLI_NAME);
   }
@@ -64,7 +64,7 @@ it("usage errors and missing files exit 2 with a message", () => {
 it("run without an exported main is a CLI error, exit 2 (Q061)", () => {
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-`));
   writeFileSync(join(dir, "m.szigyr"), "export function f(): void {}\n");
-  expect(sts("run", join(dir, "m.szigyr")).code).toBe(2);
+  expect(szigyr("run", join(dir, "m.szigyr")).code).toBe(2);
 });
 
 it("run rejects main with wrong signature or non-managed layer with exit 2 (Q061)", () => {
@@ -81,7 +81,7 @@ it("run rejects main with wrong signature or non-managed layer with exit 2 (Q061
   for (const [name, src] of bads) {
     const f = join(dir, name);
     writeFileSync(f, src);
-    const r = sts("run", f);
+    const r = szigyr("run", f);
     expect(r.code, name).toBe(2);
     expect(r.out, name).toBe("");
     expect(r.err, name).toContain(CLI_NAME);
@@ -134,7 +134,7 @@ it("test --backend=both runs each test under JS and C and agrees", () => {
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-both-`));
   const f = join(dir, "both.szigyr");
   writeFileSync(f, BOTH);
-  const r = sts("test", "--json", "--backend=both", f);
+  const r = szigyr("test", "--json", "--backend=both", f);
   const ls = jsonLines(r.out);
   expect(ls.filter((l) => l.kind === "mismatch")).toEqual([]);
   expect(ls.at(-1)).toEqual({ kind: "summary", passed: 1, failed: 1 });
@@ -148,7 +148,7 @@ it("C traps T006 from the stack bound before the depth limit (Q182, D106)", () =
   const init = Array.from({ length: 100 }, (_, i) => `f${i}: ${i}`).join(", ");
   // depth 9990 is under the 10000 counter; 800-byte frames exceed an 8 MiB stack only with the stack check
   writeFileSync(f, `type S = Struct<{ ${fs} }>;\nfunction r(n: usize, s: S): f64 { "use owned"; if (n === 0) { return s.f0; } const t: S = { ...s, f1: s.f1 + 1 }; return r(n - 1, t) + s.f2; }\nexport function main(sys: System): void { const s: S = { ${init} }; sys.log.info(\`\${r(9990, s)}\`); }\n`);
-  const r = sts("run", "--backend=c", f);
+  const r = szigyr("run", "--backend=c", f);
   expect(r.out + r.err).toMatch(/T006/);
 });
 
@@ -186,7 +186,7 @@ it("t.eq on values from C (packed Vec<Struct>, unions) agrees under --backend=bo
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-eq-`));
   const f = join(dir, "eq.szigyr");
   writeFileSync(f, EQ);
-  const r = sts("test", "--json", "--backend=both", f);
+  const r = szigyr("test", "--json", "--backend=both", f);
   const ls = jsonLines(r.out);
   expect(ls.filter((l) => l.kind === "mismatch")).toEqual([]);
   expect(ls.at(-1)).toEqual({ kind: "summary", passed: 1, failed: 1 });
@@ -241,19 +241,19 @@ it("run / test of a C-only program stop with E4009 on js and both; check is clea
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-conly-`));
   const f = join(dir, "conly.szigyr");
   writeFileSync(f, C_ONLY);
-  expect(sts("check", f)).toEqual({ code: 0, out: "", err: "" });
-  const r = sts("run", "--json", f);
+  expect(szigyr("check", f)).toEqual({ code: 0, out: "", err: "" });
+  const r = szigyr("run", "--json", f);
   expect(r.code).toBe(1);
   expect(r.out).toBe("");
   expect(jsonLines(r.err)[0]).toMatchObject({ code: "E4009", range: { start: { line: 1, col: 16 } } });
-  expect(sts("run", "--backend=both", f).code).toBe(1);
-  const rc = sts("run", "--backend=c", f);
+  expect(szigyr("run", "--backend=both", f).code).toBe(1);
+  const rc = szigyr("run", "--backend=c", f);
   expect(rc.code).toBe(0);
   expect(rc.out).toBe("42\n");
-  const t = sts("test", "--json", f);
+  const t = szigyr("test", "--json", f);
   expect(t.code).toBe(1);
   expect(jsonLines(t.out)[0]).toMatchObject({ code: "E4009" });
-  const tc = sts("test", "--json", "--backend=c", f);
+  const tc = szigyr("test", "--json", "--backend=c", f);
   expect(tc.code).toBe(0);
   expect(jsonLines(tc.out).at(-1)).toEqual({ kind: "summary", passed: 1, failed: 0 });
 });
@@ -270,10 +270,10 @@ export function main(sys: System): void {
   sys.log.info("x");
 }
 `);
-  const r = sts("run", "--json", f);
+  const r = szigyr("run", "--json", f);
   expect(r.code).toBe(1);
   expect(jsonLines(r.err)[0]).toMatchObject({ code: "E4009", range: { start: { line: 1, col: 18 } } });
-  expect(sts("check", f).code).toBe(0);
+  expect(szigyr("check", f).code).toBe(0);
 });
 
 it("--backend=both stops on first backend diagnostics (E4009) without running C", () => {
@@ -335,7 +335,7 @@ export function main(sys: System): void {
 }
 `);
   // #16b: package name starting with '-' is not parsed as a pkg-config option
-  const optChk = sts("check", `${CONF}reject/E2009-pkg-option-flag.szigyr`);
+  const optChk = szigyr("check", `${CONF}reject/E2009-pkg-option-flag.szigyr`);
   expect(optChk.code).toBe(1);
   expect(optChk.out).toContain("pkg-config does not know the package '--version'");
 
@@ -363,7 +363,7 @@ export function main(sys: System): void {
   const nativeDir = join(cacheDir, `${CLI_NAME}-native`);
   expect(readdirSync(nativeDir).filter((n) => n.includes(".tmp"))).toEqual([]);
 
-  // #16f: empty XDG_CACHE_HOME does not create sts-native in CWD
+  // #16f: empty XDG_CACHE_HOME does not create szigyr-native in CWD
   const emptyXdg = spawnSync("node", [CLI, "run", "--backend=c", simpleTs], { encoding: "utf8", cwd: workDir, env: { ...process.env, XDG_CACHE_HOME: "" } });
   expect(emptyXdg.status).toBe(0);
   expect(existsSync(join(workDir, `${CLI_NAME}-native`))).toBe(false);
@@ -403,7 +403,7 @@ it("a polymorphically recursive strict function is rejected by check with E4010 
   expect(jsonLines(r.stdout)[0].code).toBe("E4010");
 });
 it("runs through a symlink to cli.ts and from a path containing % # ?", () => {
-  const d = mkdtempSync(join(tmpdir(), "sts-link-%#?-"));
+  const d = mkdtempSync(join(tmpdir(), "szigyr-link-%#?-"));
   symlinkSync(CLI, join(d, CLI_NAME));
   const r = spawnSync(join(d, CLI_NAME), ["check", "--json", `${CONF}reject/E1001-var-in-function.szigyr`], { encoding: "utf8" });
   expect(r.status).toBe(1);
@@ -412,8 +412,8 @@ it("runs through a symlink to cli.ts and from a path containing % # ?", () => {
 
 it("CC may carry arguments; an unwritable cache directory is a CBuildError, exit 2 (D150)", () => {
   const f = tmpFile(`function inc(x: i32): i32 { "use owned"; return x + 1; }\nexport function main(sys: System): void { sys.log.info(\`\${inc(1)}\`); }\n`);
-  const cache = mkdtempSync(join(tmpdir(), "sts-d150-"));
-  const ok = spawnSync("node", [CLI, "run", "--backend=c", f], { encoding: "utf8", env: { ...process.env, XDG_CACHE_HOME: cache, CC: "cc -O1 -DSTS_D150" } });
+  const cache = mkdtempSync(join(tmpdir(), "szigyr-d150-"));
+  const ok = spawnSync("node", [CLI, "run", "--backend=c", f], { encoding: "utf8", env: { ...process.env, XDG_CACHE_HOME: cache, CC: "cc -O1 -DSZ_D150" } });
   expect(ok).toMatchObject({ status: 0, stdout: "2\n" });
   const bad = spawnSync("node", [CLI, "run", "--backend=c", f], { encoding: "utf8", env: { ...process.env, XDG_CACHE_HOME: "/proc/nope" } });
   expect(bad.status).toBe(2);
@@ -423,7 +423,7 @@ it("CC may carry arguments; an unwritable cache directory is a CBuildError, exit
 
 it("the native cache drops entries unused for 7 days once it holds more than 500, and a hit refreshes its entry (D149)", () => {
   const f = tmpFile(`function inc(x: i32): i32 { "use owned"; return x + 1; }\nexport function main(sys: System): void { sys.log.info(\`\${inc(2)}\`); }\n`);
-  const cache = mkdtempSync(join(tmpdir(), "sts-d149-"));
+  const cache = mkdtempSync(join(tmpdir(), "szigyr-d149-"));
   const env = { ...process.env, XDG_CACHE_HOME: cache };
   const dir = join(cache, `${CLI_NAME}-native`);
   mkdirSync(dir, { mode: 0o700 });
@@ -443,19 +443,19 @@ it("the native cache drops entries unused for 7 days once it holds more than 500
 });
 
 it("a module imported under two names (a symlink) loads once, in check and in run (Q253)", () => {
-  const d = mkdtempSync(join(tmpdir(), "sts-q253-"));
+  const d = mkdtempSync(join(tmpdir(), "szigyr-q253-"));
   writeFileSync(join(d, "a.szigyr"), "export class C { x: f64 = 1; }\nexport function mk(): C { return new C(); }\nexport function use(c: C): f64 { return c.x; }\n");
   symlinkSync("a.szigyr", join(d, "link.szigyr"));
   const main = join(d, "main.szigyr");
   writeFileSync(main, `import { mk } from "./a.szigyr";\nimport { use } from "./link.szigyr";\nexport function main(sys: System): void { sys.log.info(\`\${use(mk())}\`); }\n`);
-  expect(sts("check", main)).toEqual({ code: 0, out: "", err: "" });
-  expect(sts("run", main)).toMatchObject({ code: 0, out: "1\n" });
-  expect(sts("run", join(d, "link.szigyr")).err).toContain("no exported function 'main'"); // the entry may itself be the link
+  expect(szigyr("check", main)).toEqual({ code: 0, out: "", err: "" });
+  expect(szigyr("run", main)).toMatchObject({ code: 0, out: "1\n" });
+  expect(szigyr("run", join(d, "link.szigyr")).err).toContain("no exported function 'main'"); // the entry may itself be the link
 });
 
 it("a second load in the same process refreshes the cache entry too (D149)", async () => {
   const f = tmpFile(`function inc(x: i32): i32 { "use owned"; return x + 4; }\nexport function main(sys: System): void { sys.log.info(\`\${inc(1)}\`); }\n`);
-  const cache = mkdtempSync(join(tmpdir(), "sts-d149b-"));
+  const cache = mkdtempSync(join(tmpdir(), "szigyr-d149b-"));
   const prev = process.env.XDG_CACHE_HOME;
   process.env.XDG_CACHE_HOME = cache;
   try {
@@ -470,17 +470,17 @@ it("a second load in the same process refreshes the cache entry too (D149)", asy
 }, 30_000);
 
 // Q252: user input mistakes are CLI errors (exit 2) without a stack; internal errors exit 70.
-const tmpFile = (src: string): string => { const f = join(mkdtempSync(join(tmpdir(), "sts-q252-")), "a.szigyr"); writeFileSync(f, src); return f; };
+const tmpFile = (src: string): string => { const f = join(mkdtempSync(join(tmpdir(), "szigyr-q252-")), "a.szigyr"); writeFileSync(f, src); return f; };
 
 it("a directory as the entry file is a CLI error (Q252)", () => {
-  const r = sts("check", CONF);
+  const r = szigyr("check", CONF);
   expect(r.code).toBe(2);
   expect(r.err).toContain("not a file");
 });
 
 it("run with an unresolvable npm: import is a CLI error naming the specifier (Q252)", () => {
   const f = tmpFile(`import { x } from "npm:nonexistent-pkg-xyz";\nexport function main(sys: System): void { sys.log.info("hi"); }\n`);
-  const r = sts("run", "--json", f);
+  const r = szigyr("run", "--json", f);
   expect(r.code).toBe(2);
   expect(r.err).toContain("npm:nonexistent-pkg-xyz");
   expect(r.err).not.toContain("    at ");
@@ -488,7 +488,7 @@ it("run with an unresolvable npm: import is a CLI error naming the specifier (Q2
 
 it("a source nested too deeply is a CLI error, not a raw RangeError (Q252)", () => {
   const f = tmpFile(`export function main(sys: System): void {\n  const a: i32 = 1;\n  const b: i32 = ${Array(20000).fill("a").join(" + ")};\n}\n`);
-  const r = sts("check", f);
+  const r = szigyr("check", f);
   expect(r.code).toBe(2);
   expect(r.err).toBe(`${CLI_NAME}: source nests too deeply\n`);
 });
@@ -509,10 +509,10 @@ export async function main(sys: System): Promise<void> {
   const b = await p.recv();
 }
 `);
-  const t = sts("run", join(dir, "m.szigyr"));
+  const t = szigyr("run", join(dir, "m.szigyr"));
   expect(t.code).toBe(3);
   expect(t.err).toMatch(/^trap T006 at .*\n.*boom in isolate/);
-  const j = sts("run", "--json", join(dir, "m.szigyr"));
+  const j = szigyr("run", "--json", join(dir, "m.szigyr"));
   expect(jsonLines(j.err)[0]).toMatchObject({ kind: "trap", code: "T006", message: expect.stringContaining("boom in isolate") });
 }, 60000);
 
@@ -529,30 +529,30 @@ export function main(sys: System): void {
 `);
   for (const n of ["a", "b"]) writeFileSync(join(dir, `${n}.szigyr`), `import { main } from "./shared.szigyr";\nexport function ${n}(): i32 {\n  return 1;\n}\n`);
   const a = join(dir, "a.szigyr"), b = join(dir, "b.szigyr");
-  const alone = sts("check", "--json", b).out;
+  const alone = szigyr("check", "--json", b).out;
   expect(alone).toContain("E2002");
-  expect(sts("check", "--json", a, b).out).toBe(sts("check", "--json", a).out + alone);
-  expect(sts("check", "--json", b, a, b).out).toBe(alone + sts("check", "--json", a).out + alone);
+  expect(szigyr("check", "--json", a, b).out).toBe(szigyr("check", "--json", a).out + alone);
+  expect(szigyr("check", "--json", b, a, b).out).toBe(alone + szigyr("check", "--json", a).out + alone);
 });
 
 it("--json emits valid JSONL for exit-2 usage/file errors and explain/query/test details", () => {
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-json-`));
-  const missing = sts("check", "--json", join(dir, "does-not-exist.szigyr"));
+  const missing = szigyr("check", "--json", join(dir, "does-not-exist.szigyr"));
   expect(missing.code).toBe(2);
   expect(missing.out).toBe("");
   expect(jsonLines(missing.err)[0]).toMatchObject({ kind: "error", code: "CLI_ERROR" });
 
-  const badFlag = sts("check", "--json", "--unknown-flag", "x.szigyr");
+  const badFlag = szigyr("check", "--json", "--unknown-flag", "x.szigyr");
   expect(badFlag.code).toBe(2);
   expect(jsonLines(badFlag.err)[0]).toMatchObject({ kind: "error", code: "CLI_USAGE" });
 
-  const exText = sts("explain", "E2007");
+  const exText = szigyr("explain", "E2007");
   expect(exText.code).toBe(0);
   expect(exText.out).toContain("E2007 [P2]");
-  const exJson = sts("explain", "--json", "t015");
+  const exJson = szigyr("explain", "--json", "t015");
   expect(exJson.code).toBe(0);
   expect(jsonLines(exJson.out)[0]).toMatchObject({ kind: "explain", code: "T015", phase: "runtime" });
-  const exBad = sts("explain", "--json", "E9999");
+  const exBad = szigyr("explain", "--json", "E9999");
   expect(exBad.code).toBe(2);
   expect(jsonLines(exBad.err)[0]).toMatchObject({ kind: "error", code: "CLI_ERROR" });
 
@@ -585,7 +585,7 @@ test("forAll fail", (t: Test) => {
   forAll((n: i32): boolean => n === 999999);
 });
 `);
-  const qRes = sts("query", "--json", qf);
+  const qRes = szigyr("query", "--json", qf);
   expect(qRes.code).toBe(0);
   const syms = jsonLines(qRes.out);
   expect(syms.find((s) => s.name === "Pt")).toMatchObject({ kind: "symbol", symbolKind: "type", caps: expect.arrayContaining(["Native", "Copy", "Send", "Codec"]) });
@@ -603,7 +603,7 @@ test("forAll fail", (t: Test) => {
     kind: "symbol", symbolKind: "method", layer: "managed", pure: true, mutatable: true, exported: true,
   });
 
-  const tRes = sts("test", "--json", qf);
+  const tRes = szigyr("test", "--json", qf);
   expect(tRes.code).toBe(1);
   const tLines = jsonLines(tRes.out);
   expect(tLines.find((l) => l.name === "details")?.detail).toEqual({ kind: "eq", actual: 2, expected: 3 });

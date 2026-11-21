@@ -1,5 +1,5 @@
 // Stage 5 Milestone 2 tests: Clock.sleep, Audio capability, FakeAudio across js/c/wasm,
-// E2013/E3001/E4001/E6002/sts mutate, and SDL3 disk-driver end-to-end verification (js/c/wasm).
+// E2013/E3001/E4001/E6002/szigyr mutate, and SDL3 disk-driver end-to-end verification (js/c/wasm).
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,7 +19,7 @@ function hasSdl3(): boolean {
 const RATE = 48000;
 const portableEntry = join(import.meta.dirname, "../../../examples/audio-portable/main.szigyr");
 const tmpFile = (name: string, src: string): string => {
-  const dir = mkdtempSync(join(tmpdir(), "sts-audio-p-"));
+  const dir = mkdtempSync(join(tmpdir(), "szigyr-audio-p-"));
   const p = join(dir, name);
   writeFileSync(p, src);
   return p;
@@ -136,7 +136,7 @@ test("copy state render & oob trap isolation", async (t: Test) => {
     }
   });
 
-  it("sts mutate works on tests using FakeAudio and rt callback", async () => {
+  it("szigyr mutate works on tests using FakeAudio and rt callback", async () => {
     const p = tmpFile("mutate-audio.szigyr", `
 type St = Struct<{ buf: Vec<f32>; rx: RingRx<f32>; gain: f32 }>;
 function gainStep(st: Mut<St>, out: Mut<Slice<f32>>, frames: usize): void {
@@ -176,7 +176,7 @@ test("fake audio kill", async (t: Test) => {
 describe.skipIf(!hasSdl3())("portable audio demo & traps with SDL3 disk driver", () => {
   for (const backend of ["c", "wasm", "js"] as const satisfies readonly Backend[]) {
     it(`plays 440 / 660 / 880 Hz stereo segments on ${backend} backend`, async () => {
-      const dir = mkdtempSync(join(tmpdir(), `sts-audio-${backend}-`));
+      const dir = mkdtempSync(join(tmpdir(), `szigyr-audio-${backend}-`));
       const file = join(dir, "out.raw");
       process.env.SDL_AUDIO_DRIVER = "disk";
       process.env.SDL_AUDIO_DISK_OUTPUT_FILE = file;
@@ -239,7 +239,7 @@ export async function main(sys: System): Promise<void> {
   await opened.value.close();
 }
 `);
-      const dir = mkdtempSync(join(tmpdir(), `sts-audio-trap-${backend}-`));
+      const dir = mkdtempSync(join(tmpdir(), `szigyr-audio-trap-${backend}-`));
       const file = join(dir, "trap.raw");
       process.env.SDL_AUDIO_DRIVER = "disk";
       process.env.SDL_AUDIO_DISK_OUTPUT_FILE = file;
@@ -272,7 +272,7 @@ export async function main(sys: System): Promise<void> {
   }
 }
 `);
-    const dir = mkdtempSync(join(tmpdir(), "sts-audio-ac-"));
+    const dir = mkdtempSync(join(tmpdir(), "szigyr-audio-ac-"));
     process.env.SDL_AUDIO_DRIVER = "disk";
     process.env.SDL_AUDIO_DISK_OUTPUT_FILE = join(dir, "ac.raw");
     let r;

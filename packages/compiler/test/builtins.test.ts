@@ -91,7 +91,7 @@ it("treats a reserved §13 name exactly like a builtin name in every declaration
     field: (n) => `type R = { readonly ${n}: i32 };\n`, // a property name is not a global: allowed for both
     typeParam: (n) => `function f<${n}>(x: i32): void {}\n`,
   };
-  const dir = mkdtempSync(join(tmpdir(), "sts-q231-"));
+  const dir = mkdtempSync(join(tmpdir(), "szigyr-q231-"));
   const codes = (src: string): string => {
     const f = join(dir, "f.szigyr");
     writeFileSync(f, src);

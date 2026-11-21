@@ -4,10 +4,10 @@
 // stage: 3
 // backend: c
 // open-question: Q217
-declare module "c:stscb:stscb.h" {
-  function stscb_start(ffi: Ffi, f: Ptr<(ud: Ptr<void>, x: i32) => i32>, ud: Ptr<void>, x: i32, delay: i32, after: Ptr<(ud: Ptr<void>, x: i32) => i32>, aud: Ptr<void>): void;
+declare module "c:szcb:szcb.h" {
+  function szcb_start(ffi: Ffi, f: Ptr<(ud: Ptr<void>, x: i32) => i32>, ud: Ptr<void>, x: i32, delay: i32, after: Ptr<(ud: Ptr<void>, x: i32) => i32>, aud: Ptr<void>): void;
 }
-import { stscb_start } from "c:stscb:stscb.h";
+import { szcb_start } from "c:szcb:szcb.h";
 
 function boom(ud: Ptr<void>, x: i32): i32 {
   "use rt";
@@ -23,7 +23,7 @@ function arm(ffi: Ffi, alloc: Alloc): void {
   "use owned";
   "use unsafe";
   const ud = Ptr.box(alloc, 0);
-  stscb_start(ffi, cfn(boom), ud.cast<void>(), 2147483647, 50, cfn(noop), ud.cast<void>());
+  szcb_start(ffi, cfn(boom), ud.cast<void>(), 2147483647, 50, cfn(noop), ud.cast<void>());
 }
 export function main(sys: System): void {
   arm(sys.ffi, sys.alloc);

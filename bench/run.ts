@@ -12,13 +12,13 @@ type Row = Map<string, { ms: number; sum: string }>;
 const parse = (out: string): Row => new Map(out.trim().split("\n").map((l) => { const [k, ms, sum] = l.split(" "); return [k!, { ms: +ms!, sum: sum! }]; }));
 const fmtSum = (s: string): string => String(Number(s));
 
-async function sts(backend: "js" | "c"): Promise<Row> {
+async function runSzigyr(backend: "js" | "c"): Promise<Row> {
   const r = await run(join(here, "kernels.szigyr"), { backend });
-  if (r.diagnostics.length || r.trap) throw new Error(`STS-${backend}: ${JSON.stringify(r.diagnostics.length ? r.diagnostics : r.trap)}`);
+  if (r.diagnostics.length || r.trap) throw new Error(`szigyr-${backend}: ${JSON.stringify(r.diagnostics.length ? r.diagnostics : r.trap)}`);
   return parse(r.stdout);
 }
 
-const tmpDir = mkdtempSync(join(tmpdir(), "sts-bench-"));
+const tmpDir = mkdtempSync(join(tmpdir(), "szigyr-bench-"));
 const parser = createParser();
 try {
   const kernelsPath = join(here, "kernels.szigyr");
@@ -38,12 +38,12 @@ try {
   if (relBuild.diagnostics.length) throw new Error(`bench release build failed: ${JSON.stringify(relBuild.diagnostics)}`);
   const rel = parse(execFileSync(process.execPath, [join(relDir, "main.js")], { encoding: "utf8" }));
 
-  const c = await sts("c");
-  const js = await sts("js");
+  const c = await runSzigyr("c");
+  const js = await runSzigyr("js");
 
   console.log(`flags: ${flags.join(" ")}`);
   console.log(`proved: ${relBuild.provedEliminated ?? 0} checks eliminated`);
-  console.log("| kernel | hand C (ms) | STS-C (ms) | STS-C rel (ms) | STS-JS (ms) | dev / hand C | rel / hand C |");
+  console.log("| kernel | hand C (ms) | szigyr-C (ms) | szigyr-C rel (ms) | szigyr-JS (ms) | dev / hand C | rel / hand C |");
   console.log("| --- | ---: | ---: | ---: | ---: | ---: | ---: |");
   let bad = false;
   for (const [k, h] of hand) {

@@ -6,7 +6,7 @@ import { runTestFile } from "../src/index.ts";
 import { main as cliMain } from "../src/cli.ts";
 
 function project(files: Record<string, string>): string {
-  const dir = mkdtempSync(join(tmpdir(), "sts-forall-"));
+  const dir = mkdtempSync(join(tmpdir(), "szigyr-forall-"));
   for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
   return join(dir, "main.szigyr");
 }

@@ -3,10 +3,10 @@
 // stage: 3
 // backend: c
 // open-question: Q217
-declare module "c:stscb:stscb.h" {
-  function stscb_call_big(ffi: Ffi, f: Ptr<(ud: Ptr<void>, n: usize) => usize>, ud: Ptr<void>): usize;
+declare module "c:szcb:szcb.h" {
+  function szcb_call_big(ffi: Ffi, f: Ptr<(ud: Ptr<void>, n: usize) => usize>, ud: Ptr<void>): usize;
 }
-import { stscb_call_big } from "c:stscb:stscb.h";
+import { szcb_call_big } from "c:szcb:szcb.h";
 
 function big(ud: Ptr<void>, n: usize): usize {
   "use rt";
@@ -17,7 +17,7 @@ function go(ffi: Ffi, alloc: Alloc): usize {
   "use owned";
   "use unsafe";
   const ud = Ptr.box(alloc, 0);
-  return stscb_call_big(ffi, cfn(big), ud.cast<void>());
+  return szcb_call_big(ffi, cfn(big), ud.cast<void>());
 }
 export function main(sys: System): void {
   sys.log.info("before");

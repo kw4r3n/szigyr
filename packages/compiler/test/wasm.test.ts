@@ -255,7 +255,7 @@ export function main(sys: System): void { sys.log.info(\`\${boxUnbox(sys.alloc)}
     expect(re.stdout).toBe("");
   });
 
-  it("supports CLI sts run/test --backend=wasm and forAll", async () => {
+  it("supports CLI szigyr run/test --backend=wasm and forAll", async () => {
     const f = tmpFile("cli-wasm.szigyr", `
 function addComm(a: i16, b: i16): i32 {
   "use rt";

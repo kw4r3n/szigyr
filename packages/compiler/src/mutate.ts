@@ -1,4 +1,4 @@
-// Stage 4-2..4: `sts mutate` mutation testing engine (SPEC §16.2, Q275–Q278).
+// Stage 4-2..4: `szigyr mutate` mutation testing engine (SPEC §16.2, Q275–Q278).
 // JS-only execution with 1-build runtime mutant switches, per-test reachability,
 // step-fuel timeout abortion, per-function diff caching, and shrunk witness search.
 import { createHash } from "node:crypto";
@@ -69,9 +69,9 @@ export interface MutateResult {
 }
 
 export interface MutateOptions {
-  /** Read/write `.sts-cache/mutate.json` (default: true). */
+  /** Read/write `.szigyr-cache/mutate.json` (default: true). */
   cache?: boolean;
-  /** Override cache file path (default: `.sts-cache/mutate.json` in cwd). */
+  /** Override cache file path (default: `.szigyr-cache/mutate.json` in cwd). */
   cacheFile?: string;
   /** Include functions and classes in locally imported modules too (default: false, entry file only). */
   all?: boolean;
@@ -116,7 +116,7 @@ type CacheStore = Record<string, CacheEntry>;
 
 const displayPath = (p: string): string => relative(process.cwd(), p) || p;
 
-/** Main entry for `sts mutate` on a single file (called inside `exclusive` from `index.ts`). */
+/** Main entry for `szigyr mutate` on a single file (called inside `exclusive` from `index.ts`). */
 export async function mutateFile(entryFile: string, opts: MutateOptions = {}): Promise<MutateResult> {
   const emptySummary: MutateSummary = { targets: 0, killed: 0, survived: 0, timeout: 0, cached: 0, skipped: [] };
   const a = opts.analysis ?? analyze(entryFile, opts.parser);
@@ -598,7 +598,7 @@ function formatJsonVal(v: unknown): unknown {
   return out;
 }
 
-/** Snapshot any STS runtime value (including Vec, Slice, Struct, Map, Set, Array) for structural comparison. */
+/** Snapshot any Szigyr runtime value (including Vec, Slice, Struct, Map, Set, Array) for structural comparison. */
 function snapshot(v: unknown): unknown {
   if (v instanceof rt.Vec || v instanceof rt.Slice) return { __seq: Array.from({ length: v.length }, (_, i) => snapshot(v.get(i))) };
   if (v instanceof Map) return { __map: [...v.entries()].map(([k, val]) => [snapshot(k), snapshot(val)]) };

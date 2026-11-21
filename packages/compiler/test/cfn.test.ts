@@ -9,12 +9,12 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import * as rt from "../../runtime-js/src/index.ts";
 import { run } from "../src/index.ts";
-import { ensureStscb } from "./stscb.ts";
+import { ensureSzcb } from "./szcb.ts";
 
-ensureStscb();
+ensureSzcb();
 
 function project(files: Record<string, string>): string {
-  const dir = mkdtempSync(join(tmpdir(), "sts-cfn-"));
+  const dir = mkdtempSync(join(tmpdir(), "szigyr-cfn-"));
   for (const [p, t] of Object.entries(files)) {
     mkdirSync(dirname(join(dir, p)), { recursive: true });
     writeFileSync(join(dir, p), t);
@@ -22,20 +22,20 @@ function project(files: Record<string, string>): string {
   return join(dir, "main.szigyr");
 }
 
-const HEAD = `declare module "c:stscb:stscb.h" {
-  function stscb_call(ffi: Ffi, f: Ptr<(ud: Ptr<void>, x: i32) => i32>, ud: Ptr<void>, x: i32): i32;
-  function stscb_cell(ffi: Ffi): Ptr<i32>;
-  function stscb_reset_stats(ffi: Ffi): void;
-  function stscb_stat_n(ffi: Ffi): i32;
-  function stscb_stat(ffi: Ffi, i: i32): i32;
+const HEAD = `declare module "c:szcb:szcb.h" {
+  function szcb_call(ffi: Ffi, f: Ptr<(ud: Ptr<void>, x: i32) => i32>, ud: Ptr<void>, x: i32): i32;
+  function szcb_cell(ffi: Ffi): Ptr<i32>;
+  function szcb_reset_stats(ffi: Ffi): void;
+  function szcb_stat_n(ffi: Ffi): i32;
+  function szcb_stat(ffi: Ffi, i: i32): i32;
 }
-import { stscb_call, stscb_cell, stscb_reset_stats, stscb_stat_n, stscb_stat } from "c:stscb:stscb.h";
+import { szcb_call, szcb_cell, szcb_reset_stats, szcb_stat_n, szcb_stat } from "c:szcb:szcb.h";
 `;
 
-const withDecl = (decl: string, name: string): string => HEAD.replace("}\nimport {", `  ${decl}\n}\nimport { ${name} } from "c:stscb:stscb.h";\nimport {`);
+const withDecl = (decl: string, name: string): string => HEAD.replace("}\nimport {", `  ${decl}\n}\nimport { ${name} } from "c:szcb:szcb.h";\nimport {`);
 
 /** A program whose main arms the fixture: after `delay` ms, a fixture thread calls bump twice on the cell; then `rest` runs. */
-const armed = (delay: number, rest: string, extra = ""): string => project({ "main.szigyr": withDecl("function stscb_start(ffi: Ffi, f: Ptr<(ud: Ptr<void>, x: i32) => i32>, ud: Ptr<void>, x: i32, delay: i32, after: Ptr<(ud: Ptr<void>, x: i32) => i32>, aud: Ptr<void>): void;", "stscb_start") + `
+const armed = (delay: number, rest: string, extra = ""): string => project({ "main.szigyr": withDecl("function szcb_start(ffi: Ffi, f: Ptr<(ud: Ptr<void>, x: i32) => i32>, ud: Ptr<void>, x: i32, delay: i32, after: Ptr<(ud: Ptr<void>, x: i32) => i32>, aud: Ptr<void>): void;", "szcb_start") + `
 function bump(ud: Ptr<void>, x: i32): i32 {
   "use rt";
   "use unsafe";
@@ -46,10 +46,10 @@ function bump(ud: Ptr<void>, x: i32): i32 {
 function arm(ffi: Ffi): void {
   "use owned";
   "use unsafe";
-  stscb_reset_stats(ffi);
-  const cell = stscb_cell(ffi);
+  szcb_reset_stats(ffi);
+  const cell = szcb_cell(ffi);
   cell.write(0);
-  stscb_start(ffi, cfn(bump), cell.cast<void>(), 1, ${delay}, cfn(bump), cell.cast<void>());
+  szcb_start(ffi, cfn(bump), cell.cast<void>(), 1, ${delay}, cfn(bump), cell.cast<void>());
 }
 ${extra}export function main(sys: System): void {
   arm(sys.ffi);
@@ -59,14 +59,14 @@ ${rest}
 
 /** Joins the armed fixture thread and returns "runs n v0 v1": bump's runs, then what the fixture got back. */
 async function readCell(): Promise<string> {
-  const r = await run(project({ "main.szigyr": withDecl("function stscb_join(ffi: Ffi): void;", "stscb_join") + `
+  const r = await run(project({ "main.szigyr": withDecl("function szcb_join(ffi: Ffi): void;", "szcb_join") + `
 type S = Struct<{ runs: i32; n: i32; v0: i32; v1: i32 }>;
 function read(ffi: Ffi): S {
   "use owned";
   "use unsafe";
-  stscb_join(ffi);
-  const cell = stscb_cell(ffi);
-  return { runs: cell.read(), n: stscb_stat_n(ffi), v0: stscb_stat(ffi, 0), v1: stscb_stat(ffi, 1) };
+  szcb_join(ffi);
+  const cell = szcb_cell(ffi);
+  return { runs: cell.read(), n: szcb_stat_n(ffi), v0: szcb_stat(ffi, 0), v1: szcb_stat(ffi, 1) };
 }
 export function main(sys: System): void {
   const s = read(sys.ffi);
@@ -91,12 +91,12 @@ function bump(ud: Ptr<void>, x: i32): i32 {
 function run3(ffi: Ffi): void {
   "use owned";
   "use unsafe";
-  stscb_reset_stats(ffi);
-  const cell = stscb_cell(ffi);
+  szcb_reset_stats(ffi);
+  const cell = szcb_cell(ffi);
   cell.write(0);
-  const a = stscb_call(ffi, cfn(bump), cell.cast<void>(), 1);
-  const b = stscb_call(ffi, cfn(bump), cell.cast<void>(), 2147483647);
-  const c = stscb_call(ffi, cfn(bump), cell.cast<void>(), 5);
+  const a = szcb_call(ffi, cfn(bump), cell.cast<void>(), 1);
+  const b = szcb_call(ffi, cfn(bump), cell.cast<void>(), 2147483647);
+  const c = szcb_call(ffi, cfn(bump), cell.cast<void>(), 5);
 }
 export function main(sys: System): void {
   run3(sys.ffi);
@@ -112,8 +112,8 @@ type S = Struct<{ runs: i32; n: i32; v0: i32; v1: i32; v2: i32 }>;
 function read(ffi: Ffi): S {
   "use owned";
   "use unsafe";
-  const cell = stscb_cell(ffi);
-  return { runs: cell.read(), n: stscb_stat_n(ffi), v0: stscb_stat(ffi, 0), v1: stscb_stat(ffi, 1), v2: stscb_stat(ffi, 2) };
+  const cell = szcb_cell(ffi);
+  return { runs: cell.read(), n: szcb_stat_n(ffi), v0: szcb_stat(ffi, 0), v1: szcb_stat(ffi, 1), v2: szcb_stat(ffi, 2) };
 }
 export function main(sys: System): void {
   const s = read(sys.ffi);
@@ -138,7 +138,7 @@ export function main(sys: System): void {
   it("a C thread trapping after main's own trap does not displace it (§15.4, D144)", async () => {
     // An npm package blocks the main thread for 1.5 s in the first macrotask after main, so the
     // fixture thread's trap 200 ms after main's panic lands before runNow finishes. Main's trap came first.
-    const a = project({ "main.szigyr": `import { block } from "npm:blockpkg";\n` + withDecl("function stscb_start(ffi: Ffi, f: Ptr<(ud: Ptr<void>, x: i32) => i32>, ud: Ptr<void>, x: i32, delay: i32, after: Ptr<(ud: Ptr<void>, x: i32) => i32>, aud: Ptr<void>): void;", "stscb_start") + `
+    const a = project({ "main.szigyr": `import { block } from "npm:blockpkg";\n` + withDecl("function szcb_start(ffi: Ffi, f: Ptr<(ud: Ptr<void>, x: i32) => i32>, ud: Ptr<void>, x: i32, delay: i32, after: Ptr<(ud: Ptr<void>, x: i32) => i32>, aud: Ptr<void>): void;", "szcb_start") + `
 function boom(ud: Ptr<void>, x: i32): i32 {
   "use rt";
   "use unsafe";
@@ -147,8 +147,8 @@ function boom(ud: Ptr<void>, x: i32): i32 {
 function arm(ffi: Ffi): void {
   "use owned";
   "use unsafe";
-  const cell = stscb_cell(ffi);
-  stscb_start(ffi, cfn(boom), cell.cast<void>(), 2147483647, 200, cfn(boom), cell.cast<void>());
+  const cell = szcb_cell(ffi);
+  szcb_start(ffi, cfn(boom), cell.cast<void>(), 2147483647, 200, cfn(boom), cell.cast<void>());
 }
 export function main(sys: System): void {
   const b = sys.js.call(block, []);
@@ -192,7 +192,7 @@ function cleanPtr(cell: Ptr<i32>, p: Ptr<i32>): void {
 function runNormal(a: Alloc, ffi: Ffi): i32 {
   "use owned";
   "use unsafe";
-  const cell = stscb_cell(ffi);
+  const cell = szcb_cell(ffi);
   cell.write(0);
   using r1 = Resource.ownWith<Ptr<i32>, Ptr<i32>>(Ptr.box<i32>(a, 1), cell, cleanPtr);
   using r2 = Resource.ownWith<Ptr<i32>, Ptr<i32>>(Ptr.box<i32>(a, 2), cell, cleanPtr);
@@ -204,7 +204,7 @@ function runNormal(a: Alloc, ffi: Ffi): i32 {
 function runTrap(a: Alloc, ffi: Ffi): void {
   "use owned";
   "use unsafe";
-  const cell = stscb_cell(ffi);
+  const cell = szcb_cell(ffi);
   cell.write(0);
   using r1 = Resource.ownWith<Ptr<i32>, Ptr<i32>>(Ptr.box<i32>(a, 3), cell, cleanPtr);
   using r2 = Resource.ownWith<Ptr<i32>, Ptr<i32>>(Ptr.box<i32>(a, 4), cell, cleanPtr);
@@ -215,7 +215,7 @@ function runTrap(a: Alloc, ffi: Ffi): void {
 function readCell(ffi: Ffi): i32 {
   "use owned";
   "use unsafe";
-  return stscb_cell(ffi).read();
+  return szcb_cell(ffi).read();
 }
 export function main(sys: System): void {
   const s = runNormal(sys.alloc, sys.ffi);
@@ -229,7 +229,7 @@ export function main(sys: System): void {
     expect(r.trap).toMatchObject({ code: "T006" });
     expect(r.stdout).toBe("10:21\n");
     const cellEntry = project({
-      "main.szigyr": HEAD + `function readCell(ffi: Ffi): i32 {\n  "use owned";\n  "use unsafe";\n  return stscb_cell(ffi).read();\n}\nexport function main(sys: System): void {\n  sys.log.info(\`\${readCell(sys.ffi)}\`);\n}\n`,
+      "main.szigyr": HEAD + `function readCell(ffi: Ffi): i32 {\n  "use owned";\n  "use unsafe";\n  return szcb_cell(ffi).read();\n}\nexport function main(sys: System): void {\n  sys.log.info(\`\${readCell(sys.ffi)}\`);\n}\n`,
     });
     const r2 = await run(cellEntry, { backend: "c" });
     expect(r2.trap).toBeNull();

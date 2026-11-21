@@ -91,7 +91,7 @@ type AnyNode = Node & Record<string, unknown>;
 
 /** `tests`: keep the module's top-level `test(...)` calls (§9.2, §10.10). `file`: path reported in trap positions. */
 /** `native`: strict / rt function declarations compiled to C (D101), with their key in `rt.native`. */
-/** `mut`: optional mutation testing instrumentation (`sts mutate`, SPEC §16.2). */
+/** `mut`: optional mutation testing instrumentation (`szigyr mutate`, SPEC §16.2). */
 export function emitFile(
   pf: ParsedFile,
   file: string,

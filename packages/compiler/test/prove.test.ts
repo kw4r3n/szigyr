@@ -44,7 +44,7 @@ function jsonLines(s: string): Record<string, any>[] {
 }
 
 function cFnBody(code: string, name: string): string {
-  const m = new RegExp(`sts_F\\d+_${name}(?:_I\\d+)?\\([^)]*\\) \\{`).exec(code);
+  const m = new RegExp(`sz_F\\d+_${name}(?:_I\\d+)?\\([^)]*\\) \\{`).exec(code);
   if (!m) throw new Error(`missing C body for ${name}`);
   let depth = 0;
   const start = m.index;
@@ -202,25 +202,25 @@ export function useGeneric(s: Ref<Slice<i32>>): i32 {
     expect(prefixRes.obligations.filter((o) => o.kind === "T002").every((o) => o.status === "proved")).toBe(true);
     expect(prefixRes.remainingRtTrapSites?.map((s) => s.code).sort()).toEqual(["T001", "T004"]);
 
-    // Dev C output keeps `sts_chk`; release C eliminates `sts_chk` from all kernels
+    // Dev C output keeps `sz_chk`; release C eliminates `sz_chk` from all kernels
     const devC = emitC(analysis.decls!, "native")!;
     const relC = emitC(analysis.decls!, "native", { proved: res.proved })!;
-    expect(devC.c).toContain("sts_chk(");
+    expect(devC.c).toContain("sz_chk(");
     expect(relC.eliminated).toBeGreaterThanOrEqual(15);
 
-    expect(cFnBody(relC.c, "dotInner")).not.toContain("sts_chk(");
-    expect(cFnBody(relC.c, "dotInner")).not.toContain("STS_AOP(");
-    expect(cFnBody(relC.c, "dotInner")).not.toContain("sts_trap(4,");
-    expect(cFnBody(relC.c, "saxpy")).not.toContain("sts_chk(");
-    expect(cFnBody(relC.c, "saxpy")).not.toContain("STS_AOP(");
-    expect(cFnBody(relC.c, "prefix")).not.toContain("sts_chk(");
-    expect(cFnBody(relC.c, "prefix")).toContain("STS_AOP(add, int32_t");
-    expect(cFnBody(relC.c, "stencil")).not.toContain("sts_chk(");
-    expect(cFnBody(relC.c, "stencil")).not.toContain("STS_DIV(");
-    expect(cFnBody(relC.c, "particles")).not.toContain("sts_chk(");
+    expect(cFnBody(relC.c, "dotInner")).not.toContain("sz_chk(");
+    expect(cFnBody(relC.c, "dotInner")).not.toContain("SZ_AOP(");
+    expect(cFnBody(relC.c, "dotInner")).not.toContain("sz_trap(4,");
+    expect(cFnBody(relC.c, "saxpy")).not.toContain("sz_chk(");
+    expect(cFnBody(relC.c, "saxpy")).not.toContain("SZ_AOP(");
+    expect(cFnBody(relC.c, "prefix")).not.toContain("sz_chk(");
+    expect(cFnBody(relC.c, "prefix")).toContain("SZ_AOP(add, int32_t");
+    expect(cFnBody(relC.c, "stencil")).not.toContain("sz_chk(");
+    expect(cFnBody(relC.c, "stencil")).not.toContain("SZ_DIV(");
+    expect(cFnBody(relC.c, "particles")).not.toContain("sz_chk(");
 
     // Generic instantiations MUST NOT eliminate checks even with `proved`
-    expect(cFnBody(relC.c, "idGeneric")).toContain("sts_chk(");
+    expect(cFnBody(relC.c, "idGeneric")).toContain("sz_chk(");
   });
 
   it("proves and eliminates T001, T002 (.slice), T003, T004 (private requires), T005, T007, T009, T010", async () => {
@@ -268,7 +268,7 @@ export function sliceCastShiftDivRem(
   const ten: u32 = 10;
   const zeroU: u32 = 0;
   const fq = divTrunc(u32(k) + ten, one + sh);
-  const cvtFloat = i32(f); // unmodeled float cast stays unknown and keeps sts_cvt
+  const cvtFloat = i32(f); // unmodeled float cast stays unknown and keeps sz_cvt
   if (cvtFloat > 100000) return u32(first) + sft + fq + (q > 0 ? one : zeroU);
   return u32(first) + sft + fq;
 }
@@ -324,25 +324,25 @@ export function whileWithInv(s: Ref<Slice<i32>>): i32 {
     const relC = emitC(analysis.decls!, "native", { proved: res.proved })!.c;
 
     // Private `privHelper` and `firstByte` have requires (T004) + ensures (T005) + bounds (T002) eliminated
-    expect(cFnBody(relC, "privHelper")).not.toContain("sts_trap(4,");
-    expect(cFnBody(relC, "privHelper")).not.toContain("sts_trap(5,");
-    expect(cFnBody(relC, "firstByte")).not.toContain("sts_trap(4,");
-    expect(cFnBody(relC, "firstByte")).not.toContain("sts_chk(");
-    // Exported `callPriv` keeps its runtime `requires` (sts_trap(4)), but eliminates `ensures` (sts_trap(5))
-    expect(cFnBody(relC, "callPriv")).toContain("sts_trap(4,");
-    expect(cFnBody(relC, "callPriv")).not.toContain("sts_trap(5,");
-    // Proved neg, div, while invariant, slice/cast/shift/rem all eliminated; float cast keeps sts_cvt
-    expect(cFnBody(relC, "negSafe")).not.toContain("STS_AOP(");
-    expect(cFnBody(relC, "divSafe")).not.toContain("STS_DIV(");
-    expect(cFnBody(relC, "whileWithInv")).not.toContain("sts_trap(10,");
-    expect(cFnBody(relC, "whileWithInv")).not.toContain("sts_chk(");
-    expect(cFnBody(relC, "whileWithInv")).not.toContain("STS_AOP(");
-    expect(cFnBody(relC, "sliceCastShiftDivRem")).not.toContain("sts_sub(");
-    expect(cFnBody(relC, "sliceCastShiftDivRem")).not.toContain("sts_cvti(");
-    expect(cFnBody(relC, "sliceCastShiftDivRem")).not.toContain("sts_amt(");
-    expect(cFnBody(relC, "sliceCastShiftDivRem")).not.toContain("STS_DIV(");
-    expect(cFnBody(relC, "sliceCastShiftDivRem")).not.toContain("STS_REM(");
-    expect(cFnBody(relC, "sliceCastShiftDivRem")).toContain("sts_cvt(");
+    expect(cFnBody(relC, "privHelper")).not.toContain("sz_trap(4,");
+    expect(cFnBody(relC, "privHelper")).not.toContain("sz_trap(5,");
+    expect(cFnBody(relC, "firstByte")).not.toContain("sz_trap(4,");
+    expect(cFnBody(relC, "firstByte")).not.toContain("sz_chk(");
+    // Exported `callPriv` keeps its runtime `requires` (sz_trap(4)), but eliminates `ensures` (sz_trap(5))
+    expect(cFnBody(relC, "callPriv")).toContain("sz_trap(4,");
+    expect(cFnBody(relC, "callPriv")).not.toContain("sz_trap(5,");
+    // Proved neg, div, while invariant, slice/cast/shift/rem all eliminated; float cast keeps sz_cvt
+    expect(cFnBody(relC, "negSafe")).not.toContain("SZ_AOP(");
+    expect(cFnBody(relC, "divSafe")).not.toContain("SZ_DIV(");
+    expect(cFnBody(relC, "whileWithInv")).not.toContain("sz_trap(10,");
+    expect(cFnBody(relC, "whileWithInv")).not.toContain("sz_chk(");
+    expect(cFnBody(relC, "whileWithInv")).not.toContain("SZ_AOP(");
+    expect(cFnBody(relC, "sliceCastShiftDivRem")).not.toContain("sz_sub(");
+    expect(cFnBody(relC, "sliceCastShiftDivRem")).not.toContain("sz_cvti(");
+    expect(cFnBody(relC, "sliceCastShiftDivRem")).not.toContain("sz_amt(");
+    expect(cFnBody(relC, "sliceCastShiftDivRem")).not.toContain("SZ_DIV(");
+    expect(cFnBody(relC, "sliceCastShiftDivRem")).not.toContain("SZ_REM(");
+    expect(cFnBody(relC, "sliceCastShiftDivRem")).toContain("sz_cvt(");
   });
 
   it("reports counterexamples and refuses elimination for buggy contracts, a[i]=b[i], divTrunc MIN/-1, and bitwise/float ops", async () => {
@@ -435,9 +435,9 @@ function privCalledByManaged(x: i32): i32 {
     expect([...res.proved.provedPrivateRequires].map((f) => f.name)).not.toContain("privCalledByManaged");
 
     const relC = emitC(analysis.decls!, "native", { proved: res.proved })!.c;
-    expect(cFnBody(relC, "divMinBad")).toContain("STS_DIV(");
-    expect(cFnBody(relC, "oobCopy")).toContain("sts_chk(");
-    expect(cFnBody(relC, "privCalledByManaged")).toContain("sts_trap(4,");
+    expect(cFnBody(relC, "divMinBad")).toContain("SZ_DIV(");
+    expect(cFnBody(relC, "oobCopy")).toContain("sz_chk(");
+    expect(cFnBody(relC, "privCalledByManaged")).toContain("sz_trap(4,");
   });
 
   it("preserves runtime behavior and traps in buildNode (C & Wasm) and buildBrowser release builds", async () => {
@@ -551,8 +551,8 @@ export function overlapAnchor(arr: Ref<Slice<i32>>, k: i64): i32 {
     const second = await prove(file, { analysis, cacheFile, parser });
     expect(second.summary.cached).toBe(1);
     const relC = emitC(analysis.decls!, "native", { proved: second.proved })!.c;
-    expect(cFnBody(relC, "overlapAnchor")).not.toContain("sts_chk(");
-    expect(cFnBody(relC, "overlapAnchor")).not.toContain("sts_cvti(");
+    expect(cFnBody(relC, "overlapAnchor")).not.toContain("sz_chk(");
+    expect(cFnBody(relC, "overlapAnchor")).not.toContain("sz_cvti(");
 
     // Modifying the function invalidates the cache entry
     writeFileSync(file, src.replace("k < i64(arr.length)", "k <= i64(arr.length)"));
@@ -760,12 +760,12 @@ export function runTool(tool: Tool): usize {
     expect(res.summary).toMatchObject({ failed: 0, unknown: 0, timeout: 0 });
 
     const relC = emitC(analysis.decls!, "native", { proved: res.proved })!;
-    expect(cFnBody(relC.c, "fillBuf")).not.toContain("sts_chk(");
-    expect(cFnBody(relC.c, "fillBuf")).not.toContain("sts_trap(4,");
-    expect(cFnBody(relC.c, "useBox")).not.toContain("sts_chk(");
-    expect(cFnBody(relC.c, "checkVecLen")).not.toContain("sts_chk(");
-    expect(cFnBody(relC.c, "checkVecLen")).not.toContain("sts_trap(4,");
-    expect(cFnBody(relC.c, "blurPass")).not.toContain("sts_trap(4,");
+    expect(cFnBody(relC.c, "fillBuf")).not.toContain("sz_chk(");
+    expect(cFnBody(relC.c, "fillBuf")).not.toContain("sz_trap(4,");
+    expect(cFnBody(relC.c, "useBox")).not.toContain("sz_chk(");
+    expect(cFnBody(relC.c, "checkVecLen")).not.toContain("sz_chk(");
+    expect(cFnBody(relC.c, "checkVecLen")).not.toContain("sz_trap(4,");
+    expect(cFnBody(relC.c, "blurPass")).not.toContain("sz_trap(4,");
   });
 
   it("proves real-app kernels (bench, retouch, audio-portable, audio) with zero failures and eliminates release bounds checks", async () => {
@@ -786,9 +786,9 @@ export function runTool(tool: Tool): usize {
     const bench = await runOne("bench/kernels.szigyr");
     expect(bench.relC.eliminated).toBeGreaterThan(0);
     for (const fn of ["dot", "saxpy", "prefix", "stencil", "particles"]) {
-      expect(cFnBody(bench.relC.c, fn)).not.toContain("sts_chk(");
+      expect(cFnBody(bench.relC.c, fn)).not.toContain("sz_chk(");
     }
-    expect(cFnBody(bench.relC.c, "prefix")).toContain("STS_AOP(add, int32_t");
+    expect(cFnBody(bench.relC.c, "prefix")).toContain("SZ_AOP(add, int32_t");
 
     const retouch = await runOne("examples/retouch/kernels.szigyr");
     expect(retouch.relC.eliminated).toBeGreaterThan(0);
@@ -802,24 +802,24 @@ export function runTool(tool: Tool): usize {
       "applyBrushStroke",
       "computeImageStats",
     ]) {
-      expect(cFnBody(retouch.relC.c, fn)).not.toContain("sts_chk(");
+      expect(cFnBody(retouch.relC.c, fn)).not.toContain("sz_chk(");
     }
     for (const privFn of ["unpackRgbaToRgb", "reconstructFrequency", "smoothRoiPass"]) {
-      expect(cFnBody(retouch.relC.c, privFn)).not.toContain("sts_trap(4,");
+      expect(cFnBody(retouch.relC.c, privFn)).not.toContain("sz_trap(4,");
     }
-    expect(cFnBody(retouch.relC.c, "clampU8")).toContain("sts_cvt(");
-    expect(cFnBody(retouch.relC.c, "roiBox")).toContain("sts_trap(5,");
+    expect(cFnBody(retouch.relC.c, "clampU8")).toContain("sz_cvt(");
+    expect(cFnBody(retouch.relC.c, "roiBox")).toContain("sz_trap(5,");
 
     await runOne("examples/retouch/session.szigyr");
 
     const audioPortable = await runOne("examples/audio-portable/main.szigyr");
-    expect(cFnBody(audioPortable.relC.c, "render")).not.toContain("sts_chk(");
-    expect(cFnBody(audioPortable.relC.c, "render")).toContain("sts_trap(4,");
+    expect(cFnBody(audioPortable.relC.c, "render")).not.toContain("sz_chk(");
+    expect(cFnBody(audioPortable.relC.c, "render")).toContain("sz_trap(4,");
 
     if (hasSdl3()) {
       const audio = await runOne("examples/audio/main.szigyr");
-      expect(cFnBody(audio.relC.c, "fill")).not.toContain("sts_chk(");
-      expect(cFnBody(audio.relC.c, "fill")).toContain("sts_trap(4,");
+      expect(cFnBody(audio.relC.c, "fill")).not.toContain("sz_chk(");
+      expect(cFnBody(audio.relC.c, "fill")).toContain("sz_trap(4,");
     }
   }, 60_000);
 });

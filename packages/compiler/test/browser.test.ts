@@ -1,4 +1,4 @@
-// Stage 5 Milestone 3 tests: browser runtime split, `sts build --target=browser`,
+// Stage 5 Milestone 3 tests: browser runtime split, `szigyr build --target=browser`,
 // Web Worker Spawn + Wasm, `--mode=lib`, and real Chromium AudioWorklet PCM (440/660/880 Hz).
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -109,7 +109,7 @@ const pw = findPlaywright();
 
 describe("browser target builder & CLI", () => {
   it("builds portable audio demo (--mode=app) with zero node: imports or host paths", async () => {
-    const outDir = mkdtempSync(join(tmpdir(), "sts-bapp-"));
+    const outDir = mkdtempSync(join(tmpdir(), "szigyr-bapp-"));
     const r = await runCli(["build", "--target=browser", "-o", outDir, portableDemo]);
     expect(r.code, r.err).toBe(0);
     expect(existsSync(join(outDir, "index.html"))).toBe(true);
@@ -128,8 +128,8 @@ describe("browser target builder & CLI", () => {
   });
 
   it("builds --mode=lib without index.html and without requiring main", async () => {
-    const srcDir = mkdtempSync(join(tmpdir(), "sts-blib-src-"));
-    const outDir = mkdtempSync(join(tmpdir(), "sts-blib-out-"));
+    const srcDir = mkdtempSync(join(tmpdir(), "szigyr-blib-src-"));
+    const outDir = mkdtempSync(join(tmpdir(), "szigyr-blib-out-"));
     const libFile = join(srcDir, "mathlib.szigyr");
     writeFileSync(libFile, `export function saxpy(a: f32, x: Ref<Vec<f32>>, y: Mut<Vec<f32>>): f32 {\n  "use owned";\n  let s: f32 = f32(0);\n  for (let i: usize = 0; i < x.length; i += 1) {\n    y[i] = f32(y[i] + f32(a * x[i]));\n    s = f32(s + y[i]);\n  }\n  return s;\n}\n`);
     const r = await runCli(["build", "--target=browser", "--mode=lib", "-o", outDir, libFile]);
@@ -140,7 +140,7 @@ describe("browser target builder & CLI", () => {
   });
 
   it("rejects C-only program with E4009 and invalid build flags with exit 2", async () => {
-    const outDir = mkdtempSync(join(tmpdir(), "sts-bconly-"));
+    const outDir = mkdtempSync(join(tmpdir(), "szigyr-bconly-"));
     const r1 = await runCli(["build", "--target=browser", "-o", outDir, ffiDemo]);
     expect(r1.code).toBe(1);
     expect(r1.err).toContain("E4009");
@@ -151,7 +151,7 @@ describe("browser target builder & CLI", () => {
   });
 
   it("bundles ESM and CJS npm: dependencies statically without node: imports", async () => {
-    const srcDir = mkdtempSync(join(tmpdir(), "sts-bnpm-src-"));
+    const srcDir = mkdtempSync(join(tmpdir(), "szigyr-bnpm-src-"));
     const nm = join(srcDir, "node_modules");
     mkdirSync(join(nm, "esm-pkg"), { recursive: true });
     mkdirSync(join(nm, "cjs-pkg"), { recursive: true });
@@ -188,7 +188,7 @@ describe("browser target builder & CLI", () => {
       `}`,
     ].join("\n"));
 
-    const outDir = mkdtempSync(join(tmpdir(), "sts-bnpm-out-"));
+    const outDir = mkdtempSync(join(tmpdir(), "szigyr-bnpm-out-"));
     const r = await runCli(["build", "--target=browser", "-o", outDir, entry]);
     expect(r.code, r.err).toBe(0);
     expect(existsSync(join(outDir, "vendor"))).toBe(true);
@@ -197,7 +197,7 @@ describe("browser target builder & CLI", () => {
     }
 
     // Copy bundle out to an isolated directory without node_modules and execute app.js as static ESM.
-    const isoDir = mkdtempSync(join(tmpdir(), "sts-bnpm-iso-"));
+    const isoDir = mkdtempSync(join(tmpdir(), "szigyr-bnpm-iso-"));
     cpSync(outDir, isoDir, { recursive: true });
     let stdout = "";
     const mod = await import(pathToFileURL(join(isoDir, "app.js")).href) as {
@@ -209,7 +209,7 @@ describe("browser target builder & CLI", () => {
   });
 
   it("fails with exit 2 when an npm: package is missing or imports node:* for browser", async () => {
-    const srcDir = mkdtempSync(join(tmpdir(), "sts-bnpm-err-"));
+    const srcDir = mkdtempSync(join(tmpdir(), "szigyr-bnpm-err-"));
     const nm = join(srcDir, "node_modules");
     mkdirSync(join(nm, "node-only-pkg"), { recursive: true });
     writeFileSync(join(nm, "node-only-pkg", "package.json"), JSON.stringify({ name: "node-only-pkg", type: "module", main: "index.mjs" }));
@@ -232,7 +232,7 @@ describe("browser target builder & CLI", () => {
 describe.skipIf(!pw)("real Chromium browser verification (Playwright)", () => {
   for (const coi of [true, false]) {
     it(`plays 440 / 660 / 880 Hz via AudioWorklet + Wasm (${coi ? "COOP/COEP SAB" : "MessagePort fallback"})`, async () => {
-      const outDir = mkdtempSync(join(tmpdir(), `sts-pw-audio-${coi ? "sab" : "msg"}-`));
+      const outDir = mkdtempSync(join(tmpdir(), `szigyr-pw-audio-${coi ? "sab" : "msg"}-`));
       const built = buildBrowser(portableDemo, { outDir, mode: "app" });
       expect(built.diagnostics).toEqual([]);
       const srv = await serveDir(outDir, coi);
@@ -292,8 +292,8 @@ describe.skipIf(!pw)("real Chromium browser verification (Playwright)", () => {
   }
 
   it("surfaces AudioWorklet Wasm callback trap (T002) with source position", async () => {
-    const srcDir = mkdtempSync(join(tmpdir(), "sts-pw-trap-src-"));
-    const outDir = mkdtempSync(join(tmpdir(), "sts-pw-trap-out-"));
+    const srcDir = mkdtempSync(join(tmpdir(), "szigyr-pw-trap-src-"));
+    const outDir = mkdtempSync(join(tmpdir(), "szigyr-pw-trap-out-"));
     const entry = join(srcDir, "main.szigyr");
     writeFileSync(entry, [
       `type St = Struct<{ n: i32 }>;`,
@@ -333,8 +333,8 @@ describe.skipIf(!pw)("real Chromium browser verification (Playwright)", () => {
   }, 60000);
 
   it("runs Spawn Web Worker isolates (+ Wasm + Ring + Trap) and --mode=lib in Chromium", async () => {
-    const srcDir = mkdtempSync(join(tmpdir(), "sts-pw-spawn-src-"));
-    const outDir = mkdtempSync(join(tmpdir(), "sts-pw-spawn-out-"));
+    const srcDir = mkdtempSync(join(tmpdir(), "szigyr-pw-spawn-src-"));
+    const outDir = mkdtempSync(join(tmpdir(), "szigyr-pw-spawn-out-"));
     const entry = join(srcDir, "main.szigyr");
     writeFileSync(entry, [
       `function sumVec(v: Ref<Vec<f32>>): f32 {`,
@@ -380,7 +380,7 @@ describe.skipIf(!pw)("real Chromium browser verification (Playwright)", () => {
     const built = buildBrowser(entry, { outDir, mode: "app" });
     expect(built.diagnostics).toEqual([]);
 
-    const libDir = mkdtempSync(join(tmpdir(), "sts-pw-lib-out-"));
+    const libDir = mkdtempSync(join(tmpdir(), "szigyr-pw-lib-out-"));
     const libEntry = join(srcDir, "lib.szigyr");
     writeFileSync(libEntry, [
       `export function dot(a: Ref<Vec<f32>>, b: Ref<Vec<f32>>): f32 {`,

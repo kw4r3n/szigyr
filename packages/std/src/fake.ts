@@ -85,10 +85,10 @@ export class FakeAudio implements Audio {
     if (this.active?.isOpen()) await this.active.close();
     const { sampleRate, channels } = config;
     let closed = false;
-    const cInit = cb.native?.[`sts_audio_fake_init_${cb.id}`] as ((s: unknown) => unknown) | undefined;
-    const cRender = cb.native?.[`sts_audio_fake_render_${cb.id}`] as ((ctx: unknown, out: Float32Array, frames: number) => void) | undefined;
-    const cFree = cb.native?.[`sts_audio_fake_free_${cb.id}`] as ((ctx: unknown) => void) | undefined;
-    const wasmMod = !cInit ? (cb.native?.[`sts_audio_${cb.id}`] as { init(s: unknown): number; render(b: number, out: Float32Array, f: number): void; free(b: number): void } | undefined) : undefined;
+    const cInit = cb.native?.[`sz_audio_fake_init_${cb.id}`] as ((s: unknown) => unknown) | undefined;
+    const cRender = cb.native?.[`sz_audio_fake_render_${cb.id}`] as ((ctx: unknown, out: Float32Array, frames: number) => void) | undefined;
+    const cFree = cb.native?.[`sz_audio_fake_free_${cb.id}`] as ((ctx: unknown) => void) | undefined;
+    const wasmMod = !cInit ? (cb.native?.[`sz_audio_${cb.id}`] as { init(s: unknown): number; render(b: number, out: Float32Array, f: number): void; free(b: number): void } | undefined) : undefined;
     let cCtx: unknown;
     let wasmBox = 0;
     if (cInit) cCtx = cInit(state);

@@ -895,3 +895,16 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - **確かめ方**:
   - `packages/compiler/test/prove.test.ts` に `Arena.alloc`/`view`・構造体/`Vec` 戻り値 `ensures`・タグつきユニオン `switch` 契約の単体テストおよび上記実アプリ 5 ファイルのリリース `emitC` 検査除去テストを追加（9/9 通過）。
   - `pnpm typecheck` 通過、`pnpm verify:conformance` 通過（`accept=84 reject=637 run=212`、`ok`）、`rtk bypass pnpm test` 通過（44 ファイル 438/438、`retouch-example.test.ts` 7/7 生存ミュータント 0 件・`audio-portable.test.ts` 10/10・`audio-demo.test.ts` 1/1 含む）、`rtk bypass pnpm conformance` 通過（1 ファイル 1,284/1,284）、`pnpm bench` 通過（4 者チェックサム一致）。
+
+## D176: 旧名称 STS / sts の稼働コード・生成物からのオミット（2026-11-22）
+
+- **前提**: 直前の D175（段階 6 ドッグフーディング・ベンチ比較）を先にコミット（`976af40`）したうえで実施した。
+- **対象範囲（オーナー判断）**: 稼働コード・生成物・テスト・適合ケース・C フィクスチャのすべてから旧名称 `STS` / `sts` / `stscb` をオミットする（`docs/DECISIONS.md`・`docs/OPEN_QUESTIONS.md`・`docs/ROADMAP.md`・`docs/REDESIGN_PLAN.md` の既存履歴記述および `pnpm-lock.yaml` は歴史記録として維持）。
+- **主な置換**:
+  - **C / Wasm ランタイムヘッダと生成シンボル（`sz_` / `SZ_`）**: `packages/compiler/src/c/sts_rt.h` → `sz_rt.h`、`sts_wasm_rt.h` → `sz_wasm_rt.h` に改名し、`emit-c.ts`・`wasm-bridge.ts`・`audio-sdl.ts`・`headercheck.ts`・`build-node.ts`・`build-browser.ts`・`index.ts`・`isolate.ts`・`packages/std/src/fake.ts` の内部識別子・エクスポート（`sz_poll`・`sz_finish`・`sz_audio_*`・`SZ_INTERNAL`・`SZ_AOP` 等）をすべて `sz_` / `SZ_` へ統一した。
+  - **ブラウザワイヤー・HTML・NPM CJS マーカー**: `build-browser.ts` / `packages/std/src/browser.ts` の `StsAudioProcessor` → `SzigyrAudioProcessor`、`sts-audio-processor` → `szigyr-audio-processor`、`$stsVec`/`$stsPool`/`$stsArena`/`$stsRing` → `$szVec`/`$szPool`/`$szArena`/`$szRing`、`STS Browser App` → `Szigyr Browser App`、および `bundle-npm.ts` / `isolate.ts` の `__stsCjs` → `__szCjs` を同期更新した。
+  - **レガシー環境変数フォールバック撤去とベンチ表記**: `wasm.ts` の `STS_WASM_CC` と `conformance.conf.ts` / `conformance/README.md` の `STS_STAGE` フォールバックを削除し `SZIGYR_WASM_CC` / `SZIGYR_STAGE` に一本化。`bench/run.ts` の表記を `szigyr-C` / `szigyr-C rel` / `szigyr-JS` に改めた。
+  - **適合フィクスチャ・ケース・コメント整理**: `conformance/fixtures/stscb/` → `szcb/`（`szcb.c` / `szcb.h` / `szcb_names.h` / `szcb_audit.h` / `szcb.pc`）、`packages/compiler/test/stscb.ts` → `szcb.ts`、`.gitignore`、`scripts/update-passing.mjs`、`conformance/run/157-detmath-user-dm-name.szigyr`（予約接頭辞 `RUNTIME_GLOBAL` = `__szigyr_rt` を避けた `__sz_dm_sin`）および全テスト・コメント・一時ディレクトリ接頭辞を統一した。
+- **確かめ方**:
+  - ゼロ残存監査（履歴 4 ドキュメントと `pnpm-lock.yaml` を除いた全リポジトリに対する `rg`）: **0 件**（終了コード 1）、ファイル名検索 `*sts*` も英単語 `consts` の 2 ファイルのみ。
+  - `pnpm typecheck` 通過、`pnpm verify:conformance` 通過（`accept=84 reject=637 run=212`、`ok`）、`rtk bypass pnpm test` 通過（44 ファイル 438/438、`browser.test.ts` Playwright Chromium・`retouch-example.test.ts`・`prove.test.ts` 9/9・`cfn.test.ts` 6/6・`passing.test.ts` 含む）、`rtk bypass pnpm conformance` 通過（1 ファイル 1,284/1,284）、`rtk bypass pnpm bench` 通過（`proved: 45 checks eliminated`、`dot_f32` 1.01x、`saxpy_f32` 1.03x、`prefix_i32` 1.08x、`stencil_f64` 0.99x、`particles_aos_f32` 1.41x、4 者チェックサム一致）。

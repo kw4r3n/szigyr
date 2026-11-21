@@ -1,7 +1,7 @@
 import { Vec, type ElemKind } from "./collections.ts";
 import type { Int32Type, NumType, NumVal } from "./num.ts";
 
-/** Descriptor for generating, materializing, shrinking, and formatting STS values (SPEC §16.1, §16.2). */
+/** Descriptor for generating, materializing, shrinking, and formatting Szigyr values (SPEC §16.1, §16.2). */
 export type GenDesc =
   | { readonly k: "num"; readonly t: NumType }
   | { readonly k: "bool" }

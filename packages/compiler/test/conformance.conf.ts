@@ -1,15 +1,15 @@
-// Runs conformance/ against the real compiler. Run with `pnpm conformance` (STS_STAGE=N to limit).
+// Runs conformance/ against the real compiler. Run with `pnpm conformance` (SZIGYR_STAGE=N to limit).
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import * as compiler from "../src/index.ts";
 import { atCSpecifier, filterByStage, loadCases, missingCPackages, parseStage, pkgExists, runCase } from "./harness.ts";
-import { ensureStscb } from "./stscb.ts";
+import { ensureSzcb } from "./szcb.ts";
 
-// The stscb fixture (stage 3-6) is built before the cases load, so its cases do not skip.
-ensureStscb();
+// The szcb fixture (stage 3-6) is built before the cases load, so its cases do not skip.
+ensureSzcb();
 
 const root = fileURLToPath(new URL("../../../conformance", import.meta.url));
-const stage = parseStage(process.env.SZIGYR_STAGE ?? process.env.STS_STAGE);
+const stage = parseStage(process.env.SZIGYR_STAGE);
 const cases = filterByStage(loadCases(root), stage);
 
 /** D101 / Q280: stage 2+ run cases also run with strict / rt compiled to C and Wasm. */

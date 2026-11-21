@@ -149,7 +149,7 @@ export function forAll(
 
 type TestFn = (t: Test) => void | Promise<void>;
 const registry: { name: string; fn: TestFn }[] = [];
-/** Registers; the translator emits these calls only for `sts test`. Duplicate names are allowed (Q058). */
+/** Registers; the translator emits these calls only for `szigyr test`. Duplicate names are allowed (Q058). */
 export function test(name: string, fn: TestFn): void { registry.push({ name, fn }); }
 export function clearTests(): void { registry.length = 0; }
 

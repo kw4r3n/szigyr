@@ -3,8 +3,8 @@ dist/
 *.tsbuildinfo
 .yomiyasu/
 
-# stage 3-6 fixture build output (stscb)
-conformance/fixtures/stscb/.build/
+# stage 3-6 fixture build output (szcb)
+conformance/fixtures/szcb/.build/
 
 # agent worktrees
 .claude/

@@ -1,6 +1,6 @@
 prefix=${pcfiledir}
-Name: stscb
+Name: szcb
 Description: Szigyr conformance fixture: calls a callback from its own threads (stage 3-6)
 Version: 1
-Libs: -L${prefix} -lstscb -Wl,-rpath,${prefix} -lpthread
+Libs: -L${prefix} -lszcb -Wl,-rpath,${prefix} -lpthread
 Cflags: -I${prefix}

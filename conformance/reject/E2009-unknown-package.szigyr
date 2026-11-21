@@ -1,5 +1,5 @@
 // expect: E2009 @ 3:16
 // stage: 3
-declare module "c:sts-no-such-pkg:foo.h" {
+declare module "c:szigyr-no-such-pkg:foo.h" {
   function f(ffi: Ffi): void;
 }

@@ -20,14 +20,14 @@ const SDL_PUSH_C = `
 #include <stdlib.h>
 #include <stdatomic.h>
 
-typedef struct { uint32_t format; int channels; int freq; } sts_sdl_spec;
+typedef struct { uint32_t format; int channels; int freq; } sz_sdl_spec;
 static struct {
   int tried, ok; const char *ec, *em; void *lib;
   bool (*InitSubSystem)(uint32_t);
   void (*QuitSubSystem)(uint32_t);
   uint32_t (*WasInit)(uint32_t);
   void (*Quit)(void);
-  void *(*OpenAudioDeviceStream)(uint32_t, const sts_sdl_spec *, void *, void *);
+  void *(*OpenAudioDeviceStream)(uint32_t, const sz_sdl_spec *, void *, void *);
   bool (*ResumeAudioStreamDevice)(void *);
   bool (*PutAudioStreamData)(void *, const void *, int);
   int (*GetAudioStreamQueued)(void *);
@@ -50,10 +50,10 @@ static bool load_sdl(const char **ec, const char **em) {
   sdl.ok = 1; return true;
 }
 
-typedef struct { void *stream; _Atomic int closed; } sts_pstream;
+typedef struct { void *stream; _Atomic int closed; } sz_pstream;
 static void quit_if_idle(void) { sdl.QuitSubSystem(0x10u); if (!sdl.WasInit(0)) sdl.Quit(); }
 static void fin_ps(napi_env env, void *data, void *hint) {
-  (void)env; (void)hint; sts_pstream *ps = (sts_pstream *)data;
+  (void)env; (void)hint; sz_pstream *ps = (sz_pstream *)data;
   if (!atomic_exchange(&ps->closed, 1) && ps->stream) { sdl.DestroyAudioStream(ps->stream); ps->stream = 0; quit_if_idle(); }
   free(ps);
 }
@@ -70,23 +70,23 @@ static napi_value n_open(napi_env env, napi_callback_info info) {
   const char *ec = 0, *em = 0;
   if (!load_sdl(&ec, &em)) return err_obj(env, ec, em);
   if (!sdl.InitSubSystem(0x10u)) { const char *m = sdl.GetError(); return err_obj(env, "EIO", m && *m ? m : "SDL_InitSubSystem failed"); }
-  sts_sdl_spec spec = { 0x8120u, (int)ch, (int)rate };
+  sz_sdl_spec spec = { 0x8120u, (int)ch, (int)rate };
   void *s = sdl.OpenAudioDeviceStream(0xFFFFFFFFu, &spec, 0, 0);
   if (!s) { const char *m = sdl.GetError(); quit_if_idle(); return err_obj(env, "EIO", m && *m ? m : "SDL_OpenAudioDeviceStream failed"); }
   if (!sdl.ResumeAudioStreamDevice(s)) { const char *m = sdl.GetError(); sdl.DestroyAudioStream(s); quit_if_idle(); return err_obj(env, "EIO", m && *m ? m : "SDL_ResumeAudioStreamDevice failed"); }
-  sts_pstream *ps = calloc(1, sizeof *ps); ps->stream = s;
+  sz_pstream *ps = calloc(1, sizeof *ps); ps->stream = s;
   napi_value ext; napi_create_external(env, ps, fin_ps, 0, &ext); return ext;
 }
 static napi_value n_queued(napi_env env, napi_callback_info info) {
   size_t argc = 1; napi_value argv[1]; napi_get_cb_info(env, info, &argc, argv, 0, 0);
   void *p = 0; napi_get_value_external(env, argv[0], &p);
-  sts_pstream *ps = (sts_pstream *)p;
+  sz_pstream *ps = (sz_pstream *)p;
   napi_value r; napi_create_int32(env, ps && ps->stream ? sdl.GetAudioStreamQueued(ps->stream) : -1, &r); return r;
 }
 static napi_value n_put(napi_env env, napi_callback_info info) {
   size_t argc = 2; napi_value argv[2]; napi_get_cb_info(env, info, &argc, argv, 0, 0);
   void *p = 0; napi_get_value_external(env, argv[0], &p);
-  sts_pstream *ps = (sts_pstream *)p;
+  sz_pstream *ps = (sz_pstream *)p;
   if (!ps || !ps->stream || atomic_load(&ps->closed)) { napi_value b; napi_get_boolean(env, false, &b); return b; }
   napi_typedarray_type tt; size_t len, off; void *data; napi_value ab;
   napi_get_typedarray_info(env, argv[1], &tt, &len, &data, &ab, &off);
@@ -96,7 +96,7 @@ static napi_value n_put(napi_env env, napi_callback_info info) {
 static napi_value n_close(napi_env env, napi_callback_info info) {
   (void)env; size_t argc = 1; napi_value argv[1]; napi_get_cb_info(env, info, &argc, argv, 0, 0);
   void *p = 0; if (napi_get_value_external(env, argv[0], &p) == napi_ok && p) {
-    sts_pstream *ps = (sts_pstream *)p;
+    sz_pstream *ps = (sz_pstream *)p;
     if (!atomic_exchange(&ps->closed, 1) && ps->stream) { sdl.DestroyAudioStream(ps->stream); ps->stream = 0; quit_if_idle(); }
   }
   return 0;
@@ -122,8 +122,8 @@ export function createNodeAudio(): Audio {
         return err({ code: "EINVAL", message: `invalid audio config: sampleRate=${config.sampleRate}, channels=${config.channels}` });
       }
       const { sampleRate, channels } = config;
-      const cOpen = cb.native?.[`sts_audio_open_${cb.id}`] as ((r: number, c: number, s: unknown) => unknown) | undefined;
-      const cClose = cb.native?.[`sts_audio_close_${cb.id}`] as ((h: unknown) => void) | undefined;
+      const cOpen = cb.native?.[`sz_audio_open_${cb.id}`] as ((r: number, c: number, s: unknown) => unknown) | undefined;
+      const cClose = cb.native?.[`sz_audio_close_${cb.id}`] as ((h: unknown) => void) | undefined;
       if (cOpen && cClose) {
         const res = cOpen(sampleRate, channels, state);
         const e = errOut(res);
@@ -146,7 +146,7 @@ export function createNodeAudio(): Audio {
       const e = errOut(ext);
       if (e) return err({ code: e.code, message: e.error });
 
-      const wasmMod = cb.native?.[`sts_audio_${cb.id}`] as { init(s: unknown): number; render(b: number, out: Float32Array, f: number): void; free(b: number): void } | undefined;
+      const wasmMod = cb.native?.[`sz_audio_${cb.id}`] as { init(s: unknown): number; render(b: number, out: Float32Array, f: number): void; free(b: number): void } | undefined;
       let boxPtr = 0;
       if (wasmMod) {
         try { boxPtr = wasmMod.init(state); } catch (ex) { addon.close!(ext); throw ex; }

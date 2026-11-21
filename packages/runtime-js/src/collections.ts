@@ -294,7 +294,7 @@ export function setAt<T>(a: T[] | Vec<T> | Slice<T>, i: number, x: T, pos?: Pos)
   } else (a as Vec<T>).set(i, x, pos);
 }
 
-/** A Pool handle (Q188 (a)): pool id, generation, slot index. A plain object; STS code cannot see the fields. */
+/** A Pool handle (Q188 (a)): pool id, generation, slot index. A plain object; Szigyr code cannot see the fields. */
 export interface PoolHandle { pool: number; gen: number; idx: number }
 /** Value equality for Handle<T> / Handle<T> | null (SPEC-v1 §3.4). */
 export const handleEq = (a: PoolHandle | null, b: PoolHandle | null): boolean =>
@@ -434,7 +434,7 @@ export class Pool<T = unknown> {
   has(h: PoolHandle): boolean { return this.valid(h); }
 }
 
-/** An ArenaBuf handle (Q188 (b)): arena id, generation, head byte position, element count. A plain object; STS code sees only `length`. */
+/** An ArenaBuf handle (Q188 (b)): arena id, generation, head byte position, element count. A plain object; Szigyr code sees only `length`. */
 export interface ArenaBuf { arena: number; gen: number; off: number; length: number }
 
 const NUM_SIZE: Record<string, number> = { i8: 1, u8: 1, i16: 2, u16: 2, i32: 4, u32: 4, i64: 8, u64: 8, usize: 4, f32: 4, f64: 8 };
@@ -588,9 +588,9 @@ export class RingTx<T = unknown> {
   constructor(s: RingShared<T>) { this.s = s; }
   /** The shared state itself, for the isolate transport (§15.2). */
   get shared(): RingShared<T> { return this.s; }
-  /** The buffer the C backend works on (sts_ring_in); null until a type-parameter element adopts one. */
+  /** The buffer the C backend works on (sz_ring_in); null until a type-parameter element adopts one. */
   get sab(): ArrayBufferLike | null { return this.s.sab; }
-  /** The capacity the C backend reads (sts_ring_in). */
+  /** The capacity the C backend reads (sz_ring_in). */
   get cap(): number { return this.s.cap; }
   /** C boundary: switch a type-parameter element to its concrete representation (like Vec.adopt). */
   adopt(elem: ElemKind): void { ringAdopt(this.s, elem); }
@@ -623,9 +623,9 @@ export class RingRx<T = unknown> {
   constructor(s: RingShared<T>) { this.s = s; }
   /** The shared state itself, for the isolate transport (§15.2). */
   get shared(): RingShared<T> { return this.s; }
-  /** The buffer the C backend works on (sts_ring_in); null until a type-parameter element adopts one. */
+  /** The buffer the C backend works on (sz_ring_in); null until a type-parameter element adopts one. */
   get sab(): ArrayBufferLike | null { return this.s.sab; }
-  /** The capacity the C backend reads (sts_ring_in). */
+  /** The capacity the C backend reads (sz_ring_in). */
   get cap(): number { return this.s.cap; }
   /** C boundary: switch a type-parameter element to its concrete representation (like Vec.adopt). */
   adopt(elem: ElemKind): void { ringAdopt(this.s, elem); }

@@ -16,18 +16,18 @@ export type WasmHost = typeof NATIVE_HOST;
 interface WasmExports {
   memory: WebAssembly.Memory;
   __stack_pointer: WebAssembly.Global;
-  sts_alloc(n: number): number;
-  sts_dealloc(p: number): void;
-  sts_empty_ptr(): number;
-  sts_get_depth(): number;
-  sts_set_depth(d: number): void;
-  sts_defer_enter(): number;
-  sts_defer_leave(prev: number): void;
-  sts_nvecs_get(): number;
-  sts_npools_get(): number;
-  sts_narenas_get(): number;
-  sts_sync_frame(v0: number, p0: number, a0: number): void;
-  sts_run_wb(id: number, fr: number): void;
+  sz_alloc(n: number): number;
+  sz_dealloc(p: number): void;
+  sz_empty_ptr(): number;
+  sz_get_depth(): number;
+  sz_set_depth(d: number): void;
+  sz_defer_enter(): number;
+  sz_defer_leave(prev: number): void;
+  sz_nvecs_get(): number;
+  sz_npools_get(): number;
+  sz_narenas_get(): number;
+  sz_sync_frame(v0: number, p0: number, a0: number): void;
+  sz_run_wb(id: number, fr: number): void;
   [k: string]: unknown;
 }
 
@@ -115,8 +115,8 @@ function createBridge(meta: WasmMeta, host: WasmHost): {
     const hit = f.bufMap.get(ab);
     if (hit) return hit.ptr;
     const total = ab.byteLength;
-    if (total === 0) return exp.sts_empty_ptr() >>> 0;
-    const ptr = exp.sts_alloc(total) >>> 0;
+    if (total === 0) return exp.sz_empty_ptr() >>> 0;
+    const ptr = exp.sz_alloc(total) >>> 0;
     if (ptr === 0) trapAt(6, pos);
     f.allocs.push(ptr);
     syncMem();
@@ -134,8 +134,8 @@ function createBridge(meta: WasmMeta, host: WasmHost): {
     const f = cur();
     const hit = f.bufMap.get(ab);
     if (hit) return (hit.ptr + byteOff) >>> 0;
-    if (byteLen === 0) return exp.sts_empty_ptr() >>> 0;
-    const ptr = exp.sts_alloc(byteLen) >>> 0;
+    if (byteLen === 0) return exp.sz_empty_ptr() >>> 0;
+    const ptr = exp.sz_alloc(byteLen) >>> 0;
     if (ptr === 0) trapAt(6, pos);
     f.allocs.push(ptr);
     syncMem();
@@ -146,33 +146,33 @@ function createBridge(meta: WasmMeta, host: WasmHost): {
 
   const imports: WebAssembly.Imports = {
     env: {
-      sts_trap: (code: number, pos: number): never => trapAt(code, pos),
-      sts_fail: (msgPtr: number): never => { throw new Error(cstr(msgPtr)); },
-      sts_fmod: (a: number, b: number): number => a % b,
+      sz_trap: (code: number, pos: number): never => trapAt(code, pos),
+      sz_fail: (msgPtr: number): never => { throw new Error(cstr(msgPtr)); },
+      sz_fmod: (a: number, b: number): number => a % b,
 
-      sts_get: (oH: number, kPtr: number): number => pushVal((cur().vals[oH] as Record<string, unknown>)[cstr(kPtr)]),
-      sts_set: (oH: number, kPtr: number, vH: number): void => {
+      sz_get: (oH: number, kPtr: number): number => pushVal((cur().vals[oH] as Record<string, unknown>)[cstr(kPtr)]),
+      sz_set: (oH: number, kPtr: number, vH: number): void => {
         const f = cur();
         (f.vals[oH] as Record<string, unknown>)[cstr(kPtr)] = f.vals[vH];
       },
-      sts_mkobj: (): number => pushVal({}),
-      sts_num: (vH: number): number => cur().vals[vH] as number,
-      sts_i64: (vH: number): bigint => cur().vals[vH] as bigint,
-      sts_u64: (vH: number): bigint => BigInt.asIntN(64, cur().vals[vH] as bigint),
-      sts_bool: (vH: number): number => (cur().vals[vH] ? 1 : 0),
-      sts_mknum: (d: number): number => pushVal(d),
-      sts_mki64: (x: bigint): number => pushVal(x),
-      sts_mku64: (x: bigint): number => pushVal(BigInt.asUintN(64, x)),
-      sts_mkbool: (b: number): number => pushVal(b !== 0),
-      sts_mknull: (): number => pushVal(null),
-      sts_isnull: (vH: number): number => (cur().vals[vH] === null ? 1 : 0),
-      sts_mklit: (k: number): number => pushVal(meta.lits[k]),
-      sts_lit_in: (vH: number): number => {
+      sz_mkobj: (): number => pushVal({}),
+      sz_num: (vH: number): number => cur().vals[vH] as number,
+      sz_i64: (vH: number): bigint => cur().vals[vH] as bigint,
+      sz_u64: (vH: number): bigint => BigInt.asIntN(64, cur().vals[vH] as bigint),
+      sz_bool: (vH: number): number => (cur().vals[vH] ? 1 : 0),
+      sz_mknum: (d: number): number => pushVal(d),
+      sz_mki64: (x: bigint): number => pushVal(x),
+      sz_mku64: (x: bigint): number => pushVal(BigInt.asUintN(64, x)),
+      sz_mkbool: (b: number): number => pushVal(b !== 0),
+      sz_mknull: (): number => pushVal(null),
+      sz_isnull: (vH: number): number => (cur().vals[vH] === null ? 1 : 0),
+      sz_mklit: (k: number): number => pushVal(meta.lits[k]),
+      sz_lit_in: (vH: number): number => {
         const idx = meta.lits.indexOf(cur().vals[vH] as string);
         if (idx < 0) throw new Error("unknown string literal");
         return idx;
       },
-      sts_callm: (oH: number, mPtr: number, n: number, argsPtr: number): number => {
+      sz_callm: (oH: number, mPtr: number, n: number, argsPtr: number): number => {
         const f = cur();
         const obj = f.vals[oH] as Record<string, (...a: unknown[]) => unknown>;
         const m = cstr(mPtr);
@@ -183,9 +183,9 @@ function createBridge(meta: WasmMeta, host: WasmHost): {
         return pushVal(obj[m]!(...args));
       },
 
-      sts_reg_wb: (id: number, frPtr: number): void => { cur().wb = { id, fr: frPtr >>> 0 }; },
-      sts_clear_wb: (): void => { cur().wb = undefined; },
-      sts_box_ref: (oH: number): number => {
+      sz_reg_wb: (id: number, frPtr: number): void => { cur().wb = { id, fr: frPtr >>> 0 }; },
+      sz_clear_wb: (): void => { cur().wb = undefined; },
+      sz_box_ref: (oH: number): number => {
         const r = cur().vals[oH] as { sab: ArrayBufferLike; cap: number; shared?: { onPush?: (b: Uint8Array) => void } };
         const sab = r.sab;
         let idx = pinned.indexOf(null);
@@ -193,12 +193,12 @@ function createBridge(meta: WasmMeta, host: WasmHost): {
         if (idx < 0) { idx = pinned.length; pinned.push(slot); } else pinned[idx] = slot;
         return -(idx + 1);
       },
-      sts_box_unref: (h: number): number => {
+      sz_box_unref: (h: number): number => {
         if (h < 0) pinned[~h] = null;
         return 0;
       },
 
-      sts_vec_in: (oH: number, _es: number, descPtr: number, out3Ptr: number): void => {
+      sz_vec_in: (oH: number, _es: number, descPtr: number, out3Ptr: number): void => {
         const vec = cur().vals[oH] as { buf: unknown; len: number };
         if (!ArrayBuffer.isView(vec.buf)) host.adopt(vec as never, cstr(descPtr) as ElemKind);
         const esU = _es >>> 0;
@@ -215,13 +215,13 @@ function createBridge(meta: WasmMeta, host: WasmHost): {
         curU32[base + 1] = vec.len >>> 0;
         curU32[base + 2] = Math.min(cap, 0xffffffff) >>> 0;
       },
-      sts_vec_create: (allocH: number, cap: number, elemPtr: number, pos: number): number => {
+      sz_vec_create: (allocH: number, cap: number, elemPtr: number, pos: number): number => {
         let v: unknown;
         try { v = host.create(cur().vals[allocH], cap >>> 0, cstr(elemPtr) as ElemKind); }
         catch (e) { if (isTrap(e)) throw e; trapAt(6, pos); }
         return pushVal(v);
       },
-      sts_vec_grow: (oH: number, oldDataPtr: number, newCap: number, curLen: number, esize: number, pos: number, out2Ptr: number): void => {
+      sz_vec_grow: (oH: number, oldDataPtr: number, newCap: number, curLen: number, esize: number, pos: number, out2Ptr: number): void => {
         const f = cur();
         const vec = f.vals[oH] as { buf: ArrayBufferView; len: number };
         const oldView = vec.buf;
@@ -249,10 +249,10 @@ function createBridge(meta: WasmMeta, host: WasmHost): {
         curU32[base] = (newPtr + newView.byteOffset) >>> 0;
         curU32[base + 1] = capU;
       },
-      sts_vec_sync: (oH: number, len: number): void => {
+      sz_vec_sync: (oH: number, len: number): void => {
         (cur().vals[oH] as { len: number }).len = len >>> 0;
       },
-      sts_slice_in: (oH: number, es: number, descPtr: number, out2Ptr: number): void => {
+      sz_slice_in: (oH: number, es: number, descPtr: number, out2Ptr: number): void => {
         const o = cur().vals[oH] as Record<string, unknown>;
         const esU = es >>> 0;
         if (!("off" in o)) {
@@ -281,7 +281,7 @@ function createBridge(meta: WasmMeta, host: WasmHost): {
         curU32[base + 1] = len;
       },
 
-      sts_pool_in: (oH: number, _es: number, descPtr: number, u7Ptr: number, d2Ptr: number): void => {
+      sz_pool_in: (oH: number, _es: number, descPtr: number, u7Ptr: number, d2Ptr: number): void => {
         const p = cur().vals[oH] as {
           buf: unknown; gens: Uint32Array; occ: Uint8Array; nextFree: Int32Array;
           len: number; capacity: number; id: number; freeHead: number; nextFresh: number;
@@ -329,18 +329,18 @@ function createBridge(meta: WasmMeta, host: WasmHost): {
         curDv.setFloat64(d2Ptr >>> 0, p.freeHead, true);
         curDv.setFloat64((d2Ptr >>> 0) + 8, p.nextFresh, true);
       },
-      sts_pool_create: (allocH: number, cap: number, elemPtr: number, pos: number): number => {
+      sz_pool_create: (allocH: number, cap: number, elemPtr: number, pos: number): number => {
         let p: unknown;
         try { p = host.createPool(cur().vals[allocH], cap >>> 0, cstr(elemPtr) as ElemKind); }
         catch (e) { if (isTrap(e)) throw e; trapAt(6, pos); }
         return pushVal(p);
       },
-      sts_pool_sync: (oH: number, len: number, freeHead: number, nextFresh: number): void => {
+      sz_pool_sync: (oH: number, len: number, freeHead: number, nextFresh: number): void => {
         const p = cur().vals[oH] as { len: number; freeHead: number; nextFresh: number };
         p.len = len >>> 0; p.freeHead = freeHead; p.nextFresh = nextFresh;
       },
 
-      sts_arena_in: (oH: number, u4Ptr: number): void => {
+      sz_arena_in: (oH: number, u4Ptr: number): void => {
         const a = cur().vals[oH] as { buf: Uint8Array; used: number; gen: number };
         const ptr = pinBuffer(
           a.buf.buffer,
@@ -355,13 +355,13 @@ function createBridge(meta: WasmMeta, host: WasmHost): {
         curU32[base + 2] = a.used >>> 0;
         curU32[base + 3] = a.gen >>> 0;
       },
-      sts_arena_create: (allocH: number, bytes: number, pos: number): number => {
+      sz_arena_create: (allocH: number, bytes: number, pos: number): number => {
         let a: unknown;
         try { a = host.createArena(cur().vals[allocH], bytes >>> 0); }
         catch (e) { if (isTrap(e)) throw e; trapAt(6, pos); }
         return pushVal(a);
       },
-      sts_arena_note: (oH: number, off: number, descPtr: number): void => {
+      sz_arena_note: (oH: number, off: number, descPtr: number): void => {
         const f = cur(), a = f.vals[oH] as object;
         const offU = off >>> 0, desc = cstr(descPtr);
         let notes = f.arenaNotes.get(a);
@@ -369,11 +369,11 @@ function createBridge(meta: WasmMeta, host: WasmHost): {
         if (notes.length && notes[notes.length - 1]!.off === offU) notes[notes.length - 1]!.desc = desc;
         else notes.push({ off: offU, desc });
       },
-      sts_arena_reset_notes: (oH: number): void => {
+      sz_arena_reset_notes: (oH: number): void => {
         const f = cur();
         f.arenaNotes.delete(f.vals[oH] as object);
       },
-      sts_arena_sync: (oH: number, used: number, gen: number): void => {
+      sz_arena_sync: (oH: number, used: number, gen: number): void => {
         const f = cur();
         const a = f.vals[oH] as { used: number; gen: number; noteC: (off: number, desc: string) => void };
         a.used = used >>> 0; a.gen = gen >>> 0;
@@ -384,18 +384,18 @@ function createBridge(meta: WasmMeta, host: WasmHost): {
         }
       },
 
-      sts_ring_in: (oH: number, descPtr: number): number => {
+      sz_ring_in: (oH: number, descPtr: number): number => {
         const r = cur().vals[oH] as { sab: SharedArrayBuffer | null; cap: number };
         if (!r.sab) host.adoptRing(r as never, cstr(descPtr) as ElemKind);
         return r.cap >>> 0;
       },
-      sts_ring_create: (allocH: number, cap: number, elemPtr: number, pos: number): number => {
+      sz_ring_create: (allocH: number, cap: number, elemPtr: number, pos: number): number => {
         let r: unknown;
         try { r = host.createRing(cur().vals[allocH], cap >>> 0, cstr(elemPtr) as ElemKind); }
         catch (e) { if (isTrap(e)) throw e; trapAt(6, pos); }
         return pushVal(r);
       },
-      sts_ring_push: (oH: number, srcPtr: number, esize: number): number => {
+      sz_ring_push: (oH: number, srcPtr: number, esize: number): number => {
         const p = oH < 0 ? pinned[~oH]! : undefined;
         const r = p ?? (cur().vals[oH] as { sab: ArrayBufferLike; cap: number; shared?: { onPush?: (b: Uint8Array) => void } });
         const sab = r.sab, cap = r.cap, es = esize >>> 0, ptr = srcPtr >>> 0;
@@ -416,7 +416,7 @@ function createBridge(meta: WasmMeta, host: WasmHost): {
         }
         return 1;
       },
-      sts_ring_pop: (oH: number, dstPtr: number, esize: number): number => {
+      sz_ring_pop: (oH: number, dstPtr: number, esize: number): number => {
         const p = oH < 0 ? pinned[~oH]! : undefined;
         const r = p ?? (cur().vals[oH] as { sab: ArrayBufferLike; cap: number });
         const sab = r.sab, cap = r.cap, es = esize >>> 0, ptr = dstPtr >>> 0;
@@ -441,22 +441,22 @@ function createBridge(meta: WasmMeta, host: WasmHost): {
     mem = exp.memory;
     const sp = exp.__stack_pointer;
     const api: Record<string, (...a: unknown[]) => unknown> = {
-      sts_poll: () => null,
-      sts_finish: () => null,
+      sz_poll: () => null,
+      sz_finish: () => null,
     };
     for (const [name, spec] of Object.entries(meta.fns)) {
       const fn = exp[`w_${name}`] as (...args: number[]) => number | void;
       api[name] = (...args: unknown[]): unknown => {
         const f: Frame = { vals: [undefined], bufMap: new Map(), slicePins: [], allocs: [], arenaNotes: new Map(), wb: undefined };
         const argHandles = args.slice(0, spec.nargs).map((v) => { f.vals.push(v); return f.vals.length - 1; });
-        const v0 = exp.sts_nvecs_get() >>> 0;
-        const p0 = exp.sts_npools_get() >>> 0;
-        const a0 = exp.sts_narenas_get() >>> 0;
-        const savedDepth = exp.sts_get_depth();
-        const savedDefer = exp.sts_defer_enter();
+        const v0 = exp.sz_nvecs_get() >>> 0;
+        const p0 = exp.sz_npools_get() >>> 0;
+        const a0 = exp.sz_narenas_get() >>> 0;
+        const savedDepth = exp.sz_get_depth();
+        const savedDefer = exp.sz_defer_enter();
         const savedSp = sp.value as number;
         frames.push(f);
-        exp.sts_set_depth(0);
+        exp.sz_set_depth(0);
         let res: unknown;
         try {
           res = fn(...argHandles);
@@ -464,15 +464,15 @@ function createBridge(meta: WasmMeta, host: WasmHost): {
           try {
             try {
               // Run any un-unwound defers while stack slots above savedSp remain intact.
-              exp.sts_defer_leave(savedDefer);
+              exp.sz_defer_leave(savedDefer);
             } finally {
               sp.value = savedSp;
               if (f.wb) {
                 const { id, fr } = f.wb;
                 f.wb = undefined;
-                exp.sts_run_wb(id, fr);
+                exp.sz_run_wb(id, fr);
               }
-              exp.sts_sync_frame(v0, p0, a0);
+              exp.sz_sync_frame(v0, p0, a0);
               syncMem();
               for (const [ab, { ptr, wbRange }] of f.bufMap) {
                 const [off, len] = wbRange();
@@ -481,10 +481,10 @@ function createBridge(meta: WasmMeta, host: WasmHost): {
               for (const sPin of f.slicePins) {
                 if (sPin.byteLen > 0) new Uint8Array(sPin.ab, sPin.byteOff, sPin.byteLen).set(curU8.subarray(sPin.ptr, sPin.ptr + sPin.byteLen));
               }
-              for (const ptr of f.allocs) exp.sts_dealloc(ptr);
+              for (const ptr of f.allocs) exp.sz_dealloc(ptr);
             }
           } finally {
-            exp.sts_set_depth(savedDepth);
+            exp.sz_set_depth(savedDepth);
             frames.pop();
           }
         }
@@ -498,22 +498,22 @@ function createBridge(meta: WasmMeta, host: WasmHost): {
       let outPtr = 0, outCap = 0;
       const runAudio = <T>(fn: () => T): T => {
         const f: Frame = { vals: [undefined], bufMap: new Map(), slicePins: [], allocs: [], arenaNotes: new Map(), wb: undefined };
-        const v0 = exp.sts_nvecs_get() >>> 0, p0 = exp.sts_npools_get() >>> 0, a0 = exp.sts_narenas_get() >>> 0;
-        const savedDepth = exp.sts_get_depth(), savedDefer = exp.sts_defer_enter(), savedSp = sp.value as number;
-        frames.push(f); exp.sts_set_depth(0);
+        const v0 = exp.sz_nvecs_get() >>> 0, p0 = exp.sz_npools_get() >>> 0, a0 = exp.sz_narenas_get() >>> 0;
+        const savedDepth = exp.sz_get_depth(), savedDefer = exp.sz_defer_enter(), savedSp = sp.value as number;
+        frames.push(f); exp.sz_set_depth(0);
         try { return fn(); } finally {
           try {
-            exp.sts_defer_leave(savedDefer);
+            exp.sz_defer_leave(savedDefer);
           } finally {
             sp.value = savedSp;
-            exp.sts_sync_frame(v0, p0, a0);
-            for (const ptr of f.allocs) exp.sts_dealloc(ptr);
-            exp.sts_set_depth(savedDepth);
+            exp.sz_sync_frame(v0, p0, a0);
+            for (const ptr of f.allocs) exp.sz_dealloc(ptr);
+            exp.sz_set_depth(savedDepth);
             frames.pop();
           }
         }
       };
-      (api as Record<string, unknown>)[`sts_audio_${id}`] = {
+      (api as Record<string, unknown>)[`sz_audio_${id}`] = {
         init(state: unknown): number {
           return runAudio(() => {
             const f = cur(); f.vals.push(state);
@@ -523,8 +523,8 @@ function createBridge(meta: WasmMeta, host: WasmHost): {
         render(boxPtr: number, outF32: Float32Array, nFrames: number): void {
           const bytes = outF32.byteLength;
           if (bytes > outCap) {
-            if (outPtr) exp.sts_dealloc(outPtr);
-            outPtr = exp.sts_alloc(bytes) >>> 0;
+            if (outPtr) exp.sz_dealloc(outPtr);
+            outPtr = exp.sz_alloc(bytes) >>> 0;
             if (!outPtr) throw new Error("wasm audio: out of memory");
             outCap = bytes;
           }
@@ -534,7 +534,7 @@ function createBridge(meta: WasmMeta, host: WasmHost): {
         },
         free(boxPtr: number): void {
           if (boxPtr) runAudio(() => { freeFn(boxPtr >>> 0); });
-          if (outPtr) { exp.sts_dealloc(outPtr); outPtr = 0; outCap = 0; }
+          if (outPtr) { exp.sz_dealloc(outPtr); outPtr = 0; outCap = 0; }
         },
       };
     }
