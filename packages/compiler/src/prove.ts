@@ -11,9 +11,9 @@ import { CACHE_DIR } from "./names.ts";
 import { NodeFlags, SyntaxKind as K, isId, type Node, type Parser, type ts } from "./parse.ts";
 import { detectSolver, runSmtBatch, type SmtQuery, type SmtValue } from "./smt.ts";
 import { trapSites, type TrapSite } from "./traps.ts";
-import { isBool, isInt, nonNull, show, unref, type Type } from "./types.ts";
+import { isBool, isInt, isTaggedUnion, kindOf, nonNull, show, unref, type Type } from "./types.ts";
 
-const PROVE_VERSION = "2";
+const PROVE_VERSION = "3";
 
 export type ObligationKind = "T001" | "T002" | "T003" | "T004" | "T005" | "T007" | "T009" | "T010";
 export type ObligationStatus = "proved" | "failed" | "unknown" | "timeout";
@@ -95,6 +95,11 @@ const isContainer = (t: Type): boolean => {
   const u = unref(t);
   return u.k === "gen" && SEQ_CONTAINER.has(u.name);
 };
+const isStrLitLike = (t: Type): boolean => {
+  const u = unref(t);
+  if (u.k === "lit") return true;
+  return u.k === "union" && u.members.length > 0 && u.members.every((m) => unref(m).k === "lit");
+};
 
 function strip(e: ts.Expression): ts.Expression {
   while (e.kind === K.ParenthesizedExpression) e = (e as ts.ParenthesizedExpression).expression;
@@ -158,10 +163,17 @@ interface PendingObligation {
   readonly calleeKey?: string;
 }
 
+interface FieldTerm {
+  readonly smt: string;
+  readonly exact: boolean;
+}
+
 interface TermVal {
   readonly smt: string;
   readonly exact: boolean;
   readonly constVal?: bigint;
+  readonly containerLen?: string;
+  readonly recordFields?: ReadonlyMap<string, FieldTerm>;
 }
 
 interface CondVal {
@@ -203,6 +215,7 @@ class FnProver {
   nonLinear = false;
   private vid = 0;
   private readonly contracts: Map<FnSym, ExtractedContracts>;
+  private readonly tagIds = new Map<string, bigint>();
   private loopDepth = 0;
   private loopBreaks: State[] = [];
   private loopContinues: State[] = [];
@@ -211,6 +224,41 @@ class FnProver {
     this.decls = decls;
     this.f = f;
     this.contracts = contracts;
+  }
+
+  private tagId(s: string): bigint {
+    let id = this.tagIds.get(s);
+    if (id === undefined) {
+      id = BigInt(this.tagIds.size + 1);
+      this.tagIds.set(s, id);
+    }
+    return id;
+  }
+
+  private withTempEnv<T>(
+    st: State,
+    entries: ReadonlyMap<string, string>,
+    inexactKeys: ReadonlySet<string> | undefined,
+    fn: () => T,
+  ): T {
+    const savedEnv: [string, string | undefined][] = [];
+    const savedInexact: [string, boolean][] = [];
+    for (const [k, v] of entries) {
+      savedEnv.push([k, st.env.get(k)]);
+      savedInexact.push([k, st.inexact.has(k)]);
+      st.env.set(k, v);
+      if (inexactKeys?.has(k)) st.inexact.add(k); else st.inexact.delete(k);
+    }
+    try {
+      return fn();
+    } finally {
+      for (const [k, old] of savedEnv) {
+        if (old === undefined) st.env.delete(k); else st.env.set(k, old);
+      }
+      for (const [k, was] of savedInexact) {
+        if (was) st.inexact.add(k); else st.inexact.delete(k);
+      }
+    }
   }
 
   fresh(sort: "Int" | "Bool", prefix: string, bounds?: readonly [bigint, bigint]): string {
@@ -288,43 +336,66 @@ class FnProver {
       st.modelVars.set(`${display}.length`, lv);
     } else if (u.k === "record") {
       this.initRecordFields(st, `field:${sym.id}`, `len:${sym.id}`, display, u);
-    } else if (u.k === "union" && nonNull(u) && freshNonNull) {
-      const b = this.fresh("Bool", `${display}_nn`);
-      st.env.set(`nn:${sym.id}`, b);
-      const inner = unref(nonNull(u)!);
-      if (inner.k === "num" && INT_BOUNDS[inner.name]) {
-        const [lo, hi] = INT_BOUNDS[inner.name]!;
-        const v = this.fresh("Int", display, [lo, hi]);
-        st.env.set(key, v);
-      } else if (isBool(inner)) {
-        st.env.set(key, this.fresh("Bool", display));
-      } else if (isContainer(inner)) {
-        const lv = this.fresh("Int", `${display}_len`, [0n, MAX_U32]);
-        st.env.set(`len:${sym.id}`, lv);
+    } else if (u.k === "union") {
+      if (isTaggedUnion(u)) {
+        const tagV = this.fresh("Int", `${display}_kind`);
+        const eqs = u.members.map((m) => `(= ${tagV} ${smtInt(this.tagId(kindOf(m)!))})`);
+        st.assumptions.push(eqs.length === 1 ? eqs[0]! : `(or ${eqs.join(" ")})`);
+        st.env.set(`field:${sym.id}.kind`, tagV);
+        st.modelVars.set(`${display}.kind`, tagV);
+        for (const m of u.members) {
+          const mu = unref(m);
+          if (mu.k === "record") this.initRecordFields(st, `field:${sym.id}`, `len:${sym.id}`, display, mu, true);
+        }
+      } else if (nonNull(u) && freshNonNull) {
+        const b = this.fresh("Bool", `${display}_nn`);
+        st.env.set(`nn:${sym.id}`, b);
+        const inner = unref(nonNull(u)!);
+        if (inner.k === "num" && INT_BOUNDS[inner.name]) {
+          const [lo, hi] = INT_BOUNDS[inner.name]!;
+          const v = this.fresh("Int", display, [lo, hi]);
+          st.env.set(key, v);
+        } else if (isBool(inner)) {
+          st.env.set(key, this.fresh("Bool", display));
+        } else if (isContainer(inner)) {
+          const lv = this.fresh("Int", `${display}_len`, [0n, MAX_U32]);
+          st.env.set(`len:${sym.id}`, lv);
+        }
       }
     }
   }
 
-  private initRecordFields(st: State, fieldPrefix: string, lenPrefix: string, displayPrefix: string, rec: Extract<Type, { k: "record" }>): void {
+  private initRecordFields(
+    st: State,
+    fieldPrefix: string,
+    lenPrefix: string,
+    displayPrefix: string,
+    rec: Extract<Type, { k: "record" }>,
+    skipExisting = false,
+  ): void {
     for (const f of rec.fields) {
       const fu = unref(f.type);
       const fk = `${fieldPrefix}.${f.name}`;
+      const lk = `${lenPrefix}.${f.name}`;
       const dk = `${displayPrefix}.${f.name}`;
       if (fu.k === "num" && INT_BOUNDS[fu.name]) {
+        if (skipExisting && st.env.has(fk)) continue;
         const [lo, hi] = INT_BOUNDS[fu.name]!;
         const v = this.fresh("Int", dk, [lo, hi]);
         st.env.set(fk, v);
         st.modelVars.set(dk, v);
       } else if (isBool(fu)) {
+        if (skipExisting && st.env.has(fk)) continue;
         const v = this.fresh("Bool", dk);
         st.env.set(fk, v);
         st.modelVars.set(dk, v);
       } else if (isContainer(fu)) {
+        if (skipExisting && st.env.has(lk)) continue;
         const lv = this.fresh("Int", `${dk}_len`, [0n, MAX_U32]);
-        st.env.set(`${lenPrefix}.${f.name}`, lv);
+        st.env.set(lk, lv);
         st.modelVars.set(`${dk}.length`, lv);
       } else if (fu.k === "record") {
-        this.initRecordFields(st, fk, `${lenPrefix}.${f.name}`, dk, fu);
+        this.initRecordFields(st, fk, lk, dk, fu, skipExisting);
       }
     }
   }
@@ -336,6 +407,9 @@ class FnProver {
   /** Evaluates a side-effect-free contract/invariant expression, with optional local overrides (e.g. `ensures` param `r`). */
   evalPureInt(e0: ts.Expression, st: State, mod: Module, overrides: Map<number, TermVal>, trackNonLinear = true): TermVal {
     const e = strip(e0);
+    if (e.kind === K.StringLiteral) {
+      return { smt: smtInt(this.tagId((e as ts.StringLiteral).text)), exact: true };
+    }
     const t = this.typeOf(e);
     const lit = intLitValue(e, mod.sf);
     if (lit !== undefined) return { smt: smtInt(lit), exact: true, constVal: lit };
@@ -439,7 +513,7 @@ class FnProver {
 
     if (e.kind === K.PropertyAccessExpression) {
       const fk = this.fieldKeyOf(e as ts.PropertyAccessExpression);
-      if (fk && st.env.has(fk)) return { smt: st.env.get(fk)!, exact: true };
+      if (fk && st.env.has(fk)) return { smt: st.env.get(fk)!, exact: !st.inexact.has(fk) };
     }
 
     if (e.kind === K.PrefixUnaryExpression && (e as ts.PrefixUnaryExpression).operator === K.ExclamationToken) {
@@ -476,6 +550,12 @@ class FnProver {
         if (isBool(lt) && isBool(rt)) {
           const l = this.evalPureBool(b.left, st, mod, overrides, trackNonLinear);
           const r = this.evalPureBool(b.right, st, mod, overrides, trackNonLinear);
+          const core = `(= ${l.smt} ${r.smt})`;
+          return { smt: eq ? core : `(not ${core})`, exact: l.exact && r.exact };
+        }
+        if (isStrLitLike(lt) || isStrLitLike(rt) || strip(b.left).kind === K.StringLiteral || strip(b.right).kind === K.StringLiteral) {
+          const l = this.evalPureInt(b.left, st, mod, overrides, trackNonLinear);
+          const r = this.evalPureInt(b.right, st, mod, overrides, trackNonLinear);
           const core = `(= ${l.smt} ${r.smt})`;
           return { smt: eq ? core : `(not ${core})`, exact: l.exact && r.exact };
         }
@@ -519,15 +599,20 @@ class FnProver {
     return undefined;
   }
 
-  private isSliceCall(e0: ts.Expression): boolean {
+  private isLenCall(e0: ts.Expression): boolean {
     const e = strip(e0);
     if (e.kind !== K.CallExpression) return false;
     const c = e as ts.CallExpression;
-    if (c.expression.kind !== K.PropertyAccessExpression || c.arguments.length !== 2) return false;
+    if (c.expression.kind !== K.PropertyAccessExpression) return false;
     const p = c.expression as ts.PropertyAccessExpression;
-    if (p.name.text !== "slice") return false;
     const recvT = this.typeOf(p.expression);
-    return recvT.k === "gen" && (recvT.name === "Vec" || recvT.name === "Slice");
+    if (p.name.text === "slice" && c.arguments.length === 2) {
+      return recvT.k === "gen" && (recvT.name === "Vec" || recvT.name === "Slice");
+    }
+    if (p.name.text === "view" && c.arguments.length === 1) {
+      return (recvT.k === "gen" || recvT.k === "opaque") && recvT.name === "Arena";
+    }
+    return false;
   }
 
   private fieldKeyOf(p: ts.PropertyAccessExpression): string | undefined {
@@ -567,6 +652,7 @@ class FnProver {
     if (e.kind === K.TrueKeyword) return { smt: "true", exact: true };
     if (e.kind === K.FalseKeyword) return { smt: "false", exact: true };
     if (e.kind === K.NullKeyword) return { smt: "false", exact: true };
+    if (e.kind === K.StringLiteral) return { smt: smtInt(this.tagId((e as ts.StringLiteral).text)), exact: true };
 
     if (e.kind === K.Identifier) {
       const id = e as ts.Identifier;
@@ -622,7 +708,7 @@ class FnProver {
     if (e.kind === K.ElementAccessExpression) {
       const a = e as ts.ElementAccessExpression;
       const arrVal = await this.checkExpr(a.expression, st);
-      const lenTerm = this.isSliceCall(a.expression) ? arrVal : this.containerLen(a.expression, st);
+      const lenTerm = this.isLenCall(a.expression) ? arrVal : this.containerLen(a.expression, st);
       const idx = await this.checkExpr(a.argumentExpression, st);
       this.addObligation("T002", "index in bounds [0, length)", a.argumentExpression, mod, st, `(and (>= ${idx.smt} 0) (< ${idx.smt} ${lenTerm.smt}))`, idx.exact && lenTerm.exact);
       st.assumptions.push(`(and (>= ${idx.smt} 0) (< ${idx.smt} ${lenTerm.smt}))`);
@@ -643,11 +729,33 @@ class FnProver {
     }
 
     if (e.kind === K.ObjectLiteralExpression) {
+      const rf = new Map<string, FieldTerm>();
       for (const pr of (e as ts.ObjectLiteralExpression).properties) {
-        if (pr.kind === K.PropertyAssignment) await this.checkExpr((pr as ts.PropertyAssignment).initializer, st);
-        else if (pr.kind === K.SpreadAssignment) await this.checkExpr((pr as ts.SpreadAssignment).expression, st);
+        if (pr.kind === K.PropertyAssignment) {
+          const pa = pr as ts.PropertyAssignment;
+          const pv = await this.checkExpr(pa.initializer, st);
+          const pn = pa.name.kind === K.Identifier || pa.name.kind === K.StringLiteral ? (pa.name as ts.Identifier | ts.StringLiteral).text : undefined;
+          if (pn) {
+            rf.set(pn, { smt: pv.smt, exact: pv.exact });
+            if (pv.recordFields) for (const [sk, sv] of pv.recordFields) rf.set(`${pn}.${sk}`, sv);
+          }
+        } else if (pr.kind === K.ShorthandPropertyAssignment) {
+          const sp = pr as ts.ShorthandPropertyAssignment;
+          if (!isId(sp.name)) continue;
+          const pv = await this.checkExpr(sp.name, st);
+          rf.set(sp.name.text, { smt: pv.smt, exact: pv.exact });
+          const rs = localOf.get(sp.name);
+          if (rs) {
+            const pfx = `field:${rs.id}.`;
+            for (const [k, fv] of st.env) {
+              if (k.startsWith(pfx)) rf.set(`${sp.name.text}.${k.slice(pfx.length)}`, { smt: fv, exact: !st.inexact.has(k) });
+            }
+          }
+        } else if (pr.kind === K.SpreadAssignment) {
+          await this.checkExpr((pr as ts.SpreadAssignment).expression, st);
+        }
       }
-      return { smt: this.freshForType(t, "obj"), exact: false };
+      return { smt: this.freshForType(t, "obj"), exact: false, ...(rf.size ? { recordFields: rf } : {}) };
     }
 
     if (e.kind === K.ArrayLiteralExpression) {
@@ -728,7 +836,7 @@ class FnProver {
         }
         return { smt: this.fresh("Bool", "nn_eq"), exact: false };
       }
-      if ((isInt(lt) && isInt(rt)) || (isBool(lt) && isBool(rt))) {
+      if ((isInt(lt) && isInt(rt)) || (isBool(lt) && isBool(rt)) || isStrLitLike(lt) || isStrLitLike(rt) || strip(b.left).kind === K.StringLiteral || strip(b.right).kind === K.StringLiteral) {
         const expr = `(= ${l.smt} ${r.smt})`;
         return { smt: eq ? expr : `(not ${expr})`, exact: l.exact && r.exact };
       }
@@ -788,7 +896,7 @@ class FnProver {
     if (left.kind === K.ElementAccessExpression) {
       const a = left as ts.ElementAccessExpression;
       const arrVal = await this.checkExpr(a.expression, st);
-      const lenTerm = this.isSliceCall(a.expression) ? arrVal : this.containerLen(a.expression, st);
+      const lenTerm = this.isLenCall(a.expression) ? arrVal : this.containerLen(a.expression, st);
       const idx = await this.checkExpr(a.argumentExpression, st);
       if (op && isInt(lt)) {
         this.addObligation("T002", "index in bounds [0, length)", a.argumentExpression, mod, st, `(and (>= ${idx.smt} 0) (< ${idx.smt} ${lenTerm.smt}))`, idx.exact && lenTerm.exact);
@@ -853,23 +961,134 @@ class FnProver {
         else if (this.typeOf(rhsNode).k !== "union") {
           st.env.set(`nn:${sym.id}`, "true");
           st.env.set(`sym:${sym.id}`, rhsVal.smt);
+          if (rhsVal.exact) st.inexact.delete(`sym:${sym.id}`); else st.inexact.add(`sym:${sym.id}`);
         } else {
           const b = this.fresh("Bool", `${sym.name}_nn`);
           st.env.set(`nn:${sym.id}`, b);
           st.env.set(`sym:${sym.id}`, this.freshForType(nonNull(lt)!, sym.name));
+          if (rhsVal.containerLen !== undefined) {
+            st.env.set(`len:${sym.id}`, rhsVal.containerLen);
+            if (rhsVal.exact) st.inexact.delete(`len:${sym.id}`); else st.inexact.add(`len:${sym.id}`);
+          }
         }
         return;
       }
       if (lt.k === "record") {
-        this.bindRecordFromExpr(sym.id, sym.name, lt, rhsNode, st);
+        this.bindRecordFromExpr(sym.id, sym.name, lt, rhsNode, st, rhsVal);
         return;
       }
       if (isContainer(lt)) {
-        const len = this.exprContainerLength(rhsNode, st);
-        if (len) st.env.set(`len:${sym.id}`, len);
-        else st.env.set(`len:${sym.id}`, this.fresh("Int", `${sym.name}_len`, [0n, MAX_U32]));
+        const len = rhsVal.containerLen ?? this.exprContainerLength(rhsNode, st);
+        if (len) {
+          st.env.set(`len:${sym.id}`, len);
+          if (rhsVal.exact || rhsVal.containerLen === undefined) st.inexact.delete(`len:${sym.id}`); else st.inexact.add(`len:${sym.id}`);
+        } else {
+          st.env.set(`len:${sym.id}`, this.fresh("Int", `${sym.name}_len`, [0n, MAX_U32]));
+          st.inexact.delete(`len:${sym.id}`);
+        }
       }
     }
+  }
+
+  private extractRecordFields(expr0: ts.Expression, st: State, mod: Module, val?: TermVal): Map<string, FieldTerm> {
+    if (val?.recordFields) return new Map(val.recordFields);
+    const e = strip(expr0);
+    const out = new Map<string, FieldTerm>();
+    if (e.kind === K.ObjectLiteralExpression) {
+      for (const pr of (e as ts.ObjectLiteralExpression).properties) {
+        if (pr.kind === K.PropertyAssignment) {
+          const pa = pr as ts.PropertyAssignment;
+          const pn = pa.name.kind === K.Identifier || pa.name.kind === K.StringLiteral ? (pa.name as ts.Identifier | ts.StringLiteral).text : undefined;
+          if (!pn) continue;
+          const iv = strip(pa.initializer);
+          const it = this.typeOf(iv);
+          if (iv.kind === K.ObjectLiteralExpression) {
+            for (const [sk, sv] of this.extractRecordFields(iv, st, mod)) out.set(`${pn}.${sk}`, sv);
+          } else if (isBool(it)) {
+            const b = this.evalPureBool(iv, st, mod, new Map());
+            out.set(pn, { smt: b.smt, exact: b.exact });
+          } else {
+            const n = this.evalPureInt(iv, st, mod, new Map());
+            out.set(pn, { smt: n.smt, exact: n.exact });
+          }
+        } else if (pr.kind === K.ShorthandPropertyAssignment) {
+          const sp = (pr as ts.ShorthandPropertyAssignment).name;
+          if (!isId(sp)) continue;
+          const rs = localOf.get(sp);
+          if (rs) {
+            const sv = st.env.get(`sym:${rs.id}`);
+            if (sv !== undefined) out.set(sp.text, { smt: sv, exact: !st.inexact.has(`sym:${rs.id}`) });
+            const pfx = `field:${rs.id}.`;
+            for (const [k, fv] of st.env) {
+              if (k.startsWith(pfx)) out.set(`${sp.text}.${k.slice(pfx.length)}`, { smt: fv, exact: !st.inexact.has(k) });
+            }
+          }
+        }
+      }
+      return out;
+    }
+    if (isId(e)) {
+      const rs = localOf.get(e);
+      if (rs) {
+        const pfx = `field:${rs.id}.`;
+        for (const [k, fv] of st.env) {
+          if (k.startsWith(pfx)) out.set(k.slice(pfx.length), { smt: fv, exact: !st.inexact.has(k) });
+        }
+        return out;
+      }
+      const gv = this.decls.lookupValue(mod, e.text);
+      if (gv?.k === "const" && gv.decl.initializer && !gv.bind) {
+        return this.extractRecordFields(gv.decl.initializer, st, gv.mod);
+      }
+      return out;
+    }
+    if (e.kind === K.PropertyAccessExpression) {
+      const fk = this.fieldKeyOf(e as ts.PropertyAccessExpression);
+      if (fk) {
+        const pfx = `${fk}.`;
+        for (const [k, fv] of st.env) {
+          if (k.startsWith(pfx)) out.set(k.slice(pfx.length), { smt: fv, exact: !st.inexact.has(k) });
+        }
+      }
+    }
+    return out;
+  }
+
+  private bindRecordFromExpr(
+    symId: number,
+    display: string,
+    rec: Extract<Type, { k: "record" }>,
+    rhs0: ts.Expression,
+    st: State,
+    rhsVal?: TermVal,
+  ): void {
+    const fields = this.extractRecordFields(rhs0, st, this.f.mod, rhsVal);
+    if (fields.size > 0) {
+      this.initRecordFields(st, `field:${symId}`, `len:${symId}`, display, rec, true);
+      for (const [path, fv] of fields) {
+        const fk = `field:${symId}.${path}`;
+        st.env.set(fk, fv.smt);
+        if (fv.exact) st.inexact.delete(fk); else st.inexact.add(fk);
+        if (this.loopDepth === 0) st.modelVars.set(`${display}.${path}`, fv.smt);
+      }
+      const sr = strip(rhs0);
+      const srcLenPfx = isId(sr) && localOf.get(sr)
+        ? `len:${localOf.get(sr)!.id}.`
+        : sr.kind === K.PropertyAccessExpression && this.lengthKeyOf(sr)
+        ? `${this.lengthKeyOf(sr)}.`
+        : undefined;
+      if (srcLenPfx) {
+        for (const [k, lv] of st.env) {
+          if (k.startsWith(srcLenPfx)) {
+            const lk = `len:${symId}.${k.slice(srcLenPfx.length)}`;
+            st.env.set(lk, lv);
+            if (st.inexact.has(k)) st.inexact.add(lk); else st.inexact.delete(lk);
+          }
+        }
+      }
+      return;
+    }
+    this.initRecordFields(st, `field:${symId}`, `len:${symId}`, display, rec);
   }
 
   private exprContainerLength(e0: ts.Expression, st: State): string | undefined {
@@ -883,41 +1102,87 @@ class FnProver {
     return undefined;
   }
 
-  private bindRecordFromExpr(symId: number, display: string, rec: Extract<Type, { k: "record" }>, rhs0: ts.Expression, st: State): void {
-    const rhs = strip(rhs0);
-    if (rhs.kind === K.ObjectLiteralExpression) {
-      for (const f of rec.fields) {
-        const pr = (rhs as ts.ObjectLiteralExpression).properties.find(
-          (x) => (x.kind === K.PropertyAssignment || x.kind === K.ShorthandPropertyAssignment) && ((x.name as ts.Identifier).text === f.name),
-        );
-        const fu = unref(f.type);
-        const fk = `field:${symId}.${f.name}`;
-        if (pr && pr.kind === K.PropertyAssignment) {
-          const iv = (pr as ts.PropertyAssignment).initializer;
-          if (isInt(fu)) st.env.set(fk, this.evalPureInt(iv, st, this.f.mod, new Map()).smt);
-          else if (isBool(fu)) st.env.set(fk, this.evalPureBool(iv, st, this.f.mod, new Map()).smt);
-        } else if (pr && pr.kind === K.ShorthandPropertyAssignment) {
-          const rs = localOf.get((pr as ts.ShorthandPropertyAssignment).name);
-          if (rs && st.env.has(`sym:${rs.id}`)) st.env.set(fk, st.env.get(`sym:${rs.id}`)!);
-        } else {
-          if (isInt(fu) || isBool(fu)) st.env.set(fk, this.freshForType(fu, `${display}.${f.name}`));
+  private collectArgBindings(
+    target: FnSym,
+    args: readonly ts.Expression[],
+    argVals: readonly TermVal[],
+    st: State,
+  ): { env: Map<string, string>; inexact: Set<string>; pMap: Map<number, TermVal> } {
+    const env = new Map<string, string>();
+    const inexact = new Set<string>();
+    const pMap = new Map<number, TermVal>();
+    target.decl.parameters.forEach((p, idx) => {
+      if (!isId(p.name)) return;
+      const ps = localOf.get(p.name);
+      if (!ps) return;
+      const av = argVals[idx];
+      if (av) pMap.set(ps.id, av);
+      const argNode = args[idx];
+      if (!argNode) return;
+      const lk = this.lengthKeyOf(argNode);
+      if (lk && st.env.has(lk)) {
+        env.set(`len:${ps.id}`, st.env.get(lk)!);
+        if (st.inexact.has(lk)) inexact.add(`len:${ps.id}`);
+      } else if (this.isLenCall(argNode) && av) {
+        env.set(`len:${ps.id}`, av.smt);
+        if (!av.exact) inexact.add(`len:${ps.id}`);
+      }
+      const pu = unref(ps.type);
+      if (pu.k === "record" || isTaggedUnion(pu)) {
+        const rf = this.extractRecordFields(argNode, st, this.f.mod, av);
+        for (const [path, fv] of rf) {
+          const fk = `field:${ps.id}.${path}`;
+          env.set(fk, fv.smt);
+          if (!fv.exact) inexact.add(fk);
+        }
+        const sa = strip(argNode);
+        const srcLenPfx = isId(sa) && localOf.get(sa)
+          ? `len:${localOf.get(sa)!.id}.`
+          : sa.kind === K.PropertyAccessExpression && this.lengthKeyOf(sa)
+          ? `${this.lengthKeyOf(sa)}.`
+          : undefined;
+        if (srcLenPfx) {
+          for (const [k, lv] of st.env) {
+            if (k.startsWith(srcLenPfx)) {
+              const dstk = `len:${ps.id}.${k.slice(srcLenPfx.length)}`;
+              env.set(dstk, lv);
+              if (st.inexact.has(k)) inexact.add(dstk);
+            }
+          }
         }
       }
-      return;
-    }
-    if (isId(rhs)) {
-      const rs = localOf.get(rhs);
-      if (rs) {
-        for (const f of rec.fields) {
-          const val = st.env.get(`field:${rs.id}.${f.name}`);
-          if (val !== undefined) st.env.set(`field:${symId}.${f.name}`, val);
-          const lv = st.env.get(`len:${rs.id}.${f.name}`);
-          if (lv !== undefined) st.env.set(`len:${symId}.${f.name}`, lv);
-        }
-        return;
+    });
+    return { env, inexact, pMap };
+  }
+
+  private allocRetRecordFields(
+    rec: Extract<Type, { k: "record" }>,
+    pathPrefix: string,
+    displayPrefix: string,
+    retFields: Map<string, FieldTerm>,
+    eSymId: number | undefined,
+    env: Map<string, string>,
+  ): void {
+    for (const f of rec.fields) {
+      const fu = unref(f.type);
+      const relPath = pathPrefix ? `${pathPrefix}.${f.name}` : f.name;
+      const disp = `${displayPrefix}.${f.name}`;
+      if (fu.k === "num" && INT_BOUNDS[fu.name]) {
+        const [lo, hi] = INT_BOUNDS[fu.name]!;
+        const sym = this.fresh("Int", disp, [lo, hi]);
+        retFields.set(relPath, { smt: sym, exact: true });
+        if (eSymId !== undefined) env.set(`field:${eSymId}.${relPath}`, sym);
+      } else if (isBool(fu)) {
+        const sym = this.fresh("Bool", disp);
+        retFields.set(relPath, { smt: sym, exact: true });
+        if (eSymId !== undefined) env.set(`field:${eSymId}.${relPath}`, sym);
+      } else if (isContainer(fu)) {
+        const lv = this.fresh("Int", `${disp}_len`, [0n, MAX_U32]);
+        if (eSymId !== undefined) env.set(`len:${eSymId}.${relPath}`, lv);
+      } else if (fu.k === "record") {
+        this.allocRetRecordFields(fu, relPath, disp, retFields, eSymId, env);
       }
     }
-    this.initRecordFields(st, `field:${symId}`, `len:${symId}`, display, rec);
   }
 
   private havocTarget(e0: ts.Expression, st: State): void {
@@ -993,38 +1258,14 @@ class FnProver {
       if (target) {
         const cs = this.contracts.get(target);
         const calleeKey = `${target.mod.pf.path}::${target.name}`;
-        const pMap = new Map<number, TermVal>();
-        if (cs) {
-          const lenKeys = new Map<string, string>();
-          target.decl.parameters.forEach((p, idx) => {
-            if (!isId(p.name)) return;
-            const ps = localOf.get(p.name);
-            if (!ps) return;
-            const av = argVals[idx];
-            if (av) pMap.set(ps.id, av);
-            const argNode = c.arguments[idx];
-            if (argNode) {
-              const lk = this.lengthKeyOf(argNode);
-              if (lk && st.env.has(lk)) lenKeys.set(`len:${ps.id}`, st.env.get(lk)!);
-              else if (this.isSliceCall(argNode) && av) lenKeys.set(`len:${ps.id}`, av.smt);
-            }
-          });
-          // Temporarily bind callee param lengths in state for pure requires evaluation
-          const savedLen: [string, string | undefined][] = [];
-          for (const [k, v] of lenKeys) {
-            savedLen.push([k, st.env.get(k)]);
-            st.env.set(k, v);
-          }
-          try {
+        if (cs?.requires.length) {
+          const { env: reqEnv, inexact: reqInexact, pMap } = this.collectArgBindings(target, c.arguments, argVals, st);
+          this.withTempEnv(st, reqEnv, reqInexact, () => {
             for (const req of cs.requires) {
               const cond = this.evalPureBool(req.arguments[0]!, st, target.mod, pMap);
               this.addObligation("T004", `requires for ${target.name}`, callee, mod, st, cond.smt, cond.exact, calleeKey);
             }
-          } finally {
-            for (const [k, old] of savedLen) {
-              if (old === undefined) st.env.delete(k); else st.env.set(k, old);
-            }
-          }
+          });
         }
         // Havoc Mut<Vec<T>> / Mut<Struct> args BEFORE evaluating ensures (Mut<Slice<T>> length cannot change)
         target.sig.params.forEach((pt, idx) => {
@@ -1038,39 +1279,43 @@ class FnProver {
         });
         if (cs?.ensures.length) {
           const retVar = this.freshForType(retT, `${target.name}_ret`);
-          const retTerm: TermVal = { smt: retVar, exact: true };
-          const postLenKeys = new Map<string, string>();
-          target.decl.parameters.forEach((p, idx) => {
-            if (!isId(p.name)) return;
-            const ps = localOf.get(p.name);
-            if (!ps) return;
-            const argNode = c.arguments[idx];
-            if (argNode) {
-              const lk = this.lengthKeyOf(argNode);
-              if (lk && st.env.has(lk)) postLenKeys.set(`len:${ps.id}`, st.env.get(lk)!);
-              else if (this.isSliceCall(argNode) && argVals[idx]) postLenKeys.set(`len:${ps.id}`, argVals[idx]!.smt);
-            }
-          });
-          const savedLen: [string, string | undefined][] = [];
-          for (const [k, v] of postLenKeys) {
-            savedLen.push([k, st.env.get(k)]);
-            st.env.set(k, v);
+          const { env: postEnv, inexact: postInexact, pMap } = this.collectArgBindings(target, c.arguments, argVals, st);
+          const firstParam = cs.ensures.map((e) => e.parameters[0]?.name).find((n): n is ts.Identifier => !!n && isId(n));
+          const firstESym = firstParam ? localOf.get(firstParam) : undefined;
+          let retRecordFields: Map<string, FieldTerm> | undefined;
+          let retContainerLen: string | undefined;
+          if (retT.k === "record") {
+            retRecordFields = new Map();
+            this.allocRetRecordFields(retT, "", `${target.name}_ret`, retRecordFields, firstESym?.id, postEnv);
+          } else if (isContainer(retT)) {
+            retContainerLen = this.fresh("Int", `${target.name}_len`, [0n, MAX_U32]);
+            if (firstESym) postEnv.set(`len:${firstESym.id}`, retContainerLen);
           }
-          try {
-            for (const ens of cs.ensures) {
-              const ep = ens.parameters[0]?.name;
-              if (ep && isId(ep) && ens.body.kind !== K.Block) {
-                const eSym = localOf.get(ep);
-                const eMap = new Map(pMap);
-                if (eSym) eMap.set(eSym.id, retTerm);
-                const post = this.evalPureBool(ens.body as ts.Expression, st, target.mod, eMap);
-                st.assumptions.push(post.smt);
+          const retTerm: TermVal = {
+            smt: retContainerLen ?? retVar,
+            exact: true,
+            ...(retContainerLen !== undefined ? { containerLen: retContainerLen } : {}),
+            ...(retRecordFields?.size ? { recordFields: retRecordFields } : {}),
+          };
+          for (const ens of cs.ensures) {
+            const ep = ens.parameters[0]?.name;
+            if (!ep || !isId(ep) || ens.body.kind === K.Block) continue;
+            const eSym = localOf.get(ep);
+            const eMap = new Map(pMap);
+            if (eSym) {
+              eMap.set(eSym.id, retTerm);
+              if (firstESym && eSym.id !== firstESym.id) {
+                if (retRecordFields) {
+                  for (const [rp, fv] of retRecordFields) postEnv.set(`field:${eSym.id}.${rp}`, fv.smt);
+                } else if (retContainerLen !== undefined) {
+                  postEnv.set(`len:${eSym.id}`, retContainerLen);
+                }
               }
             }
-          } finally {
-            for (const [k, old] of savedLen) {
-              if (old === undefined) st.env.delete(k); else st.env.set(k, old);
-            }
+            this.withTempEnv(st, postEnv, postInexact, () => {
+              const post = this.evalPureBool(ens.body as ts.Expression, st, target.mod, eMap);
+              st.assumptions.push(post.smt);
+            });
           }
           return retTerm;
         }
@@ -1086,6 +1331,26 @@ class FnProver {
       if (isId(p.expression) && p.expression.text === "Vec" && m === "create") {
         for (const a of c.arguments) await this.checkExpr(a, st);
         return { smt: this.fresh("Int", "vec", [0n, MAX_U32]), exact: true };
+      }
+      if ((recvT.k === "gen" || recvT.k === "opaque") && recvT.name === "Arena") {
+        const argTerms: TermVal[] = [];
+        for (const a of c.arguments) argTerms.push(await this.checkExpr(a, st));
+        if (m === "alloc" && argTerms.length >= 1) {
+          const a0 = argTerms[0]!;
+          return { smt: a0.smt, exact: a0.exact, containerLen: a0.smt };
+        }
+        if (m === "view" && c.arguments.length === 1) {
+          const s0 = strip(c.arguments[0]!);
+          if (isId(s0)) {
+            const sym = localOf.get(s0);
+            if (sym && st.env.has(`len:${sym.id}`)) {
+              const lv = st.env.get(`len:${sym.id}`)!;
+              const exact = !st.inexact.has(`len:${sym.id}`);
+              return { smt: lv, exact, containerLen: lv };
+            }
+          }
+        }
+        return { smt: this.freshForType(retT, m), exact: false };
       }
       if (recvT.k === "gen" && (recvT.name === "Vec" || recvT.name === "Slice") && m === "slice" && c.arguments.length === 2) {
         const lenTerm = this.containerLen(p.expression, st);
@@ -1431,11 +1696,27 @@ class FnProver {
                 st.env.set(key, v.smt);
                 if (v.exact) st.inexact.delete(key); else st.inexact.add(key);
               } else if (isContainer(u)) {
-                st.env.set(`len:${sym.id}`, this.exprContainerLength(d.initializer, st) ?? this.fresh("Int", `${sym.name}_len`, [0n, MAX_U32]));
+                const lv = v.containerLen ?? this.exprContainerLength(d.initializer, st);
+                if (lv) {
+                  st.env.set(`len:${sym.id}`, lv);
+                  if (v.exact || v.containerLen === undefined) st.inexact.delete(`len:${sym.id}`); else st.inexact.add(`len:${sym.id}`);
+                } else {
+                  st.env.set(`len:${sym.id}`, this.fresh("Int", `${sym.name}_len`, [0n, MAX_U32]));
+                }
               } else if (u.k === "record") {
-                this.bindRecordFromExpr(sym.id, sym.name, u, d.initializer, st);
-              } else if (u.k === "union" && nonNull(u)) {
-                this.assignPlaceFromExpr(d.name, d.initializer, v, st);
+                this.bindRecordFromExpr(sym.id, sym.name, u, d.initializer, st, v);
+              } else if (u.k === "union") {
+                if (isTaggedUnion(u)) {
+                  this.initLocal(st, sym, sym.name);
+                  const rf = this.extractRecordFields(d.initializer, st, mod, v);
+                  for (const [path, fv] of rf) {
+                    const fk = `field:${sym.id}.${path}`;
+                    st.env.set(fk, fv.smt);
+                    if (fv.exact) st.inexact.delete(fk); else st.inexact.add(fk);
+                  }
+                } else if (nonNull(u)) {
+                  this.assignPlaceFromExpr(d.name, d.initializer, v, st);
+                }
               }
             } else {
               this.initLocal(st, sym, sym.name);
@@ -1466,7 +1747,7 @@ class FnProver {
         let retVal: TermVal | undefined;
         if (r) retVal = await this.checkExpr(r, st);
         const cs = this.contracts.get(this.f)!;
-        for (const ens of cs.ensures) this.checkEnsures(ens, retVal, st);
+        for (const ens of cs.ensures) this.checkEnsures(ens, retVal, st, r);
         st.terminated = true;
         return;
       }
@@ -1504,7 +1785,8 @@ class FnProver {
           const clSt = cloneState(remCond);
           if (cl.kind === K.CaseClause) {
             const cVal = await this.checkExpr(cl.expression, remCond);
-            const eq = isInt(discT) || isBool(discT) ? `(= ${disc.smt} ${cVal.smt})` : this.fresh("Bool", "case_eq");
+            const matchTag = isStrLitLike(discT) && disc.exact && cVal.exact;
+            const eq = isInt(discT) || isBool(discT) || matchTag ? `(= ${disc.smt} ${cVal.smt})` : this.fresh("Bool", "case_eq");
             clSt.assumptions.push(eq);
             remCond.assumptions.push(`(not ${eq})`);
           } else {
@@ -1674,30 +1956,52 @@ class FnProver {
       st.terminated = true;
     } else {
       st.env = exitFalseSt.env;
+      st.inexact = exitFalseSt.inexact;
       st.assumptions = exitFalseSt.assumptions;
     }
   }
 
-  private checkEnsures(ens: ts.ArrowFunction, retVal: TermVal | undefined, st: State): void {
+  private checkEnsures(ens: ts.ArrowFunction, retVal: TermVal | undefined, st: State, retExpr?: ts.Expression): void {
     const ep = ens.parameters[0]?.name;
     const ov = new Map<number, TermVal>();
+    const tmpEnv = new Map<string, string>();
+    const tmpInexact = new Set<string>();
     if (ep && isId(ep) && retVal) {
       const sym = localOf.get(ep);
-      if (sym) ov.set(sym.id, retVal);
+      if (sym) {
+        ov.set(sym.id, retVal);
+        const su = unref(sym.type);
+        if (su.k === "record" && (retVal.recordFields || retExpr)) {
+          const rf = this.extractRecordFields(retExpr!, st, this.f.mod, retVal);
+          for (const [path, fv] of rf) {
+            const fk = `field:${sym.id}.${path}`;
+            tmpEnv.set(fk, fv.smt);
+            if (!fv.exact) tmpInexact.add(fk);
+          }
+        } else if (isContainer(su) && (retVal.containerLen || retExpr)) {
+          const lv = retVal.containerLen ?? this.exprContainerLength(retExpr!, st);
+          if (lv) {
+            tmpEnv.set(`len:${sym.id}`, lv);
+            if (!retVal.exact && retVal.containerLen !== undefined) tmpInexact.add(`len:${sym.id}`);
+          }
+        }
+      }
     }
     const call = ens.parent as ts.CallExpression;
-    if (ens.body.kind !== K.Block) {
-      const c = this.evalPureBool(ens.body as ts.Expression, st, this.f.mod, ov);
-      this.addObligation("T005", "ensures postcondition", call.expression, this.f.mod, st, c.smt, c.exact);
-      return;
-    }
-    const blk = ens.body as ts.Block;
-    if (blk.statements.length === 1 && blk.statements[0]!.kind === K.ReturnStatement && (blk.statements[0] as ts.ReturnStatement).expression) {
-      const c = this.evalPureBool((blk.statements[0] as ts.ReturnStatement).expression!, st, this.f.mod, ov);
-      this.addObligation("T005", "ensures postcondition", call.expression, this.f.mod, st, c.smt, c.exact);
-      return;
-    }
-    this.addObligation("T005", "ensures postcondition (block)", call.expression, this.f.mod, st, "false", false);
+    this.withTempEnv(st, tmpEnv, tmpInexact, () => {
+      if (ens.body.kind !== K.Block) {
+        const c = this.evalPureBool(ens.body as ts.Expression, st, this.f.mod, ov);
+        this.addObligation("T005", "ensures postcondition", call.expression, this.f.mod, st, c.smt, c.exact);
+        return;
+      }
+      const blk = ens.body as ts.Block;
+      if (blk.statements.length === 1 && blk.statements[0]!.kind === K.ReturnStatement && (blk.statements[0] as ts.ReturnStatement).expression) {
+        const c = this.evalPureBool((blk.statements[0] as ts.ReturnStatement).expression!, st, this.f.mod, ov);
+        this.addObligation("T005", "ensures postcondition", call.expression, this.f.mod, st, c.smt, c.exact);
+        return;
+      }
+      this.addObligation("T005", "ensures postcondition (block)", call.expression, this.f.mod, st, "false", false);
+    });
   }
 
   async run(): Promise<void> {

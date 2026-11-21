@@ -879,3 +879,19 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - **確かめ方**:
   - `packages/compiler/test/prove.test.ts`（7 件通過）でソルバアダプタ、`dot`/`saxpy`/`prefix`/`stencil`/`particles` の範囲検査・添字算術除去（未証明データ演算・ジェネリック・公開 `requires` 保持を含む）、`T001`〜`T010` 全種、反例と `a[i]=b[i]` / `divTrunc(MIN,-1)` / ビット演算の健全性、`buildNode`（C/Wasm）・`buildBrowser` リリース実行一致、キャッシュ・CLI・MCP を検証。
   - `pnpm typecheck` 通過、`pnpm verify:conformance` 通過（`accept=84 reject=637 run=212`）、`pnpm test` 通過（44 ファイル 436/436、`resident-watch-mcp.test.ts` の 7 ツール期待更新含む）、`rtk bypass pnpm conformance` 通過（1 ファイル 1,284/1,284）、`pnpm bench` 通過（`dot_f32` 1.02x、`saxpy_f32` 1.18x、`prefix_i32` 1.29x、`stencil_f64` 1.03x、`particles_aos_f32` 1.40x）。
+
+## D175: 段階 6 実アプリドッグフーディングとリリースベンチ比較（2026-11-21）
+
+- **関連**: D174、Q289〜Q292
+- **実コードで踏んだ証明器のギャップ解消（`packages/compiler/src/prove.ts`、`PROVE_VERSION = "3"`）**:
+  - `Arena.alloc` / `Arena.view` の長さ伝搬（`Arena` 型が `k: "gen", name: "Arena"` であるため `gen` / `opaque` の両方を判定し、添字側・引数転送側とも `isLenCall` に一般化）を追加し、`frequencySeparatePass` や `smoothRoiPass` 等でアリーナ由来 `Slice` 長の `requires` を証明できるようにした。
+  - 構造体・レコード・コンテナ（`Vec`/`Slice`）の戻り値 `ensures`（トップレベル `const` レコードおよびオブジェクトリテラル返却を含む検証、`allocRetRecordFields` による呼出側へのフィールド／長さ束縛伝搬）、レコード／タグつきユニオン引数のフィールド転送（`collectArgBindings` / `extractRecordFields`）、およびタグつきユニオン文字列リテラル判別子モデル（`kind` の `===` / `!==` / `switch` 絞込み）を実装した。
+- **実アプリ 5 ファイルの契約強化とミューテーション両立**:
+  - `bench/kernels.szigyr`、`examples/retouch/kernels.szigyr`、`examples/retouch/session.szigyr`、`examples/audio-portable/main.szigyr`、`examples/audio/main.szigyr` に対し、`requires` / `ensures` / `invariant` のみを補強した（`examples/retouch` は本体ロジック無変更のまま維持し、`retouch-example.test.ts` の `mutateFile --all` 生存ミュータント 0 件を保持）。
+  - `node packages/compiler/src/cli.ts prove --no-cache` の 5 ファイル合計で **`proved=287 failed=0 unknown=7 timeout=0`**（30 関数、`solver=z3-wasm@5.4.1`）を達成した（残る `unknown` 7 件は `prefix` の `i32` データ加算、`clampU8` の `u8(float)`、`roiBox` の浮動小数由来 `ensures` および `usize(float)` 4 件で、いずれも fail-closed で実行時検査を維持）。
+- **リリースビルドベンチ比較（`bench/run.ts`、`STS-C rel` 追加）**:
+  - `bench/run.ts` に Stage 6 証明＋`buildNode --backend=c` の `STS-C rel` 列と `proved: <N> checks eliminated` 出力を追加し、`hand C`・`STS-C`（dev）・`STS-C rel`・`STS-JS` の 4 者でチェックサム一致を検証するようにした。
+  - 実測結果（`pnpm bench`、`proved: 45 checks eliminated`、`flags: -std=gnu11 -O2 -ffp-contract=off -fno-fast-math -fwrapv -fexcess-precision=standard -falign-loops=32 -w`）: `dot_f32` 1.02x→**0.99x**（0.700→0.680 vs hand C 0.689 ms）、`saxpy_f32` 1.26x→**1.04x**（0.340→0.280 vs 0.270 ms）、`prefix_i32` 1.23x→**1.04x**（0.520→0.440 vs 0.424 ms）、`stencil_f64` 1.00x→**0.98x**（1.040→1.020 vs 1.042 ms）、`particles_aos_f32` 1.36x→**1.33x**（1.020→1.000 vs 0.752 ms）。
+- **確かめ方**:
+  - `packages/compiler/test/prove.test.ts` に `Arena.alloc`/`view`・構造体/`Vec` 戻り値 `ensures`・タグつきユニオン `switch` 契約の単体テストおよび上記実アプリ 5 ファイルのリリース `emitC` 検査除去テストを追加（9/9 通過）。
+  - `pnpm typecheck` 通過、`pnpm verify:conformance` 通過（`accept=84 reject=637 run=212`、`ok`）、`rtk bypass pnpm test` 通過（44 ファイル 438/438、`retouch-example.test.ts` 7/7 生存ミュータント 0 件・`audio-portable.test.ts` 10/10・`audio-demo.test.ts` 1/1 含む）、`rtk bypass pnpm conformance` 通過（1 ファイル 1,284/1,284）、`pnpm bench` 通過（4 者チェックサム一致）。

@@ -236,7 +236,7 @@ export function createSession(
 }
 
 export function createDemoSession(alloc: Alloc, width: usize, height: usize): RetouchSession {
-  requires(width > 0 && height > 0);
+  requires(width > 0 && height > 0 && width <= 16384 && height <= 16384);
   const pixels = generateTestPortrait(alloc, width, height);
   return createSession(alloc, width, height, 20, pixels);
 }

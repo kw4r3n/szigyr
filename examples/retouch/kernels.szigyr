@@ -26,7 +26,7 @@ export function clampU8(x: f32): u8 {
 
 export function buildGaussianWeights(radius: usize, out: Mut<Slice<f32>>): void {
   "use rt";
-  requires(out.length === radius * 2 + 1);
+  requires(radius <= 1024 && out.length === radius * 2 + 1);
   const sigma: f64 = f64(radius) * 0.5 + 0.5;
   const denom: f64 = 2.0 * sigma * sigma;
   const len = out.length;
@@ -56,6 +56,7 @@ export function blurHorizontal(
     height > 0 &&
     src.length === width * height * 3 &&
     dst.length === width * height * 3 &&
+    radius <= 1024 &&
     weights.length === radius * 2 + 1,
   );
   const kLen = weights.length;
@@ -95,6 +96,7 @@ export function blurVertical(
     height > 0 &&
     src.length === width * height * 3 &&
     dst.length === width * height * 3 &&
+    radius <= 1024 &&
     weights.length === radius * 2 + 1,
   );
   const kLen = weights.length;
@@ -173,7 +175,7 @@ export function frequencySeparatePass(
   scratch: Mut<Arena>,
 ): boolean {
   "use rt";
-  requires(width > 0 && height > 0 && rgba.length === width * height * 4);
+  requires(width > 0 && height > 0 && rgba.length === width * height * 4 && params.blurRadius <= 1024);
   scratch.reset();
   const npix = width * height;
   const rgbLen = npix * 3;
@@ -198,6 +200,7 @@ export function frequencySeparatePass(
 function roiBox(stroke: BrushStroke, width: usize, height: usize): RoiBox {
   "use rt";
   requires(width > 0 && height > 0);
+  ensures((r: RoiBox) => r.empty || (r.x0 <= r.x1 && r.x1 < width && r.y0 <= r.y1 && r.y1 < height));
   if (
     !Number.isFinite(stroke.radius) ||
     stroke.radius <= f32(0) ||
@@ -256,7 +259,7 @@ function smoothRoiPass(
   smoothed: Mut<Slice<f32>>,
 ): void {
   "use rt";
-  requires(width > 0 && height > 0 && rgba.length === width * height * 4 && smoothed.length === rw * rh * 3);
+  requires(width > 0 && height > 0 && rgba.length === width * height * 4 && smoothed.length === rw * rh * 3 && x0 <= width && rw <= width - x0 && y0 <= height && rh <= height - y0);
   for (let ly: usize = 0; ly < rh; ly += 1) {
     const cy = y0 + ly;
     const ny0 = cy > 0 ? cy - 1 : 0; // szigyr-equivalent: cy === 1 yields 0 either way
@@ -270,7 +273,9 @@ function smoothRoiPass(
       let sumB: f32 = f32(0);
       let count: usize = 0;
       for (let sy: usize = ny0; sy <= ny1; sy += 1) {
+        invariant(count <= (sy - ny0) * 3);
         for (let sx: usize = nx0; sx <= nx1; sx += 1) {
+          invariant(count <= (sy - ny0) * 3 + (sx - nx0));
           const sIdx = (sy * width + sx) * 4;
           sumR = sumR + f32(rgba[sIdx]);
           sumG = sumG + f32(rgba[sIdx + 1]);
@@ -313,7 +318,7 @@ export function applyBrushStroke(
   scratch: Mut<Arena>,
 ): boolean {
   "use rt";
-  requires(width > 0 && height > 0 && rgba.length === width * height * 4);
+  requires(width > 0 && height > 0 && rgba.length === width * height * 4 && (tool.kind !== "frequency" || tool.params.blurRadius <= 1024));
   switch (tool.kind) {
     case "frequency":
       return frequencySeparatePass(rgba, width, height, tool.params, scratch);
@@ -365,6 +370,7 @@ export function computeImageStats(rgba: Ref<Slice<u8>>, width: usize, height: us
   let fnv: u64 = 14695981039346656037;
   const prime: u64 = 1099511628211;
   for (let p: usize = 0; p < npix; p += 1) {
+    invariant(lumaSum <= u64(p) * 255);
     const idx = p * 4;
     const r = rgba[idx];
     const g = rgba[idx + 1];
@@ -393,7 +399,8 @@ export function clonePixels(alloc: Alloc, src: Ref<Slice<u8>>): Vec<u8> {
 
 export function generateTestPortrait(alloc: Alloc, width: usize, height: usize): Vec<u8> {
   "use owned";
-  requires(width > 0 && height > 0);
+  requires(width > 0 && height > 0 && width <= 16384 && height <= 16384);
+  ensures((r: Vec<u8>) => r.length === width * height * 4);
   const out = Vec.create<u8>(alloc, width * height * 4); // szigyr-equivalent: capacity is a preallocation hint; push auto-grows
   const cx = f32(width) * f32(0.5);
   const cy = f32(height) * f32(0.5);
@@ -404,7 +411,9 @@ export function generateTestPortrait(alloc: Alloc, width: usize, height: usize):
   const b2y = f32(height) * f32(0.58);
   const bRad = f32(width < height ? width : height) * f32(0.18); // szigyr-equivalent: tie gives identical value
   for (let y: usize = 0; y < height; y += 1) {
+    invariant(out.length === y * width * 4);
     for (let x: usize = 0; x < width; x += 1) {
+      invariant(out.length === (y * width + x) * 4);
       const dx = f32(x) - cx;
       const dy = f32(y) - cy;
       const radial = clamp01f32(f32(1) - Math.sqrt(dx * dx + dy * dy) * invMax);

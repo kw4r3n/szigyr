@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -52,6 +53,15 @@ function cFnBody(code: string, name: string): string {
     else if (code[i] === "}" && --depth === 0) return code.slice(start, i + 1);
   }
   throw new Error(`unterminated C body for ${name}`);
+}
+
+function hasSdl3(): boolean {
+  try {
+    execFileSync("pkg-config", ["--exists", "sdl3"], { stdio: "pipe" });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const parser = createParser();
@@ -656,4 +666,160 @@ export function main(sys: System): void {
     input.end();
     await srvDone;
   });
+
+  it("proves Arena.alloc/view lengths, struct & Vec return ensures, record params, and tagged-union switch contracts", async () => {
+    const { dir, cacheFile } = makeTmp();
+    const src = `
+type Box = { readonly empty: boolean; readonly x0: usize; readonly x1: usize };
+type ToolParams = { readonly radius: usize };
+type Tool =
+  | { readonly kind: "blur"; readonly params: ToolParams }
+  | { readonly kind: "noop"; readonly gain: usize };
+
+const EMPTY: Box = { empty: true, x0: 0, x1: 0 };
+
+function fillBuf(s: Mut<Slice<f32>>, n: usize): void {
+  "use rt";
+  requires(s.length === n);
+  for (let i: usize = 0; i < n; i += 1) s[i] = f32(0);
+}
+
+export function useArena(arena: Mut<Arena>, n: usize): boolean {
+  "use rt";
+  arena.reset();
+  const buf = arena.alloc<f32>(n, f32(0));
+  if (buf === null) return false;
+  fillBuf(arena.view(buf), n);
+  return true;
+}
+
+function makeBox(w: usize, valid: boolean): Box {
+  "use rt";
+  requires(w > 0);
+  ensures((r: Box) => r.empty || (r.x0 <= r.x1 && r.x1 < w));
+  if (!valid) return EMPTY;
+  return { empty: false, x0: 0, x1: w - 1 };
+}
+
+export function useBox(arr: Ref<Slice<u8>>, w: usize, valid: boolean): u8 {
+  "use rt";
+  requires(w > 0 && arr.length === w);
+  const b = makeBox(w, valid);
+  if (b.empty) return 0;
+  return arr[b.x1];
+}
+
+function checkVecLen(v: Ref<Slice<u8>>, n: usize): u8 {
+  "use rt";
+  requires(n > 0 && v.length === n);
+  return v[n - 1];
+}
+
+export function makeVec(alloc: Alloc, n: usize): Vec<u8> {
+  "use owned";
+  requires(n > 0 && n <= 4096);
+  ensures((r: Vec<u8>) => r.length === n);
+  const out = Vec.create<u8>(alloc, n);
+  for (let i: usize = 0; i < n; i += 1) {
+    invariant(out.length === i);
+    out.push(0);
+  }
+  return out;
+}
+
+export function useVecEnsures(alloc: Alloc, n: usize): u8 {
+  "use owned";
+  requires(n > 0 && n <= 4096);
+  const v = makeVec(alloc, n);
+  return checkVecLen(v, n);
+}
+
+function blurPass(radius: usize): usize {
+  "use rt";
+  requires(radius <= 1024);
+  return radius * 2 + 1;
+}
+
+export function runTool(tool: Tool): usize {
+  "use rt";
+  requires(tool.kind !== "blur" || tool.params.radius <= 1024);
+  switch (tool.kind) {
+    case "blur":
+      return blurPass(tool.params.radius);
+    case "noop":
+      return 0;
+  }
+}
+`;
+    const file = writeTmpFile(dir, "real-patterns.szigyr", src);
+    const analysis = analyze(file, parser);
+    expect(analysis.diagnostics).toEqual([]);
+
+    const res = await prove(file, { analysis, cacheFile, parser });
+    expect(res.diagnostics).toEqual([]);
+    expect(res.summary).toMatchObject({ failed: 0, unknown: 0, timeout: 0 });
+
+    const relC = emitC(analysis.decls!, "native", { proved: res.proved })!;
+    expect(cFnBody(relC.c, "fillBuf")).not.toContain("sts_chk(");
+    expect(cFnBody(relC.c, "fillBuf")).not.toContain("sts_trap(4,");
+    expect(cFnBody(relC.c, "useBox")).not.toContain("sts_chk(");
+    expect(cFnBody(relC.c, "checkVecLen")).not.toContain("sts_chk(");
+    expect(cFnBody(relC.c, "checkVecLen")).not.toContain("sts_trap(4,");
+    expect(cFnBody(relC.c, "blurPass")).not.toContain("sts_trap(4,");
+  });
+
+  it("proves real-app kernels (bench, retouch, audio-portable, audio) with zero failures and eliminates release bounds checks", async () => {
+    const repoRoot = join(import.meta.dirname, "../../..");
+
+    const runOne = async (relPath: string) => {
+      const file = join(repoRoot, relPath);
+      const analysis = analyze(file, parser);
+      expect(analysis.diagnostics).toEqual([]);
+      const res = await prove(file, { analysis, cache: false, parser });
+      expect(res.diagnostics).toEqual([]);
+      expect(res.summary.failed).toBe(0);
+      expect(res.summary.timeout).toBe(0);
+      const relC = emitC(analysis.decls!, "native", { proved: res.proved })!;
+      return { res, relC };
+    };
+
+    const bench = await runOne("bench/kernels.szigyr");
+    expect(bench.relC.eliminated).toBeGreaterThan(0);
+    for (const fn of ["dot", "saxpy", "prefix", "stencil", "particles"]) {
+      expect(cFnBody(bench.relC.c, fn)).not.toContain("sts_chk(");
+    }
+    expect(cFnBody(bench.relC.c, "prefix")).toContain("STS_AOP(add, int32_t");
+
+    const retouch = await runOne("examples/retouch/kernels.szigyr");
+    expect(retouch.relC.eliminated).toBeGreaterThan(0);
+    for (const fn of [
+      "buildGaussianWeights",
+      "blurHorizontal",
+      "blurVertical",
+      "unpackRgbaToRgb",
+      "reconstructFrequency",
+      "smoothRoiPass",
+      "applyBrushStroke",
+      "computeImageStats",
+    ]) {
+      expect(cFnBody(retouch.relC.c, fn)).not.toContain("sts_chk(");
+    }
+    for (const privFn of ["unpackRgbaToRgb", "reconstructFrequency", "smoothRoiPass"]) {
+      expect(cFnBody(retouch.relC.c, privFn)).not.toContain("sts_trap(4,");
+    }
+    expect(cFnBody(retouch.relC.c, "clampU8")).toContain("sts_cvt(");
+    expect(cFnBody(retouch.relC.c, "roiBox")).toContain("sts_trap(5,");
+
+    await runOne("examples/retouch/session.szigyr");
+
+    const audioPortable = await runOne("examples/audio-portable/main.szigyr");
+    expect(cFnBody(audioPortable.relC.c, "render")).not.toContain("sts_chk(");
+    expect(cFnBody(audioPortable.relC.c, "render")).toContain("sts_trap(4,");
+
+    if (hasSdl3()) {
+      const audio = await runOne("examples/audio/main.szigyr");
+      expect(cFnBody(audio.relC.c, "fill")).not.toContain("sts_chk(");
+      expect(cFnBody(audio.relC.c, "fill")).toContain("sts_trap(4,");
+    }
+  }, 60_000);
 });

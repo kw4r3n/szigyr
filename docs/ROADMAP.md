@@ -239,6 +239,7 @@
 - **検証**:
   - `packages/compiler/test/prove.test.ts`（7 件通過）で `dot`/`saxpy`/`prefix`/`stencil`/`particles` の範囲検査・添字算術検査の証明とリリース C コードからの `sts_chk(` 除去（`prefix` データ加算の未証明 `STS_AOP` やジェネリック具体化・公開 `requires` の保持を含む）、`T001`〜`T010`・反例出力・`buildNode`（C/Wasm）および `buildBrowser` リリース実行一致・キャッシュ・CLI・MCP を確認。
   - `pnpm typecheck` 通過、`pnpm verify:conformance` 通過（`accept=84 reject=637 run=212`）、`pnpm test` 通過（44 ファイル 436/436）、`rtk bypass pnpm conformance` 通過（1 ファイル 1,284/1,284）、`pnpm bench` 通過（`dot_f32` 1.02x、`saxpy_f32` 1.18x、`prefix_i32` 1.29x、`stencil_f64` 1.03x、`particles_aos_f32` 1.40x）。
+  - **実アプリドッグフーディング・リリースベンチ比較（D175）**: `Arena.alloc`/`view` 長伝搬・構造体/`Vec` 戻り値 `ensures`・レコード引数転送・タグつきユニオン判別子モデルを追加し、`bench/kernels.szigyr`・`examples/retouch/{kernels,session}.szigyr`・`examples/audio-portable/main.szigyr`・`examples/audio/main.szigyr` に契約のみ補強して **`proved=287 failed=0 unknown=7 timeout=0`**（30 関数、`examples/retouch` 生存ミュータント 0 件維持）を達成。`pnpm bench`（`STS-C rel`、`proved: 45 checks eliminated`、4 者チェックサム一致）で手書き C 比 `dot_f32` 1.02x→0.99x、`saxpy_f32` 1.26x→1.04x、`prefix_i32` 1.23x→1.04x、`stencil_f64` 1.00x→0.98x、`particles_aos_f32` 1.36x→1.33x。`pnpm typecheck`、`pnpm verify:conformance`（`accept=84 reject=637 run=212`）、`pnpm test`（44 ファイル 438/438）、`pnpm conformance`（1,284/1,284）通過。
 
 ## 保留
 

@@ -12,6 +12,7 @@ type AudioState = Struct<{
 
 function render(st: Mut<AudioState>, out: Mut<Slice<f32>>, frames: usize): void {
   "use rt";
+  requires(frames <= divTrunc(out.length, 2));
   let p = st.rx.pop();
   while (p !== null) {
     st.freq = p.freq;

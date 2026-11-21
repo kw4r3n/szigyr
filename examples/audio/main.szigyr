@@ -59,6 +59,7 @@ type Session = Struct<{
 // parameters live in the state, so the waveform is continuous across calls.
 function fill(st: Mut<AudioState>, out: Mut<Slice<f32>>, frames: usize): void {
   "use rt";
+  requires(frames <= divTrunc(out.length, 2));
   for (let i: usize = 0; i < frames; i += 1) {
     const v = f32(st.gain * DetMath.sin(6.283185307179586 * st.phase));
     out[i * 2] = v;
