@@ -1,9 +1,13 @@
 // Browser standard library (zero `node:*` imports; Q282, Q283, Q285).
 import {
-  Arena, Pool, RingRx, RingTx, Vec, asTrap, capturing, cast, err, isTrap, noteIsolateTrap, ok, ringPushRaw, spawnIsolate, stopFakeIsolates, stopIsolates, takeIsolateTrap, type Pos, type Result, type RingShared, type WasmMeta,
+  Arena, Pool, RingRx, RingTx, Vec, asTrap, capturing, cast, err, isTrap, noteIsolateTrap, ok, ringPushRaw, spawnIsolate, stopFakeIsolates, stopIsolates, takeIsolateTrap, type Pos, type Result, type RingShared, type Slice, type WasmMeta,
 } from "../../runtime-js/src/browser.ts";
-import { ALLOC, type Audio, type AudioCallbackSpec, type AudioConfig, type AudioStream, type Clock, type Fs, type IoError, type Js, type JsError, type JsRef, type Log, type Net, type Proc, type Random, type Spawn, type System } from "./types.ts";
-import { webFetch } from "./fake.ts";
+import {
+  ALLOC, type Audio, type AudioCallbackSpec, type AudioConfig, type AudioStream, type Clock,
+  type Display, type DisplayColor, type DisplayConfig, type DisplayEvent, type DisplaySurface,
+  type Fs, type IoError, type Js, type JsError, type JsRef, type Log, type Net, type Proc, type Random, type Spawn, type System,
+} from "./types.ts";
+import { readDisplayRgba, validateDisplayConfig, webFetch } from "./fake.ts";
 
 export * from "./types.ts";
 export * from "./fake.ts";
@@ -230,6 +234,219 @@ export function createBrowserAudio(opts: BrowserAudioOptions): Audio {
   };
 }
 
+export interface BrowserDisplayOptions {
+  canvas?: HTMLCanvasElement;
+  canvasContainer?: HTMLElement;
+}
+
+const activeDisplayClosers = new Set<() => Promise<void>>();
+export async function stopBrowserDisplaySurfaces(): Promise<void> {
+  for (const fn of [...activeDisplayClosers]) await fn();
+}
+
+function normalizeDomKey(k: string): string {
+  if (k === " ") return "Space";
+  if (k.length === 1 && k >= "A" && k <= "Z") return k.toLowerCase();
+  return k;
+}
+
+const rgbaCss = (c: DisplayColor): string => `rgba(${c.r & 255},${c.g & 255},${c.b & 255},${(c.a & 255) / 255})`;
+
+export function createBrowserDisplay(opts: BrowserDisplayOptions = {}): Display {
+  return {
+    async open(config: DisplayConfig): Promise<Result<DisplaySurface, IoError>> {
+      const valid = validateDisplayConfig(config);
+      if (valid.kind === "err") return valid;
+      if (typeof document === "undefined" && !opts.canvas) {
+        return err({ code: "ENOSYS", message: "HTML Canvas 2D is unavailable" });
+      }
+      const { width, height } = valid.value;
+      const owned = !opts.canvas;
+      let canvas: HTMLCanvasElement;
+      if (opts.canvas) {
+        canvas = opts.canvas;
+      } else {
+        canvas = document.createElement("canvas");
+        canvas.id = "szigyr-canvas";
+        canvas.tabIndex = 0;
+        canvas.style.imageRendering = "pixelated";
+        canvas.style.outline = "none";
+        canvas.style.display = "block";
+        canvas.style.border = "1px solid #323944";
+        const host = opts.canvasContainer ?? document.getElementById("szigyr-display") ?? document.body;
+        if (!host) return err({ code: "EIO", message: "Display.open: no DOM container available" });
+        host.appendChild(canvas);
+        if (config.title) document.title = config.title;
+      }
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        if (owned) canvas.remove();
+        return err({ code: "EIO", message: "Display.open: failed to create 2D context" });
+      }
+
+      const queue: DisplayEvent[] = [];
+      let closed = false;
+      let pointerDownActive = false;
+      let tmpCanvas: HTMLCanvasElement | undefined;
+      let tmpCtx: CanvasRenderingContext2D | null = null;
+
+      const toCoords = (ev: { clientX: number; clientY: number }): { x: number; y: number } => {
+        const rect = canvas.getBoundingClientRect();
+        const rw = rect.width > 0 ? rect.width : width;
+        const rh = rect.height > 0 ? rect.height : height;
+        return {
+          x: ((ev.clientX - rect.left) / rw) * width,
+          y: ((ev.clientY - rect.top) / rh) * height,
+        };
+      };
+
+      const onPointerDown = (ev: PointerEvent): void => {
+        try { canvas.focus({ preventScroll: true }); } catch { /* ignore */ }
+        try { canvas.setPointerCapture(ev.pointerId); } catch { /* ignore */ }
+        pointerDownActive = true;
+        const p = toCoords(ev);
+        queue.push({ kind: "pointerDown", x: p.x, y: p.y, button: ev.button & 0xff });
+      };
+      const onPointerMove = (ev: PointerEvent): void => {
+        const p = toCoords(ev);
+        queue.push({ kind: "pointerMove", x: p.x, y: p.y, buttons: ev.buttons & 0xff });
+      };
+      const onPointerUp = (ev: PointerEvent): void => {
+        if (!pointerDownActive) return;
+        pointerDownActive = false;
+        const p = toCoords(ev);
+        queue.push({ kind: "pointerUp", x: p.x, y: p.y, button: ev.button & 0xff });
+      };
+      const onWheel = (ev: WheelEvent): void => {
+        ev.preventDefault();
+        const p = toCoords(ev);
+        queue.push({ kind: "wheel", x: p.x, y: p.y, dx: ev.deltaX, dy: ev.deltaY });
+      };
+      const isFormTarget = (t: EventTarget | null): boolean => {
+        const tag = (t as { tagName?: string } | null)?.tagName;
+        return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+      };
+      const onKeyDown = (ev: KeyboardEvent): void => {
+        if (isFormTarget(ev.target)) return;
+        const key = normalizeDomKey(ev.key);
+        if (key === "Space" || key.startsWith("Arrow")) ev.preventDefault();
+        queue.push({ kind: "keyDown", key, repeat: ev.repeat, shift: ev.shiftKey, ctrl: ev.ctrlKey, alt: ev.altKey });
+      };
+      const onKeyUp = (ev: KeyboardEvent): void => {
+        if (isFormTarget(ev.target)) return;
+        queue.push({ kind: "keyUp", key: normalizeDomKey(ev.key), shift: ev.shiftKey, ctrl: ev.ctrlKey, alt: ev.altKey });
+      };
+
+      const winTarget: EventTarget = typeof window !== "undefined" ? window : canvas;
+      canvas.addEventListener("pointerdown", onPointerDown);
+      canvas.addEventListener("pointermove", onPointerMove);
+      canvas.addEventListener("wheel", onWheel, { passive: false });
+      winTarget.addEventListener("pointerup", onPointerUp as EventListener);
+      winTarget.addEventListener("keydown", onKeyDown as EventListener);
+      winTarget.addEventListener("keyup", onKeyUp as EventListener);
+
+      const close = async (): Promise<void> => {
+        if (closed) return;
+        closed = true;
+        activeDisplayClosers.delete(close);
+        canvas.removeEventListener("pointerdown", onPointerDown);
+        canvas.removeEventListener("pointermove", onPointerMove);
+        canvas.removeEventListener("wheel", onWheel);
+        winTarget.removeEventListener("pointerup", onPointerUp as EventListener);
+        winTarget.removeEventListener("keydown", onKeyDown as EventListener);
+        winTarget.removeEventListener("keyup", onKeyUp as EventListener);
+        if (owned) canvas.remove();
+      };
+      activeDisplayClosers.add(close);
+
+      const surface: DisplaySurface = {
+        width,
+        height,
+        clear: (color: DisplayColor): void => {
+          if (closed) return;
+          ctx.clearRect(0, 0, width, height);
+          if ((color.a & 255) > 0) {
+            ctx.fillStyle = rgbaCss(color);
+            ctx.fillRect(0, 0, width, height);
+          }
+        },
+        fillRect: (x: number, y: number, w: number, h: number, color: DisplayColor): void => {
+          if (closed || !(w > 0 && h > 0)) return;
+          ctx.fillStyle = rgbaCss(color);
+          ctx.fillRect(x, y, w, h);
+        },
+        strokeRect: (x: number, y: number, w: number, h: number, color: DisplayColor): void => {
+          if (closed || !(w > 0 && h > 0)) return;
+          ctx.strokeStyle = rgbaCss(color);
+          ctx.lineWidth = 1;
+          ctx.strokeRect(x + 0.5, y + 0.5, Math.max(0, w - 1), Math.max(0, h - 1));
+        },
+        drawLine: (x1: number, y1: number, x2: number, y2: number, color: DisplayColor): void => {
+          if (closed) return;
+          ctx.strokeStyle = rgbaCss(color);
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(x1 + 0.5, y1 + 0.5);
+          ctx.lineTo(x2 + 0.5, y2 + 0.5);
+          ctx.stroke();
+        },
+        drawText: (x: number, y: number, text: string, color: DisplayColor): void => {
+          if (closed) return;
+          ctx.font = "12px ui-monospace, SFMono-Regular, Menlo, monospace";
+          ctx.textBaseline = "top";
+          ctx.textAlign = "left";
+          ctx.fillStyle = rgbaCss(color);
+          ctx.fillText(text, x, y);
+        },
+        blitRgba: (pixels: Slice<number> | Vec<number>, srcWidth: number, srcHeight: number, dstX: number, dstY: number, dstW: number, dstH: number, pos?: Pos): void => {
+          const raw = readDisplayRgba(pixels, srcWidth, srcHeight, pos);
+          if (closed || srcWidth === 0 || srcHeight === 0 || !(dstW > 0 && dstH > 0)) return;
+          if (!tmpCanvas) {
+            const doc = canvas.ownerDocument ?? document;
+            tmpCanvas = doc.createElement("canvas");
+            tmpCtx = tmpCanvas.getContext("2d");
+          }
+          if (!tmpCanvas || !tmpCtx) return;
+          if (tmpCanvas.width !== srcWidth || tmpCanvas.height !== srcHeight) {
+            tmpCanvas.width = srcWidth;
+            tmpCanvas.height = srcHeight;
+          }
+          const need = srcWidth * srcHeight * 4;
+          const img = new ImageData(srcWidth, srcHeight);
+          img.data.set(raw.length === need ? raw : raw.subarray(0, need));
+          tmpCtx.putImageData(img, 0, 0);
+          const prev = ctx.imageSmoothingEnabled;
+          ctx.imageSmoothingEnabled = false;
+          ctx.drawImage(tmpCanvas, dstX, dstY, dstW, dstH);
+          ctx.imageSmoothingEnabled = prev;
+        },
+        present: async (): Promise<void> => {
+          if (closed) return;
+          await new Promise<void>((resolve) => {
+            let done = false;
+            const finish = (): void => {
+              if (done) return;
+              done = true;
+              clearTimeout(timer);
+              resolve();
+            };
+            const timer = setTimeout(finish, 50);
+            if (typeof requestAnimationFrame === "function") requestAnimationFrame(finish);
+            else queueMicrotask(finish);
+          });
+        },
+        pollEvents: (): DisplayEvent[] => (closed ? [] : queue.splice(0)),
+        close,
+        disposeAsync: close,
+        isOpen: (): boolean => !closed,
+      };
+      return ok(surface);
+    },
+  };
+}
+
 export interface BrowserRunOptions {
   workletUrl: string | URL;
   wasmBytes: Uint8Array | null;
@@ -238,6 +455,8 @@ export interface BrowserRunOptions {
   stderr?: (s: string) => void;
   createAudioContext?: (cfg: AudioConfig) => AudioContext;
   onNode?: (node: AudioWorkletNode, ctx: AudioContext) => void | Promise<void>;
+  canvas?: HTMLCanvasElement;
+  canvasContainer?: HTMLElement;
 }
 
 export interface BrowserRunResult {
@@ -257,6 +476,7 @@ export function createBrowserSystem(opts: BrowserRunOptions): System {
     js: browserJs,
     spawn: browserSpawn,
     audio: createBrowserAudio(opts),
+    display: createBrowserDisplay(opts),
     net: browserNet,
     proc: createBrowserProc(),
   };
@@ -277,7 +497,7 @@ export async function runMainBrowser(main: (sys: System) => void | Promise<void>
     ownTrap = { code: t.code, file: t.pos?.file ?? "", line: t.pos?.line ?? 0, col: t.pos?.col ?? 0 };
   } finally {
     stopFakeIsolates();
-    await Promise.all([stopIsolates(), stopBrowserAudioStreams()]);
+    await Promise.all([stopIsolates(), stopBrowserAudioStreams(), stopBrowserDisplaySurfaces()]);
   }
   const f = takeIsolateTrap();
   const iso = f ? { code: f.code, file: f.file ?? "", line: f.line ?? 0, col: f.col ?? 0, ...(f.message ? { message: f.message } : {}) } : null;

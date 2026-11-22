@@ -53,7 +53,7 @@ it("documents every builtin global name in SPEC and keeps BUILTIN_NAMES complete
   const expected = new Set<string>([
     ...SPEC_RESERVED,
     "boolean", "string", "number", "null", "void", "unknown", "never",
-    "Result", "Struct", "RingPair", "JsError", "CastError", "IoError", "AudioConfig",
+    "Result", "Struct", "RingPair", "JsError", "CastError", "IoError", "AudioConfig", "DisplayConfig", "DisplayColor", "DisplayEvent",
     "DirEntry", "FileStat", "EnvVar", "ProcOptions", "ProcOutput", "ProcRequest",
     "HttpHeader", "HttpRequestInit", "HttpResponse", "HttpServerConfig", "HttpServerRequest", "HttpServerResponse", "HttpBody", "HttpServerRawResponse", "HttpClientRequest", "QueryParam",
     "RegExpMatch", "Resource", "Disposable", "AsyncDisposable", "CStruct",
@@ -64,7 +64,7 @@ it("documents every builtin global name in SPEC and keeps BUILTIN_NAMES complete
 
 // The expected sets are written out here, not read from the tables, so flipping a table entry fails this test.
 const NONDET_GEN_EXPECTED = ["RingTx", "RingRx", "Ptr", "ConstPtr", "CHandle", "Port"];
-const NONDET_OPAQUE_EXPECTED = [...AUTHORITIES, "JsRef", "AudioStream", "HttpServer", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeSpawn", "FakeAudio", "FakeNet", "FakeProc"];
+const NONDET_OPAQUE_EXPECTED = [...AUTHORITIES, "JsRef", "AudioStream", "DisplaySurface", "HttpServer", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeSpawn", "FakeAudio", "FakeDisplay", "FakeNet", "FakeProc"];
 it("reports a function nondeterministic exactly for the §7.3 builtin types", () => {
   const det = (p: Type): boolean => isDeterministic({ k: "fn", tparams: [], params: [p], ret: VOID });
   for (const name of Object.keys(NONDET_GEN)) expect(det(gen(name as GenName, F64)), `gen ${name}`).toBe(!NONDET_GEN_EXPECTED.includes(name));

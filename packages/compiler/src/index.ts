@@ -22,10 +22,12 @@ import { detectSolver, parseGetValue, runSmtBatch, shutdownSmt } from "./smt.ts"
 import { loadNpmModule } from "./bundle-npm.ts";
 import { hasCap, show, type Capability, type Type } from "./types.ts";
 import * as rt from "../../runtime-js/src/index.ts";
-import { FakeAudio, FakeClock, FakeFs, FakeNet, FakeProc, FakeSpawn, MemoryLog, SeededRandom, TestAlloc, runMain, setNodeAudio, stopNodeNetServers, stopNodeProcs } from "../../std/src/index.ts";
+import { FakeAudio, FakeClock, FakeDisplay, FakeFs, FakeNet, FakeProc, FakeSpawn, MemoryLog, SeededRandom, TestAlloc, runMain, setNodeAudio, setNodeDisplay, stopNodeDisplays, stopNodeNetServers, stopNodeProcs } from "../../std/src/index.ts";
 import { createNodeAudio, stopAudioStreams } from "./audio-sdl.ts";
+import { createNodeDisplay } from "./display-sdl.ts";
 
 setNodeAudio(createNodeAudio());
+setNodeDisplay(createNodeDisplay());
 export { buildBrowser, type BrowserBuildMode, type BrowserBuildOptions, type BrowserBuildResult } from "./build-browser.ts";
 export { buildNode, type NodeBuildBackend, type NodeBuildMode, type NodeBuildOptions, type NodeBuildResult } from "./build-node.ts";
 export * from "./diagnostics.ts";
@@ -306,7 +308,7 @@ async function load(
 }
 
 /** The runtime object generated code receives: runtime-js plus the std fakes. */
-const RUNTIME = { ...rt, FakeAudio, FakeClock, FakeNet, FakeProc, SeededRandom, MemoryLog, FakeFs, FakeSpawn, TestAlloc };
+const RUNTIME = { ...rt, FakeAudio, FakeClock, FakeDisplay, FakeNet, FakeProc, SeededRandom, MemoryLog, FakeFs, FakeSpawn, TestAlloc };
 
 /** D060: the stack locator, the test registry and the unhandled-rejection sink are per process, so runs in one process are queued. */
 let queue: Promise<unknown> = Promise.resolve();
@@ -371,7 +373,7 @@ async function runNow(entryFile: string, backend?: Backend, analysis?: Analysis,
   }, { args: args ?? [] });
   rt.stopFakeIsolates();
   stopNodeProcs();
-  await Promise.all([rt.stopIsolates(), stopAudioStreams(), stopNodeNetServers()]); // Q207, §15.5, Q295: main ending stops isolates, audio streams, HTTP servers, and child processes
+  await Promise.all([rt.stopIsolates(), stopAudioStreams(), stopNodeDisplays(), stopNodeNetServers()]); // Q207, §15.5, Q279, Q295: main ending stops isolates, audio streams, display surfaces, HTTP servers, and child processes
   // §15.4 (3): an isolate record may have landed after main trapped (stopIsolates lets messages land), so it does not beat main's own.
   const t = rt.takeIsolateTrap();
   const c = Array.isArray(v) ? { code: `T${String(v[0]).padStart(3, "0")}`, file: v[1] as string, line: v[2] as number, col: v[3] as number } : null;
@@ -399,7 +401,7 @@ async function runTestFileNow(entryFile: string, opts: TestOptions = {}): Promis
     const skipped = total - results.length;
     return { diagnostics: [], results, ...(skipped > 0 ? { skipped } : {}) };
   } finally {
-    rt.stopFakeIsolates(); stopNodeProcs(); await Promise.all([stopAudioStreams(), stopNodeNetServers()]); rt.clearTests();
+    rt.stopFakeIsolates(); stopNodeProcs(); await Promise.all([stopAudioStreams(), stopNodeDisplays(), stopNodeNetServers()]); rt.clearTests();
   }
 }
 

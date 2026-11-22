@@ -59,6 +59,7 @@ type Fakes = {
   readonly fs: FakeFs;
   readonly spawn: FakeSpawn;
   readonly audio: FakeAudio;
+  readonly display: FakeDisplay;
   readonly net: FakeNet;
   readonly proc: FakeProc;
 };
@@ -69,6 +70,7 @@ function takeLog(l: Log): void { l.info("ok"); }
 function takeFs(f: Fs): void { const _r = f.readText("a"); }
 function takeSpawn(s: Spawn): void {}
 function takeAudio(a: Audio): void {}
+function takeDisplay(d: Display): void {}
 function takeNet(n: Net): void {}
 function takeProc(p: Proc): string { return p.cwd(); }
 
@@ -78,6 +80,7 @@ function makeLog(): MemoryLog { return MemoryLog.create(); }
 function makeFs(): FakeFs { return FakeFs.create(); }
 function makeSpawn(): FakeSpawn { return FakeSpawn.create(); }
 function makeAudio(): FakeAudio { return FakeAudio.create(); }
+function makeDisplay(): FakeDisplay { return FakeDisplay.create(); }
 function makeNet(): FakeNet { return FakeNet.create(); }
 function makeProc(): FakeProc { return FakeProc.create(); }
 
@@ -88,6 +91,7 @@ export function useAll(f: Fakes): f64 {
   const fs: FakeFs = makeFs();
   const sp: FakeSpawn = makeSpawn();
   const au: FakeAudio = makeAudio();
+  const dp: FakeDisplay = makeDisplay();
   const nt: FakeNet = makeNet();
   const pr: FakeProc = makeProc();
   takeClock(c);
@@ -102,6 +106,8 @@ export function useAll(f: Fakes): f64 {
   takeSpawn(f.spawn);
   takeAudio(au);
   takeAudio(f.audio);
+  takeDisplay(dp);
+  takeDisplay(f.display);
   takeNet(nt);
   takeNet(f.net);
   takeProc(pr);

@@ -17,7 +17,7 @@ import { canonPath, displayPath, type ConstSym, type FnSym, type Module, type Pr
 import { isDeterministic, isMutatable } from "./determinism.ts";
 import type { ClassSym, Type } from "./types.ts";
 import * as rt from "../../runtime-js/src/index.ts";
-import { FakeAudio, FakeClock, FakeFs, FakeNet, FakeProc, FakeSpawn, MemoryLog, SeededRandom, TestAlloc } from "../../std/src/index.ts";
+import { FakeAudio, FakeClock, FakeDisplay, FakeFs, FakeNet, FakeProc, FakeSpawn, MemoryLog, SeededRandom, TestAlloc } from "../../std/src/index.ts";
 
 const MUTATE_VERSION = "6";
 
@@ -222,7 +222,7 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
 
   const mutRt = {
     ...rt,
-    FakeAudio, FakeClock, FakeNet, FakeProc, SeededRandom, MemoryLog, FakeFs, FakeSpawn, TestAlloc,
+    FakeAudio, FakeClock, FakeDisplay, FakeNet, FakeProc, SeededRandom, MemoryLog, FakeFs, FakeSpawn, TestAlloc,
     get m(): number { return mutState.m; },
     test(name: string, fn: TestFn, file = entryDisplay): void { registeredTests.push({ name, fn, file }); },
     hit(fnId: number): void { if (mutState.recording) mutState.reached.add(fnId); },

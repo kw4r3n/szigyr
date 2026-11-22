@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { Arena, Trap, Vec, panic, requires, setForeignTrapCheck, stopFakeIsolates, takeIsolateTrap, type Pos } from "../../runtime-js/src/index.ts";
-import { ALLOC, FakeAudio, FakeClock, FakeFs, FakeNet, FakeProc, FakeSpawn, MemoryLog, SeededRandom, TestAlloc, createSystem, nodeFs, nodeJs, nodeNet, runMain } from "../src/index.ts";
+import { ALLOC, FakeAudio, FakeClock, FakeDisplay, FakeFs, FakeNet, FakeProc, FakeSpawn, MemoryLog, SeededRandom, TestAlloc, createSystem, nodeFs, nodeJs, nodeNet, runMain } from "../src/index.ts";
 import { mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -422,10 +422,10 @@ describe("node authorities", () => {
     class TrapCtor { constructor(cb: () => unknown) { cb(); } }
     expect(() => nodeJs.new(TrapCtor, [trapFn])).toThrow(Trap);
   });
-  it("System has the ten members; Log routes to the writers (Q059)", () => {
+  it("System has the eleven members; Log routes to the writers (Q059)", () => {
     const out: string[] = [], errs: string[] = [];
     const sys = createSystem((s) => out.push(s), (s) => errs.push(s));
-    expect(Object.keys(sys).sort()).toEqual(["alloc", "audio", "clock", "fs", "js", "log", "net", "proc", "random", "spawn"]);
+    expect(Object.keys(sys).sort()).toEqual(["alloc", "audio", "clock", "display", "fs", "js", "log", "net", "proc", "random", "spawn"]);
     sys.log.info("a"); sys.log.warn("b"); sys.log.error("c");
     expect([out, errs]).toEqual([["a\n"], ["b\n", "c\n"]]);
     const r = sys.random.nextF64();
@@ -503,4 +503,84 @@ console.log(JSON.stringify((await runTests()).map((x) => [x.name, x.ok, x.trap?.
     expect(JSON.parse(r.out)).toEqual([["floating", false, "T006"], ["after", true, null]]);
   });
 });
+
+describe("FakeDisplay", () => {
+  it("validates dimensions, isolates back/front buffer on present, blends primitives/blitRgba, tracks drawnTexts & events, and closes idempotently", async () => {
+    const d = FakeDisplay.create();
+    expect(await d.open({ title: "bad", width: 0, height: 10 })).toEqual({
+      kind: "err",
+      error: { code: "EINVAL", message: expect.any(String) },
+    });
+    expect(await d.open({ title: "bad", width: 10, height: 16385 })).toEqual({
+      kind: "err",
+      error: { code: "EINVAL", message: expect.any(String) },
+    });
+
+    d.pushEvent({ kind: "keyDown", key: "a", repeat: false, shift: false, ctrl: true, alt: false });
+    const res = await d.open({ title: "Fake", width: 8, height: 6 });
+    expect(res.kind).toBe("ok");
+    if (res.kind !== "ok") return;
+    const s = res.value;
+    expect(s.width).toBe(8);
+    expect(s.height).toBe(6);
+    expect(s.isOpen()).toBe(true);
+
+    // Pre-open queued events delivered on first pollEvents(), then drained
+    expect(s.pollEvents()).toEqual([{ kind: "keyDown", key: "a", repeat: false, shift: false, ctrl: true, alt: false }]);
+    expect(s.pollEvents()).toEqual([]);
+
+    // Post-open events
+    d.pushEvent({ kind: "pointerDown", x: 1.5, y: 2.5, button: 0 });
+    expect(s.pollEvents()).toEqual([{ kind: "pointerDown", x: 1.5, y: 2.5, button: 0 }]);
+
+    // Unpresented back-buffer draws must NOT leak to front pixelAt() or drawnTexts()
+    s.clear({ r: 10, g: 20, b: 30, a: 255 });
+    s.fillRect(1, 1, 2, 2, { r: 200, g: 0, b: 0, a: 255 });
+    s.fillRect(1, 1, 1, 1, { r: 0, g: 200, b: 0, a: 128 }); // alpha blend over (200,0,0)
+    s.strokeRect(4, 1, 3, 3, { r: 255, g: 255, b: 0, a: 255 });
+    s.drawLine(0, 5, 2, 5, { r: 0, g: 128, b: 255, a: 255 });
+    s.drawText(2, 3, "HUD", { r: 240, g: 241, b: 242, a: 255 });
+    expect(d.presentCount()).toBe(0);
+    expect(d.pixelAt(1, 1)).toEqual({ r: 0, g: 0, b: 0, a: 0 });
+    expect(d.drawnTexts()).toEqual([]);
+
+    // blitRgba traps T002 if buffer is too small, and supports nearest-neighbor scaling when valid
+    const shortVec = Vec.create<number>(ALLOC, 4, "u8");
+    shortVec.push(1);
+    expect(() => s.blitRgba(shortVec, 2, 2, 0, 0, 2, 2)).toThrow(Trap);
+    try { s.blitRgba(shortVec, 2, 2, 0, 0, 2, 2); } catch (e) { expect((e as Trap).code).toBe("T002"); }
+
+    const src = Vec.create<number>(ALLOC, 4, "u8");
+    src.push(0); src.push(255); src.push(100); src.push(255);
+    s.blitRgba(src, 1, 1, 0, 0, 1, 1);
+
+    await s.present();
+    expect(d.presentCount()).toBe(1);
+    expect(d.pixelAt(0, 0)).toEqual({ r: 0, g: 255, b: 100, a: 255 });
+    expect(d.pixelAt(2, 2)).toEqual({ r: 200, g: 0, b: 0, a: 255 });
+    const blended = d.pixelAt(1, 1);
+    expect(blended.r).toBeLessThan(120);
+    expect(blended.g).toBeGreaterThan(80);
+    expect(d.pixelAt(4, 1)).toEqual({ r: 255, g: 255, b: 0, a: 255 });
+    expect(d.pixelAt(5, 2)).toEqual({ r: 10, g: 20, b: 30, a: 255 }); // interior of strokeRect
+    expect(d.pixelAt(1, 5)).toEqual({ r: 0, g: 128, b: 255, a: 255 });
+    expect(d.pixelAt(-1, 0)).toEqual({ r: 0, g: 0, b: 0, a: 0 });
+    expect(d.drawnTexts()).toEqual([{ x: 2, y: 3, text: "HUD", color: { r: 240, g: 241, b: 242, a: 255 } }]);
+
+    // clear discards pending texts on next frame; close is idempotent and stops further writes
+    s.clear({ r: 1, g: 2, b: 3, a: 255 });
+    await s.present();
+    expect(d.presentCount()).toBe(2);
+    expect(d.drawnTexts()).toEqual([]);
+
+    await s.close();
+    await s.disposeAsync();
+    expect(s.isOpen()).toBe(false);
+    s.fillRect(0, 0, 8, 6, { r: 255, g: 255, b: 255, a: 255 });
+    await s.present();
+    expect(d.presentCount()).toBe(2);
+    expect(s.pollEvents()).toEqual([]);
+  });
+});
+
 

@@ -936,6 +936,7 @@ run/261-proc-and-fake-proc.szigyr
 run/262-net-and-fake-net.szigyr
 run/263-url-httpserver-stop-fakefs.szigyr
 run/264-utf8-json-exitcode-ensures-strcmp.szigyr
+run/265-display-and-fake-display.szigyr
 run/265-wave1a-ts-relaxations
 run/266-wave1b-operators-and-callbacks.szigyr
 run/267-wave1c-interfaces-defaults-param-props.szigyr

@@ -73,7 +73,7 @@ stdio JSON-RPC 2.0 MCP サーバとして起動します（未リンクの場合
 ## ドキュメント・実例・コンパイラ開発
 
 - **仕様と設計記録**: [`docs/SPEC.md`](docs/SPEC.md) / [`docs/DIAGNOSTICS.md`](docs/DIAGNOSTICS.md) / [`docs/ROADMAP.md`](docs/ROADMAP.md) / [`docs/DECISIONS.md`](docs/DECISIONS.md) / [`docs/OPEN_QUESTIONS.md`](docs/OPEN_QUESTIONS.md)
-- **実例**: [`examples/workspace-tool/`](examples/workspace-tool)（`Fs`・`Proc`・`Net`・`Url`・`use rt` 走査・Web UI）、[`examples/retouch/`](examples/retouch)（画像フィルタ・契約証明）、[`examples/audio-portable/`](examples/audio-portable)（Node + ブラウザ Wasm AudioWorklet）、[`examples/audio/`](examples/audio)（Node + SDL3 FFI）
+- **実例**: [`examples/retouch/`](examples/retouch)（画像フィルタ・契約証明・`Display` Canvas 2D / SDL3 対話アプリ [`app.szigyr`](examples/retouch/app.szigyr)）、[`examples/microdaw/`](examples/microdaw)（ポリフォニックシンセ／16 ステップシーケンサ・Browser AudioWorklet Wasm / Linux WebKitGTK Desktop）、[`examples/gzlog/`](examples/gzlog)（`zlib` C FFI＋`Resource.ownWith`）、[`examples/workspace-tool/`](examples/workspace-tool)（`Fs`・`Proc`・`Net`・`Url`・`use rt` 走査・Web UI）、[`examples/audio-portable/`](examples/audio-portable)（Node + ブラウザ Wasm AudioWorklet）、[`examples/audio/`](examples/audio)（Node + SDL3 FFI）
 - **このリポジトリでの開発検証**:
   ```bash
   pnpm typecheck

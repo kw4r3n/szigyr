@@ -1,0 +1,59 @@
+// expect-output: open=ok:16x12;ev1=keyDown:Space:true;rect=10,20,30,255;line=255,255,0,255;blit=9,88,177,255;txt=2,9:Hi:250,250,250,255;pres=1;err=EINVAL;open2=false
+// stage: 2
+
+function colorAt(px: DisplayColor): string {
+  return `${px.r},${px.g},${px.b},${px.a}`;
+}
+
+export async function main(sys: System): Promise<void> {
+  const disp = FakeDisplay.create();
+  disp.pushEvent({ kind: "keyDown", key: "Space", repeat: false, shift: true, ctrl: false, alt: false });
+
+  const openRes = await disp.open({ title: "Conform", width: 16, height: 12 });
+  if (openRes.kind !== "ok") return;
+  let openState = "no";
+  let ev1Text = "none";
+
+  {
+    await using surf = openRes.value;
+    openState = `ok:${surf.width}x${surf.height}`;
+    const evs = surf.pollEvents();
+    for (const ev of evs) {
+      switch (ev.kind) {
+        case "keyDown":
+          ev1Text = `keyDown:${ev.key}:${ev.shift}`;
+          break;
+        case "keyUp":
+        case "pointerDown":
+        case "pointerMove":
+        case "pointerUp":
+        case "wheel":
+        case "close":
+          break;
+      }
+    }
+
+    surf.clear({ r: 0, g: 0, b: 0, a: 255 });
+    surf.fillRect(1, 1, 4, 4, { r: 10, g: 20, b: 30, a: 255 });
+    surf.strokeRect(6, 1, 4, 4, { r: 200, g: 200, b: 200, a: 255 });
+    surf.drawLine(0, 10, 3, 10, { r: 255, g: 255, b: 0, a: 255 });
+    surf.drawText(2, 9, "Hi", { r: 250, g: 250, b: 250, a: 255 });
+
+    const px = Vec.create<u8>(sys.alloc, 4);
+    px.push(9);
+    px.push(88);
+    px.push(177);
+    px.push(255);
+    surf.blitRgba(px, 1, 1, 12, 8, 2, 2);
+    await surf.present();
+  }
+
+  const ts = disp.drawnTexts();
+  const t0 = ts[0];
+  const bad = await disp.open({ title: "Bad", width: 0, height: 10 });
+  const errCode = bad.kind === "err" ? bad.error.code : "ok";
+
+  sys.log.info(
+    `open=${openState};ev1=${ev1Text};rect=${colorAt(disp.pixelAt(2, 2))};line=${colorAt(disp.pixelAt(2, 10))};blit=${colorAt(disp.pixelAt(13, 9))};txt=${t0.x},${t0.y}:${t0.text}:${colorAt(t0.color)};pres=${disp.presentCount()};err=${errCode};open2=${openRes.value.isOpen()}`,
+  );
+}

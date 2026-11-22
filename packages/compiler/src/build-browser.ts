@@ -138,7 +138,7 @@ export function buildBrowser(entryFile: string, opts: BrowserBuildOptions): Brow
     `      native = await rt.instantiateWasmAsync(buf, WASM_META, rt.NATIVE_HOST);`,
     `    }`,
     `    rt.setBrowserIsolateConfig({ workerUrl: import.meta.url, wasmUrl, wasmBytes });`,
-    `    const RUNTIME = { ...rt, FakeAudio: std.FakeAudio, FakeClock: std.FakeClock, FakeNet: std.FakeNet, FakeProc: std.FakeProc, SeededRandom: std.SeededRandom, MemoryLog: std.MemoryLog, FakeFs: std.FakeFs, FakeSpawn: std.FakeSpawn, TestAlloc: std.TestAlloc, ...(native ? { native } : {}) };`,
+    `    const RUNTIME = { ...rt, FakeAudio: std.FakeAudio, FakeClock: std.FakeClock, FakeDisplay: std.FakeDisplay, FakeNet: std.FakeNet, FakeProc: std.FakeProc, SeededRandom: std.SeededRandom, MemoryLog: std.MemoryLog, FakeFs: std.FakeFs, FakeSpawn: std.FakeSpawn, TestAlloc: std.TestAlloc, ...(native ? { native } : {}) };`,
     `    const done = new Map();`,
     `    const instantiate = (k) => {`,
     `      if (k.startsWith("npm:")) {`,
@@ -192,7 +192,7 @@ export function buildBrowser(entryFile: string, opts: BrowserBuildOptions): Brow
     `    const t = rt.takeIsolateTrap();`,
     `    if (t) rt.trap(t.code, t.message ?? "trap in an isolate or audio callback", t.file ? { file: t.file, line: t.line, col: t.col } : undefined);`,
     `  });`,
-    `  const RUNTIME = { ...rt, FakeAudio: std.FakeAudio, FakeClock: std.FakeClock, FakeNet: std.FakeNet, FakeProc: std.FakeProc, SeededRandom: std.SeededRandom, MemoryLog: std.MemoryLog, FakeFs: std.FakeFs, FakeSpawn: std.FakeSpawn, TestAlloc: std.TestAlloc, ...(native ? { native } : {}) };`,
+    `  const RUNTIME = { ...rt, FakeAudio: std.FakeAudio, FakeClock: std.FakeClock, FakeDisplay: std.FakeDisplay, FakeNet: std.FakeNet, FakeProc: std.FakeProc, SeededRandom: std.SeededRandom, MemoryLog: std.MemoryLog, FakeFs: std.FakeFs, FakeSpawn: std.FakeSpawn, TestAlloc: std.TestAlloc, ...(native ? { native } : {}) };`,
     `  const npmMap = { ...BUNDLED_NPM, ...(options.npm ?? {}) };`,
     `  const done = new Map();`,
     `  const instantiate = (k) => {`,
@@ -211,7 +211,7 @@ export function buildBrowser(entryFile: string, opts: BrowserBuildOptions): Brow
     `  const exports = instantiate(ENTRY);`,
     `  const createSystem = (sysOpts = {}) => std.createBrowserSystem({ workletUrl, wasmBytes, wasmMeta: WASM_META, ...sysOpts });`,
     `  const run = (mainFn = exports.main, sysOpts = {}) => std.runMainBrowser(mainFn, { workletUrl, wasmBytes, wasmMeta: WASM_META, ...sysOpts });`,
-    `  const stop = () => { rt.stopFakeIsolates(); return Promise.all([rt.stopIsolates(), std.stopBrowserAudioStreams()]); };`,
+    `  const stop = () => { rt.stopFakeIsolates(); return Promise.all([rt.stopIsolates(), std.stopBrowserAudioStreams(), std.stopBrowserDisplaySurfaces()]); };`,
     `  return { exports, native, wasmBytes, Vec: rt.Vec, createSystem, run, stop };`,
     `}`,
     ...(mode === "app" ? [
@@ -351,6 +351,7 @@ const INDEX_HTML = `<!doctype html>
   <h1>Szigyr Browser App</h1>
   <p id="coi" class="warn"></p>
   <button id="start" type="button">Start</button>
+  <div id="szigyr-display"></div>
   <pre id="out"></pre>
   <script type="module">
     import { start } from "./app.js";

@@ -1,6 +1,6 @@
 // §12 allowlist for P2 (D010): builtin type names, global values, namespace and member tables (signatures from Q032, Q033, Q038).
 import {
-  AUDIO_CONFIG_RECORD, ASYNC_DISPOSABLE, BOOL, DIR_ENTRY_RECORD, DISPOSABLE, ENV_VAR_RECORD, ERROR_RECORD, F64, FILE_STAT_RECORD,
+  AUDIO_CONFIG_RECORD, ASYNC_DISPOSABLE, BOOL, DIR_ENTRY_RECORD, DISPLAY_COLOR_RECORD, DISPLAY_CONFIG_RECORD, DISPLAY_EVENT_UNION, DISPOSABLE, ENV_VAR_RECORD, ERROR_RECORD, F64, FILE_STAT_RECORD,
   HTTP_BODY_UNION, HTTP_CLIENT_REQUEST_RECORD, HTTP_HEADER_RECORD, HTTP_REQUEST_INIT_RECORD, HTTP_RESPONSE_RECORD, HTTP_SERVER_CONFIG_RECORD,
   HTTP_SERVER_RAW_RESPONSE_RECORD, HTTP_SERVER_REQUEST_RECORD, HTTP_SERVER_RESPONSE_RECORD, NULL, PROC_OPTIONS_RECORD, PROC_OUTPUT_RECORD, PROC_REQUEST_RECORD,
   QUERY_PARAM_RECORD, REGEXP_MATCH_RECORD, STR, UNKNOWN, USIZE, VOID, fn, gen, newTParam, nullable, num, opaque, result, record, ro, tuple, unref,
@@ -19,7 +19,7 @@ export const GLOBAL_AUTHORITIES = new Set([
 ]);
 
 /** Namespace objects (Q034). */
-export const NAMESPACES = new Set(["Math", "Number", "JSON", "Url", "String", "Promise", "Vec", "Pool", "Arena", "Ring", "OwnedCell", "RegExp", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeSpawn", "FakeAudio", "FakeNet", "FakeProc", "TestAlloc", "DetMath", "Ptr", "CHandle"]);
+export const NAMESPACES = new Set(["Math", "Number", "JSON", "Url", "String", "Promise", "Vec", "Pool", "Arena", "Ring", "OwnedCell", "RegExp", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeSpawn", "FakeAudio", "FakeDisplay", "FakeNet", "FakeProc", "TestAlloc", "DetMath", "Ptr", "CHandle"]);
 /** Builtin functions handled by the checker (§12). */
 export const BUILTIN_FUNCTIONS = new Set([...NUM_NAMES, "wrapAdd", "wrapSub", "wrapMul", "divTrunc", "rem", "ok", "err", "panic", "cast", "requires", "ensures", "invariant", "test", "forAll", "cfn"]);
 /** §13: the identifier-like names it reserves (declaring or referencing one is E1000 / E2000, Q231). */
@@ -29,7 +29,7 @@ export const CAPABILITY_NAMES = new Set(["Copy", "Native", "Owned", "Send", "Key
 
 export const BUILTIN_NAMES = new Set<string>([
   ...SPEC_RESERVED,
-  "boolean", "string", "number", "null", "void", "unknown", "never", "Result", "Struct", "RingPair", "JsError", "CastError", "IoError", "AudioConfig",
+  "boolean", "string", "number", "null", "void", "unknown", "never", "Result", "Struct", "RingPair", "JsError", "CastError", "IoError", "AudioConfig", "DisplayConfig", "DisplayColor", "DisplayEvent",
   "DirEntry", "FileStat", "EnvVar", "ProcOptions", "ProcOutput", "ProcRequest",
   "HttpHeader", "HttpRequestInit", "HttpResponse", "HttpServerConfig", "HttpServerRequest", "HttpServerResponse", "HttpBody", "HttpServerRawResponse", "HttpClientRequest", "QueryParam",
   "RegExpMatch", "Resource", "Disposable", "AsyncDisposable", "CStruct",
@@ -41,9 +41,9 @@ export const NONDET_GEN: Record<GenName, boolean> = {
   Array: false, ReadonlyArray: false, Map: false, Set: false, Promise: false, Vec: false, Slice: false, Pool: false, Handle: false, Arena: false, ArenaBuf: false,
   Ref: false, Mut: false, OwnedCell: false, CType: false, RingTx: true, RingRx: true, Ptr: true, ConstPtr: true, CHandle: true, Port: true, // §15.1, §14.4, §14.5, §15.2
 };
-/** The opaque ones (keys: OPAQUE_NAMES): the authorities, `JsRef`, `AudioStream`, `HttpServer` and the fakes, not `Test` or `RegExp`. */
+/** The opaque ones (keys: OPAQUE_NAMES): the authorities, `JsRef`, `AudioStream`, `DisplaySurface`, `HttpServer` and the fakes, not `Test` or `RegExp`. */
 export const NONDET_OPAQUE: Record<string, boolean> = {
-  ...Object.fromEntries(AUTHORITIES.map((a) => [a, true])), JsRef: true, Test: false, AudioStream: true, HttpServer: true, RegExp: false, FakeClock: true, SeededRandom: true, MemoryLog: true, FakeFs: true, FakeSpawn: true, FakeAudio: true, FakeNet: true, FakeProc: true,
+  ...Object.fromEntries(AUTHORITIES.map((a) => [a, true])), JsRef: true, Test: false, AudioStream: true, DisplaySurface: true, HttpServer: true, RegExp: false, FakeClock: true, SeededRandom: true, MemoryLog: true, FakeFs: true, FakeSpawn: true, FakeAudio: true, FakeDisplay: true, FakeNet: true, FakeProc: true,
 };
 
 /** Builtin type names (§12) that are not generic constructors. Struct and Result are handled by the resolver. */
@@ -58,6 +58,9 @@ export function builtinType(name: string): Type | undefined {
     case "never": return { k: "prim", name: "never" };
     case "JsError": case "CastError": case "IoError": return ERROR_RECORD;
     case "AudioConfig": return AUDIO_CONFIG_RECORD;
+    case "DisplayConfig": return DISPLAY_CONFIG_RECORD;
+    case "DisplayColor": return DISPLAY_COLOR_RECORD;
+    case "DisplayEvent": return DISPLAY_EVENT_UNION;
     case "DirEntry": return DIR_ENTRY_RECORD;
     case "FileStat": return FILE_STAT_RECORD;
     case "EnvVar": return ENV_VAR_RECORD;
@@ -143,12 +146,13 @@ const NET: Members = {
 };
 const SPAWN: Members = { isolate: m(PORT_FX, [UNKNOWN], VOID) };
 const AUDIO: Members = { open: mo(m(PORT_FX, [AUDIO_CONFIG_RECORD, UNKNOWN, UNKNOWN], gen("Promise", ioResult(opaque("AudioStream"))))) };
+const DISPLAY: Members = { open: mo(m(PORT_FX, [DISPLAY_CONFIG_RECORD], gen("Promise", ioResult(opaque("DisplaySurface"))))) };
 
 /** Members of an opaque builtin type. */
 export function opaqueMembers(name: string): Members {
   const lit = (v: string): Type => ({ k: "lit", value: v });
   const table: Record<string, () => Members> = {
-    System: () => ({ alloc: prop(opaque("Alloc")), fs: prop(opaque("Fs")), clock: prop(opaque("Clock")), random: prop(opaque("Random")), log: prop(opaque("Log")), js: prop(opaque("Js")), ffi: prop(opaque("Ffi")), spawn: prop(opaque("Spawn")), audio: prop(opaque("Audio")), net: prop(opaque("Net")), proc: prop(opaque("Proc")) }),
+    System: () => ({ alloc: prop(opaque("Alloc")), fs: prop(opaque("Fs")), clock: prop(opaque("Clock")), random: prop(opaque("Random")), log: prop(opaque("Log")), js: prop(opaque("Js")), ffi: prop(opaque("Ffi")), spawn: prop(opaque("Spawn")), audio: prop(opaque("Audio")), display: prop(opaque("Display")), net: prop(opaque("Net")), proc: prop(opaque("Proc")) }),
     Log: () => LOG,
     Clock: () => ({ nowMs: m(RD, [], F64), sleep: mo(m(PORT_FX, [F64], gen("Promise", VOID))) }),
     Random: () => RANDOM,
@@ -163,6 +167,22 @@ export function opaqueMembers(name: string): Members {
     // §15.5: `open` is checked in expr.ts (audioOpenCall, E2013) because `render` is a function name.
     Audio: () => AUDIO,
     AudioStream: () => ({ sampleRate: prop(num("u32")), channels: prop(num("u32")), close: mo(m(PORT_FX, [], gen("Promise", VOID))), disposeAsync: mo(m(PORT_FX, [], gen("Promise", VOID))), isOpen: mo(m(RD, [], BOOL)) }),
+    Display: () => DISPLAY,
+    DisplaySurface: () => ({
+      width: prop(num("u32")),
+      height: prop(num("u32")),
+      clear: mo(m(PORT_FX, [DISPLAY_COLOR_RECORD], VOID)),
+      fillRect: mo(m(PORT_FX, [F64, F64, F64, F64, DISPLAY_COLOR_RECORD], VOID)),
+      strokeRect: mo(m(PORT_FX, [F64, F64, F64, F64, DISPLAY_COLOR_RECORD], VOID)),
+      drawLine: mo(m(PORT_FX, [F64, F64, F64, F64, DISPLAY_COLOR_RECORD], VOID)),
+      drawText: mo(m(PORT_FX, [F64, F64, STR, DISPLAY_COLOR_RECORD], VOID)),
+      blitRgba: mo(m(PORT_FX, [gen("Ref", gen("Slice", num("u8"))), num("u32"), num("u32"), F64, F64, F64, F64], VOID)),
+      present: mo(m(PORT_FX, [], gen("Promise", VOID))),
+      pollEvents: mo(m(PORT_FX, [], gen("Array", DISPLAY_EVENT_UNION))),
+      close: mo(m(PORT_FX, [], gen("Promise", VOID))),
+      disposeAsync: mo(m(PORT_FX, [], gen("Promise", VOID))),
+      isOpen: mo(m(RD, [], BOOL)),
+    }),
     HttpServer: () => ({ host: prop(STR), port: prop(num("u16")), stop: mo(m(PORT_FX, [], VOID)), waitClosed: mo(m(PORT_FX, [], gen("Promise", VOID))), close: mo(m(PORT_FX, [], gen("Promise", VOID))), disposeAsync: mo(m(PORT_FX, [], gen("Promise", VOID))), isOpen: mo(m(RD, [], BOOL)) }),
     RegExp: () => ({
       source: prop(STR),
@@ -210,6 +230,13 @@ export function opaqueMembers(name: string): Members {
     FakeFs: () => ({ ...FS, addSymlink: mo(m(WR, [STR, STR], ioResult(NULL))) }),
     FakeSpawn: () => SPAWN,
     FakeAudio: () => ({ ...AUDIO, renderFrames: mo(m(PORT_FX, [USIZE], gen("Array", num("f32")))) }),
+    FakeDisplay: () => ({
+      ...DISPLAY,
+      pushEvent: mo(m(WR, [DISPLAY_EVENT_UNION], VOID)),
+      presentCount: mo(m(RD, [], USIZE)),
+      pixelAt: mo(m(RD, [num("u32"), num("u32")], DISPLAY_COLOR_RECORD)),
+      drawnTexts: mo(m(RD, [], gen("Array", record([ro("x", F64), ro("y", F64), ro("text", STR), ro("color", DISPLAY_COLOR_RECORD)])))),
+    }),
     FakeProc: () => ({ ...PROC, setEnv: mo(m(WR, [STR, STR], VOID)), setCwd: mo(m(WR, [STR], VOID)), setArgs: mo(m(WR, [gen("ReadonlyArray", STR)], VOID)), exitCode: mo(m(RD, [], num("u8"))), onRun: mo(m(WR, [fn([PROC_REQUEST_RECORD], ioResult(PROC_OUTPUT_RECORD))], VOID)), calls: mo(m(RD, [], gen("Array", PROC_REQUEST_RECORD))) }),
     FakeNet: () => ({ ...NET, onFetch: mo(m(WR, [fn([HTTP_CLIENT_REQUEST_RECORD], ioResult(HTTP_RESPONSE_RECORD))], VOID)), requests: mo(m(RD, [], gen("Array", HTTP_CLIENT_REQUEST_RECORD))) }),
   };
@@ -402,6 +429,7 @@ export function nsMembers(ns: string): Record<string, Member | "variadic"> {
     case "FakeFs": return { create: mo(m(RD, [], opaque("FakeFs"))) };
     case "FakeSpawn": return { create: mo(m(RD, [], opaque("FakeSpawn"))) };
     case "FakeAudio": return { create: mo(m(RD, [], opaque("FakeAudio"))) };
+    case "FakeDisplay": return { create: mo(m(RD, [], opaque("FakeDisplay"))) };
     case "FakeNet": return { create: mo(m(RD, [], opaque("FakeNet"))) };
     case "FakeProc": return { create: mo(m(RD, [], opaque("FakeProc"))) };
     case "TestAlloc": return { create: mo(m(RD, [], opaque("Alloc"))) };

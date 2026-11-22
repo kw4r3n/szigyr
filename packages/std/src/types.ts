@@ -77,6 +77,34 @@ export interface AudioCallbackSpec {
 export interface Audio {
   open(config: AudioConfig, state: unknown, cb: AudioCallbackSpec): Promise<Result<AudioStream, IoError>>;
 }
+export interface DisplayConfig { readonly title: string; readonly width: number; readonly height: number }
+export interface DisplayColor { readonly r: number; readonly g: number; readonly b: number; readonly a: number }
+export type DisplayEvent =
+  | { readonly kind: "pointerDown"; readonly x: number; readonly y: number; readonly button: number }
+  | { readonly kind: "pointerMove"; readonly x: number; readonly y: number; readonly buttons: number }
+  | { readonly kind: "pointerUp"; readonly x: number; readonly y: number; readonly button: number }
+  | { readonly kind: "wheel"; readonly x: number; readonly y: number; readonly dx: number; readonly dy: number }
+  | { readonly kind: "keyDown"; readonly key: string; readonly repeat: boolean; readonly shift: boolean; readonly ctrl: boolean; readonly alt: boolean }
+  | { readonly kind: "keyUp"; readonly key: string; readonly shift: boolean; readonly ctrl: boolean; readonly alt: boolean }
+  | { readonly kind: "close" };
+export interface DisplaySurface {
+  readonly width: number;
+  readonly height: number;
+  clear(color: DisplayColor): void;
+  fillRect(x: number, y: number, w: number, h: number, color: DisplayColor): void;
+  strokeRect(x: number, y: number, w: number, h: number, color: DisplayColor): void;
+  drawLine(x1: number, y1: number, x2: number, y2: number, color: DisplayColor): void;
+  drawText(x: number, y: number, text: string, color: DisplayColor): void;
+  blitRgba(pixels: Slice<number> | Vec<number>, srcWidth: number, srcHeight: number, dstX: number, dstY: number, dstW: number, dstH: number): void;
+  present(): Promise<void>;
+  pollEvents(): DisplayEvent[];
+  close(): Promise<void>;
+  disposeAsync(): Promise<void>;
+  isOpen(): boolean;
+}
+export interface Display {
+  open(config: DisplayConfig): Promise<Result<DisplaySurface, IoError>>;
+}
 export interface Js {
   call(f: JsRef, args: readonly JsRef[]): Result<JsRef, JsError>;
   readonly new: (ctor: JsRef, args: readonly JsRef[]) => Result<JsRef, JsError>;
@@ -93,4 +121,4 @@ export interface Js {
   /** Wraps a Szigyr function as a multi-arg returning JS function receiving raw `JsRef[]`. */
   fn(f: (args: JsRef[]) => JsRef): JsRef;
 }
-export interface System { readonly alloc: Alloc; readonly fs: Fs; readonly clock: Clock; readonly random: Random; readonly log: Log; readonly js: Js; readonly spawn: Spawn; readonly audio: Audio; readonly net: Net; readonly proc: Proc }
+export interface System { readonly alloc: Alloc; readonly fs: Fs; readonly clock: Clock; readonly random: Random; readonly log: Log; readonly js: Js; readonly spawn: Spawn; readonly audio: Audio; readonly display: Display; readonly net: Net; readonly proc: Proc }

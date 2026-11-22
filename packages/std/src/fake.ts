@@ -4,6 +4,7 @@ import {
 } from "../../runtime-js/src/index.ts";
 import {
   ALLOC, type Alloc, type Audio, type AudioCallbackSpec, type AudioConfig, type AudioStream, type Clock, type DirEntry,
+  type Display, type DisplayColor, type DisplayConfig, type DisplayEvent, type DisplaySurface,
   type FileStat, type Fs, type FsEntryKind, type HttpClientRequest, type HttpHeader, type HttpRequestInit, type HttpResponse,
   type HttpServer, type HttpServerConfig, type HttpServerRawResponse, type HttpServerRequest, type HttpServerResponse, type IoError, type Log, type Net,
   type Proc, type ProcOptions, type ProcOutput, type ProcRequest, type Random, type Spawn,
@@ -711,5 +712,192 @@ export class FakeNet implements Net {
     }
     if (this.fetchHandler) return this.fetchHandler(req);
     return err({ code: "ECONNREFUSED", message: `FakeNet: no handler for ${url}` });
+  }
+}
+
+export function validateDisplayConfig(config: DisplayConfig): Result<{ readonly width: number; readonly height: number }, IoError> {
+  if (!Number.isInteger(config.width) || config.width < 1 || config.width > 16384 || !Number.isInteger(config.height) || config.height < 1 || config.height > 16384) {
+    return err({ code: "EINVAL", message: `invalid display config: width=${config.width}, height=${config.height}` });
+  }
+  return ok({ width: config.width, height: config.height });
+}
+
+export function readDisplayRgba(pixels: Slice<number> | Vec<number>, srcWidth: number, srcHeight: number, pos?: Pos): Uint8Array {
+  const raw = readU8Slice(pixels);
+  if (!Number.isInteger(srcWidth) || !Number.isInteger(srcHeight) || srcWidth < 0 || srcHeight < 0 || raw.length < srcWidth * srcHeight * 4) {
+    trap("T002", "DisplaySurface.blitRgba: pixel buffer smaller than srcWidth * srcHeight * 4", pos);
+  }
+  return raw;
+}
+
+const cloneDisplayEvent = (ev: DisplayEvent): DisplayEvent => ({ ...ev });
+
+export interface FakeDrawnText { readonly x: number; readonly y: number; readonly text: string; readonly color: DisplayColor }
+
+export class FakeDisplay implements Display {
+  private active: { close(): Promise<void>; isOpen(): boolean; pushEvent(ev: DisplayEvent): void } | undefined;
+  private pendingEvents: DisplayEvent[] = [];
+  private front = new Uint8Array(0);
+  private frontW = 0;
+  private frontH = 0;
+  private presents = 0;
+  private texts: FakeDrawnText[] = [];
+
+  static create(): FakeDisplay { return new FakeDisplay(); }
+
+  pushEvent(ev: DisplayEvent): void {
+    const copy = cloneDisplayEvent(ev);
+    if (this.active && this.active.isOpen()) this.active.pushEvent(copy);
+    else this.pendingEvents.push(copy);
+  }
+
+  presentCount(): number { return this.presents; }
+
+  pixelAt(x: number, y: number): DisplayColor {
+    if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0 || x >= this.frontW || y >= this.frontH) {
+      return { r: 0, g: 0, b: 0, a: 0 };
+    }
+    const i = (y * this.frontW + x) * 4;
+    return { r: this.front[i]!, g: this.front[i + 1]!, b: this.front[i + 2]!, a: this.front[i + 3]! };
+  }
+
+  drawnTexts(): FakeDrawnText[] { return this.texts.map((t) => ({ ...t, color: { ...t.color } })); }
+
+  async open(config: DisplayConfig): Promise<Result<DisplaySurface, IoError>> {
+    const valid = validateDisplayConfig(config);
+    if (valid.kind === "err") return valid;
+    if (this.active && this.active.isOpen()) await this.active.close();
+
+    const { width, height } = valid.value;
+    const back = new Uint8Array(width * height * 4);
+    this.front = new Uint8Array(width * height * 4);
+    this.frontW = width;
+    this.frontH = height;
+    this.texts = [];
+    const queue: DisplayEvent[] = this.pendingEvents.splice(0).map(cloneDisplayEvent);
+    let pendingTexts: FakeDrawnText[] = [];
+    let closed = false;
+
+    const blendPixel = (x: number, y: number, r: number, g: number, b: number, a: number): void => {
+      const ix = Math.floor(x);
+      const iy = Math.floor(y);
+      if (ix < 0 || iy < 0 || ix >= width || iy >= height) return;
+      const sa = a & 255;
+      if (sa === 0) return;
+      const sr = r & 255, sg = g & 255, sb = b & 255;
+      const i = (iy * width + ix) * 4;
+      if (sa === 255) {
+        back[i] = sr; back[i + 1] = sg; back[i + 2] = sb; back[i + 3] = 255;
+        return;
+      }
+      const alpha = sa / 255;
+      const da = back[i + 3]! / 255;
+      const outA = alpha + da * (1 - alpha);
+      if (outA <= 0) {
+        back[i] = back[i + 1] = back[i + 2] = back[i + 3] = 0;
+        return;
+      }
+      back[i] = Math.round((sr * alpha + back[i]! * da * (1 - alpha)) / outA);
+      back[i + 1] = Math.round((sg * alpha + back[i + 1]! * da * (1 - alpha)) / outA);
+      back[i + 2] = Math.round((sb * alpha + back[i + 2]! * da * (1 - alpha)) / outA);
+      back[i + 3] = Math.round(outA * 255);
+    };
+
+    const close = async (): Promise<void> => {
+      if (closed) return;
+      closed = true;
+      if (this.active === handle) this.active = undefined;
+    };
+
+    const handle = {
+      close,
+      isOpen: (): boolean => !closed,
+      pushEvent: (ev: DisplayEvent): void => { queue.push(ev); },
+    };
+    this.active = handle;
+
+    const surface: DisplaySurface = {
+      width,
+      height,
+      clear: (color: DisplayColor): void => {
+        if (closed) return;
+        const r = color.r & 255, g = color.g & 255, b = color.b & 255, a = color.a & 255;
+        for (let i = 0; i < back.length; i += 4) {
+          back[i] = r; back[i + 1] = g; back[i + 2] = b; back[i + 3] = a;
+        }
+        pendingTexts = [];
+      },
+      fillRect: (x: number, y: number, w: number, h: number, color: DisplayColor): void => {
+        if (closed || !(w > 0 && h > 0) || !Number.isFinite(x) || !Number.isFinite(y)) return;
+        const x0 = Math.max(0, Math.floor(x));
+        const y0 = Math.max(0, Math.floor(y));
+        const x1 = Math.min(width, Math.ceil(x + w));
+        const y1 = Math.min(height, Math.ceil(y + h));
+        for (let py = y0; py < y1; py++) {
+          for (let px = x0; px < x1; px++) blendPixel(px, py, color.r, color.g, color.b, color.a);
+        }
+      },
+      strokeRect: (x: number, y: number, w: number, h: number, color: DisplayColor): void => {
+        if (closed || !(w > 0 && h > 0) || !Number.isFinite(x) || !Number.isFinite(y)) return;
+        const x0 = Math.floor(x), y0 = Math.floor(y);
+        const x1 = Math.floor(x + w - 1), y1 = Math.floor(y + h - 1);
+        if (x1 < x0 || y1 < y0) return;
+        for (let px = x0; px <= x1; px++) {
+          blendPixel(px, y0, color.r, color.g, color.b, color.a);
+          if (y1 !== y0) blendPixel(px, y1, color.r, color.g, color.b, color.a);
+        }
+        for (let py = y0 + 1; py < y1; py++) {
+          blendPixel(x0, py, color.r, color.g, color.b, color.a);
+          if (x1 !== x0) blendPixel(x1, py, color.r, color.g, color.b, color.a);
+        }
+      },
+      drawLine: (x1: number, y1: number, x2: number, y2: number, color: DisplayColor): void => {
+        if (closed || !Number.isFinite(x1) || !Number.isFinite(y1) || !Number.isFinite(x2) || !Number.isFinite(y2)) return;
+        let cx = Math.round(x1), cy = Math.round(y1);
+        const tx = Math.round(x2), ty = Math.round(y2);
+        const dx = Math.abs(tx - cx), sx = cx < tx ? 1 : -1;
+        const dy = -Math.abs(ty - cy), sy = cy < ty ? 1 : -1;
+        let errv = dx + dy;
+        while (true) {
+          blendPixel(cx, cy, color.r, color.g, color.b, color.a);
+          if (cx === tx && cy === ty) break;
+          const e2 = 2 * errv;
+          if (e2 >= dy) { errv += dy; cx += sx; }
+          if (e2 <= dx) { errv += dx; cy += sy; }
+        }
+      },
+      drawText: (x: number, y: number, text: string, color: DisplayColor): void => {
+        if (closed) return;
+        pendingTexts.push({ x, y, text, color: { r: color.r & 255, g: color.g & 255, b: color.b & 255, a: color.a & 255 } });
+      },
+      blitRgba: (pixels: Slice<number> | Vec<number>, srcWidth: number, srcHeight: number, dstX: number, dstY: number, dstW: number, dstH: number, pos?: Pos): void => {
+        const raw = readDisplayRgba(pixels, srcWidth, srcHeight, pos);
+        if (closed || srcWidth === 0 || srcHeight === 0 || !(dstW > 0 && dstH > 0) || !Number.isFinite(dstX) || !Number.isFinite(dstY)) return;
+        const x0 = Math.max(0, Math.floor(dstX));
+        const y0 = Math.max(0, Math.floor(dstY));
+        const x1 = Math.min(width, Math.ceil(dstX + dstW));
+        const y1 = Math.min(height, Math.ceil(dstY + dstH));
+        for (let py = y0; py < y1; py++) {
+          const v = Math.min(srcHeight - 1, Math.max(0, Math.floor(((py + 0.5 - dstY) / dstH) * srcHeight)));
+          for (let px = x0; px < x1; px++) {
+            const u = Math.min(srcWidth - 1, Math.max(0, Math.floor(((px + 0.5 - dstX) / dstW) * srcWidth)));
+            const si = (v * srcWidth + u) * 4;
+            blendPixel(px, py, raw[si]!, raw[si + 1]!, raw[si + 2]!, raw[si + 3]!);
+          }
+        }
+      },
+      present: async (): Promise<void> => {
+        if (closed) return;
+        this.front.set(back);
+        this.texts = [...pendingTexts];
+        pendingTexts = [];
+        this.presents++;
+      },
+      pollEvents: (): DisplayEvent[] => (closed ? [] : queue.splice(0)),
+      close,
+      disposeAsync: close,
+      isOpen: (): boolean => !closed,
+    };
+    return ok(surface);
   }
 }

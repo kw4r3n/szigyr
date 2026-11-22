@@ -116,7 +116,7 @@ const { pathToFileURL } = require("node:url");
       npm.set(spec, unwrapNpm(await import(url)));
     }
   }
-  const RUNTIME = { ...rt, FakeAudio: std.FakeAudio, FakeClock: std.FakeClock, FakeNet: std.FakeNet, FakeProc: std.FakeProc, SeededRandom: std.SeededRandom, MemoryLog: std.MemoryLog, FakeFs: std.FakeFs, FakeSpawn: std.FakeSpawn, TestAlloc: std.TestAlloc, ...(native ? { native } : {}) };
+  const RUNTIME = { ...rt, FakeAudio: std.FakeAudio, FakeClock: std.FakeClock, FakeDisplay: std.FakeDisplay, FakeNet: std.FakeNet, FakeProc: std.FakeProc, SeededRandom: std.SeededRandom, MemoryLog: std.MemoryLog, FakeFs: std.FakeFs, FakeSpawn: std.FakeSpawn, TestAlloc: std.TestAlloc, ...(native ? { native } : {}) };
   const done = new Map();
   const instantiate = (path) => {
     let ex = done.get(path);

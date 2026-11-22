@@ -1,0 +1,601 @@
+import { createDemoSession, createSession, RetouchSession } from "./session.szigyr";
+import { BrushStroke, FilterParams, ImageStats, RetouchTool } from "./types.szigyr";
+
+const SURF_W: u32 = 320;
+const SURF_H: u32 = 360;
+const BTN_X0: f64 = 6;
+const BTN_Y: f64 = 6;
+const BTN_W: f64 = 48;
+const BTN_H: f64 = 24;
+const BTN_PITCH: f64 = 52;
+const VIEW_X: f64 = 16;
+const VIEW_Y: f64 = 44;
+const VIEW_SIZE: f64 = 288;
+const IMG_DIM: u32 = 96;
+const OFF_SCREEN: f64 = -1;
+
+export function parseFramesArg(args: ReadonlyArray<string>): usize {
+  for (const a of args) {
+    if (a.startsWith("--frames=")) {
+      const parsed = Number.parseFloat(a.slice(9));
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return usize(Math.floor(parsed));
+      }
+    }
+  }
+  return 0;
+}
+
+export function clampRadius(r: f64): f64 {
+  if (!Number.isFinite(r)) return 3;
+  return Math.min(20, Math.max(3, r));
+}
+
+export function hitButton(x: f64, y: f64): i32 {
+  if (y < BTN_Y || y >= BTN_Y + BTN_H) return -1;
+  for (let i: i32 = 0; i < 6; i += 1) {
+    const bx = BTN_X0 + f64(i) * BTN_PITCH;
+    if (x >= bx && x < bx + BTN_W) return i;
+  }
+  return -1;
+}
+
+export function inViewport(x: f64, y: f64): boolean {
+  return x >= VIEW_X && x < VIEW_X + VIEW_SIZE && y >= VIEW_Y && y < VIEW_Y + VIEW_SIZE;
+}
+
+export function toImageCoord(screenPos: f64, origin: f64): f32 {
+  return f32(((screenPos - origin) / VIEW_SIZE) * f64(IMG_DIM));
+}
+
+export function makeBrushTool(isDodge: boolean, cx: f32, cy: f32, radius: f32): RetouchTool {
+  const stroke: BrushStroke = {
+    cx,
+    cy,
+    radius,
+    strength: f32(0.85),
+    hardness: f32(0.4),
+  };
+  if (isDodge) return { kind: "dodge", stroke, exposure: f32(0.35) };
+  return { kind: "smooth", stroke };
+}
+
+export function defaultFreqParams(): FilterParams {
+  return {
+    blurRadius: 3,
+    detailGain: f32(0.45),
+    smoothAmount: f32(0.85),
+    warmth: f32(0.12),
+  };
+}
+
+function buttonLabel(idx: i32): string {
+  switch (idx) {
+    case 0: return "SMOOTH";
+    case 1: return "DODGE";
+    case 2: return "FREQ";
+    case 3: return "UNDO";
+    case 4: return "REDO";
+    default: return "RESET";
+  }
+}
+
+async function runFreqPass(session: RetouchSession, spawn: Spawn, alloc: Alloc, log: Log, params: FilterParams): Promise<void> {
+  const fr = await session.runFrequencyInWorker(spawn, alloc, params);
+  if (fr.kind === "err") log.warn(fr.error.message);
+}
+
+async function renderFrame(
+  surface: DisplaySurface,
+  alloc: Alloc,
+  session: RetouchSession,
+  isDodge: boolean,
+  hoverX: f64,
+  hoverY: f64,
+  radius: f64,
+): Promise<void> {
+  const bg: DisplayColor = { r: 18, g: 20, b: 23, a: 255 };
+  const btnIdle: DisplayColor = { r: 30, g: 35, b: 42, a: 255 };
+  const btnActive: DisplayColor = { r: 45, g: 108, b: 223, a: 255 };
+  const border: DisplayColor = { r: 58, g: 66, b: 78, a: 255 };
+  const ink: DisplayColor = { r: 230, g: 233, b: 239, a: 255 };
+
+  surface.clear(bg);
+  for (let i: i32 = 0; i < 6; i += 1) {
+    const bx = BTN_X0 + f64(i) * BTN_PITCH;
+    const selected = (i === 0 && !isDodge) || (i === 1 && isDodge);
+    surface.fillRect(bx, BTN_Y, BTN_W, BTN_H, selected ? btnActive : btnIdle);
+    surface.strokeRect(bx, BTN_Y, BTN_W, BTN_H, border);
+    surface.drawText(bx + 4, BTN_Y + 6, buttonLabel(i), ink);
+  }
+
+  const snap = session.snapshotRgba(alloc);
+  surface.blitRgba(snap, IMG_DIM, IMG_DIM, VIEW_X, VIEW_Y, VIEW_SIZE, VIEW_SIZE);
+  surface.strokeRect(VIEW_X - 1, VIEW_Y - 1, VIEW_SIZE + 2, VIEW_SIZE + 2, border);
+
+  if (inViewport(hoverX, hoverY)) {
+    const cursor: DisplayColor = { r: 245, g: 208, b: 66, a: 255 };
+    const half = radius * 3;
+    surface.strokeRect(hoverX - half, hoverY - half, half * 2, half * 2, cursor);
+    surface.drawLine(hoverX - 4, hoverY, hoverX + 4, hoverY, cursor);
+    surface.drawLine(hoverX, hoverY - 4, hoverX, hoverY + 4, cursor);
+  }
+
+  const st = session.stats();
+  const modeName = isDodge ? "dodge" : "smooth";
+  surface.drawText(
+    VIEW_X,
+    340,
+    `${modeName} r=${radius} u=${session.undoDepth()} y=${session.redoDepth()} fnv=${st.fnv64}`,
+    ink,
+  );
+  await surface.present();
+}
+
+class SessionHolder implements Disposable {
+  session: RetouchSession;
+
+  constructor(alloc: Alloc) {
+    this.session = createDemoSession(alloc, usize(IMG_DIM), usize(IMG_DIM));
+  }
+
+  reset(alloc: Alloc): void {
+    this.session.dispose(); // szigyr-equivalent[delete-stmt]: frees discarded undo cells; replacement session below resets state
+    this.session = createDemoSession(alloc, usize(IMG_DIM), usize(IMG_DIM));
+  }
+
+  dispose(): void {
+    this.session.dispose(); // szigyr-equivalent[delete-stmt]: frees undo cells on exit without affecting return stats
+  }
+}
+
+export async function runRetouchStudio(
+  alloc: Alloc,
+  display: Display,
+  spawn: Spawn,
+  log: Log,
+  width: u32,
+  height: u32,
+  maxFrames: usize,
+): Promise<Result<ImageStats, IoError>> {
+  const openRes = await display.open({
+    title: "Szigyr Retouch Studio",
+    width,
+    height,
+  });
+  if (openRes.kind === "err") return err(openRes.error);
+  await using surface = openRes.value;
+  using holder = new SessionHolder(alloc);
+
+  let isDodge = false;
+  let painting = false;
+  let radius: f64 = 8;
+  let hoverX: f64 = OFF_SCREEN;
+  let hoverY: f64 = OFF_SCREEN;
+  let frames: usize = 0;
+  let running = true;
+
+  while (running) {
+    await renderFrame(surface, alloc, holder.session, isDodge, hoverX, hoverY, radius);
+    frames += 1;
+    if (maxFrames > 0 && frames >= maxFrames) break;
+
+    const events = surface.pollEvents();
+    for (const ev of events) {
+      switch (ev.kind) {
+        case "pointerDown": {
+          hoverX = ev.x;
+          hoverY = ev.y;
+          if (ev.button === 0) {
+            const btn = hitButton(ev.x, ev.y);
+            if (btn === 0) {
+              isDodge = false;
+            } else if (btn === 1) {
+              isDodge = true;
+            } else if (btn === 2) {
+              await runFreqPass(holder.session, spawn, alloc, log, defaultFreqParams());
+            } else if (btn === 3) {
+              holder.session.undo();
+            } else if (btn === 4) {
+              holder.session.redo();
+            } else if (btn === 5) {
+              holder.reset(alloc);
+            } else if (inViewport(ev.x, ev.y)) {
+              painting = true;
+              holder.session.applyTool(
+                alloc,
+                makeBrushTool(isDodge, toImageCoord(ev.x, VIEW_X), toImageCoord(ev.y, VIEW_Y), f32(radius)),
+              );
+            }
+          }
+          break;
+        }
+        case "pointerMove": {
+          hoverX = ev.x;
+          hoverY = ev.y;
+          if (painting && (ev.buttons & 1) !== 0 && inViewport(ev.x, ev.y)) {
+            holder.session.applyTool(
+              alloc,
+              makeBrushTool(isDodge, toImageCoord(ev.x, VIEW_X), toImageCoord(ev.y, VIEW_Y), f32(radius)),
+            );
+          }
+          break;
+        }
+        case "pointerUp": {
+          if (ev.button === 0) painting = false;
+          break;
+        }
+        case "wheel": {
+          if (ev.dy < 0) radius = clampRadius(radius + 1);
+          else if (ev.dy > 0) radius = clampRadius(radius - 1);
+          break;
+        }
+        case "keyDown": {
+          switch (ev.key) {
+            case "1":
+              isDodge = false;
+              break;
+            case "2":
+              isDodge = true;
+              break;
+            case "f":
+              await runFreqPass(holder.session, spawn, alloc, log, defaultFreqParams());
+              break;
+            case "z":
+              holder.session.undo();
+              break;
+            case "y":
+              holder.session.redo();
+              break;
+            case "r":
+              holder.reset(alloc);
+              break;
+            case "Escape":
+              running = false;
+              break;
+            default:
+              break;
+          }
+          break;
+        }
+        case "keyUp":
+          break;
+        case "close":
+          running = false;
+          break;
+      }
+      if (!running) break;
+    }
+  }
+  const finalStats = holder.session.stats();
+  log.info(`retouch:frames=${frames}:undo=${holder.session.undoDepth()}:fnv=${finalStats.fnv64}`);
+  return ok(finalStats);
+}
+
+export async function runRetouchApp(
+  alloc: Alloc,
+  display: Display,
+  spawn: Spawn,
+  log: Log,
+  maxFrames: usize,
+): Promise<Result<ImageStats, IoError>> {
+  return await runRetouchStudio(alloc, display, spawn, log, SURF_W, SURF_H, maxFrames);
+}
+
+export async function main(sys: System): Promise<void> {
+  const maxFrames = parseFramesArg(sys.proc.args());
+  const res = await runRetouchApp(sys.alloc, sys.display, sys.spawn, sys.log, maxFrames);
+  if (res.kind === "err") {
+    sys.log.error(res.error.message);
+    sys.proc.setExitCode(1);
+  }
+}
+
+test("pure UI geometry, clamping, params, and tool helpers", (t: Test) => {
+  t.eq(parseFramesArg([]), usize(0));
+  t.eq(parseFramesArg(["1234567893"]), usize(0));
+  t.eq(parseFramesArg(["--frames=0", "--frames=-2", "--frames=1"]), usize(1));
+  t.eq(parseFramesArg(["--other=1", "--frames=2.9"]), usize(2));
+
+  t.eq(clampRadius(0 / 0), 3);
+  t.eq(clampRadius(1), 3);
+  t.eq(clampRadius(3), 3);
+  t.eq(clampRadius(10), 10);
+  t.eq(clampRadius(20), 20);
+  t.eq(clampRadius(25), 20);
+
+  t.eq(hitButton(6, 5), -1);
+  t.eq(hitButton(6, 6), 0);
+  t.eq(hitButton(53, 29), 0);
+  t.eq(hitButton(54, 6), -1);
+  t.eq(hitButton(58, 12), 1);
+  t.eq(hitButton(110, 12), 2);
+  t.eq(hitButton(266, 29), 5);
+  t.eq(hitButton(318, 12), -1);
+  t.eq(hitButton(266, 30), -1);
+
+  t.ok(inViewport(16, 44));
+  t.ok(!inViewport(15, 44));
+  t.ok(!inViewport(304, 44));
+  t.ok(!inViewport(16, 43));
+  t.ok(!inViewport(16, 332));
+  t.ok(inViewport(303, 331));
+
+  t.eq(toImageCoord(16, 16), f32(0));
+  t.eq(toImageCoord(160, 16), f32(48));
+
+  const sm = makeBrushTool(false, f32(10), f32(20), f32(8));
+  t.eq(sm.kind, "smooth");
+  if (sm.kind === "smooth") {
+    t.eq(sm.stroke.strength, f32(0.85));
+    t.eq(sm.stroke.hardness, f32(0.4));
+  }
+  const dg = makeBrushTool(true, f32(10), f32(20), f32(6));
+  t.eq(dg.kind, "dodge");
+  if (dg.kind === "dodge") {
+    t.eq(dg.stroke.strength, f32(0.85));
+    t.eq(dg.stroke.hardness, f32(0.4));
+    t.eq(dg.exposure, f32(0.35));
+  }
+
+  const fp = defaultFreqParams();
+  t.eq(fp.blurRadius, usize(3));
+  t.eq(fp.detailGain, f32(0.45));
+  t.eq(fp.smoothAmount, f32(0.85));
+  t.eq(fp.warmth, f32(0.12));
+});
+
+test("SessionHolder reset & runFreqPass error path", async (t: Test) => {
+  const alloc = TestAlloc.create();
+  const spawn = FakeSpawn.create();
+  const log = MemoryLog.create();
+
+  using holder = new SessionHolder(alloc);
+  const initFnv = holder.session.stats().fnv64;
+  holder.session.applyTool(alloc, makeBrushTool(false, f32(12), f32(12), f32(4)));
+  t.eq(holder.session.undoDepth(), usize(1));
+  t.ok(holder.session.stats().fnv64 !== initFnv);
+  holder.reset(alloc);
+  t.eq(holder.session.undoDepth(), usize(0));
+  t.eq(holder.session.stats().fnv64, initFnv);
+
+  // Scratch with maxRadius=0 is too small for blurRadius=40 frequency pass -> warns cleanly
+  using small = createSession(alloc, 24, 24, 0, Vec.filled<u8>(alloc, 24 * 24 * 4, 128));
+  await runFreqPass(small, spawn, alloc, log, { blurRadius: 40, detailGain: f32(0.5), smoothAmount: f32(0.5), warmth: f32(0.1) });
+  const ents = log.entries();
+  t.eq(ents.length, usize(1));
+  t.eq(ents[0].level, "warn");
+  t.ok(ents[0].message.includes("scratch arena"));
+});
+
+test("FakeDisplay renders exact colors, borders, portrait, and texts", async (t: Test) => {
+  const alloc = TestAlloc.create();
+  const display = FakeDisplay.create();
+  const spawn = FakeSpawn.create();
+  const log = MemoryLog.create();
+
+  // Open error path (width=0)
+  const badRes = await runRetouchStudio(alloc, display, spawn, log, 0, 360, 1);
+  t.eq(badRes.kind, "err");
+
+  // Frame 0 via maxFrames=1
+  const r0 = await runRetouchApp(alloc, display, spawn, log, 1);
+  t.eq(r0.kind, "ok");
+  t.eq(display.presentCount(), usize(1));
+
+  // Background & corner untouched by hover cursor
+  const bg = display.pixelAt(0, 0);
+  t.eq(bg.r, u8(18));
+  t.eq(bg.g, u8(20));
+  t.eq(bg.b, u8(23));
+  t.eq(bg.a, u8(255));
+  t.eq(display.pixelAt(3, 3).r, u8(18));
+
+  // Active button 0 (SMOOTH) interior & border
+  const b0 = display.pixelAt(10, 12);
+  t.eq(b0.r, u8(45));
+  t.eq(b0.g, u8(108));
+  t.eq(b0.b, u8(223));
+  t.eq(b0.a, u8(255));
+  const br = display.pixelAt(6, 6);
+  t.eq(br.r, u8(58));
+  t.eq(br.g, u8(66));
+  t.eq(br.b, u8(78));
+  t.eq(br.a, u8(255));
+
+  // Idle button 1 (DODGE) interior
+  const b1 = display.pixelAt(64, 12);
+  t.eq(b1.r, u8(30));
+  t.eq(b1.g, u8(35));
+  t.eq(b1.b, u8(42));
+  t.eq(b1.a, u8(255));
+
+  // Viewport border & portrait top-left / bottom-right corners (distinct from bg)
+  const vb = display.pixelAt(15, 43);
+  t.eq(vb.r, u8(58));
+  t.eq(vb.g, u8(66));
+  t.eq(vb.b, u8(78));
+  t.eq(display.pixelAt(304, 332).r, u8(58));
+  const pTL = display.pixelAt(16, 44);
+  t.eq(pTL.a, u8(255));
+  t.ok(pTL.r !== 18 || pTL.g !== 20 || pTL.b !== 23);
+  const pBR = display.pixelAt(303, 331);
+  t.eq(pBR.a, u8(255));
+  t.ok(pBR.r !== 18 || pBR.g !== 20 || pBR.b !== 23);
+
+  // Drawn texts coordinates, labels, and ink color
+  const texts = display.drawnTexts();
+  t.eq(texts.length, usize(7));
+  t.eq(texts[0].x, 10);
+  t.eq(texts[0].y, 12);
+  t.eq(texts[0].text, "SMOOTH");
+  t.eq(texts[0].color.r, u8(230));
+  t.eq(texts[0].color.g, u8(233));
+  t.eq(texts[0].color.b, u8(239));
+  t.eq(texts[0].color.a, u8(255));
+  t.eq(texts[1].x, 62);
+  t.eq(texts[1].text, "DODGE");
+  t.eq(texts[2].text, "FREQ");
+  t.eq(texts[3].text, "UNDO");
+  t.eq(texts[4].text, "REDO");
+  t.eq(texts[5].text, "RESET");
+  t.eq(texts[6].x, 16);
+  t.eq(texts[6].y, 340);
+  t.ok(texts[6].text.includes("smooth r=8 u=0 y=0 fnv="));
+
+  const logs = log.entries();
+  t.eq(logs.length, usize(1));
+  t.ok(logs[0].message.includes("retouch:frames=1:undo=0:fnv="));
+});
+
+test("FakeDisplay pointer drag, hover cursor, wheel bounds, and key shortcuts", async (t: Test) => {
+  const alloc = TestAlloc.create();
+  const spawn = FakeSpawn.create();
+  const log = MemoryLog.create();
+
+  const dBase = FakeDisplay.create();
+  const rBase = await runRetouchApp(alloc, dBase, spawn, log, 1);
+  if (rBase.kind !== "ok") { t.ok(false); return; }
+  const initFnv = rBase.value.fnv64;
+
+  // 1. Margin click, initial move without painting, dodge button, left drag, right pointerUp ignored, wheel dy=0 & dy<0
+  const d1 = FakeDisplay.create();
+  d1.pushEvent({ kind: "pointerMove", x: 140, y: 160, buttons: 1 }); // painting is false -> no stroke
+  d1.pushEvent({ kind: "pointerDown", x: 2, y: 180, button: 0 }); // margin -> no stroke
+  d1.pushEvent({ kind: "pointerDown", x: 140, y: 160, button: 2 }); // right click -> ignored
+  d1.pushEvent({ kind: "pointerDown", x: 64, y: 12, button: 0 }); // DODGE button (idx 1)
+  d1.pushEvent({ kind: "pointerDown", x: 160, y: 188, button: 0 }); // start drag
+  d1.pushEvent({ kind: "pointerUp", x: 160, y: 188, button: 2 }); // right up ignored
+  d1.pushEvent({ kind: "pointerMove", x: 160, y: 188, buttons: 1 }); // still painting -> stroke #2
+  d1.pushEvent({ kind: "wheel", x: 160, y: 188, dx: 0, dy: 0 }); // no-op wheel
+  d1.pushEvent({ kind: "wheel", x: 160, y: 188, dx: 0, dy: -120 }); // radius 8 -> 9
+  const r1 = await runRetouchApp(alloc, d1, spawn, log, 2);
+  t.eq(r1.kind, "ok");
+  t.eq(d1.presentCount(), usize(2));
+  if (r1.kind === "ok") t.ok(r1.value.fnv64 !== initFnv);
+  t.eq(d1.pixelAt(64, 12).r, u8(45));
+  t.eq(d1.pixelAt(10, 12).r, u8(30));
+  // Cursor rect (half=27 around 160,188 -> [133..186, 161..214]) & crosshair bounds
+  const boxTL = d1.pixelAt(133, 161);
+  t.eq(boxTL.r, u8(245));
+  t.eq(boxTL.g, u8(208));
+  t.eq(boxTL.b, u8(66));
+  t.eq(d1.pixelAt(186, 214).r, u8(245));
+  t.eq(d1.pixelAt(156, 188).r, u8(245));
+  t.eq(d1.pixelAt(164, 188).g, u8(208));
+  t.eq(d1.pixelAt(160, 184).b, u8(66));
+  t.eq(d1.pixelAt(160, 192).r, u8(245));
+  t.ok(d1.drawnTexts()[6].text.includes("dodge r=9 u=2 y=0"));
+
+  // 2. pointerDown alone sets hover cursor (even with no pointerMove), and pointerMove updates to a new location
+  const dDownHover = FakeDisplay.create();
+  dDownHover.pushEvent({ kind: "pointerDown", x: 120, y: 150, button: 0 });
+  const rDownHover = await runRetouchApp(alloc, dDownHover, spawn, log, 2);
+  t.eq(rDownHover.kind, "ok");
+  t.eq(dDownHover.pixelAt(116, 150).r, u8(245)); // x crosshair from pointerDown.x
+  t.eq(dDownHover.pixelAt(120, 146).r, u8(245)); // y crosshair from pointerDown.y
+
+  const dHover = FakeDisplay.create();
+  dHover.pushEvent({ kind: "pointerDown", x: 140, y: 160, button: 0 });
+  dHover.pushEvent({ kind: "pointerUp", x: 140, y: 160, button: 0 });
+  dHover.pushEvent({ kind: "pointerMove", x: 180, y: 200, buttons: 1 }); // different coords, not painting
+  dHover.pushEvent({ kind: "wheel", x: 180, y: 200, dx: 0, dy: 1 }); // +1 wheel tick shrinks radius 8 -> 7
+  const rHover = await runRetouchApp(alloc, dHover, spawn, log, 2);
+  t.eq(rHover.kind, "ok");
+  t.eq(dHover.pixelAt(176, 200).r, u8(245)); // x crosshair from pointerMove.x
+  t.eq(dHover.pixelAt(180, 196).r, u8(245)); // y crosshair from pointerMove.y
+  t.ok(dHover.drawnTexts()[6].text.includes("smooth r=7 u=1 y=0"));
+
+  // 3. Button DODGE -> SMOOTH switches back to smooth
+  const dBtn = FakeDisplay.create();
+  dBtn.pushEvent({ kind: "pointerDown", x: 64, y: 12, button: 0 }); // DODGE (idx 1)
+  dBtn.pushEvent({ kind: "pointerDown", x: 12, y: 12, button: 0 }); // SMOOTH (idx 0)
+  const rBtn = await runRetouchApp(alloc, dBtn, spawn, log, 2);
+  t.eq(rBtn.kind, "ok");
+  t.eq(dBtn.pixelAt(10, 12).r, u8(45));
+  t.ok(dBtn.drawnTexts()[6].text.includes("smooth r=8 u=0 y=0"));
+
+  // 4. Key "2" sets dodge on Frame 1; then Key "1" returns to smooth
+  const dKey2 = FakeDisplay.create();
+  dKey2.pushEvent({ kind: "keyDown", key: "2", repeat: false, shift: false, ctrl: false, alt: false });
+  const rKey2 = await runRetouchApp(alloc, dKey2, spawn, log, 2);
+  t.eq(rKey2.kind, "ok");
+  t.ok(dKey2.drawnTexts()[6].text.includes("dodge r=8 u=0 y=0"));
+
+  const dKeys = FakeDisplay.create();
+  dKeys.pushEvent({ kind: "keyDown", key: "2", repeat: false, shift: false, ctrl: false, alt: false });
+  dKeys.pushEvent({ kind: "keyDown", key: "1", repeat: false, shift: false, ctrl: false, alt: false });
+  dKeys.pushEvent({ kind: "keyUp", key: "1", shift: false, ctrl: false, alt: false });
+  dKeys.pushEvent({ kind: "keyDown", key: "x", repeat: false, shift: false, ctrl: false, alt: false });
+  const rKeys = await runRetouchApp(alloc, dKeys, spawn, log, 2);
+  t.eq(rKeys.kind, "ok");
+  t.ok(dKeys.drawnTexts()[6].text.includes("smooth r=8 u=0 y=0"));
+});
+
+test("FakeDisplay FREQ, UNDO/REDO, RESET, Escape, and close flows", async (t: Test) => {
+  const alloc = TestAlloc.create();
+  const spawn = FakeSpawn.create();
+  const log = MemoryLog.create();
+
+  const dBase = FakeDisplay.create();
+  const rBase = await runRetouchApp(alloc, dBase, spawn, log, 1);
+  if (rBase.kind !== "ok") { t.ok(false); return; }
+  const initFnv = rBase.value.fnv64;
+
+  // 1. Toolbar FREQ -> UNDO restores initFnv cleanly, trailing event after Escape ignored
+  const dUndoBtn = FakeDisplay.create();
+  dUndoBtn.pushEvent({ kind: "pointerDown", x: 118, y: 12, button: 0 }); // FREQ btn (idx 2)
+  dUndoBtn.pushEvent({ kind: "pointerDown", x: 170, y: 12, button: 0 }); // UNDO btn (idx 3)
+  dUndoBtn.pushEvent({ kind: "keyDown", key: "Escape", repeat: false, shift: false, ctrl: false, alt: false });
+  dUndoBtn.pushEvent({ kind: "pointerDown", x: 140, y: 160, button: 0 });
+  const rUndoBtn = await runRetouchApp(alloc, dUndoBtn, spawn, log, 0);
+  if (rUndoBtn.kind !== "ok") { t.ok(false); return; }
+  t.eq(rUndoBtn.value.fnv64, initFnv);
+  t.ok(log.entries()[log.entries().length - 1].message.includes("retouch:frames=1:undo=0:"));
+
+  // 2. Toolbar FREQ -> UNDO -> REDO preserves freq fnv64
+  const dRedoBtn = FakeDisplay.create();
+  dRedoBtn.pushEvent({ kind: "pointerDown", x: 118, y: 12, button: 0 }); // FREQ btn (idx 2)
+  dRedoBtn.pushEvent({ kind: "pointerDown", x: 170, y: 12, button: 0 }); // UNDO btn (idx 3)
+  dRedoBtn.pushEvent({ kind: "pointerDown", x: 220, y: 12, button: 0 }); // REDO btn (idx 4)
+  dRedoBtn.pushEvent({ kind: "keyDown", key: "Escape", repeat: false, shift: false, ctrl: false, alt: false });
+  const rRedoBtn = await runRetouchApp(alloc, dRedoBtn, spawn, log, 0);
+  if (rRedoBtn.kind !== "ok") { t.ok(false); return; }
+  t.ok(rRedoBtn.value.fnv64 !== initFnv);
+  t.ok(log.entries()[log.entries().length - 1].message.includes("retouch:frames=1:undo=1:"));
+
+  // 3. Key "f" -> "z" restores initFnv, then key "f" -> "z" -> "y" restores freq fnv64
+  const dKeyUndo = FakeDisplay.create();
+  dKeyUndo.pushEvent({ kind: "keyDown", key: "f", repeat: false, shift: false, ctrl: false, alt: false });
+  dKeyUndo.pushEvent({ kind: "keyDown", key: "z", repeat: false, shift: false, ctrl: false, alt: false });
+  dKeyUndo.pushEvent({ kind: "close" });
+  const rKeyUndo = await runRetouchApp(alloc, dKeyUndo, spawn, log, 0);
+  if (rKeyUndo.kind !== "ok") { t.ok(false); return; }
+  t.eq(rKeyUndo.value.fnv64, initFnv);
+
+  const dKeyRedo = FakeDisplay.create();
+  dKeyRedo.pushEvent({ kind: "keyDown", key: "f", repeat: false, shift: false, ctrl: false, alt: false });
+  dKeyRedo.pushEvent({ kind: "keyDown", key: "z", repeat: false, shift: false, ctrl: false, alt: false });
+  dKeyRedo.pushEvent({ kind: "keyDown", key: "y", repeat: false, shift: false, ctrl: false, alt: false });
+  dKeyRedo.pushEvent({ kind: "close" });
+  const rKeyRedo = await runRetouchApp(alloc, dKeyRedo, spawn, log, 0);
+  if (rKeyRedo.kind !== "ok") { t.ok(false); return; }
+  t.eq(rKeyRedo.value.fnv64, rRedoBtn.value.fnv64);
+
+  // 4. Separate RESET button (idx 5) and key "r" reset tests
+  const dResetBtn = FakeDisplay.create();
+  dResetBtn.pushEvent({ kind: "pointerDown", x: 140, y: 160, button: 0 });
+  dResetBtn.pushEvent({ kind: "pointerDown", x: 274, y: 12, button: 0 }); // RESET btn
+  dResetBtn.pushEvent({ kind: "close" });
+  const rResetBtn = await runRetouchApp(alloc, dResetBtn, spawn, log, 0);
+  if (rResetBtn.kind !== "ok") { t.ok(false); return; }
+  t.eq(rResetBtn.value.fnv64, initFnv);
+
+  const dResetKey = FakeDisplay.create();
+  dResetKey.pushEvent({ kind: "pointerDown", x: 140, y: 160, button: 0 });
+  dResetKey.pushEvent({ kind: "keyDown", key: "r", repeat: false, shift: false, ctrl: false, alt: false });
+  dResetKey.pushEvent({ kind: "close" });
+  const rResetKey = await runRetouchApp(alloc, dResetKey, spawn, log, 0);
+  if (rResetKey.kind !== "ok") { t.ok(false); return; }
+  t.eq(rResetKey.value.fnv64, initFnv);
+});

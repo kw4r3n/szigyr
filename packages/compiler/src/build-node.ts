@@ -6,6 +6,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bundleNpmImports, emitNpmPreamble } from "./bundle-npm.ts";
 import { DETMATH_PATH } from "./detmath.ts";
+import { DISPLAY_SDL_C } from "./display-sdl.ts";
 import type { Diagnostic } from "./diagnostics.ts";
 import { emitFile, EXPORTS, IMP, RT, SOURCE_URL } from "./emit.ts";
 import { emitC, type WasmMeta } from "./emit-c.ts";
@@ -104,6 +105,16 @@ export function buildNode(entryFile: string, opts: NodeBuildOptions): NodeBuildR
       hasWasm = true;
     }
   }
+  let hasDisplay = false;
+  if (a.files.some((f) => /\b(display|Display)\b/.test(f.sourceFile.text))) {
+    try {
+      compileNativeAddon(DISPLAY_SDL_C, join(outDir, "display.node"), []);
+      written.push("display.node");
+      hasDisplay = true;
+    } catch (e) {
+      if (backend === "c") throw e;
+    }
+  }
 
   for (const name of RT_NODE_FILES) {
     emitOut(`rt/${name.replace(/\.ts$/, ".js")}`, transpileNodeModule(join(RT_SRC_DIR, name), (s) => s.replace(/\.ts$/, ".js")));
@@ -145,6 +156,7 @@ export function buildNode(entryFile: string, opts: NodeBuildOptions): NodeBuildR
     `export const BACKEND = ${JSON.stringify(backend)};`,
     `export const NATIVE_FILE = ${JSON.stringify(hasNative ? "./program.node" : null)};`,
     `export const WASM_FILE = ${JSON.stringify(hasWasm ? "./program.wasm" : null)};`,
+    `export const DISPLAY_FILE = ${JSON.stringify(hasDisplay ? "./display.node" : null)};`,
     `export const WASM_META = ${JSON.stringify(wasmMeta)};`,
     `export const RT_NAME = ${JSON.stringify(RT)};`,
     `export const IMP_NAME = ${JSON.stringify(IMP)};`,
@@ -159,7 +171,7 @@ export function buildNode(entryFile: string, opts: NodeBuildOptions): NodeBuildR
     `import { fileURLToPath } from "node:url";`,
     `import * as rt from "./rt/index.js";`,
     `import * as std from "./rt/std-index.js";`,
-    `import { ENTRY, NATIVE_FILE, WASM_FILE, WASM_META, RT_NAME, IMP_NAME, EXPORTS_NAME, FRAME_PATTERN, FILES } from "./program.js";`,
+    `import { ENTRY, NATIVE_FILE, WASM_FILE, DISPLAY_FILE, WASM_META, RT_NAME, IMP_NAME, EXPORTS_NAME, FRAME_PATTERN, FILES } from "./program.js";`,
     ...npmPreamble.header,
     npmPreamble.mapDecl,
     ``,
@@ -203,6 +215,17 @@ export function buildNode(entryFile: string, opts: NodeBuildOptions): NodeBuildR
     `      return rt.err({ code: "ENOSYS", message: "audio push pump is only bundled for --backend=c on Node" });`,
     `    },`,
     `  });`,
+    `  if (DISPLAY_FILE) {`,
+    `    let displayMod;`,
+    `    std.setNodeDisplay(std.createSdlDisplay(() => {`,
+    `      if (displayMod) return displayMod;`,
+    `      const displayPath = fileURLToPath(new URL(DISPLAY_FILE, base));`,
+    `      const m = { exports: {} };`,
+    `      process.dlopen(m, displayPath);`,
+    `      displayMod = m.exports;`,
+    `      return displayMod;`,
+    `    }));`,
+    `  }`,
     `  const filesMap = new Map(FILES.map(([k, e]) => [k, { js: e.js, imports: e.imports, calls: new Map(e.calls) }]));`,
     `  const frame = new RegExp(FRAME_PATTERN, "gm");`,
     `  rt.setStackLocator((e) => {`,
@@ -238,7 +261,7 @@ export function buildNode(entryFile: string, opts: NodeBuildOptions): NodeBuildR
     `    exportsName: EXPORTS_NAME,`,
     `    framePattern: FRAME_PATTERN,`,
     `  });`,
-    `  const RUNTIME = { ...rt, FakeAudio: std.FakeAudio, FakeClock: std.FakeClock, FakeNet: std.FakeNet, FakeProc: std.FakeProc, SeededRandom: std.SeededRandom, MemoryLog: std.MemoryLog, FakeFs: std.FakeFs, FakeSpawn: std.FakeSpawn, TestAlloc: std.TestAlloc, ...(native ? { native } : {}) };`,
+    `  const RUNTIME = { ...rt, FakeAudio: std.FakeAudio, FakeClock: std.FakeClock, FakeDisplay: std.FakeDisplay, FakeNet: std.FakeNet, FakeProc: std.FakeProc, SeededRandom: std.SeededRandom, MemoryLog: std.MemoryLog, FakeFs: std.FakeFs, FakeSpawn: std.FakeSpawn, TestAlloc: std.TestAlloc, ...(native ? { native } : {}) };`,
     `  const npmMap = { ...BUNDLED_NPM, ...(options.npm ?? {}) };`,
     `  const done = new Map();`,
     `  const instantiate = (k) => {`,
@@ -260,7 +283,7 @@ export function buildNode(entryFile: string, opts: NodeBuildOptions): NodeBuildR
     `  const stop = async () => {`,
     `    rt.stopFakeIsolates();`,
     `    std.stopNodeProcs();`,
-    `    await Promise.all([rt.stopIsolates(), std.stopNodeNetServers(), ...[...activeAudioClosers].map((fn) => fn())]);`,
+    `    await Promise.all([rt.stopIsolates(), std.stopNodeDisplays(), std.stopNodeNetServers(), ...[...activeAudioClosers].map((fn) => fn())]);`,
     `  };`,
     `  const createSystem = (stdout, stderr, sysOpts) => std.createSystem(stdout, stderr, sysOpts);`,
     `  const run = async (mainFn = exports.main, sysOpts = {}) => {`,

@@ -3,10 +3,11 @@ import { randomBytes } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import * as http from "node:http";
 import { basename, dirname, join } from "node:path";
-import { asTrap, cast, err, isTrap, noteIsolateTrap, ok, readU8Slice, replaceU8Vec, spawnIsolate, type ForeignTrap, type Result } from "../../runtime-js/src/index.ts";
-import { webFetch } from "./fake.ts";
+import { asTrap, cast, err, isTrap, noteIsolateTrap, ok, readU8Slice, replaceU8Vec, spawnIsolate, type ForeignTrap, type Pos, type Result, type Slice, type Vec } from "../../runtime-js/src/index.ts";
+import { readDisplayRgba, validateDisplayConfig, webFetch } from "./fake.ts";
 import {
   ALLOC, type Alloc, type Audio, type AudioCallbackSpec, type AudioConfig, type AudioStream, type Clock, type DirEntry,
+  type Display, type DisplayColor, type DisplayConfig, type DisplayEvent, type DisplaySurface,
   type FileStat, type Fs, type FsEntryKind, type HttpHeader, type HttpServer, type HttpServerConfig, type HttpServerRawResponse, type HttpServerRequest,
   type HttpServerResponse, type IoError, type Js, type JsError, type JsRef, type Log, type Net, type Proc, type ProcOptions,
   type ProcOutput, type Random, type Spawn, type System,
@@ -332,6 +333,108 @@ export const nodeAudio: Audio = {
   open: (config, state, cb) => registeredAudio.open(config, state, cb),
 };
 
+export interface DisplayAddon {
+  open(title: string, width: number, height: number): unknown;
+  clear(surf: unknown, r: number, g: number, b: number, a: number): void;
+  fillRect(surf: unknown, x: number, y: number, w: number, h: number, r: number, g: number, b: number, a: number): void;
+  strokeRect(surf: unknown, x: number, y: number, w: number, h: number, r: number, g: number, b: number, a: number): void;
+  drawLine(surf: unknown, x1: number, y1: number, x2: number, y2: number, r: number, g: number, b: number, a: number): void;
+  drawText(surf: unknown, x: number, y: number, text: string, r: number, g: number, b: number, a: number): void;
+  blit(surf: unknown, bytes: Uint8Array, srcW: number, srcH: number, dx: number, dy: number, dw: number, dh: number): void;
+  present(surf: unknown): void;
+  poll(surf: unknown): DisplayEvent[];
+  close(surf: unknown): void;
+}
+
+const activeDisplayClosers = new Set<() => Promise<void>>();
+export async function stopNodeDisplays(): Promise<void> {
+  for (const close of [...activeDisplayClosers]) await close();
+}
+
+export function createSdlDisplay(getAddon: () => DisplayAddon): Display {
+  const normKey = (k: string): string => {
+    switch (k) {
+      case "Return": return "Enter";
+      case "Left": return "ArrowLeft";
+      case "Right": return "ArrowRight";
+      case "Up": return "ArrowUp";
+      case "Down": return "ArrowDown";
+      case "Page Up": return "PageUp";
+      case "Page Down": return "PageDown";
+      default: return k.length === 1 && k >= "A" && k <= "Z" ? k.toLowerCase() : k;
+    }
+  };
+  return {
+    async open(config: DisplayConfig): Promise<Result<DisplaySurface, IoError>> {
+      const valid = validateDisplayConfig(config);
+      if (valid.kind === "err") return valid;
+      const { width, height } = valid.value;
+      let addon: DisplayAddon;
+      try { addon = getAddon(); } catch (e) { return err({ code: "ENOENT", message: (e as Error).message }); }
+      const ext = addon.open(config.title, width, height);
+      if (ext !== null && typeof ext === "object" && "error" in (ext as Record<string, unknown>)) {
+        const eo = ext as { code?: string; error: string };
+        return err({ code: eo.code ?? "EIO", message: eo.error });
+      }
+      let closed = false;
+      const close = async (): Promise<void> => {
+        if (closed) return;
+        closed = true;
+        activeDisplayClosers.delete(close);
+        addon.close(ext);
+      };
+      activeDisplayClosers.add(close);
+      const surface: DisplaySurface = {
+        width,
+        height,
+        clear: (c: DisplayColor): void => { if (!closed) addon.clear(ext, c.r & 255, c.g & 255, c.b & 255, c.a & 255); },
+        fillRect: (x: number, y: number, w: number, h: number, c: DisplayColor): void => {
+          if (!closed && w > 0 && h > 0) addon.fillRect(ext, x, y, w, h, c.r & 255, c.g & 255, c.b & 255, c.a & 255);
+        },
+        strokeRect: (x: number, y: number, w: number, h: number, c: DisplayColor): void => {
+          if (!closed && w > 0 && h > 0) addon.strokeRect(ext, x, y, w, h, c.r & 255, c.g & 255, c.b & 255, c.a & 255);
+        },
+        drawLine: (x1: number, y1: number, x2: number, y2: number, c: DisplayColor): void => {
+          if (!closed) addon.drawLine(ext, x1, y1, x2, y2, c.r & 255, c.g & 255, c.b & 255, c.a & 255);
+        },
+        drawText: (x: number, y: number, text: string, c: DisplayColor): void => {
+          if (!closed) addon.drawText(ext, x, y, text, c.r & 255, c.g & 255, c.b & 255, c.a & 255);
+        },
+        blitRgba: (pixels: Slice<number> | Vec<number>, srcW: number, srcH: number, dx: number, dy: number, dw: number, dh: number, pos?: Pos): void => {
+          const raw = readDisplayRgba(pixels, srcW, srcH, pos);
+          if (closed || srcW === 0 || srcH === 0 || !(dw > 0 && dh > 0)) return;
+          const need = srcW * srcH * 4;
+          addon.blit(ext, raw.length === need ? raw : raw.subarray(0, need), srcW, srcH, dx, dy, dw, dh);
+        },
+        present: async (): Promise<void> => {
+          if (closed) return;
+          addon.present(ext);
+          await new Promise<void>((r) => setImmediate(r));
+        },
+        pollEvents: (): DisplayEvent[] =>
+          closed
+            ? []
+            : addon.poll(ext).map((ev) => (ev.kind === "keyDown" || ev.kind === "keyUp" ? { ...ev, key: normKey(ev.key) } : ev)),
+        close,
+        disposeAsync: close,
+        isOpen: (): boolean => !closed,
+      };
+      return ok(surface);
+    },
+  };
+}
+
+let registeredDisplay: Display = {
+  async open(_c: DisplayConfig): Promise<Result<DisplaySurface, IoError>> {
+    return err({ code: "ENOSYS", message: "display host not configured" });
+  },
+};
+/** Compiler / CLI wires SDL3 display implementation here so `std` stays Node-API-free. */
+export function setNodeDisplay(display: Display): void { registeredDisplay = display; }
+export const nodeDisplay: Display = {
+  open: (config) => registeredDisplay.open(config),
+};
+
 export function createSystem(
   stdout: (s: string) => void = (s) => void process.stdout.write(s),
   stderr: (s: string) => void = (s) => void process.stderr.write(s),
@@ -346,6 +449,7 @@ export function createSystem(
     js: nodeJs,
     spawn: nodeSpawn,
     audio: nodeAudio,
+    display: nodeDisplay,
     net: nodeNet,
     proc: createNodeProc(opts?.args),
   };

@@ -249,9 +249,15 @@
 - **検証（D177）**: `pnpm typecheck` 通過、`pnpm verify:conformance` 通過（`accept=84 reject=642 run=215`、`ok`）、`rtk bypass pnpm test` 45 ファイル 446/446 通過（`tool-authorities.test.ts` 6/6・`std.test.ts` 20/20 含む）、`rtk bypass pnpm conformance` 1 ファイル 1,298/1,298 通過、`rtk bypass pnpm bench` 通過（`dot_f32` 1.00x / `saxpy_f32` 0.99x / `prefix_i32` 1.08x / `stencil_f64` 0.99x / `particles_aos_f32` 1.37x）。
 - **実アプリドッグフーディング＆実用改善（D178、`examples/workspace-tool/`）**: `scan.szigyr`（`"use rt"`・`scanBytes`、`proved=8 failed=0 unknown=0 timeout=0`）＋ `core.szigyr`（`Fs` 拡充・`Proc`・`Net`・`Url`・WebUI・`runSelfCheck`）＋ `main.szigyr`（`HttpServer.stop()`/`waitClosed()` 優雅停止・`FakeFs.addSymlink`/厳格親検証含む単体テスト＋`forAll`）を実装。あわせて `HttpServer.stop()`/`waitClosed()`、`Url`（UTF-8 クエリ／パーセント符号化＋`QueryParam`）、`FakeFs` の親未存在 `ENOENT` 厳格化と `addSymlink` を処理系・標準ライブラリへ追加し、適合テスト 2 件（`run/263`, `reject/E6002`）を加えた。`packages/compiler/test/workspace-tool-example.test.ts`（6/6）で JS/C/Wasm 3 バックエンド一致、`szigyr prove --all`（`failed=0 unknown=0`）、`szigyr mutate --all`（`225 killed / 5 timeout / 0 survived`、28 targets）、CLI `--`、`build --target=node --backend=c --release` 再配置実行・UTF-8 HTTP・Playwright Chromium UI・`/api/shutdown`（終了 0）を検証。
 
+## 2D 描画＋入力権限（Q279、2026-11-23）
+
+- [x] `Display` 権限・`DisplaySurface`（`AsyncDisposable`、`clear`/`fillRect`/`strokeRect`/`drawLine`/`drawText`/`blitRgba`（`Ref<Slice<u8>>`、短バッファ `T002`）/`present`/`pollEvents`/`close`/`disposeAsync`/`isOpen`）、組込型 `DisplayConfig`/`DisplayColor`/`DisplayEvent`（タグ付き 7 種ユニオン）、および決定的な偽物 `FakeDisplay`（`pushEvent`/`presentCount`/`pixelAt`/`drawnTexts`）。
+- [x] Node 向け SDL3 ホスト（`packages/compiler/src/display-sdl.ts` による `libSDL3.so.0`/`libSDL3.so` 動的ロード、`build --target=node` の `display.node` 同梱・遅延ロード）とブラウザ向け HTML Canvas 2D ホスト（`packages/std/src/browser.ts`、`#szigyr-display` 自動マウント・ポインタ／ホイール／キーボード入力正規化）。
+- [x] 純 Szigyr 対話アプリ `examples/retouch/app.szigyr`（ツールバー・ブラシドラッグ・Web Worker Wasm 周波数分離・Undo/Redo・HUD・`FakeDisplay` 単体テスト）を実装し、`szigyr mutate --no-cache` で `223 killed / 10 timeout / 0 survived`（14 targets）を達成。
+- **検証（Q279）**: `pnpm typecheck` 通過、`pnpm verify:conformance` 通過（`accept=84 reject=695 run=226`、`ok`）、`rtk bypass pnpm conformance` 通過（1 ファイル `1,384/1,384`）、`rtk bypass pnpm test` 通過（57 ファイル `557/557`；`packages/compiler/test/display.test.ts` 6/6 のチェッカ検査・`T002` 3 バックエンド一致・`SDL_VIDEODRIVER=dummy` の `run`＆再配置 `buildNode` SDL3 E2E・Playwright Chromium の Canvas 2D 描画／ドラッグ／Web Worker Wasm／Undo／`Escape` 終了 E2E を含む）。
+
 ## 保留
 
-- **2D 描画＋入力権限**（段階 5 の次の独立タスク、Q279）: `microdaw`（自前描画 UI）と `skin-retouch`（ピクセル転送＋操作）を見据えた最小の 2D 描画・テキスト・ポインタ／キー入力の権限抽象（Node/SDL3＋HTML Canvas 2D）。
 - **ネイティブモバイル殻（iOS / Android）**（Q279）: モバイル専用ターゲットの必要が出たときに着手する（ブラウザ版 Wasm 成果物自体はモバイルブラウザでも動く）。
 - **managed 層のネイティブ化**: 単体の実行ファイルが必要になったら着手する。そのときに managed 層のメモリ管理方式（第一候補は参照カウント＋循環回収）も決める。
 - **本物の権限を使う統合テストと、権限の記録・再生**（Q272）: 偽の権限では足りない場面が出てから対象権限と記録形式を決める。
