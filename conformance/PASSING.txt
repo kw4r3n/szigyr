@@ -646,6 +646,7 @@ reject/E4003-rt-fn-param-default.szigyr
 reject/E4003-strict-function-as-value.szigyr
 reject/E4004-arena-create-in-rt.szigyr
 reject/E4004-box-in-rt.szigyr
+reject/E4004-filled-in-rt.szigyr
 reject/E4004-pool-create-in-rt.szigyr
 reject/E4004-push-in-rt-loop.szigyr
 reject/E4004-push-in-rt.szigyr
@@ -940,6 +941,8 @@ run/267-wave1c-interfaces-defaults-param-props.szigyr
 run/268-wave2-tuples-entries-regexp.szigyr
 run/269-phase3-result-owned-and-cell-borrow.szigyr
 run/27-trap-ownedcell-empty.szigyr
+run/270-vec-filled-string-repeat-forall.szigyr
+run/271-vec-filled-oom-trap.szigyr
 run/28-trap-shift-range.szigyr
 run/29-trap-invariant.szigyr
 run/30-int-no-negative-zero.szigyr

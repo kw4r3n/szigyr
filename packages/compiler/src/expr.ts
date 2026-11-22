@@ -1361,7 +1361,7 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
       const pool = isId(p.expression) && p.expression.text === "Pool" && isNamespace(c, p.expression);
       const arena = isId(p.expression) && p.expression.text === "Arena" && isNamespace(c, p.expression);
       const ring = isId(p.expression) && p.expression.text === "Ring" && isNamespace(c, p.expression);
-      if (((vec || pool || arena || ring) && p.name.text === "create") || (rt && unref(rt).k === "gen" && (unref(rt) as { name: string }).name === "Vec" && p.name.text === "push")) c.at("E4004", p.name, `'${p.name.text}' allocates`, { op: p.name.text });
+      if ((vec && (p.name.text === "create" || p.name.text === "filled")) || ((pool || arena || ring) && p.name.text === "create") || (rt && unref(rt).k === "gen" && (unref(rt) as { name: string }).name === "Vec" && p.name.text === "push")) c.at("E4004", p.name, `'${p.name.text}' allocates`, { op: p.name.text });
       if (isId(p.expression) && p.expression.text === "Ptr" && isNamespace(c, p.expression) && p.name.text === "box") c.at("E4004", p.name, "'Ptr.box' allocates", { op: "Ptr.box" }); // §14.4
       if (rt && unref(rt).k === "gen" && (unref(rt) as { name: string }).name === "Ptr" && p.name.text === "unbox") c.at("E4004", p.name, "'unbox' allocates", { op: "unbox" }); // §14.4
     }

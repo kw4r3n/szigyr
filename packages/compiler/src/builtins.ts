@@ -219,7 +219,7 @@ export function stringMembers(): Members {
     length: prop(USIZE),
     slice: m(RD, [USIZE, USIZE], STR, { min: 1 }), indexOf: m(RD, [STR], nullable(USIZE)), includes: m(RD, [STR], BOOL), startsWith: m(RD, [STR], BOOL),
     endsWith: m(RD, [STR], BOOL), split: m(RD, [STR], gen("Array", STR)), trim: m(RD, [], STR), toUpperCase: m(RD, [], STR), toLowerCase: m(RD, [], STR),
-    padStart: m(RD, [USIZE, STR], STR), padEnd: m(RD, [USIZE, STR], STR), replaceAll: m(RD, [STR, STR], STR),
+    padStart: m(RD, [USIZE, STR], STR), padEnd: m(RD, [USIZE, STR], STR), repeat: m(RD, [USIZE], STR), replaceAll: m(RD, [STR, STR], STR),
     charCodeAt: m(RD, [USIZE], num("u16")), codePointAt: m(RD, [USIZE], nullable(num("u32"))),
   };
 }
@@ -371,7 +371,13 @@ export function nsMembers(ns: string): Record<string, Member | "variadic"> {
     case "Promise": return { all: mo(m(RD, [gen("Array", gen("Promise", tT))], gen("Promise", gen("Array", tT)), { tparams: [T] })) };
     case "DetMath": // §12 (Q191): rt functions, so callable from every layer; f64 only
       return { ...each(DETMATH_UNARY, () => m(RD, [F64], F64)), ...each(DETMATH_BINARY, () => m(RD, [F64, F64], F64)) };
-    case "Vec": return { create: m(RD, [opaque("Alloc"), USIZE], gen("Vec", tT), { tparams: [T], tcheck: "copy" }) };
+    case "Vec": {
+      const T2 = newTParam("T"), tT2: Type = { k: "tparam", p: T2 };
+      return {
+        create: m(RD, [opaque("Alloc"), USIZE], gen("Vec", tT), { tparams: [T], tcheck: "copy" }),
+        filled: m(RD, [opaque("Alloc"), USIZE, tT2], gen("Vec", tT2), { tparams: [T2], tcheck: "copy" }),
+      };
+    }
     case "Pool": return { create: m(RD, [opaque("Alloc"), USIZE], gen("Pool", tT), { tparams: [T], tcheck: "copy" }) };
     case "Arena": return { create: m(RD, [opaque("Alloc"), USIZE], gen("Arena")) };
     case "Ring": return { create: m(RD, [opaque("Alloc"), USIZE], record([{ name: "tx", type: gen("RingTx", tT), readonly: false }, { name: "rx", type: gen("RingRx", tT), readonly: false }], true), { tparams: [T], tcheck: "ring" }) }; // §15.1 (Q199)

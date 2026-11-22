@@ -894,4 +894,44 @@ function closureInsideEnsures(s: Ref<Slice<u8>>): usize {
     expect(badDiags).toContain("4:E6002");
     expect(badDiags).toContain("8:E3004");
   });
+
+  it("proves strict Vec.filled length, indexing, and counting loop ensures without manual invariant", async () => {
+    const { dir, cacheFile } = makeTmp();
+    const src = `
+export function rampFilled(alloc: Alloc, n: usize): Vec<f64> {
+  "use owned";
+  ensures((r) => r.length === n);
+  const out = Vec.filled<f64>(alloc, n, 0);
+  for (let i: usize = 0; i < n; i += 1) {
+    out[i] = f64(i);
+  }
+  return out;
+}
+
+export function directFilledRead(alloc: Alloc, n: usize): u32 {
+  "use owned";
+  requires(n >= 3);
+  const lenOk = Vec.filled<u32>(alloc, n, 7).length;
+  if (lenOk !== n) panic("unreachable");
+  return Vec.filled<u32>(alloc, 3, 7)[2];
+}
+
+export function directFilledLen(alloc: Alloc, n: usize): usize {
+  "use owned";
+  ensures((r: usize) => r === n);
+  return Vec.filled<u32>(alloc, n, 7).length;
+}
+`;
+    const file = writeTmpFile(dir, "vec-filled-prove.szigyr", src);
+    const analysis = analyze(file, parser);
+    expect(analysis.diagnostics).toEqual([]);
+    const pRes = await prove(file, { analysis, cacheFile, parser });
+    expect(pRes.diagnostics).toEqual([]);
+    expect(pRes.summary.failed).toBe(0);
+    expect(pRes.summary.unknown).toBe(0);
+    expect(pRes.summary.proved).toBeGreaterThan(0);
+
+    const emitted = emitC(analysis.decls!, "native", { proved: pRes.proved })!;
+    expect(cFnBody(emitted.c, "rampFilled")).not.toContain("sz_chk(");
+  });
 });

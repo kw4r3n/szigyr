@@ -154,6 +154,17 @@ export class Vec<T = unknown> {
     if (elem.startsWith("{")) { const c = codecOf(elem); return new Vec<T>(new Uint8Array(Math.max(capacity, 4) * c.z) as Buf<T>, elem, c); }
     return new Vec<T>(new TYPED[elem as NumType](Math.max(capacity, 4)), elem);
   }
+  static filled<T>(_alloc: unknown, length: number, init: T, elem: ElemKind = "other"): Vec<T> {
+    if (elem === "other") {
+      const v = new Vec<T>(new Array<T>(length).fill(init), elem);
+      v.len = length;
+      return v;
+    }
+    const v = Vec.create<T>(_alloc, length, elem);
+    v.len = length;
+    v.fill(init);
+    return v;
+  }
   /** A Vec made where its element type was a type parameter ("other") switches to the representation of `elem` (C boundary, D105). */
   adopt(elem: ElemKind): void {
     if (this.elem !== "other" || elem === "other") return;

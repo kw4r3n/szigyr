@@ -1,0 +1,6 @@
+// expect: E4004 @ 5:14
+// stage: 2
+function f(n: usize): Vec<f32> {
+  "use rt";
+  return Vec.filled<f32>(TestAlloc.create(), n, 0);
+}

@@ -119,7 +119,7 @@ export function forAll(
   const rng = createRng();
   let passed = 0, rejected = 0;
   while (passed < 100) {
-    const raw = generateRaw(descs, rng, Math.min(30, 1 + Math.floor(passed / 3)));
+    const raw = generateRaw(descs, rng, Math.min(30, 1 + Math.floor((passed + rejected) / 3)));
     const res = runTrial(raw);
     if (res.kind === "skip") {
       if (++rejected >= 1000) throw new TestFailure(`forAll: gave up after ${rejected} precondition rejections (${passed} passed)`, pos, { kind: "forAll", passed, rejected });

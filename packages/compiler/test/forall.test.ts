@@ -281,4 +281,43 @@ test("-0 counterexample formats distinctively", (t: Test) => {
       expect(r.results[1]!.failure).toContain('["-0"]');
     }
   });
+
+  it("advances size across requires rejections so minimum collection length preconditions do not starve", async () => {
+    const main = project({
+      "main.szigyr": `
+function firstThreeSum(v: Ref<Vec<f64>>): f64 {
+  "use owned";
+  requires(v.length >= 3);
+  return v[0] + v[1] + v[2];
+}
+
+test("array min length requires", (t: Test) => {
+  forAll((xs: Array<f64>): void => {
+    requires(xs.length >= 3);
+    t.ok(xs.length >= 3);
+  });
+});
+
+test("vec min length requires", (t: Test) => {
+  forAll((v: Ref<Vec<f64>>): void => {
+    requires(v.length >= 3);
+    t.ok(v.length >= 3);
+  });
+});
+
+test("named strict fn with vec min length requires", (t: Test) => {
+  forAll(firstThreeSum);
+});
+`,
+    });
+    for (const backend of ["js", "c"] as const) {
+      const r = await runTestFile(main, { backend });
+      expect(r.diagnostics).toEqual([]);
+      expect(r.results.map((x) => [x.name, x.ok])).toEqual([
+        ["array min length requires", true],
+        ["vec min length requires", true],
+        ["named strict fn with vec min length requires", true],
+      ]);
+    }
+  });
 });

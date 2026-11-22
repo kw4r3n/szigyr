@@ -202,6 +202,9 @@ test("traps sees T006", (t: Test) => {
   t.eq(JSON.parse("1"), JSON.parse("1"));
   t.eq(JSON.parse("{").kind, "err");
 });
+test("repeat", (t: Test) => {
+  const s: string = "x".repeat(4294967295);
+});
 `,
     });
     const r = await runTestFile(main);
@@ -211,6 +214,7 @@ test("traps sees T006", (t: Test) => {
       ["padStart", false, "T006", 8, 25],
       ["deep", false, "T006", 2, 10],
       ["traps sees T006", true, undefined, undefined, undefined],
+      ["repeat", false, "T006", 21, 25],
     ]);
   });
 

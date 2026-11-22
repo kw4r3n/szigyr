@@ -37,7 +37,7 @@ const COMPOUND: Partial<Record<K, string>> = {
 /** §12 members that can throw a JS exception (Q035): parse errors, out-of-range code points, string / array / Map / Set size limits. */
 const THROWING: Record<string, readonly string[]> = {
   String: ["fromCodePoint"],
-  string: ["padStart", "padEnd", "replaceAll", "toUpperCase", "toLowerCase"],
+  string: ["padStart", "padEnd", "repeat", "replaceAll", "toUpperCase", "toLowerCase"],
   Array: ["push", "concat", "join"], ReadonlyArray: ["concat", "join"], Map: ["set"], Set: ["add"],
 };
 const INT_OP: Record<string, string> = { "+": "add", "-": "sub", "*": "mul" };
@@ -851,7 +851,7 @@ export function emitFile(
     const withArgs = (extra: string[]): string => `${gen(callee)}(${[...args, ...extra].join(", ")})`;
     const nn = (s: string): string => (p.questionDotToken ? `${RT}.nn(${s})` : s);
     const awaited = e.arguments.some(hasAwait);
-    if (recv.kind === K.Identifier && ((recv as ts.Identifier).text === "Vec" || (recv as ts.Identifier).text === "Pool") && m === "create" && !typeOf(recv)) {
+    if (recv.kind === K.Identifier && (((recv as ts.Identifier).text === "Vec" && (m === "create" || m === "filled")) || ((recv as ts.Identifier).text === "Pool" && m === "create")) && !typeOf(recv)) {
       const el = self?.k === "gen" ? self.args[0] : undefined;
       return withArgs([q(elemDesc(el))]);
     }

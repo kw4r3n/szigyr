@@ -201,3 +201,22 @@ describe("Vec.pack / Vec.unpack (§15.2)", () => {
     expect(r.get(0)).toEqual({ x: 1, b: false });
   });
 });
+
+describe("Vec.filled", () => {
+  const rec = JSON.stringify({ t: "rec", z: 8, a: 4, f: [{ n: "x", o: 0, l: { t: "num", n: "i32", z: 4, a: 4 } }, { n: "b", o: 4, l: { t: "bool", z: 1, a: 1 } }] }) as `{${string}`;
+  it("fills numeric, packed, and generic Vec instances with exact initial length", () => {
+    const f = Vec.filled<number>(null, 3, 1.5, "f64");
+    expect([f.length, f.get(0), f.get(1), f.get(2)]).toEqual([3, 1.5, 1.5, 1.5]);
+    const u = Vec.filled<number>(null, 2, 250, "u8");
+    expect([u.length, u.get(0), u.get(1)]).toEqual([2, 250, 250]);
+    const i64v = Vec.filled<bigint>(null, 2, -9n, "i64");
+    expect([i64v.length, i64v.get(0), i64v.get(1)]).toEqual([2, -9n, -9n]);
+    const p = Vec.filled<{ x: number; b: boolean }>(null, 2, { x: 7, b: true }, rec);
+    expect([p.length, p.get(0), p.get(1)]).toEqual([2, { x: 7, b: true }, { x: 7, b: true }]);
+    const o = Vec.filled<string>(null, 3, "ok", "other");
+    expect([o.length, o.get(0), o.get(1), o.get(2)]).toEqual([3, "ok", "ok", "ok"]);
+    const empty = Vec.filled<number>(null, 0, 99, "i32");
+    expect(empty.length).toBe(0);
+    expect(code(() => empty.get(0, pos))).toBe("T002");
+  });
+});

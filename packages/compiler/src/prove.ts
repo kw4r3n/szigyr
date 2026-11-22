@@ -645,6 +645,9 @@ class FnProver {
     if (c.expression.kind !== K.PropertyAccessExpression) return false;
     const p = c.expression as ts.PropertyAccessExpression;
     const recvT = this.typeOf(p.expression);
+    if (p.name.text === "filled" && c.arguments.length === 3 && isId(p.expression) && p.expression.text === "Vec" && !localOf.has(p.expression)) {
+      return true;
+    }
     if (p.name.text === "slice" && c.arguments.length === 2) {
       return recvT.k === "gen" && (recvT.name === "Vec" || recvT.name === "Slice");
     }
@@ -748,6 +751,10 @@ class FnProver {
       if (p.name.text === "length") {
         const lk = this.lengthKeyOf(p.expression);
         if (lk && st.env.has(lk)) return { smt: st.env.get(lk)!, exact: true };
+        if (this.isLenCall(p.expression)) {
+          const base = await this.checkExpr(p.expression, st);
+          return { smt: base.containerLen ?? base.smt, exact: base.exact };
+        }
         if (isContainer(this.typeOf(p.expression))) {
           return { smt: this.fresh("Int", "len", [0n, MAX_U32]), exact: true };
         }
@@ -1506,6 +1513,13 @@ class FnProver {
       if (isId(p.expression) && p.expression.text === "Vec" && m === "create") {
         for (const a of c.arguments) await this.checkExpr(a, st);
         return { smt: this.fresh("Int", "vec", [0n, MAX_U32]), exact: true };
+      }
+      if (isId(p.expression) && p.expression.text === "Vec" && m === "filled") {
+        const argTerms: TermVal[] = [];
+        for (const a of c.arguments) argTerms.push(await this.checkExpr(a, st));
+        const a1 = argTerms[1];
+        if (a1) return { smt: a1.smt, exact: a1.exact, containerLen: a1.smt };
+        return { smt: this.fresh("Int", "vec", [0n, MAX_U32]), exact: false };
       }
       if ((recvT.k === "gen" || recvT.k === "opaque") && recvT.name === "Arena") {
         const argTerms: TermVal[] = [];

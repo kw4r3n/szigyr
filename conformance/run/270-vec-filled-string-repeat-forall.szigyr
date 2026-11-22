@@ -1,0 +1,52 @@
+// expect-output: 4:0.5:2.5:3:10:2:-3:1.5:0|true:true:0:3:ababab::0|alpha:42
+// stage: 3
+
+type Pt = Struct<{ readonly x: f64; readonly y: i32 }>;
+
+function makeFilledF32(alloc: Alloc, n: usize): Vec<f32> {
+  "use owned";
+  const v = Vec.filled<f32>(alloc, n, f32(0.5));
+  for (let i: usize = 0; i < n; i += 1) {
+    if (i === 2) v[i] = f32(2.5);
+  }
+  return v;
+}
+
+function makeFilledGeneric<T extends Copy & Native>(alloc: Alloc, n: usize, init: T): Vec<T> {
+  "use owned";
+  return Vec.filled<T>(alloc, n, init);
+}
+
+function makePackedFilled(alloc: Alloc, n: usize): Vec<Pt> {
+  "use owned";
+  return Vec.filled(alloc, n, { x: 1.5, y: -3 });
+}
+
+function makeSideEffectLen(alloc: Alloc): usize {
+  "use owned";
+  const a = Vec.filled(alloc, 2, i32(7));
+  const b = Vec.filled<u8>(alloc, 0, 9);
+  return a.length + b.length;
+}
+
+export function main(sys: System): void {
+  const f = makeFilledF32(sys.alloc, 4);
+  const g = makeFilledGeneric<i64>(sys.alloc, 3, i64(10));
+  const p = makePackedFilled(sys.alloc, 2);
+  const empty = makeFilledGeneric<u8>(sys.alloc, 0, 9);
+  const zeroF32 = Vec.filled<f32>(sys.alloc, 0, f32(1));
+  const infI32 = Vec.filled(sys.alloc, 3, i32(-4));
+  const vecPart = `${f.length}:${f[0]}:${f[2]}:${g.length}:${g[1]}:${p.length}:${p[1].y}:${p[0].x}:${empty.length}`;
+  const extraVec = `${zeroF32.length === 0}:${infI32.length === 3 && infI32[2] === -4 && makeSideEffectLen(sys.alloc) === 2}`;
+
+  const s0 = "abc".repeat(0);
+  const s3 = "ab".repeat(3);
+  const sEmpty = "".repeat(5);
+  const strPart = `${extraVec}:${s0.length}:${divTrunc(s3.repeat(1).length, 2)}:${s3}:${sEmpty}:${s0.repeat(0).length}`;
+
+  const re = /([a-z]+)-(\d+)/;
+  const m = re.exec("id=alpha-42;");
+  const rePart = m !== null ? `${m.groups[0] ?? "?"}:${m.groups[1] ?? "?"}` : "none";
+
+  sys.log.info(`${vecPart}|${strPart}|${rePart}`);
+}

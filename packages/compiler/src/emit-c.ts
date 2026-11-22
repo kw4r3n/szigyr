@@ -1471,6 +1471,18 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
           const a = this.ex(e.arguments[0]!), n = this.ex(e.arguments[1]!);
           return this.t(t, `sz_vec_create(${a}, ${n}, ${cstr(elemDesc(el))}, ${layout(el)!.z}, ${this.pos(p.name)})`, e);
         }
+        if (ns === "Vec" && m === "filled") {
+          const el = elemOf(t);
+          ctype(t, this.where);
+          const av = this.t({ k: "opaque", name: "Alloc" }, this.ex(e.arguments[0]!), e);
+          const nv = this.t({ k: "num", name: "usize" }, this.ex(e.arguments[1]!), e);
+          const x = this.t(el, this.conv(this.ex(e.arguments[2]!), this.typeOf(e.arguments[2]!), el), e);
+          const v = this.t(t, `sz_vec_create(${av}, ${nv}, ${cstr(elemDesc(el))}, ${layout(el)!.z}, ${this.pos(p.name)})`, e);
+          const eInfo = elem(el, this.where);
+          this.emit(`${v}->len = ${nv};`);
+          this.emit(`for (uint32_t k_ = 0; k_ < ${nv}; k_++) { ${eInfo.st(`${v}->data`, "k_", x)} }`);
+          return v;
+        }
         if (ns === "Pool" && m === "create") {
           const el = elemOf(t);
           ctype(t, this.where);
