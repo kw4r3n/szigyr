@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs";
-import { dirname, relative, resolve } from "node:path";
+import { dirname } from "node:path";
 import type { Diagnostic, Range, RunResult } from "./diagnostics.ts";
 import { createParser, SyntaxKind, type Node, type ParsedFile, type Parser, type ts } from "./parse.ts";
 import { DETMATH_PATH } from "./detmath.ts";
 import { checkSyntax } from "./syntax.ts";
-import { Program as Decls, Reporter, canonPath, checkImportNames, type Layer, type Module } from "./modules.ts";
+import { Program as Decls, Reporter, canonPath, checkImportNames, displayPath, type Layer, type Module } from "./modules.ts";
 import { Checker } from "./checker.ts";
 import { checkOwnership } from "./ownership.ts";
 import { checkHeaders } from "./headercheck.ts";
@@ -126,7 +126,7 @@ function loadProgram(entryFile: string, shared?: Parser): Program {
   return { files: [...files.values()], missing };
 }
 
-const displayPath = (p: string): string => relative(process.cwd(), p) || p;
+export { displayPath };
 
 /** All-phase check: P1 -> P2 -> P3 -> P4 (see analyze). */
 export function check(entryFile: string, parser?: Parser): Diagnostic[] {
@@ -223,7 +223,7 @@ export function rtTrapSites(entryFile: string): Record<string, TrapSite[]> {
 /** Which backend runs strict / rt functions (D101, Q280). Managed code always runs on the JS engine. */
 export type Backend = "js" | "c" | "wasm";
 /** `analysis`: the result of `analyze` for this entry file, reused instead of analysing again (D162: `--backend=both` runs both backends over one analysis). */
-export interface RunOptions { backend?: Backend; analysis?: Analysis; args?: readonly string[] }
+export interface RunOptions { backend?: Backend; analysis?: Analysis; parser?: Parser; args?: readonly string[] }
 export interface TestOptions extends RunOptions { all?: boolean; filter?: string; skipTestFiles?: ReadonlySet<string> }
 
 /** Q265: the cause an isolate's abnormal end recorded (no position, not a Trap); the foreign-trap check below rethrows it as main's own trap. */
@@ -346,9 +346,9 @@ export function checkMain(decls: Decls, entryFile: string): void {
 }
 
 /** Checks, emits and runs `main(sys)` of the entry file with a real System (Q059, Q061). */
-export const run = (entryFile: string, opts: RunOptions = {}): Promise<RunResult> => exclusive(() => runNow(entryFile, opts.backend, opts.analysis, opts.args));
-async function runNow(entryFile: string, backend?: Backend, analysis?: Analysis, args?: readonly string[]): Promise<RunResult> {
-  const a = analysis ?? analyze(entryFile);
+export const run = (entryFile: string, opts: RunOptions = {}): Promise<RunResult> => exclusive(() => runNow(entryFile, opts.backend, opts.analysis, opts.args, opts.parser));
+async function runNow(entryFile: string, backend?: Backend, analysis?: Analysis, args?: readonly string[], parser?: Parser): Promise<RunResult> {
+  const a = analysis ?? analyze(entryFile, parser);
   if (a.diagnostics.length) return { diagnostics: a.diagnostics, stdout: "", trap: null };
   const e4009 = backend !== "c" ? cOnlyDiagnostic(a.files, a.unsafeOps ?? []) : undefined; // §14.7
   if (e4009) return { diagnostics: [e4009], stdout: "", trap: null };
@@ -386,7 +386,7 @@ async function runNow(entryFile: string, backend?: Backend, analysis?: Analysis,
 export const runTestFile = (entryFile: string, opts: TestOptions = {}): Promise<{ diagnostics: Diagnostic[]; results: rt.TestResult[]; skipped?: number }> =>
   exclusive(() => runTestFileNow(entryFile, opts));
 async function runTestFileNow(entryFile: string, opts: TestOptions = {}): Promise<{ diagnostics: Diagnostic[]; results: rt.TestResult[]; skipped?: number }> {
-  const a = opts.analysis ?? analyze(entryFile);
+  const a = opts.analysis ?? analyze(entryFile, opts.parser);
   if (a.diagnostics.length) return { diagnostics: a.diagnostics, results: [] };
   const e4009 = opts.backend !== "c" ? cOnlyDiagnostic(a.files, a.unsafeOps ?? []) : undefined; // §14.7
   if (e4009) return { diagnostics: [e4009], results: [] };

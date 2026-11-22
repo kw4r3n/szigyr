@@ -994,4 +994,57 @@ test("fake spawn worker", async (t: Test) => {
     expect(r.summary.survived).toBe(0);
     expect(elapsed).toBeLessThan(10000);
   });
+
+  it("supports op-scoped // szigyr-equivalent[op1, op2]: reason while keeping other mutants on the same line", async () => {
+    const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-equiv-ops-`));
+    const f = join(dir, "main.szigyr");
+    writeFileSync(f, `function oneOp(x: i32): i32 {
+  if (x >= 10) return 99; // szigyr-equivalent[>= -> >]: x === 10 never happens in callers
+  return x;
+}
+function twoOps(x: i32): i32 {
+  if (x >= 0) return 42; // szigyr-equivalent[>= -> >, num -> 0]: x === 0 unreachable and 42 unchecked
+  return x;
+}
+function prevPlusInline(x: i32): i32 {
+  // szigyr-equivalent[if -> false]: test previous-line filter
+  if (x >= 0) return x + 1; // szigyr-equivalent[>= -> >]: test inline filter union
+  return -x;
+}
+function emptyOrMismatch(x: i32): i32 {
+  // szigyr-equivalent[]: ignored empty filter
+  if (x >= 5) return 99; // szigyr-equivalent[nonexistent]: mismatched op does not suppress
+  return x;
+}
+test("ops", (t: Test) => {
+  t.eq(oneOp(5), 5);
+  t.eq(oneOp(11), 99);
+  t.eq(twoOps(-1), -1);
+  t.eq(twoOps(1), 42);
+  t.eq(prevPlusInline(-3), 3);
+  t.eq(prevPlusInline(2), 3);
+  t.eq(emptyOrMismatch(1), 1);
+  t.eq(emptyOrMismatch(6), 99);
+});
+`);
+    const r = await mutate(f, { cache: false });
+    expect(r.diagnostics).toEqual([]);
+    expect(r.baselineFailure).toBeNull();
+    const oneOpMutants = r.mutants.filter((m) => m.fn === "oneOp");
+    expect(oneOpMutants.some((m) => m.op === ">= -> >")).toBe(false);
+    expect(oneOpMutants.some((m) => m.op === "if -> false" && m.status === "killed")).toBe(true);
+    expect(oneOpMutants.some((m) => m.op === "num -> 0" && m.status === "killed")).toBe(true);
+
+    const twoOpMutants = r.mutants.filter((m) => m.fn === "twoOps");
+    expect(twoOpMutants.some((m) => m.op === ">= -> >" || m.op === "num -> 0")).toBe(false);
+    expect(twoOpMutants.some((m) => m.op === "if -> true" && m.status === "killed")).toBe(true);
+
+    const unionMutants = r.mutants.filter((m) => m.fn === "prevPlusInline");
+    expect(unionMutants.some((m) => m.op === "if -> false" || m.op === ">= -> >")).toBe(false);
+    expect(unionMutants.some((m) => m.op === "if -> true")).toBe(true);
+    expect(unionMutants.some((m) => m.op === "+ -> -")).toBe(true);
+
+    const badMutants = r.mutants.filter((m) => m.fn === "emptyOrMismatch");
+    expect(badMutants.some((m) => m.op === ">= -> >" && m.status === "survived")).toBe(true);
+  });
 });

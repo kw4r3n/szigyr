@@ -1,12 +1,12 @@
 // Stage 6 SMT-LIB2 verification condition generator, loop auto-invariant verifier, and function cache (Q289-Q292).
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, relative, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import type { Diagnostic, Range } from "./diagnostics.ts";
 import { DETMATH_PATH } from "./detmath.ts";
 import { analyze, type Analysis } from "./index.ts";
 import { callFns, exprTypes, localOf } from "./expr.ts";
-import { canonPath, directiveOf, type ConstSym, type FnSym, type LocalSym, type Module, type Program as Decls } from "./modules.ts";
+import { canonPath, directiveOf, displayPath, type ConstSym, type FnSym, type LocalSym, type Module, type Program as Decls } from "./modules.ts";
 import { CACHE_DIR } from "./names.ts";
 import { NodeFlags, SyntaxKind as K, isId, type Node, type Parser, type ts } from "./parse.ts";
 import { detectSolver, runSmtBatch, type SmtQuery, type SmtValue } from "./smt.ts";
@@ -100,7 +100,6 @@ const truncDivSmt = (l: string, r: string, signed: boolean): string =>
 const truncRemSmt = (l: string, r: string, signed: boolean): string =>
   `(- ${l} (* ${r} ${truncDivSmt(l, r, signed)}))`;
 
-const displayPath = (p: string): string => relative(process.cwd(), p) || p;
 const smtInt = (v: bigint): string => (v < 0n ? `(- ${-v})` : `${v}`);
 const inBounds = (term: string, lo: bigint, hi: bigint): string => `(and (>= ${term} ${smtInt(lo)}) (<= ${term} ${smtInt(hi)}))`;
 const isSignedInt = (t: Type): boolean => t.k === "num" && INT_BOUNDS[t.name]?.[2] === true;

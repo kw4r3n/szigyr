@@ -50,3 +50,20 @@ it("maps .szigyr files to virtual .ts for tsgo while preserving .szigyr paths", 
     p.close();
   }
 });
+
+it("evict() closes tracked files cleanly on next parse() without stale entries", () => {
+  const p = createParser({ "/m/one.szigyr": "export const A: i32 = 1;\n", "/m/two.szigyr": "export const B: i32 = 2;\n" });
+  try {
+    expect(p.parse(["/m/one.szigyr"]).get("/m/one.szigyr")?.syntaxErrors).toEqual([]);
+    p.evict?.();
+    const r2 = p.parse(["/m/two.szigyr"]);
+    expect([...r2.keys()]).toEqual(["/m/two.szigyr"]);
+    expect(r2.get("/m/two.szigyr")?.syntaxErrors).toEqual([]);
+    p.evict?.();
+    // Re-parsing a previously evicted file produces a fresh AST cleanly.
+    const r3 = p.parse(["/m/one.szigyr"]);
+    expect(r3.get("/m/one.szigyr")?.syntaxErrors).toEqual([]);
+  } finally {
+    p.close();
+  }
+});

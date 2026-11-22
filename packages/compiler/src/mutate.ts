@@ -3,7 +3,7 @@
 // step-fuel timeout abortion, per-function diff caching, and shrunk witness search.
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, relative, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { loadNpmModule } from "./bundle-npm.ts";
 import { analyze, CliError, type Analysis } from "./index.ts";
 import { DETMATH_PATH } from "./detmath.ts";
@@ -13,7 +13,7 @@ import { emitFile, EXPORTS, IMP, MUT_FNS, RT, SOURCE_URL, type EmitMutate, type 
 import { SyntaxKind as K, isId, type Node, type Parser, type ts } from "./parse.ts";
 import { callFns, localOf } from "./expr.ts";
 import { genDescOf, isGeneratable } from "./gendesc.ts";
-import { canonPath, type ConstSym, type FnSym, type Module, type Program as Decls, type TypeSym } from "./modules.ts";
+import { canonPath, displayPath, type ConstSym, type FnSym, type Module, type Program as Decls, type TypeSym } from "./modules.ts";
 import { isDeterministic, isMutatable } from "./determinism.ts";
 import type { ClassSym, Type } from "./types.ts";
 import * as rt from "../../runtime-js/src/index.ts";
@@ -114,8 +114,6 @@ interface CacheEntry {
   results: { op: string; status: "killed" | "survived" | "timeout"; deadCode?: true; witness?: Witness | null }[];
 }
 type CacheStore = Record<string, CacheEntry>;
-
-const displayPath = (p: string): string => relative(process.cwd(), p) || p;
 
 /** Main entry for `szigyr mutate` on a single file (called inside `exclusive` from `index.ts`). */
 export async function mutateFile(entryFile: string, opts: MutateOptions = {}): Promise<MutateResult> {
@@ -415,19 +413,27 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
   }
 
   const linesByMod = new Map<Module, string[]>();
-  const isEquivalentLine = (mod: Module, line: number): boolean => {
+  const matchesEquiv = (m: RegExpMatchArray | null, op: string): boolean => {
+    if (!m) return false;
+    if (m[1] === undefined) return true;
+    const ops = m[1].split(",").map((s) => s.trim()).filter(Boolean);
+    return ops.includes(op);
+  };
+  const isEquivalentSuppressed = (mod: Module, line: number, op: string): boolean => {
     let sourceLines = linesByMod.get(mod);
     if (!sourceLines) linesByMod.set(mod, sourceLines = mod.sf.text.split("\n"));
     const cur = sourceLines[line - 1] ?? "";
-    if (/\/\/\s*szigyr-equivalent:\s*\S/.test(cur)) return true;
     const prev = line >= 2 ? (sourceLines[line - 2] ?? "") : "";
-    return /^\s*\/\/\s*szigyr-equivalent:\s*\S/.test(prev);
+    return (
+      matchesEquiv(/\/\/\s*szigyr-equivalent(?:\[([^\]]*)\])?:\s*\S/.exec(cur), op) ||
+      matchesEquiv(/^\s*\/\/\s*szigyr-equivalent(?:\[([^\]]*)\])?:\s*\S/.exec(prev), op)
+    );
   };
 
   const reports: MutantReport[] = [];
   for (const target of targets) {
     const targetDisplay = displayPath(target.mod.pf.path);
-    const fnMutants = (mutantsByFn.get(target.fnId) ?? []).filter((m) => !isEquivalentLine(target.mod, m.range.start.line));
+    const fnMutants = (mutantsByFn.get(target.fnId) ?? []).filter((m) => !isEquivalentSuppressed(target.mod, m.range.start.line, m.op));
     if (!fnMutants.length) continue;
 
     const reaching = activeTests.filter((t) => t.reached.has(target.fnId));

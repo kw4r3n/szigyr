@@ -1,13 +1,19 @@
 // P2 declarations (D011): one Module per file, top-level symbols, imports, type-node resolution, signatures, layers.
 // Signatures come from annotations only (§10: "シグネチャはすべて注釈されているので、構文だけから取り出せる").
 import { realpathSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { Diagnostic } from "./diagnostics.ts";
 import { NodeFlags, SyntaxKind as K, hasMod, isId, isParamProp, isRecordInterface, type Node, type ParsedFile, type ts } from "./parse.ts";
 /** The absolute path with symlinks resolved, so one file reached through two names is one module (Q253). A path that does not exist stays as resolved (E7001). */
 export function canonPath(...p: string[]): string {
   const r = resolve(...p);
   try { return realpathSync(r); } catch { return r; }
+}
+/** Relative path when inside `process.cwd()`, absolute path when outside CWD (avoiding `../../...` chains). */
+export function displayPath(p: string): string {
+  const rel = relative(process.cwd(), p);
+  if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return p;
+  return rel;
 }
 import { CAPABILITY_NAMES, RESERVED, builtinType, isGenName } from "./builtins.ts";
 import {

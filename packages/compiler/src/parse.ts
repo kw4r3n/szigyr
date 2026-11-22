@@ -39,6 +39,8 @@ export interface Parser {
   /** Sets or clears an in-memory buffer override (used by editors/MCP). */
   setOverlay?(path: string, content: string): void;
   clearOverlay?(path?: string): void;
+  /** Drops tracked files so subsequent parse() rounds do not accumulate open files in tsgo. */
+  evict?(): void;
   close(): void;
 }
 
@@ -58,6 +60,7 @@ export function createParser(sources?: Record<string, string>): Parser {
   const overlays = new Map<string, string>();
   const vfsFiles = new Map<string, string>();
   const entries = new Map<string, { vp: string; text: string }>();
+  const pendingClose: string[] = [];
   const fs: FileSystem = {
     readFile: (f) => (vfsFiles.has(f) ? vfsFiles.get(f)! : undefined),
     fileExists: (f) => (vfsFiles.has(f) ? true : undefined),
@@ -84,12 +87,19 @@ export function createParser(sources?: Record<string, string>): Parser {
       if (path === undefined) overlays.clear();
       else { overlays.delete(normPath(path)); overlays.delete(resolve(path)); }
     },
+    evict() {
+      for (const cur of entries.values()) {
+        pendingClose.push(cur.vp);
+        vfsFiles.delete(cur.vp);
+      }
+      entries.clear();
+    },
     parse(paths) {
       const out = new Map<string, ParsedFile>();
       const want = paths.map((p) => resolve(p));
       if (!want.length) return out;
       const openFiles: string[] = [];
-      const closeFiles: string[] = [];
+      const closeFiles: string[] = pendingClose.splice(0);
       for (const p of want) {
         const text = readText(p);
         const cur = entries.get(p);
@@ -140,6 +150,7 @@ export function createParser(sources?: Record<string, string>): Parser {
       api = undefined;
       vfsFiles.clear();
       entries.clear();
+      pendingClose.length = 0;
       overlays.clear();
     },
   };

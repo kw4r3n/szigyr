@@ -10,8 +10,18 @@ const prefixes = process.argv.slice(2).filter((a) => a !== "--allow-remove");
 if (!prefixes.length) { console.error("usage: update-passing.mjs [--allow-remove] <case-name-prefix>..."); process.exit(2); }
 ensureSzcb(); // the szcb fixture cases need its pkg-config entry, as in conformance.conf.ts
 const pass = [], fail = [];
-for (const c of loadCases("conformance")) {
-  if (prefixes.some((p) => c.name.startsWith(p))) ((await runCase(c, compiler)).length ? fail : pass).push(c.name);
+const parser = compiler.createParser();
+const shared = {
+  ...compiler,
+  check: (f) => { parser.evict?.(); return compiler.check(f, parser); },
+  run: (f) => { parser.evict?.(); return compiler.run(f, { parser }); },
+};
+try {
+  for (const c of loadCases("conformance")) {
+    if (prefixes.some((p) => c.name.startsWith(p))) ((await runCase(c, shared)).length ? fail : pass).push(c.name);
+  }
+} finally {
+  parser.close();
 }
 const old = existsSync("conformance/PASSING.txt") ? readFileSync("conformance/PASSING.txt", "utf8").split("\n").filter(Boolean) : [];
 const removed = passingRemovals(old, pass);

@@ -1,6 +1,6 @@
 // Runs conformance/ against the real compiler. Run with `pnpm conformance` (SZIGYR_STAGE=N to limit).
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import * as compiler from "../src/index.ts";
 import { atCSpecifier, filterByStage, loadCases, missingCPackages, parseStage, pkgExists, runCase } from "./harness.ts";
 import { ensureSzcb } from "./szcb.ts";
@@ -12,10 +12,6 @@ const root = fileURLToPath(new URL("../../../conformance", import.meta.url));
 const stage = parseStage(process.env.SZIGYR_STAGE);
 const cases = filterByStage(loadCases(root), stage);
 
-/** D101 / Q280: stage 2+ run cases also run with strict / rt compiled to C and Wasm. */
-const cBackend = { ...compiler, backend: "c" as const, run: (f: string) => compiler.run(f, { backend: "c" }) };
-const wasmBackend = { ...compiler, backend: "wasm" as const, run: (f: string) => compiler.run(f, { backend: "wasm" }) };
-
 /** §14.7: a `// backend: c` case needs the pkg-config packages its `c:` specifiers name.
  * Where one is unavailable the case is skipped (and counted below), never failed. */
 const skipped: string[] = [];
@@ -23,6 +19,33 @@ const skipped: string[] = [];
 const C_PENDING = new Set<string>([]); // stage-2 run cases the C backend does not translate yet (none since D105)
 
 describe("conformance", () => {
+  const parser = compiler.createParser();
+  afterAll(() => parser.close());
+
+  let lastEntry: string | undefined;
+  let lastAnalysis: compiler.Analysis | undefined;
+  const analysisOf = (f: string): compiler.Analysis => {
+    if (lastEntry !== f || !lastAnalysis) {
+      parser.evict?.();
+      lastEntry = f;
+      lastAnalysis = compiler.analyze(f, parser);
+    }
+    return lastAnalysis;
+  };
+  const jsCompiler = {
+    ...compiler,
+    check: (f: string) => {
+      parser.evict?.();
+      lastEntry = undefined;
+      lastAnalysis = undefined;
+      return compiler.check(f, parser);
+    },
+    run: (f: string) => compiler.run(f, { analysis: analysisOf(f) }),
+  };
+  /** D101 / Q280: stage 2+ run cases also run with strict / rt compiled to C and Wasm. */
+  const cBackend = { ...compiler, backend: "c" as const, run: (f: string) => compiler.run(f, { backend: "c", analysis: analysisOf(f) }) };
+  const wasmBackend = { ...compiler, backend: "wasm" as const, run: (f: string) => compiler.run(f, { backend: "wasm", analysis: analysisOf(f) }) };
+
   it(`${cases.length} cases${stage === undefined ? "" : ` (stage <= ${stage})`}`, () => {});
   for (const c of cases) {
     // §14.2: the header check also makes accept cases depend on their libraries, and an E2009
@@ -35,7 +58,7 @@ describe("conformance", () => {
       continue;
     }
     it(c.name, async () => {
-      expect(await runCase(c, compiler)).toEqual([]);
+      expect(await runCase(c, jsCompiler)).toEqual([]);
     });
     if (c.kind === "run" && c.stage >= 2) {
       it(`${c.name} [c]`, async () => {

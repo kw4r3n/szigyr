@@ -1,6 +1,6 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { main } from "../src/cli.ts";
 import { CLI_NAME } from "../src/names.ts";
@@ -82,7 +82,7 @@ describe("CLI check --fix", () => {
     writeFileSync(fText, src);
     const r = await runCli(["check", "--fix", fText]);
     expect(r.code).toBe(0);
-    expect(r.out).toContain(`fixed ${relative(process.cwd(), fText)} (2 edit(s))`);
+    expect(r.out).toContain(`fixed ${fText} (2 edit(s))`);
     const fixed = readFileSync(fText, "utf8");
     expect(fixed).toContain("let total: i32 = 0;");
     expect(fixed).toContain("for (let i: usize = 0; i < xs.length; i++)");
@@ -93,7 +93,7 @@ describe("CLI check --fix", () => {
     writeFileSync(fJson, src);
     const rj = await runCli(["check", "--fix", "--json", fJson]);
     expect(rj.code).toBe(0);
-    expect(jsonLines(rj.out)).toEqual([{ kind: "fixed", file: relative(process.cwd(), fJson), applied: 2 }]);
+    expect(jsonLines(rj.out)).toEqual([{ kind: "fixed", file: fJson, applied: 2 }]);
   });
 
   it("deduplicates colliding parameter insertion on multi-edit E5001 fixes", async () => {
@@ -106,7 +106,7 @@ describe("CLI check --fix", () => {
 `);
     const r = await runCli(["check", "--fix", f]);
     expect(r.code).toBe(0);
-    expect(r.out).toContain(`fixed ${relative(process.cwd(), f)} (3 edit(s))`);
+    expect(r.out).toContain(`fixed ${f} (3 edit(s))`);
     const updated = readFileSync(f, "utf8");
     expect(updated).toBe(`function greet(name: string, log: Log): void {
   log.info("hello");
@@ -190,5 +190,21 @@ test("boundary", (t: Test) => {
     writeFileSync(f, `export function main(sys: System): void { sys.log.info("ok"); }\n`);
     expect((await runCli(["check", "--all", f])).code).toBe(2);
     expect((await runCli(["test", "--fail-on-survived", f])).code).toBe(2);
+  });
+
+  it("displays relative paths inside CWD and absolute paths outside CWD", async () => {
+    const inside = await runCli(["check", "--json", "conformance/reject/E1001-var-in-function.szigyr"]);
+    expect(inside.code).toBe(1);
+    const inDiag = jsonLines(inside.out)[0];
+    expect(inDiag.file).toBe("conformance/reject/E1001-var-in-function.szigyr");
+
+    const dir = makeDir("outside-cwd");
+    const outsideFile = join(dir, "bad.szigyr");
+    writeFileSync(outsideFile, "function f(): i32 { var x: i32 = 1; return x; }\n");
+    const outside = await runCli(["check", "--json", outsideFile]);
+    expect(outside.code).toBe(1);
+    const outDiag = jsonLines(outside.out)[0];
+    expect(outDiag.file).toBe(outsideFile);
+    expect(outDiag.file).not.toContain("..");
   });
 });

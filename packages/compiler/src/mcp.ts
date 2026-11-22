@@ -1,12 +1,12 @@
 // Stdio JSON-RPC 2.0 MCP server (`szigyr mcp`) powered by a resident incremental compiler session.
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { relative, resolve } from "node:path";
+import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { BUILTIN_FUNCTIONS, CAPABILITY_NAMES, NAMESPACES, SPEC_RESERVED, genMembers, nsMembers, opaqueMembers, stringMembers, type Member } from "./builtins.ts";
-import { analyze, check, CLI_NAME, createParser, explainCode, mutate, prove, queryFile, run, runTestFile, shutdownSmt, type Backend, type Parser } from "./index.ts";
+import { analyze, check, CLI_NAME, createParser, displayPath, explainCode, mutate, prove, queryFile, run, runTestFile, shutdownSmt, type Backend, type Parser } from "./index.ts";
 import { GEN_ARITY, OPAQUE_NAMES, show, type GenName, type Type } from "./types.ts";
 
 export interface McpOptions {
@@ -505,7 +505,7 @@ export async function serveMcp(opts: McpOptions = {}): Promise<number> {
         const durationMs = +(performance.now() - t0).toFixed(2);
         return okTool({
           ok: diagnostics.every((d) => d.severity !== "error"),
-          file: relative(process.cwd(), resolvedFile) || resolvedFile,
+          file: displayPath(resolvedFile),
           diagnostics,
           durationMs,
         });
