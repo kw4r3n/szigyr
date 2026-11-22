@@ -1,0 +1,10 @@
+// expect: E4003 @ 7:45
+// stage: 2
+function inc(x: i32): i32 {
+  "use rt";
+  return x + 1;
+}
+function apply(x: i32, f: (n: i32) => i32 = inc): i32 {
+  "use rt";
+  return f(x);
+}

@@ -1,0 +1,5 @@
+// expect: E3004 @ 4:27
+// stage: 2
+class C {
+  constructor(readonly r: Ref<Vec<i32>>) {}
+}

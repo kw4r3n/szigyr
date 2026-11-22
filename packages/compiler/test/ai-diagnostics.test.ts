@@ -38,11 +38,11 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
     const tup = checkSrc("type Pair = [i32, string];\n").diags[0]!;
     expect(tup).toMatchObject({ code: "E1000", message: "tuple types are not allowed; use a record '{ readonly ... }' or 'Struct<{ ... }>'", data: { kind: "tuple-type" } });
 
-    const ifaceField = checkSrc("interface Foo { readonly x: i32; }\n").diags[0]!;
-    expect(ifaceField).toMatchObject({
+    const ifaceMixed = checkSrc("interface Foo { readonly x: i32; m(): void; }\n").diags[0]!;
+    expect(ifaceMixed).toMatchObject({
       code: "E1000",
-      message: "interface fields are not allowed (interfaces only declare methods); use 'type ... = { ... }' for records",
-      data: { kind: "interface-field" },
+      message: "interface cannot mix fields and methods",
+      data: { kind: "interface-mixed" },
     });
 
     const forIn = checkSrc("export function f(xs: Array<i32>): void { for (const k in xs) {} }\n").diags[0]!;

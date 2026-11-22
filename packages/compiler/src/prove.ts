@@ -1252,7 +1252,40 @@ class FnProver {
       const av = argVals[idx];
       if (av) pMap.set(ps.id, av);
       const argNode = args[idx];
-      if (!argNode) return;
+      if (!argNode) {
+        if (!p.initializer) return;
+        this.withTempEnv(st, env, inexact, () => {
+          const pu = unref(ps.type);
+          if (pu.k === "record" || isTaggedUnion(pu)) {
+            const rf = this.extractRecordFields(p.initializer!, st, target.mod);
+            for (const [path, fv] of rf) {
+              const fk = `field:${ps.id}.${path}`;
+              env.set(fk, fv.smt);
+              if (!fv.exact) inexact.add(fk);
+            }
+          } else if (isContainer(pu)) {
+            const iv = strip(p.initializer!);
+            if (iv.kind === K.ArrayLiteralExpression) {
+              env.set(`len:${ps.id}`, smtInt(BigInt((iv as ts.ArrayLiteralExpression).elements.length)));
+            } else {
+              const lv = this.exprContainerLength(p.initializer!, st);
+              if (lv !== undefined) env.set(`len:${ps.id}`, lv);
+              else {
+                env.set(`len:${ps.id}`, this.fresh("Int", `${ps.name}_def_len`, [0n, MAX_U32]));
+                inexact.add(`len:${ps.id}`);
+              }
+            }
+          } else if (isBool(pu)) {
+            const bv = this.evalPureBool(p.initializer!, st, target.mod, pMap);
+            pMap.set(ps.id, { smt: bv.smt, exact: bv.exact });
+          } else if (isInt(pu) || isStrLitLike(pu)) {
+            pMap.set(ps.id, this.evalPureInt(p.initializer!, st, target.mod, pMap));
+          } else {
+            pMap.set(ps.id, { smt: this.freshForType(ps.type, `${ps.name}_def`), exact: false });
+          }
+        });
+        return;
+      }
       const lk = this.lengthKeyOf(argNode);
       if (lk && st.env.has(lk)) {
         env.set(`len:${ps.id}`, st.env.get(lk)!);
@@ -2169,6 +2202,16 @@ class FnProver {
 
   async run(): Promise<void> {
     if (!this.f.decl.body) return;
+    if (this.f.decl.parameters.some((p) => !!p.initializer)) {
+      const defSt: State = { terminated: false, env: new Map(), inexact: new Set(), assumptions: [], modelVars: new Map() };
+      for (const p of this.f.decl.parameters) {
+        if (p.initializer) await this.checkExpr(p.initializer, cloneState(defSt));
+        if (isId(p.name)) {
+          const sym = localOf.get(p.name);
+          if (sym) this.initLocal(defSt, sym, sym.name);
+        }
+      }
+    }
     const st = this.initEntry();
     for (const s of this.f.decl.body.statements) {
       await this.checkStmt(s, st);
@@ -2318,6 +2361,7 @@ function indexAnchors(f: FnSym): Map<string, Node> {
     }
     n.forEachChild(walk);
   };
+  for (const p of f.decl.parameters) if (p.initializer) walk(p.initializer);
   if (f.decl.body) walk(f.decl.body);
   return out;
 }

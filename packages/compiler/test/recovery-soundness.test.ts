@@ -25,7 +25,8 @@ function applyFix(src: string, d: Diagnostic): string {
 
 describe("P1 -> P2 recovery without crashing", () => {
   const recoveryCases: [string, string][] = [
-    ["interface with property signatures", "interface Point { x: f64; y: f64; }\n"],
+    ["interface mixing property and method signatures", "interface Point { x: f64; m(): void; }\n"],
+    ["interface with index signature", "interface Dict { [k: string]: i32; }\n"],
     ["type literal with index signature", "type Dict = { [k: string]: i32 };\n"],
     ["type literal with method signature", "type HasMethod = { foo(): i32; readonly x: i32 };\n"],
     ["function overload without body", "function ov(x: i32): i32;\nfunction ov(x: i32): i32 { return x; }\n"],

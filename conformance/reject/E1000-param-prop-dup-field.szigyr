@@ -1,0 +1,8 @@
+// expect: E1000 @ 5:24
+// stage: 1
+class C {
+  x: i32;
+  constructor(readonly x: i32) {
+    this.x = x;
+  }
+}

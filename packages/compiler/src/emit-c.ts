@@ -64,7 +64,7 @@ function resolveCFn(mod: Module, name: string): CFnSym | undefined {
 /** One C function: a strict / rt function, or one instantiation of a generic one (D104). `fns` is the
  * Q189 (b) part of the key: the concrete function bound to each function-typed parameter (by parameter index).
  * Function-typed parameters have no C parameter; calls through them call the bound instantiation directly. */
-interface Inst { f: FnSym; m: Map<number, Type>; fns: Map<number, FnSym>; name: string; params: Type[]; ret: Type }
+interface Inst { f: FnSym; m: Map<number, Type>; fns: Map<number, FnSym>; name: string; params: Type[]; ret: Type; full?: Inst }
 /** The parameter indices of `f` whose type is a function type (Q189 (b)). */
 const fnParamIdx = (f: FnSym): number[] => f.sig.params.flatMap((pt, i) => (unref(pt).k === "fn" ? [i] : []));
 
@@ -93,15 +93,26 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
   let fnIndex = 0;
   const fnBase = new Map<FnSym, string>();
   const baseOf = (f: FnSym): string => { let b = fnBase.get(f); if (!b) fnBase.set(f, b = `sz_F${fnIndex++}_${f.name}`); return b; };
-  /** The C function for `f` with type arguments `args` and function arguments `fnArgs` (D104 + Q189 (b)). */
-  function inst(f: FnSym, args: Type[], fnArgs: Map<number, FnSym>, where: string): Inst {
+  /** The C function for `f` with type arguments `args`, function arguments `fnArgs`, and arity `argc` (D104 + Q189 (b)). */
+  function inst(f: FnSym, args: Type[], fnArgs: Map<number, FnSym>, where: string, argc = f.sig.params.length): Inst {
     if (args.some(hasTParam)) throw new CUnsupported(where, "a generic instantiation that is not concrete");
-    const key = `${baseOf(f)}<${args.map(show).join(",")}|${[...fnArgs].map(([j, g]) => `${j}:${baseOf(g)}`).join(",")}>`;
-    let i = insts.get(key);
+    const fullKey = `${baseOf(f)}<${args.map(show).join(",")}|${[...fnArgs].map(([j, g]) => `${j}:${baseOf(g)}`).join(",")}>`;
+    if (argc < f.sig.params.length) {
+      const full = inst(f, args, fnArgs, where, f.sig.params.length);
+      const key = `${fullKey}#${argc}`;
+      let i = insts.get(key);
+      if (!i) {
+        i = { f, m: full.m, fns: fnArgs, name: `${full.name}_a${argc}`, params: full.params.slice(0, argc), ret: full.ret, full };
+        insts.set(key, i);
+        queue.push(i);
+      }
+      return i;
+    }
+    let i = insts.get(fullKey);
     if (!i) {
       const m = new Map(f.sig.tparams.map((p, k) => [p.id, args[k]!]));
       i = { f, m, fns: fnArgs, name: args.length || fnArgs.size ? `${baseOf(f)}_I${insts.size}` : baseOf(f), params: f.sig.params.map((p) => subst(p, m)), ret: subst(f.sig.ret, m) };
-      insts.set(key, i);
+      insts.set(fullKey, i);
       queue.push(i);
     }
     return i;
@@ -117,8 +128,12 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
     return out;
   }
   for (const f of fns) {
-    if (!f.sig.tparams.length && !fnParamIdx(f).length) keys.set(f.decl, inst(f, [], new Map(), f.name).name);
-    else keys.set(f.decl, "!generic"); // called through its instances only (emit.ts)
+    if (!f.sig.tparams.length && !fnParamIdx(f).length) {
+      keys.set(f.decl, inst(f, [], new Map(), f.name).name);
+      if (f.sig.min !== undefined && f.sig.min < f.sig.params.length) {
+        for (let a = f.sig.min; a < f.sig.params.length; a++) inst(f, [], new Map(), f.name, a);
+      }
+    } else keys.set(f.decl, "!generic"); // called through its instances only (emit.ts)
   }
   // Managed call sites of generic strict / rt functions get the key of their instance (D104).
   for (const mod of prog.mods) {
@@ -146,7 +161,7 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
         if (fn && fn.layer !== "managed" && (fn.sig.tparams.length || fnParamIdx(fn).length)) {
           const p = mod.pf.position(n.getStart(mod.sf));
           const where = `${mod.file}:${p.line}:${p.col}`;
-          keys.set(n, inst(fn, callTArgs.get(n as ts.CallExpression) ?? [], rootFnArgs(n as ts.CallExpression, fn, where), where).name);
+          keys.set(n, inst(fn, callTArgs.get(n as ts.CallExpression) ?? [], rootFnArgs(n as ts.CallExpression, fn, where), where, (n as ts.CallExpression).arguments.length).name);
         }
       }
       n.forEachChild(walk);
@@ -454,7 +469,7 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
 
   function proto(i: Inst): string {
     const where = `${i.f.mod.file}: ${i.f.name}`;
-    const ps = i.f.decl.parameters.flatMap((p, k) => (unref(i.params[k]!).k === "fn" ? [] : [`${ctype(i.params[k]!, where)} u_${(p.name as ts.Identifier).text}`])); // Q189 (b): no runtime value
+    const ps = i.f.decl.parameters.slice(0, i.params.length).flatMap((p, k) => (unref(i.params[k]!).k === "fn" ? [] : [`${ctype(i.params[k]!, where)} u_${(p.name as ts.Identifier).text}`])); // Q189 (b): no runtime value
     return `static ${ctype(i.ret, where)} ${i.name}(${ps.join(", ") || "void"})`;
   }
 
@@ -582,6 +597,36 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
 
     run(): string {
       const f = this.f;
+      if (this.i.full) {
+        const full = this.i.full;
+        this.scopes.push(new Map());
+        const argc = this.i.params.length;
+        const callArgs: string[] = [];
+        for (let k = 0; k < argc; k++) {
+          const p = f.decl.parameters[k]!;
+          if (p.name.kind !== K.Identifier) throw this.no(p, "a destructured parameter");
+          const t = full.params[k]!, a = unref(t);
+          if (a.k === "fn") continue;
+          const name = (p.name as ts.Identifier).text;
+          this.scopes[0]!.set(name, { c: borrowMode(t) && isStruct(a) ? `(*u_${name})` : `u_${name}`, t: a, ptr: false });
+          callArgs.push(`u_${name}`);
+        }
+        for (let k = argc; k < f.decl.parameters.length; k++) {
+          const p = f.decl.parameters[k]!;
+          if (p.name.kind !== K.Identifier) throw this.no(p, "a destructured parameter");
+          const pt = full.params[k]!, a = unref(pt);
+          if (a.k === "fn") continue;
+          const name = (p.name as ts.Identifier).text;
+          const val = this.conv(this.ex(p.initializer!), this.typeOf(p.initializer!), pt);
+          const ct = ctype(pt, this.where);
+          this.emit(`${ct} u_${name} = ${val};`);
+          this.scopes[0]!.set(name, { c: `u_${name}`, t: a, ptr: false });
+          callArgs.push(`u_${name}`);
+        }
+        if (this.isVoid()) this.emit(`${full.name}(${callArgs.join(", ")});`);
+        else this.emit(`return ${full.name}(${callArgs.join(", ")});`);
+        return `${proto(this.i)} {\n${this.body.join("\n")}\n}`;
+      }
       this.scopes.push(new Map());
       this.hasUsing = hasUsingStmt(f.decl.body!);
       if (this.hasUsing) { this.fnDm = `sz_dm_${this.tmp++}`; this.emit(`sz_defer *${this.fnDm} = sz_defer_head;`); }
@@ -1719,7 +1764,7 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
         if (!g) throw this.no(e, "a function argument that cannot be specialized");
         fnArgs.set(j, g);
       }
-      const callee = inst(fn, fn.sig.tparams.length ? targs : [], fnArgs, this.where);
+      const callee = inst(fn, fn.sig.tparams.length ? targs : [], fnArgs, this.where, e.arguments.length);
       const args = e.arguments.map((a0, i) => {
         let a = a0; while (a.kind === K.ParenthesizedExpression || a.kind === K.SatisfiesExpression) a = a.kind === K.ParenthesizedExpression ? (a as ts.ParenthesizedExpression).expression : (a as ts.SatisfiesExpression).expression; // D157: `f((p.borrow()))` is the same borrowed argument
         const pt = callee.params[i]!, inner = unref(pt), mode = borrowMode(pt);

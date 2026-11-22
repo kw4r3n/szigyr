@@ -95,6 +95,7 @@ export function trapSites(pf: ParsedFile): Record<string, TrapSite[]> {
       }
       n.forEachChild(walk);
     };
+    for (const p of d.parameters) if (p.initializer) walk(p.initializer);
     walk(d.body!);
     out[d.name!.text] = sites.sort((a, b) => a.line - b.line || a.col - b.col);
   }

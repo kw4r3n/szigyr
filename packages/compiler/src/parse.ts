@@ -4,7 +4,7 @@ import { realpathSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { API, type Snapshot } from "typescript/unstable/sync";
 import { type FileSystem } from "typescript/unstable/fs";
-import { LanguageVariant, NodeFlags, SyntaxKind, type Identifier, type ModifierLike, type NodeArray, type Node, type SourceFile } from "typescript/unstable/ast";
+import { LanguageVariant, NodeFlags, SyntaxKind, type Identifier, type InterfaceDeclaration, type ModifierLike, type NodeArray, type Node, type ParameterDeclaration, type SourceFile } from "typescript/unstable/ast";
 import { createScanner } from "typescript/unstable/ast/scanner";
 import type { Position } from "./diagnostics.ts";
 
@@ -190,3 +190,8 @@ function wrap(path: string, sf: SourceFile, syntaxErrors: SyntaxError[]): Parsed
 
 export const isId = (n: Node | undefined): n is Identifier => n?.kind === SyntaxKind.Identifier;
 export const hasMod = (n: Node, k: SyntaxKind): boolean => !!(n as Node & { modifiers?: NodeArray<ModifierLike> }).modifiers?.some((m) => m.kind === k);
+export const isParamProp = (p: ParameterDeclaration): boolean =>
+  hasMod(p, SyntaxKind.PrivateKeyword) || hasMod(p, SyntaxKind.PublicKeyword) || hasMod(p, SyntaxKind.ReadonlyKeyword);
+export const isRecordInterface = (d: InterfaceDeclaration): boolean =>
+  !d.members.some((m) => m.kind === SyntaxKind.MethodSignature) &&
+  (d.members.some((m) => m.kind === SyntaxKind.PropertySignature) || !!d.heritageClauses?.length);

@@ -1,0 +1,147 @@
+// expect-output: 6:6:ok(42):err(bad):hi:5:2:{"x":3,"y":4}|14:19:13|15:25:6:7:7:9:37:25:8:31|14:19:10:13:17:hi
+// stage: 2
+interface Vec2 {
+  readonly x: i32;
+  readonly y: i32;
+}
+interface Vec3 extends Vec2 {
+  readonly z: i32;
+}
+interface EventBase {
+  readonly kind: string;
+  readonly id: i32;
+}
+interface EventTime extends EventBase {
+  readonly ts: i32;
+}
+interface EventOk extends EventBase, EventTime {
+  readonly kind: "ok";
+  readonly val: i32;
+}
+interface EventErr extends EventBase {
+  readonly kind: "err";
+  readonly msg: string;
+}
+type Ev = EventOk | EventErr;
+
+type Header = { readonly ver: i32 };
+interface Packet extends Header, Vec2 {}
+
+interface Boxed<T> {
+  readonly label: string;
+  readonly item: T;
+}
+
+interface CounterRec {
+  count: i32;
+}
+
+function rtSumVec3(v: Vec3): i32 {
+  "use rt";
+  return v.x + v.y + v.z;
+}
+
+function describeEv(e: Ev): string {
+  switch (e.kind) {
+    case "ok": return `ok(${e.val})`;
+    case "err": return `err(${e.msg})`;
+  }
+}
+
+function mScale(x: i32, mult: i32 = 2, bias: i32 = x + mult): i32 {
+  return x * mult + bias;
+}
+
+function rtZeroArg(a: i32 = 3, b: i32 = a * 4): i32 {
+  "use rt";
+  return a + b;
+}
+
+function rtPick<T extends Copy & Native>(a: T, flag: boolean = true, b: T = a): T {
+  "use rt";
+  return flag ? a : b;
+}
+
+type Acc = Struct<{ total: i32 }>;
+function strictBump(acc: Mut<Acc>, step: i32 = 5, scale: i32 = 1): void {
+  "use owned";
+  acc.total += step * scale;
+}
+
+function strictRunAcc(): i32 {
+  "use owned";
+  const a: Acc = { total: 1 };
+  strictBump(a);
+  strictBump(a, 2);
+  return a.total;
+}
+
+function rtViaStrict(v: Vec3): i32 {
+  "use owned";
+  const a = rtSumVec3(v);
+  const b = rtZeroArg();
+  const c = rtPick<i32>(i32(7));
+  const d = rtPick(i32(7), false, i32(9));
+  return a + b + c + d;
+}
+
+function addWithBias(x: i32, b: i32 = 10): i32 {
+  return x + b;
+}
+
+interface Scorer {
+  score(x: i32): i32;
+}
+
+class LinearScorer implements Scorer {
+  constructor(private readonly slope: i32, public offset: i32 = 1) {}
+  score(x: i32, bonus: i32 = 0): i32 {
+    return this.slope * x + this.offset + bonus;
+  }
+}
+
+class Accum<T> {
+  readonly doubled: i32;
+  tag: string = "ok";
+  constructor(
+    private readonly base: i32,
+    public readonly extra: T,
+    private count: i32 = 2,
+  ) {
+    this.doubled = this.base * this.count;
+  }
+  bump(delta: i32 = 1): i32 {
+    this.count += delta;
+    return this.doubled + this.count;
+  }
+}
+
+export function main(sys: System): void {
+  const v3: Vec3 = { x: 1, y: 2, z: 3 };
+  const ev1: EventOk = { kind: "ok", id: 1, ts: 100, val: 42 };
+  const ev2: EventErr = { kind: "err", id: 2, msg: "bad" };
+  const bx: Boxed<string> = { label: "lbl", item: "hi" };
+  const cr: CounterRec = { count: 4 };
+  cr.count++;
+  const pkt: Packet = { ver: 2, x: 3, y: 4 };
+  const jsonVec2 = JSON.stringify<Vec2>({ x: 3, y: 4 });
+  const p1 = `${rtSumVec3(v3)}:${v3.x + v3.y + v3.z}:${describeEv(ev1)}:${describeEv(ev2)}:${bx.item}:${cr.count}:${pkt.ver}:${jsonVec2}`;
+
+  const p2 = `${mScale(4)}:${mScale(4, 3)}:${mScale(4, 3, 1)}`;
+
+  const acc: Acc = { total: 10 };
+  strictBump(acc);
+  strictBump(acc, 4);
+  strictBump(acc, 2, 3);
+  const g: (x: i32) => i32 = addWithBias;
+  const arrowDef: (x: i32) => i32 = (x: i32, d: i32 = 10): i32 => x + d;
+  const p3 = `${rtZeroArg()}:${rtZeroArg(5)}:${rtZeroArg(5, 1)}:${rtPick(i32(7))}:${rtPick(i32(7), false)}:${rtPick(i32(7), false, i32(9))}:${rtViaStrict(v3)}:${acc.total}:${strictRunAcc()}:${g(5) + arrowDef(6)}`;
+
+  const ls1 = new LinearScorer(3);
+  ls1.offset += 1;
+  const sc: Scorer = ls1;
+  const ac = new Accum<string>(5, "hi");
+  const p4 = `${sc.score(4)}:${ls1.score(4, 5)}:${ac.doubled}:${ac.bump()}:${ac.bump(4)}:${ac.extra}`;
+
+  sys.log.info(`${p1}|${p2}|${p3}|${p4}`);
+}

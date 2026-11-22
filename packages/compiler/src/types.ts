@@ -36,7 +36,7 @@ export interface ClassSym {
   name: string;
   decl: ts.ClassDeclaration;
   tparams: TParam[];
-  fields: Map<string, { type: Type; readonly: boolean; private: boolean; static: boolean; node: ts.PropertyDeclaration }>;
+  fields: Map<string, { type: Type; readonly: boolean; private: boolean; static: boolean; paramProp?: boolean; node: ts.PropertyDeclaration | ts.ParameterDeclaration }>;
   methods: Map<string, { sig: FnType; private: boolean; static: boolean; node: ts.MethodDeclaration }>;
   ctor: FnType;
   implements: Type[];
@@ -190,9 +190,11 @@ export function assignable(s: Type, t: Type, arg = false): boolean {
     return false;
   }
   if (s.k === "fn" && t.k === "fn") {
-    if (s.params.length > t.params.length || (!t.prefix && s.params.length !== t.params.length)) return false;
+    const sMin = s.min ?? s.params.length;
+    if (sMin > t.params.length || (!t.prefix && s.params.length < t.params.length)) return false;
+    const n = Math.min(s.params.length, t.params.length);
     // a builtin void callback drops the result; a dropped Promise would lose its trap (Q125)
-    return s.params.every((p, i) => assignable(t.params[i]!, p)) && (assignable(s.ret, t.ret) || (t.ret.k === "prim" && t.ret.name === "void" && !!t.prefix && !(s.ret.k === "gen" && s.ret.name === "Promise")));
+    return s.params.slice(0, n).every((p, i) => assignable(t.params[i]!, p)) && (assignable(s.ret, t.ret) || (t.ret.k === "prim" && t.ret.name === "void" && !!t.prefix && !(s.ret.k === "gen" && s.ret.name === "Promise")));
   }
   if (s.k === "class" && t.k === "iface") return s.cls.implements.some((i) => same(substClass(i, s), t));
   if (s.k === "opaque" && (s.name === "AudioStream" || s.name === "HttpServer") && t.k === "iface" && t.iface === ASYNC_DISPOSABLE_IFACE) return true;

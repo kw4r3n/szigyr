@@ -1,0 +1,8 @@
+// expect: E1000 @ 6:15
+// stage: 1
+interface Base {
+  m(): void;
+}
+interface Sub extends Base {
+  n(): void;
+}

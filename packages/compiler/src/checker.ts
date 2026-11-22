@@ -1,5 +1,5 @@
 // P2 checker (D012): declarations, statements, control flow, narrowing. Expressions live in expr.ts.
-import { NodeFlags, SyntaxKind as K, hasMod, isId, type Node, type ts } from "./parse.ts";
+import { NodeFlags, SyntaxKind as K, hasMod, isId, isParamProp, type Node, type ts } from "./parse.ts";
 import { Program, declBindings, legalUnion, type CStructSym, type ClassValueSym, type FnSym, type Layer, type LocalSym, type Module, type ValueSym } from "./modules.ts";
 import { PROMISE_CONTAINERS, assignTarget, checkTo, exprTypes, hasPromise, cond, expr, isLitOnly, localOf, promiseOk, usingInitExprs, type FnArgRef } from "./expr.ts";
 import {
@@ -434,7 +434,15 @@ export class Checker {
     this.scope = new Scope(nested ? outer.scope : undefined);
     this.narrow = nested ? new Map(outer.narrow) : new Map();
     d.parameters.forEach((p, i) => {
-      if (isId(p.name)) { const t = sig.params[i] ?? ERROR; this.declare(p.name, unref(t), { param: true, mutable: true, declared: t }); }
+      const t = sig.params[i] ?? ERROR;
+      if (p.initializer) {
+        if (this.fx.layer !== "managed" && unref(t).k === "fn") {
+          this.at("E4003", p.initializer, "a function-typed parameter in strict / rt code cannot have a default value");
+        } else {
+          checkTo(this, p.initializer, unref(t));
+        }
+      }
+      if (isId(p.name)) this.declare(p.name, unref(t), { param: true, mutable: true, declared: t });
     });
     let result: Type = VOID;
     const body = d.body!;
@@ -487,13 +495,13 @@ export class Checker {
     };
     const inits = stmts.map(initOf);
     // the prefix ends where every field without an initializer has been assigned (or at the last assignment if some never is)
-    const need = new Set([...cls.fields].filter(([, f]) => !f.static && !f.node.initializer).map(([n]) => n));
+    const need = new Set([...cls.fields].filter(([, f]) => !f.static && !f.paramProp && !f.node.initializer).map(([n]) => n));
     let end = need.size ? inits.findIndex((x) => x && need.delete(x.name.text) && !need.size) : -1;
     if (need.size) end = inits.findLastIndex((x) => x !== undefined);
     const prefix = stmts.slice(0, end + 1);
     this.ctorInits = new Set(inits.slice(0, end + 1).filter((x) => x !== undefined));
     // Q121 addendum: fields with an initializer, then those assigned by earlier top-level `this.f = ...`, may be read
-    const done = new Set([...cls.fields].filter(([, f]) => !f.static && f.node.initializer).map(([n]) => n));
+    const done = new Set([...cls.fields].filter(([, f]) => !f.static && (f.paramProp || !!f.node.initializer)).map(([n]) => n));
     const isThisField = (n: Node): n is ts.PropertyAccessExpression => n.kind === K.PropertyAccessExpression && (n as ts.PropertyAccessExpression).expression.kind === K.ThisKeyword;
     const walk = (n: Node, inFn: boolean): void => {
       if (!inFn && isThisField(n) && done.has(n.name.text)) return;
@@ -535,7 +543,7 @@ export class Checker {
     // Q029: every instance field without an initializer is assigned by a top-level `this.f = ...` in the constructor
     const assigned = new Set(inits.flatMap((x) => (x ? [x.name.text] : [])));
     for (const [name, f] of cls.fields) {
-      if (!f.static && !f.node.initializer && !assigned.has(name)) this.at("E2002", f.node.name, `field '${name}' is not initialized`);
+      if (!f.static && !f.paramProp && !f.node.initializer && !assigned.has(name)) this.at("E2002", f.node.name, `field '${name}' is not initialized`);
     }
   }
 
@@ -1012,7 +1020,7 @@ export class Checker {
             if (m.kind === K.PropertyDeclaration) { const p = m as ts.PropertyDeclaration; if (p.type) this.walkTypePos(p.type, "field", sig); }
             else if (m.kind === K.MethodDeclaration || m.kind === K.Constructor) {
               const md = m as ts.FunctionLikeDeclaration;
-              md.parameters.forEach((p) => { if (p.type) this.walkTypePos(p.type, "sig", sig); });
+              md.parameters.forEach((p) => { if (p.type) this.walkTypePos(p.type, m.kind === K.Constructor && isParamProp(p) ? "field" : "sig", sig); });
               if (md.type) this.walkTypePos(md.type, "sig", sig);
             }
           }
@@ -1022,6 +1030,18 @@ export class Checker {
           const d = s as ts.InterfaceDeclaration;
           if (!d.name) break;
           const sym = mod.types.get(d.name.text);
+          if (sym?.k === "rec-iface") {
+            this.fx.tparams = new Map((sym.tparams ?? []).map((p) => [p.name, p]));
+            for (const h of d.heritageClauses ?? []) {
+              for (const ht of h.types) for (const a of ht.typeArguments ?? []) this.walkTypePos(a, "typearg", sig);
+            }
+            for (const m of d.members) {
+              if (m.kind !== K.PropertySignature) continue;
+              const p = m as ts.PropertySignatureDeclaration;
+              if (p.type) this.walkTypePos(p.type, "field", sig);
+            }
+            break;
+          }
           this.fx.tparams = sym?.k === "iface" ? new Map(sym.iface.tparams.map((p) => [p.name, p])) : new Map();
           for (const m of d.members) {
             if (m.kind !== K.MethodSignature) continue;
@@ -1276,7 +1296,8 @@ function sameSig(a: FnType, b0: FnType): boolean {
     const q = b0.tparams[i]!.constraint;
     return (p.constraint && q ? same(p.constraint, subst(q, m)) : !p.constraint && !q) && capsEq(p.caps, b0.tparams[i]!.caps);
   });
-  return cons && a.params.length === b.params.length && a.params.every((p, i) => same(p, b.params[i]!)) && same(a.ret, b.ret);
+  const aMin = a.min ?? a.params.length;
+  return cons && aMin <= b.params.length && a.params.length >= b.params.length && b.params.every((p, i) => same(a.params[i]!, p)) && same(a.ret, b.ret);
 }
 
 /** Q054 / Q072: types a module-level const may not have. */

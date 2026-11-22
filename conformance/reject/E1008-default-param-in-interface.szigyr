@@ -1,0 +1,5 @@
+// expect: E1008 @ 4:5
+// stage: 1
+interface I {
+  m(a: i32 = 1): void;
+}

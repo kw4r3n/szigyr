@@ -519,6 +519,17 @@ export function queryFile(entryFile: string, parser?: Parser): QueryResult {
           range: rangeOf(m.node),
         });
       }
+    } else if (sym.k === "rec-iface") {
+      const t = decls.recIfaceBody(sym);
+      symbols.push({
+        name,
+        kind: "interface",
+        exported: exportedSet.has(name),
+        type: show(t),
+        caps: capsOf(t),
+        fields: t.k === "record" ? t.fields.map((f) => ({ name: f.name, type: show(f.type), readonly: f.readonly, private: false, static: false })) : [],
+        range: rangeOf(sym.decl),
+      });
     } else {
       const ifaceType = sym.iface.tparams.length ? `${sym.iface.name}<${sym.iface.tparams.map((p) => p.name).join(", ")}>` : sym.iface.name;
       symbols.push({

@@ -5,7 +5,7 @@ import { BUILTIN_NAMES, CAPABILITY_NAMES } from "./builtins.ts";
 import type { Diagnostic } from "./diagnostics.ts";
 import { DETMATH_PATH } from "./detmath.ts";
 import { canonPath } from "./modules.ts";
-import { NodeFlags, SyntaxKind as K, isId, type Node, type ParsedFile, type ts } from "./parse.ts";
+import { NodeFlags, SyntaxKind as K, isId, isParamProp, isRecordInterface, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { RUNTIME_GLOBAL } from "./names.ts";
 
 /** Q004: type names rejected as E1000 rather than E2000. */
@@ -416,7 +416,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     else if (n.kind === K.ArrowFunction) mods(n, [K.AsyncKeyword]);
     else if (n.kind === K.Constructor) mods(n, []);
     typeParams(n.typeParameters);
-    params(n.parameters);
+    params(n.parameters, { allowDefaults: true, allowParamProps: n.kind === K.Constructor, forbidThis: n.kind === K.Constructor });
     for (const p of n.parameters) if (isId(p.name)) bind(p.name);
     if (n.type) type(n.type);
     const body = n.body;
@@ -462,17 +462,37 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     }
   }
 
-  function params(list: ts.NodeArray<ts.ParameterDeclaration>): void {
+  function params(list: ts.NodeArray<ts.ParameterDeclaration>, opts?: { allowDefaults?: boolean; allowParamProps?: boolean; forbidThis?: boolean }): void {
+    let seenDefault = false;
     for (const p of list) {
-      mods(p, []);
+      mods(p, opts?.allowParamProps ? [K.PrivateKeyword, K.PublicKeyword, K.ReadonlyKeyword] : []);
+      if (opts?.allowParamProps) {
+        const hasPub = !!p.modifiers?.some((m) => m.kind === K.PublicKeyword);
+        const hasPriv = !!p.modifiers?.some((m) => m.kind === K.PrivateKeyword);
+        if (hasPub && hasPriv) e1000(p.modifiers![0]!, "conflicting access modifiers");
+      }
       if (p.dotDotDotToken) { e1000(p, "rest parameter"); continue; }
       if (!isId(p.name)) { e1000(p.name, "parameter destructuring"); continue; }
       if (p.name.text === "this") { e1000(p.name, "'this' parameter"); continue; }
       declName(p.name);
+      if (opts?.allowParamProps && isParamProp(p) && (SPECIAL_MEMBERS.has(p.name.text) || p.name.text.startsWith(RUNTIME_GLOBAL))) {
+        e1000(p.name, `member name '${p.name.text}'`, { kind: "reserved-name", name: p.name.text });
+      }
       if (p.questionToken) {
         at("E1008", p.name, "optional parameter is not allowed", { kind: "optional-param", name: p.name.text });
         nullableFix(p.questionToken, p.type);
-      } else if (p.initializer) at("E1008", p.name, "default parameter is not allowed", { kind: "default-param", name: p.name.text });
+      } else if (p.initializer) {
+        if (!opts?.allowDefaults) {
+          at("E1008", p.name, "default parameter is not allowed here", { kind: "default-param", name: p.name.text });
+        } else {
+          seenDefault = true;
+          const saved = fc;
+          fc = { ...fc, async: false, ...(opts.forbidThis ? { thisOk: false } : {}) };
+          try { expr(p.initializer); } finally { fc = saved; }
+        }
+      } else if (seenDefault && opts?.allowDefaults) {
+        at("E1008", p.name, "required parameter cannot follow a default parameter", { kind: "non-trailing-default", name: p.name.text });
+      }
       if (p.type) type(p.type);
     }
   }
@@ -523,7 +543,15 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
           fn(md, "method");
           break;
         }
-        case K.Constructor: if (hasCtor) e1000(m, "duplicate constructor"); else { hasCtor = true; fn(m as ts.ConstructorDeclaration, "other"); } break;
+        case K.Constructor:
+          if (hasCtor) e1000(m, "duplicate constructor");
+          else {
+            hasCtor = true;
+            const ctor = m as ts.ConstructorDeclaration;
+            fn(ctor, "other");
+            for (const p of ctor.parameters) if (isParamProp(p) && isId(p.name)) claim(members, p.name);
+          }
+          break;
         default: e1000(m, "this class member");
       }
     }
@@ -533,21 +561,45 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     mods(d, [K.ExportKeyword]);
     declName(d.name);
     typeParams(d.typeParameters);
-    for (const h of d.heritageClauses ?? []) e1000(h, "'extends' on an interface");
-    const names = new Set<string>(); // Q223 (a): a method name once per interface
-    for (const m of d.members) {
-      if (m.kind === K.PropertySignature) {
-        at("E1000", m, "interface fields are not allowed (interfaces only declare methods); use 'type ... = { ... }' for records", { kind: "interface-field" });
-        continue;
+    const hasMethods = d.members.some((m) => m.kind === K.MethodSignature);
+    const names = new Set<string>(); // Q223 (a): a member name once per interface
+    if (hasMethods) {
+      for (const h of d.heritageClauses ?? []) e1000(h, "'extends' on a method interface", { kind: "interface-extends" });
+      for (const m of d.members) {
+        if (m.kind === K.PropertySignature) {
+          at("E1000", m, "interface cannot mix fields and methods", { kind: "interface-mixed" });
+          continue;
+        }
+        if (m.kind !== K.MethodSignature) { e1000(m, "interface member other than a method signature"); continue; }
+        const s = m as ts.MethodSignatureDeclaration;
+        mods(s, []);
+        memberName(s);
+        if (isId(s.name)) claim(names, s.name);
+        typeParams(s.typeParameters);
+        params(s.parameters);
+        if (s.type) type(s.type);
       }
-      if (m.kind !== K.MethodSignature) { e1000(m, "interface member other than a method signature"); continue; }
-      const s = m as ts.MethodSignatureDeclaration;
-      mods(s, []);
-      memberName(s);
-      if (isId(s.name)) claim(names, s.name);
-      typeParams(s.typeParameters);
-      params(s.parameters);
-      if (s.type) type(s.type);
+    } else if (isRecordInterface(d)) {
+      for (const h of d.heritageClauses ?? []) {
+        if (h.token !== K.ExtendsKeyword) { e1000(h, "this clause on an interface"); continue; }
+        for (const t of h.types) {
+          const exp = t.expression;
+          const ok = isId(exp) || (exp.kind === K.PropertyAccessExpression && isId((exp as ts.PropertyAccessExpression).expression) && isId((exp as ts.PropertyAccessExpression).name));
+          if (!ok) e1000(t.expression, "this extends clause");
+          for (const a of t.typeArguments ?? []) type(a);
+        }
+      }
+      for (const m of d.members) {
+        if (m.kind !== K.PropertySignature) { e1000(m, "interface member other than a property signature"); continue; }
+        const p = m as ts.PropertySignatureDeclaration;
+        mods(p, [K.ReadonlyKeyword]);
+        memberName(p);
+        if (isId(p.name)) claim(names, p.name);
+        if (p.type) type(p.type);
+      }
+    } else {
+      for (const h of d.heritageClauses ?? []) e1000(h, "'extends' on an interface");
+      for (const m of d.members) e1000(m, "interface member other than a method or field signature");
     }
   }
 

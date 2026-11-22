@@ -2,7 +2,7 @@
 // Splices the source text: every node prints as its own text with its children replaced by their emission,
 // type syntax deleted, and the §10 rewrites applied to the nodes that need them. Types come from P2 (exprTypes).
 import { dirname } from "node:path";
-import { NodeFlags, SyntaxKind as K, isId, type Node, type ParsedFile, type ts } from "./parse.ts";
+import { NodeFlags, SyntaxKind as K, isId, isParamProp, type Node, type ParsedFile, type ts } from "./parse.ts";
 import type { Range } from "./diagnostics.ts";
 import { assignTarget, audioOpenCalls, callSigs, exprTypes, forAllMeta, isolateCalls, localOf, resourceCalls } from "./expr.ts";
 import { sliceGroups, type SliceGroupEntry } from "./ownership.ts";
@@ -380,7 +380,7 @@ export function emitFile(
         const af = n as ts.ArrowFunction;
         if (af.body.kind !== K.Block && inContract === 0) {
           const isAsync = !!af.modifiers?.some((x) => x.kind === K.AsyncKeyword);
-          const ps = af.parameters.map((p) => p.name.getText(sf)).join(", ");
+          const ps = af.parameters.map((p) => (p.initializer ? `${p.name.getText(sf)} = ${gen(p.initializer)}` : p.name.getText(sf))).join(", ");
           return `${isAsync ? "async " : ""}(${ps}) => (${RT}.step(), (${gen(af.body)}))`;
         }
         break;
@@ -403,6 +403,17 @@ export function emitFile(
         if (key === "!generic") return `function ${f.name!.text}() { throw new Error("internal: a generic strict / rt function runs only through its C instances (D104)"); }`;
         if (key) {
           const ps = f.parameters.map((p) => p.name.getText(sf));
+          const firstDef = f.parameters.findIndex((p) => !!p.initializer);
+          if (firstDef >= 0) {
+            const A = `${RUNTIME_GLOBAL}_a`;
+            const branches: string[] = [];
+            for (let k = firstDef; k < ps.length; k++) {
+              const callArgs = Array.from({ length: k }, (_, i) => `${A}[${i}]`).join(", ");
+              branches.push(`if (${A}.length === ${k}) return ${RT}.native.${key}_a${k}(${callArgs});`);
+            }
+            const fullArgs = ps.map((_, i) => `${A}[${i}]`).join(", ");
+            return `function ${f.name!.text}(...${A}) { ${branches.join(" ")} return ${RT}.native.${key}(${fullArgs}); }${tail}`;
+          }
           return `function ${f.name!.text}(${ps.join(", ")}) { return ${RT}.native.${key}(${ps.join(", ")}); }${tail}`;
         }
         return withMutTarget(n, f.body, () => splice(n) + tail);
@@ -667,7 +678,7 @@ export function emitFile(
     if (inst) {
       // Q189 (b): function-typed arguments exist only at compile time; the C instance does not take them
       const sig = callSigs.get(e);
-      const keep = sig ? sig.params.flatMap((pt, i) => (unref(pt).k === "fn" ? [] : [i])) : args.map((_, i) => i);
+      const keep = sig ? sig.params.slice(0, args.length).flatMap((pt, i) => (unref(pt).k === "fn" ? [] : [i])) : args.map((_, i) => i);
       const mNode = callee.kind === K.PropertyAccessExpression ? (callee as ts.PropertyAccessExpression).name : callee;
       return groups ? grouped(e, groups, args, (refs) => `${mark(mNode)}${RT}.native.${inst}(${keep.map((i) => refs[i]).join(", ")})`) : `${mark(mNode)}${RT}.native.${inst}(${keep.map((i) => args[i]).join(", ")})`;
     }
@@ -856,11 +867,17 @@ export function emitFile(
       }
       return gen(s);
     };
+    const ctorParamProps = b.parent?.kind === K.Constructor
+      ? (b.parent as ts.ConstructorDeclaration).parameters
+          .filter((p) => isParamProp(p) && isId(p.name))
+          .map((p) => { const n = (p.name as ts.Identifier).text; return `this.${n} = ${n};`; })
+      : [];
     const last = fnLike ? ss.map((s) => !!isCallNamed(s, "ensures")).lastIndexOf(true) : -1;
-    if (last < 0 && !mut && !hasUsing) return splice(b);
+    if (last < 0 && !mut && !hasUsing && !ctorParamProps.length) return splice(b);
     let inner: string;
+    const paramPropPrefix = ctorParamProps.length ? `${ctorParamProps.join("\n")}\n` : "";
     if (last < 0) {
-      inner = emitStmtsWithUsing(ss, emitStmt);
+      inner = paramPropPrefix + emitStmtsWithUsing(ss, emitStmt);
     } else {
       const head: string[] = [], checks: string[] = [];
       for (let i = 0; i <= last; i++) {
@@ -876,7 +893,7 @@ export function emitFile(
       const isAsync = !!(b.parent as AnyNode as { modifiers?: ts.NodeArray<Node> }).modifiers?.some((x) => x.kind === K.AsyncKeyword);
       const rest = emitStmtsWithUsing(ss.slice(last + 1), emitStmt, last + 1);
       const run = isAsync ? `await (async () => {\n${rest}\n})()` : `(() => {\n${rest}\n})()`;
-      inner = `${head.join("\n")}\nconst ${ENS} = (${R}) => { ${checks.join(" ")} return ${R}; };\nreturn ${ENS}(${run});`;
+      inner = `${paramPropPrefix}${head.join("\n")}\nconst ${ENS} = (${R}) => { ${checks.join(" ")} return ${R}; };\nreturn ${ENS}(${run});`;
       if (!mut) return `{\n${inner}\n}`;
     }
     if (mut && isTargetBody) return `{\n${RT}.hit(${targetFnId}); ${RT}.step(); ${RT}.enter(${targetFnId});\ntry {\n${inner}\n} finally { ${RT}.leave(${targetFnId}); }\n}`;

@@ -975,9 +975,10 @@ function checkArrow(c: Checker, e: ts.ArrowFunction | ts.FunctionExpression, wan
   let ret = e.type ? (c.walkTypePos(e.type, "sig", { unsafe: c.fx.unsafe, cdecl: false }), c.typeOf(e.type, true)) : undefined;
   c.fx.tparams = outerTps;
   if (!ret && want && !inferRet) ret = want.ret;
-  const sig = fn(params, ret ?? ERROR, tps);
+  const firstDef = e.parameters.findIndex((p) => !!p.initializer);
+  const sig: FnType = { ...fn(params, ret ?? ERROR, tps), ...(firstDef >= 0 ? { min: firstDef } : {}) };
   const got = c.fnBody(e, sig, { inferRet: !ret });
-  return fn(params, ret ?? got, tps);
+  return { ...fn(params, ret ?? got, tps), ...(firstDef >= 0 ? { min: firstDef } : {}) };
 }
 
 // ---- calls
@@ -1016,6 +1017,7 @@ function audioOpenCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExp
   if (sym.sig.tparams.length) return bad(`the audio callback '${sym.name}' cannot be generic`);
   if (sym.layer !== "rt") return bad(`the audio callback '${sym.name}' must be a 'use rt' function (got ${sym.layer})`);
   if (sym.unsafe) return bad(`the audio callback '${sym.name}' cannot use 'use unsafe'`);
+  if (sym.sig.min !== undefined) return bad(`the audio callback '${sym.name}' cannot have default parameters`);
   if (isErr(st)) return ERROR;
   const sig = sym.sig;
   const wantSt = isOwned(st) ? gen("Mut", st) : st;
@@ -1103,6 +1105,7 @@ function resourceCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpr
   let cleanupFn: FnSym | undefined;
   const checkCleanupSym = (sym: FnSym): FnSym | undefined => {
     if (sym.sig.tparams.length) { c.at("E4003", cleanupArg, `the generic function '${sym.name}' cannot be used as a cleanup callback`); return undefined; }
+    if (sym.sig.min !== undefined) { c.at("E2002", cleanupArg, `cleanup function '${sym.name}' cannot have default parameters`); return undefined; }
     if (!c.callCheck(sym)) c.at("E4001", cleanupArg, `a ${c.fx.layer} function cannot use the ${sym.layer} function '${sym.name}' as cleanup`, { callerLayer: c.fx.layer, calleeLayer: sym.layer });
     if (sym.sig.params.some(hasRawPtr) || hasRawPtr(sym.sig.ret)) {
       c.noteUnsafeOp(cleanupArg);
@@ -1155,6 +1158,7 @@ function isolateCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpre
   }
   const sym = isoFnRef.sym;
   if (sym.sig.tparams.length) return bad(`the isolate entry '${sym.name}' cannot be generic`, "generic-entry");
+  if (sym.sig.min !== undefined) return bad(`the isolate entry '${sym.name}' cannot have default parameters`);
   if (sym.layer !== "managed") return bad(`the isolate entry '${sym.name}' is a ${sym.layer} function; isolates run managed functions`, "non-managed-entry");
   const sig = sym.sig;
   const portT = sig.params.length === 1 || sig.params.length === 2 ? unref(sig.params[0]!) : undefined;
@@ -1609,6 +1613,7 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
       }
       const sym = fnRef.sym;
       if (sym.sig.tparams.length) { c.at("E4003", a, `'cfn' cannot take the generic function '${sym.name}'`, { kind: "generic-fn", name: sym.name }); return ERROR; }
+      if (sym.sig.min !== undefined) { c.at("E4003", a, `'cfn' cannot take '${sym.name}' because it has default parameters`); return ERROR; }
       if (sym.layer !== "rt") { c.at("E4001", a, `'cfn' takes an rt function, not the ${sym.layer} function '${sym.name}'`, { callerLayer: c.fx.layer, calleeLayer: sym.layer }); return ERROR; }
       if (sym.sig.params.some((p) => !boundary(p)) || !(boundary(sym.sig.ret) || (sym.sig.ret.k === "prim" && sym.sig.ret.name === "void"))) {
         c.at("E4007", a, `the signature of '${sym.name}' cannot cross the C boundary`, { actual: show(sym.sig) });

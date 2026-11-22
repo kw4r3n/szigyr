@@ -82,12 +82,14 @@ accept/78-reexport-loop-warning
 accept/79-forAll-basic.szigyr
 accept/80-forAll-generatable-types.szigyr
 accept/81-audio-and-sleep.szigyr
+reject/E1000-async-default-await.szigyr
 reject/E1000-await-in-non-async-arrow.szigyr
 reject/E1000-await-outside-async.szigyr
 reject/E1000-break-in-arrow-inside-loop.szigyr
 reject/E1000-break-outside-loop.szigyr
 reject/E1000-class-extends.szigyr
 reject/E1000-continue-in-switch.szigyr
+reject/E1000-ctor-default-this.szigyr
 reject/E1000-detmath-redeclare.szigyr
 reject/E1000-directive-after-first-statement.szigyr
 reject/E1000-duplicate-class-member.szigyr
@@ -105,6 +107,8 @@ reject/E1000-generator.szigyr
 reject/E1000-getter.szigyr
 reject/E1000-in-operator.szigyr
 reject/E1000-inc-in-value-pos.szigyr
+reject/E1000-interface-extends-method.szigyr
+reject/E1000-interface-mixed.szigyr
 reject/E1000-intersection-type.szigyr
 reject/E1000-label.szigyr
 reject/E1000-local-redeclares-parameter.szigyr
@@ -116,6 +120,7 @@ reject/E1000-module-array-destructuring.szigyr
 reject/E1000-module-destructuring-duplicate-name.szigyr
 reject/E1000-object-literal-proto.szigyr
 reject/E1000-object-type.szigyr
+reject/E1000-param-prop-dup-field.szigyr
 reject/E1000-pre-dec-in-value-pos.szigyr
 reject/E1000-reserved-bigint-class.szigyr
 reject/E1000-reserved-i64-type.szigyr
@@ -147,6 +152,7 @@ reject/E1005-as-const.szigyr
 reject/E1006-non-null-assertion.szigyr
 reject/E1007-throw.szigyr
 reject/E1007-try-catch.szigyr
+reject/E1008-default-param-in-interface.szigyr
 reject/E1008-default-param.szigyr
 reject/E1008-destructure-default.szigyr
 reject/E1008-optional-param.szigyr
@@ -194,6 +200,7 @@ reject/E2002-cast-class-target.szigyr
 reject/E2002-cast-of-result.szigyr
 reject/E2002-cast-type-parameter.szigyr
 reject/E2002-cast-unknown-target.szigyr
+reject/E2002-class-implements-record-interface.szigyr
 reject/E2002-constptr-to-ptr.szigyr
 reject/E2002-constraint-unmet-alias.szigyr
 reject/E2002-constraint-unmet-class-declared-later.szigyr
@@ -234,6 +241,8 @@ reject/E2002-inc-on-string.szigyr
 reject/E2002-includes-array-element.szigyr
 reject/E2002-indexof-record-element.szigyr
 reject/E2002-inferred-return-union.szigyr
+reject/E2002-interface-extends-conflict.szigyr
+reject/E2002-interface-extends-struct.szigyr
 reject/E2002-interface-structural-conformance.szigyr
 reject/E2002-js-callback-function-argument.szigyr
 reject/E2002-js-callback-returns-value.szigyr
@@ -446,6 +455,8 @@ reject/E3004-arena-view-statement.szigyr
 reject/E3004-arena-view-stored.szigyr
 reject/E3004-async-borrow-parameter.szigyr
 reject/E3004-borrow-captured-by-closure.szigyr
+reject/E3004-borrow-default-param.szigyr
+reject/E3004-borrow-param-prop.szigyr
 reject/E3004-borrow-parameter-reassigned.szigyr
 reject/E3004-borrow-passed-by-value.szigyr
 reject/E3004-borrow-return-type.szigyr
@@ -544,6 +555,7 @@ reject/E3007-owned-in-managed-array.szigyr
 reject/E3007-owned-in-map.szigyr
 reject/E3007-owned-in-record-field.szigyr
 reject/E3007-owned-in-result.szigyr
+reject/E3007-owned-param-prop.szigyr
 reject/E3007-owned-pushed-from-local.szigyr
 reject/E3007-pool-in-array.szigyr
 reject/E3007-recv-not-awaited.szigyr
@@ -610,6 +622,7 @@ reject/E4003-function-type-local-in-strict.szigyr
 reject/E4003-function-type-return-in-strict.szigyr
 reject/E4003-generic-function-as-fn-arg.szigyr
 reject/E4003-managed-function-value-in-strict.szigyr
+reject/E4003-rt-fn-param-default.szigyr
 reject/E4003-strict-function-as-value.szigyr
 reject/E4004-arena-create-in-rt.szigyr
 reject/E4004-box-in-rt.szigyr
@@ -902,6 +915,7 @@ run/263-url-httpserver-stop-fakefs.szigyr
 run/264-utf8-json-exitcode-ensures-strcmp.szigyr
 run/265-wave1a-ts-relaxations
 run/266-wave1b-operators-and-callbacks.szigyr
+run/267-wave1c-interfaces-defaults-param-props.szigyr
 run/27-trap-ownedcell-empty.szigyr
 run/28-trap-shift-range.szigyr
 run/29-trap-invariant.szigyr

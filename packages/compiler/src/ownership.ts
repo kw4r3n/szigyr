@@ -1,5 +1,5 @@
 // P3 (D070): ownership and borrowing (§5), run only when P1 and P2 report nothing (Q003). Reads P2's types and symbols.
-import { NodeFlags, SyntaxKind as K, isId, type Node, type ts } from "./parse.ts";
+import { NodeFlags, SyntaxKind as K, isId, isParamProp, type Node, type ts } from "./parse.ts";
 import type { LocalSym, Module, Program } from "./modules.ts";
 import { assignTarget, callSigs, ensuresArgs, exprTypes, localOf } from "./expr.ts";
 import { genFx } from "./builtins.ts";
@@ -79,9 +79,10 @@ class ModuleCheck {
       const r = n as ts.TypeReferenceNode;
       const p = r.parent as ts.ParameterDeclaration;
       const name = isId(r.typeName) ? r.typeName.text : undefined;
-      if ((name === "Ref" || name === "Mut") && !(p.kind === K.Parameter && p.type === r)) {
+      if ((name === "Ref" || name === "Mut") && (!(p.kind === K.Parameter && p.type === r) || isParamProp(p))) {
         this.at("E3004", r, `'${name}' can only be the type of a parameter`, { kind: "borrow-position", type: name });
       } else if (name === "Ref" || name === "Mut") {
+        if (p.initializer) this.at("E3004", r, `a '${name}' borrow parameter cannot have a default value`, { kind: "borrow-default", type: name });
         const f = p.parent as ts.FunctionLikeDeclaration;
         if (f.modifiers?.some((m) => m.kind === K.AsyncKeyword)) this.at("E3004", r, "an async function cannot take a borrow; it would outlive the call", { kind: "async-borrow", type: name });
       } else if (name === "Slice") {
@@ -137,6 +138,22 @@ class Flow {
   get loopDepth(): number { return this.frames.filter((f) => f.loop).length; }
 
   body(d: ts.FunctionLikeDeclaration): void {
+    for (const p of d.parameters) {
+      if (p.initializer) {
+        const s0 = copy(this.state);
+        this.ex(p.initializer, "move");
+        this.state = join(s0, this.state);
+      }
+    }
+    if (d.kind === K.Constructor) {
+      for (const p of d.parameters) {
+        if (!isParamProp(p) || !isId(p.name)) continue;
+        const sym = localOf.get(p.name);
+        if (sym && !borrowMode(sym.declared) && movesLike(sym.type)) {
+          this.m.at("E3007", p.name, `the owned value '${sym.name}' cannot be put in a managed container`, { variable: sym.name, kind: "managed-container" });
+        }
+      }
+    }
     const b = d.body;
     if (!b) return;
     if (b.kind === K.Block) this.stmts((b as ts.Block).statements);
