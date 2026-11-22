@@ -633,10 +633,18 @@ export class Checker {
         const saved = this.scope;
         this.scope = new Scope(saved);
         if (x.initializer.kind === K.VariableDeclarationList) {
-          const d = (x.initializer as ts.VariableDeclarationList).declarations[0];
+          const vl = x.initializer as ts.VariableDeclarationList;
+          const d = vl.declarations[0];
+          const isLet = !!(vl.flags & NodeFlags.Let);
           if (d) {
-            if (d.type) { const at = this.typeOf(d.type); this.walkTypePos(d.type, "local", { unsafe: this.fx.unsafe, cdecl: false }); if (!assignable(elem, at)) this.at("E2002", d.name, "element type does not match the annotation"); elem = at; }
-            if (isId(d.name)) this.declare(d.name, elem);
+            if (d.type) {
+              const at = this.typeOf(d.type);
+              this.walkTypePos(d.type, "local", { unsafe: this.fx.unsafe, cdecl: false });
+              if (this.fx.layer !== "managed") this.layerType(at, d.type, this.fx.layer);
+              if (!assignable(elem, at)) this.at("E2002", d.name, "element type does not match the annotation");
+              elem = at;
+            }
+            if (isId(d.name)) this.declare(d.name, elem, { mutable: isLet });
           }
         }
         this.loopEntry(x.statement);
@@ -1186,6 +1194,14 @@ export class Checker {
         return;
       }
       case K.ParenthesizedType: this.walkTypePos((node as ts.ParenthesizedTypeNode).type, place, ctx); return;
+      case K.ArrayType: this.walkTypePos((node as ts.ArrayTypeNode).elementType, "typearg", ctx); return;
+      case K.TypeOperator: {
+        const op = node as ts.TypeOperatorNode;
+        if (op.operator === K.ReadonlyKeyword && op.type.kind === K.ArrayType) {
+          this.walkTypePos((op.type as ts.ArrayTypeNode).elementType, "typearg", ctx);
+        }
+        return;
+      }
       default: return;
     }
   }

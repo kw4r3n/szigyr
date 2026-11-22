@@ -48,17 +48,20 @@ const ARITH_MUT: Record<string, string> = { "+": "-", "-": "+", "*": "+" };
 const CMP_MUT: Record<string, string> = { "<": "<=", "<=": "<", ">": ">=", ">=": ">", "===": "!==", "!==": "===" };
 const LOGIC_MUT: Record<string, string> = { "&&": "||", "||": "&&" };
 const numValue = (n: ts.NumericLiteral): number => Number(n.text.replace(/_/g, ""));
-const unwrapParens = (e: ts.Expression): ts.Expression => (e.kind === K.ParenthesizedExpression ? unwrapParens((e as ts.ParenthesizedExpression).expression) : e);
+const unwrapParens = (e: ts.Expression): ts.Expression =>
+  e.kind === K.ParenthesizedExpression || e.kind === K.SatisfiesExpression
+    ? unwrapParens((e as ts.ParenthesizedExpression | ts.SatisfiesExpression).expression)
+    : e;
 /** Whether `n` is a `switch` `case` expression, including parenthesized forms (`case (1):`). */
 const isCaseExpr = (n: Node): boolean => {
   let cur = n;
-  while (cur.parent?.kind === K.ParenthesizedExpression) cur = cur.parent;
+  while (cur.parent?.kind === K.ParenthesizedExpression || cur.parent?.kind === K.SatisfiesExpression) cur = cur.parent;
   return cur.parent?.kind === K.CaseClause && (cur.parent as ts.CaseClause).expression === cur;
 };
 /** Whether `n` is the whole boolean literal condition of `while`/`do`/`for` (checker/ownership rely on it for return/move soundness). */
 const isLoopCondLit = (n: Node): boolean => {
   let cur = n;
-  while (cur.parent?.kind === K.ParenthesizedExpression) cur = cur.parent;
+  while (cur.parent?.kind === K.ParenthesizedExpression || cur.parent?.kind === K.SatisfiesExpression) cur = cur.parent;
   const p = cur.parent;
   if (!p) return false;
   if (p.kind === K.WhileStatement) return (p as ts.WhileStatement).expression === cur;
@@ -291,6 +294,7 @@ export function emitFile(
   function gen(n: Node): string {
     switch (n.kind) {
       case K.TypeAliasDeclaration: case K.InterfaceDeclaration: case K.ModuleDeclaration: return ""; // ModuleDeclaration: `declare module "c:..."` (§14.1) declares C functions and has no runtime form
+      case K.SatisfiesExpression: return `(${gen((n as ts.SatisfiesExpression).expression)})`;
       case K.NumericLiteral: {
         const nt = numName(n) as NumName | undefined;
         const orig = nt === "f32" ? `${RT}.f32(${splice(n)})` : nt && isInt64(nt) ? `${parseExactInt(n.getText(sf), false)!}n` : splice(n); // Q015
@@ -631,7 +635,8 @@ export function emitFile(
       // Q189 (b): function-typed arguments exist only at compile time; the C instance does not take them
       const sig = callSigs.get(e);
       const keep = sig ? sig.params.flatMap((pt, i) => (unref(pt).k === "fn" ? [] : [i])) : args.map((_, i) => i);
-      return groups ? grouped(e, groups, args, (refs) => `${mark(callee)}${RT}.native.${inst}(${keep.map((i) => refs[i]).join(", ")})`) : `${mark(callee)}${RT}.native.${inst}(${keep.map((i) => args[i]).join(", ")})`;
+      const mNode = callee.kind === K.PropertyAccessExpression ? (callee as ts.PropertyAccessExpression).name : callee;
+      return groups ? grouped(e, groups, args, (refs) => `${mark(mNode)}${RT}.native.${inst}(${keep.map((i) => refs[i]).join(", ")})`) : `${mark(mNode)}${RT}.native.${inst}(${keep.map((i) => args[i]).join(", ")})`;
     }
     const self = typeOf(e);
     const q = (s: string): string => JSON.stringify(s);
@@ -848,6 +853,8 @@ export function emitFile(
 
   // ---- module level (§1): imports become calls of IMP, `export` becomes the returned object.
   const body: string[] = [];
+  const reexported: string[] = [];
+  let impIdx = 0, reexpIdx = 0;
   const values = new Set<string>(), fns = new Set<string>();
   for (const s of sf.statements) {
     if (s.kind === K.FunctionDeclaration || s.kind === K.ClassDeclaration) {
@@ -855,14 +862,26 @@ export function emitFile(
       if (s.kind === K.FunctionDeclaration) fns.add((s as ts.FunctionDeclaration).name!.text);
     }
     else if (s.kind === K.VariableStatement) for (const d of (s as ts.VariableStatement).declarationList.declarations) for (const b of declBindings(d)) values.add(b.id.text);
-    else if (s.kind === K.ImportDeclaration) for (const x of ((s as ts.ImportDeclaration).importClause!.namedBindings as ts.NamedImports).elements) values.add(x.name.text);
+    else if (s.kind === K.ImportDeclaration) {
+      const d = s as ts.ImportDeclaration, ic = d.importClause, nb = ic?.namedBindings;
+      const spec = (d.moduleSpecifier as ts.StringLiteral).text;
+      if (!ic || ic.phaseModifier === K.TypeKeyword) continue;
+      if (ic.name) values.add(ic.name.text);
+      if (nb?.kind === K.NamespaceImport && spec.startsWith("npm:")) values.add((nb as ts.NamespaceImport).name.text);
+      else if (nb?.kind === K.NamedImports) {
+        for (const x of (nb as ts.NamedImports).elements) if (!x.isTypeOnly) values.add(x.name.text);
+      }
+    }
   }
   for (const s of sf.statements) {
     if (s.kind === K.ImportDeclaration) {
       const d = s as ts.ImportDeclaration;
+      const ic = d.importClause!;
+      if (ic.phaseModifier === K.TypeKeyword) continue;
+      const nb = ic.namedBindings;
       const spec = (d.moduleSpecifier as ts.StringLiteral).text;
       if (spec.startsWith("c:")) {
-        if (mut) {
+        if (mut && nb?.kind === K.NamedImports) {
           const decls = sf.statements.filter((st): st is ts.ModuleDeclaration => {
             if (st.kind !== K.ModuleDeclaration) return false;
             const md = st as ts.ModuleDeclaration;
@@ -873,7 +892,8 @@ export function emitFile(
             if (st.kind === K.VariableStatement) for (const vd of (st as ts.VariableStatement).declarationList.declarations) if (isId(vd.name)) constNames.add(vd.name.text);
             if (st.kind === K.TypeAliasDeclaration) typeNames.add((st as ts.TypeAliasDeclaration).name.text);
           }
-          const stubs = (d.importClause!.namedBindings as ts.NamedImports).elements.flatMap((x) => {
+          const stubs = (nb as ts.NamedImports).elements.flatMap((x) => {
+            if (x.isTypeOnly) return [];
             const orig = (x.propertyName ?? x.name).text;
             if (typeNames.has(orig)) return [];
             return [constNames.has(orig) ? `${x.name.text} = 0` : `${x.name.text} = () => ${RT}.cOnly()`];
@@ -882,14 +902,47 @@ export function emitFile(
         }
         continue; // §14: C declarations have no JS value; in mutate mode functions become COnlyReached stubs (Q275)
       }
+      const valNamed = nb?.kind === K.NamedImports ? (nb as ts.NamedImports).elements.filter((x) => !x.isTypeOnly) : [];
+      if (!ic.name && nb?.kind === K.NamedImports && !valNamed.length) continue;
       const key = spec.startsWith("npm:") ? spec : keyOf(canonPath(dirname(pf.path), spec));
       imports.push(key);
-      const els = (d.importClause!.namedBindings as ts.NamedImports).elements.map((x) => (x.propertyName ? `${x.propertyName.text}: ${x.name.text}` : x.name.text));
-      body.push(`const { ${els.join(", ")} } = ${IMP}(${JSON.stringify(key)});`);
+      if (!ic.name && nb?.kind === K.NamedImports) {
+        const els = valNamed.map((x) => (x.propertyName ? `${x.propertyName.text}: ${x.name.text}` : x.name.text));
+        body.push(`const { ${els.join(", ")} } = ${IMP}(${JSON.stringify(key)});`);
+      } else if (!ic.name && nb?.kind === K.NamespaceImport) {
+        body.push(`const ${(nb as ts.NamespaceImport).name.text} = ${IMP}(${JSON.stringify(key)});`);
+      } else if (ic.name) {
+        const tmp = `${RUNTIME_GLOBAL}_im${impIdx++}`;
+        const lines = [
+          `const ${tmp} = ${IMP}(${JSON.stringify(key)});`,
+          `const ${ic.name.text} = (${tmp} && typeof ${tmp} === "object" && "default" in ${tmp}) ? ${tmp}.default : ${tmp};`,
+        ];
+        if (nb?.kind === K.NamespaceImport) lines.push(`const ${(nb as ts.NamespaceImport).name.text} = ${tmp};`);
+        else if (valNamed.length) {
+          const els = valNamed.map((x) => (x.propertyName ? `${x.propertyName.text}: ${x.name.text}` : x.name.text));
+          lines.push(`const { ${els.join(", ")} } = ${tmp};`);
+        }
+        body.push(lines.join("\n"));
+      }
       continue;
     }
     if (s.kind === K.ExportDeclaration) {
-      for (const x of ((s as ts.ExportDeclaration).exportClause as ts.NamedExports).elements) {
+      const d = s as ts.ExportDeclaration;
+      if (d.isTypeOnly) continue;
+      const ec = d.exportClause as ts.NamedExports;
+      if (d.moduleSpecifier) {
+        const els = ec.elements.filter((x) => !x.isTypeOnly);
+        if (!els.length) continue;
+        const spec = (d.moduleSpecifier as ts.StringLiteral).text;
+        const key = keyOf(canonPath(dirname(pf.path), spec));
+        imports.push(key);
+        const tmp = `${RUNTIME_GLOBAL}_re${reexpIdx++}`;
+        body.push(`const ${tmp} = ${IMP}(${JSON.stringify(key)});`);
+        for (const x of els) reexported.push(`${x.name.text}: ${tmp}.${(x.propertyName ?? x.name).text}`);
+        continue;
+      }
+      for (const x of ec.elements) {
+        if (x.isTypeOnly) continue;
         const local = (x.propertyName ?? x.name).text;
         if (values.has(local)) exported.push(x.propertyName ? `${x.name.text}: ${local}` : local); // types have no runtime value
       }
@@ -915,7 +968,7 @@ export function emitFile(
   // declared `export` (who may *import* a name stays a static question for P1 / P2).
   for (const n of extraExports ?? []) if (!exported.includes(n)) exported.push(n);
   const mutTableExport = mut?.exportFns.length ? `${MUT_FNS}: { ${mut.exportFns.join(", ")} }` : "";
-  const finalExports = [...exported, ...(mutTableExport ? [mutTableExport] : [])];
+  const finalExports = [...exported, ...reexported, ...(mutTableExport ? [mutTableExport] : [])];
   const prelude = [
     `"use strict";`,
     `const { ${RT_NAMESPACES.join(", ")} } = ${RT};`,

@@ -1,0 +1,4 @@
+// expect: E5002 @ 4:18
+// stage: 1
+// open-question: Q054
+const A: i32[] = [1, 2];

@@ -67,7 +67,7 @@ test("mul works", (t: Test) => {
 });
 
 describe("CLI check --fix", () => {
-  it("auto-fixes single-edit syntax errors (var, ==, T[], i++) in text and json modes", async () => {
+  it("auto-fixes single-edit syntax errors (var, ==, i++) in text and json modes", async () => {
     const dir = makeDir("fix-single");
     const fText = join(dir, "single.szigyr");
     const src = `function sum(xs: i32[]): i32 {
@@ -82,9 +82,8 @@ describe("CLI check --fix", () => {
     writeFileSync(fText, src);
     const r = await runCli(["check", "--fix", fText]);
     expect(r.code).toBe(0);
-    expect(r.out).toContain(`fixed ${relative(process.cwd(), fText)} (4 edit(s))`);
+    expect(r.out).toContain(`fixed ${relative(process.cwd(), fText)} (3 edit(s))`);
     const fixed = readFileSync(fText, "utf8");
-    expect(fixed).toContain("xs: Array<i32>");
     expect(fixed).toContain("let total: i32 = 0;");
     expect(fixed).toContain("i += 1");
     expect(fixed).toContain("xs[i] === 0");
@@ -94,7 +93,7 @@ describe("CLI check --fix", () => {
     writeFileSync(fJson, src);
     const rj = await runCli(["check", "--fix", "--json", fJson]);
     expect(rj.code).toBe(0);
-    expect(jsonLines(rj.out)).toEqual([{ kind: "fixed", file: relative(process.cwd(), fJson), applied: 4 }]);
+    expect(jsonLines(rj.out)).toEqual([{ kind: "fixed", file: relative(process.cwd(), fJson), applied: 3 }]);
   });
 
   it("deduplicates colliding parameter insertion on multi-edit E5001 fixes", async () => {

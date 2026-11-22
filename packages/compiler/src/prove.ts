@@ -102,7 +102,9 @@ const isStrLitLike = (t: Type): boolean => {
 };
 
 function strip(e: ts.Expression): ts.Expression {
-  while (e.kind === K.ParenthesizedExpression) e = (e as ts.ParenthesizedExpression).expression;
+  while (e.kind === K.ParenthesizedExpression || e.kind === K.SatisfiesExpression) {
+    e = e.kind === K.ParenthesizedExpression ? (e as ts.ParenthesizedExpression).expression : (e as ts.SatisfiesExpression).expression;
+  }
   return e;
 }
 
@@ -433,6 +435,15 @@ class FnProver {
 
     if (e.kind === K.PropertyAccessExpression) {
       const p = e as ts.PropertyAccessExpression;
+      if (isId(p.expression) && !localOf.has(p.expression)) {
+        const ns = mod.nsImports.get(p.expression.text);
+        if (ns && !ns.typeOnly) {
+          const gv = this.decls.lookupExportedValue(ns.mod, p.name.text);
+          if (gv?.k === "const" && gv.decl.initializer && !gv.bind) {
+            return this.evalPureInt(gv.decl.initializer, st, gv.mod, overrides, trackNonLinear);
+          }
+        }
+      }
       if (p.name.text === "length") {
         const lk = this.lengthKeyOf(p.expression);
         if (lk && st.env.has(lk)) return { smt: st.env.get(lk)!, exact: true };
@@ -512,7 +523,17 @@ class FnProver {
     }
 
     if (e.kind === K.PropertyAccessExpression) {
-      const fk = this.fieldKeyOf(e as ts.PropertyAccessExpression);
+      const p = e as ts.PropertyAccessExpression;
+      if (isId(p.expression) && !localOf.has(p.expression)) {
+        const ns = mod.nsImports.get(p.expression.text);
+        if (ns && !ns.typeOnly) {
+          const gv = this.decls.lookupExportedValue(ns.mod, p.name.text);
+          if (gv?.k === "const" && gv.decl.initializer && !gv.bind) {
+            return this.evalPureBool(gv.decl.initializer, st, gv.mod, overrides, trackNonLinear);
+          }
+        }
+      }
+      const fk = this.fieldKeyOf(p);
       if (fk && st.env.has(fk)) return { smt: st.env.get(fk)!, exact: !st.inexact.has(fk) };
     }
 
@@ -692,6 +713,15 @@ class FnProver {
 
     if (e.kind === K.PropertyAccessExpression) {
       const p = e as ts.PropertyAccessExpression;
+      if (isId(p.expression) && !localOf.has(p.expression)) {
+        const ns = mod.nsImports.get(p.expression.text);
+        if (ns && !ns.typeOnly) {
+          const gv = this.decls.lookupExportedValue(ns.mod, p.name.text);
+          if (gv?.k === "const" && gv.decl.initializer && !gv.bind) {
+            return this.evalPureInt(gv.decl.initializer, st, gv.mod, new Map());
+          }
+        }
+      }
       if (p.name.text === "length") {
         const lk = this.lengthKeyOf(p.expression);
         if (lk && st.env.has(lk)) return { smt: st.env.get(lk)!, exact: true };
@@ -1043,7 +1073,17 @@ class FnProver {
       return out;
     }
     if (e.kind === K.PropertyAccessExpression) {
-      const fk = this.fieldKeyOf(e as ts.PropertyAccessExpression);
+      const p = e as ts.PropertyAccessExpression;
+      if (isId(p.expression) && !localOf.has(p.expression)) {
+        const ns = mod.nsImports.get(p.expression.text);
+        if (ns && !ns.typeOnly) {
+          const gv = this.decls.lookupExportedValue(ns.mod, p.name.text);
+          if (gv?.k === "const" && gv.decl.initializer && !gv.bind) {
+            return this.extractRecordFields(gv.decl.initializer, st, gv.mod);
+          }
+        }
+      }
+      const fk = this.fieldKeyOf(p);
       if (fk) {
         const pfx = `${fk}.`;
         for (const [k, fv] of st.env) {
@@ -1196,6 +1236,73 @@ class FnProver {
     }
   }
 
+  private async checkTargetCall(target: FnSym, anchor: Node, c: ts.CallExpression, st: State, mod: Module, retT: Type): Promise<TermVal | undefined> {
+    const argVals: TermVal[] = [];
+    for (const a of c.arguments) argVals.push(await this.checkExpr(a, st));
+    const cs = this.contracts.get(target);
+    const calleeKey = `${target.mod.pf.path}::${target.name}`;
+    if (cs?.requires.length) {
+      const { env: reqEnv, inexact: reqInexact, pMap } = this.collectArgBindings(target, c.arguments, argVals, st);
+      this.withTempEnv(st, reqEnv, reqInexact, () => {
+        for (const req of cs.requires) {
+          const cond = this.evalPureBool(req.arguments[0]!, st, target.mod, pMap);
+          this.addObligation("T004", `requires for ${target.name}`, anchor, mod, st, cond.smt, cond.exact, calleeKey);
+        }
+      });
+    }
+    // Havoc Mut<Vec<T>> / Mut<Struct> args BEFORE evaluating ensures (Mut<Slice<T>> length cannot change)
+    target.sig.params.forEach((pt, idx) => {
+      if (pt.k === "gen" && pt.name === "Mut") {
+        const inner = unref(pt.args[0]!);
+        if (!(inner.k === "gen" && inner.name === "Slice")) {
+          const argNode = c.arguments[idx];
+          if (argNode) this.havocTarget(argNode, st);
+        }
+      }
+    });
+    if (!cs?.ensures.length) return undefined;
+    const retVar = this.freshForType(retT, `${target.name}_ret`);
+    const { env: postEnv, inexact: postInexact, pMap } = this.collectArgBindings(target, c.arguments, argVals, st);
+    const firstParam = cs.ensures.map((e) => e.parameters[0]?.name).find((n): n is ts.Identifier => !!n && isId(n));
+    const firstESym = firstParam ? localOf.get(firstParam) : undefined;
+    let retRecordFields: Map<string, FieldTerm> | undefined;
+    let retContainerLen: string | undefined;
+    if (retT.k === "record") {
+      retRecordFields = new Map();
+      this.allocRetRecordFields(retT, "", `${target.name}_ret`, retRecordFields, firstESym?.id, postEnv);
+    } else if (isContainer(retT)) {
+      retContainerLen = this.fresh("Int", `${target.name}_len`, [0n, MAX_U32]);
+      if (firstESym) postEnv.set(`len:${firstESym.id}`, retContainerLen);
+    }
+    const retTerm: TermVal = {
+      smt: retContainerLen ?? retVar,
+      exact: true,
+      ...(retContainerLen !== undefined ? { containerLen: retContainerLen } : {}),
+      ...(retRecordFields?.size ? { recordFields: retRecordFields } : {}),
+    };
+    for (const ens of cs.ensures) {
+      const ep = ens.parameters[0]?.name;
+      if (!ep || !isId(ep) || ens.body.kind === K.Block) continue;
+      const eSym = localOf.get(ep);
+      const eMap = new Map(pMap);
+      if (eSym) {
+        eMap.set(eSym.id, retTerm);
+        if (firstESym && eSym.id !== firstESym.id) {
+          if (retRecordFields) {
+            for (const [rp, fv] of retRecordFields) postEnv.set(`field:${eSym.id}.${rp}`, fv.smt);
+          } else if (retContainerLen !== undefined) {
+            postEnv.set(`len:${eSym.id}`, retContainerLen);
+          }
+        }
+      }
+      this.withTempEnv(st, postEnv, postInexact, () => {
+        const post = this.evalPureBool(ens.body as ts.Expression, st, target.mod, eMap);
+        st.assumptions.push(post.smt);
+      });
+    }
+    return retTerm;
+  }
+
   private async checkCall(c: ts.CallExpression, st: State): Promise<TermVal> {
     const callee = c.expression;
     const mod = this.f.mod;
@@ -1253,78 +1360,22 @@ class FnProver {
       }
 
       const target = callFns.get(c);
-      const argVals: TermVal[] = [];
-      for (const a of c.arguments) argVals.push(await this.checkExpr(a, st));
       if (target) {
-        const cs = this.contracts.get(target);
-        const calleeKey = `${target.mod.pf.path}::${target.name}`;
-        if (cs?.requires.length) {
-          const { env: reqEnv, inexact: reqInexact, pMap } = this.collectArgBindings(target, c.arguments, argVals, st);
-          this.withTempEnv(st, reqEnv, reqInexact, () => {
-            for (const req of cs.requires) {
-              const cond = this.evalPureBool(req.arguments[0]!, st, target.mod, pMap);
-              this.addObligation("T004", `requires for ${target.name}`, callee, mod, st, cond.smt, cond.exact, calleeKey);
-            }
-          });
-        }
-        // Havoc Mut<Vec<T>> / Mut<Struct> args BEFORE evaluating ensures (Mut<Slice<T>> length cannot change)
-        target.sig.params.forEach((pt, idx) => {
-          if (pt.k === "gen" && pt.name === "Mut") {
-            const inner = unref(pt.args[0]!);
-            if (!(inner.k === "gen" && inner.name === "Slice")) {
-              const argNode = c.arguments[idx];
-              if (argNode) this.havocTarget(argNode, st);
-            }
-          }
-        });
-        if (cs?.ensures.length) {
-          const retVar = this.freshForType(retT, `${target.name}_ret`);
-          const { env: postEnv, inexact: postInexact, pMap } = this.collectArgBindings(target, c.arguments, argVals, st);
-          const firstParam = cs.ensures.map((e) => e.parameters[0]?.name).find((n): n is ts.Identifier => !!n && isId(n));
-          const firstESym = firstParam ? localOf.get(firstParam) : undefined;
-          let retRecordFields: Map<string, FieldTerm> | undefined;
-          let retContainerLen: string | undefined;
-          if (retT.k === "record") {
-            retRecordFields = new Map();
-            this.allocRetRecordFields(retT, "", `${target.name}_ret`, retRecordFields, firstESym?.id, postEnv);
-          } else if (isContainer(retT)) {
-            retContainerLen = this.fresh("Int", `${target.name}_len`, [0n, MAX_U32]);
-            if (firstESym) postEnv.set(`len:${firstESym.id}`, retContainerLen);
-          }
-          const retTerm: TermVal = {
-            smt: retContainerLen ?? retVar,
-            exact: true,
-            ...(retContainerLen !== undefined ? { containerLen: retContainerLen } : {}),
-            ...(retRecordFields?.size ? { recordFields: retRecordFields } : {}),
-          };
-          for (const ens of cs.ensures) {
-            const ep = ens.parameters[0]?.name;
-            if (!ep || !isId(ep) || ens.body.kind === K.Block) continue;
-            const eSym = localOf.get(ep);
-            const eMap = new Map(pMap);
-            if (eSym) {
-              eMap.set(eSym.id, retTerm);
-              if (firstESym && eSym.id !== firstESym.id) {
-                if (retRecordFields) {
-                  for (const [rp, fv] of retRecordFields) postEnv.set(`field:${eSym.id}.${rp}`, fv.smt);
-                } else if (retContainerLen !== undefined) {
-                  postEnv.set(`len:${eSym.id}`, retContainerLen);
-                }
-              }
-            }
-            this.withTempEnv(st, postEnv, postInexact, () => {
-              const post = this.evalPureBool(ens.body as ts.Expression, st, target.mod, eMap);
-              st.assumptions.push(post.smt);
-            });
-          }
-          return retTerm;
-        }
+        const retTerm = await this.checkTargetCall(target, callee, c, st, mod, retT);
+        if (retTerm) return retTerm;
+      } else {
+        for (const a of c.arguments) await this.checkExpr(a, st);
       }
       return { smt: this.freshForType(retT, name), exact: false };
     }
 
     if (callee.kind === K.PropertyAccessExpression) {
       const p = callee as ts.PropertyAccessExpression;
+      const target = callFns.get(c);
+      if (target) {
+        const retTerm = await this.checkTargetCall(target, p.name, c, st, mod, retT);
+        return retTerm ?? { smt: this.freshForType(retT, target.name), exact: false };
+      }
       const m = p.name.text;
       await this.checkExpr(p.expression, st);
       const recvT = this.typeOf(p.expression);
@@ -1470,7 +1521,8 @@ class FnProver {
             const sym = localOf.get(strip(p.expression) as ts.Identifier);
             if (sym) out.add(`len:${sym.id}`);
           }
-        } else {
+        }
+        if (callFns.has(c)) {
           const fn = callFns.get(c);
           fn?.sig.params.forEach((pt, idx) => {
             if (pt.k === "gen" && pt.name === "Mut" && !(pt.args[0]!.k === "gen" && pt.args[0]!.name === "Slice")) {
@@ -2075,6 +2127,15 @@ function computeProveKey(decls: Decls, f: FnSym, solverId: string): string {
       if (n.kind === K.CallExpression) {
         const cf = callFns.get(n);
         if (cf) visitFn(cf);
+      } else if (n.kind === K.PropertyAccessExpression) {
+        const p = n as ts.PropertyAccessExpression;
+        if (isId(p.expression) && !localOf.has(p.expression)) {
+          const ns = mod.nsImports.get(p.expression.text);
+          if (ns && !ns.typeOnly) {
+            const sym = decls.lookupExportedValue(ns.mod, p.name.text);
+            if (sym?.k === "const") visitConst(sym);
+          }
+        }
       } else if (isId(n) && !localOf.has(n)) {
         const sym = decls.lookupValue(mod, n.text);
         if (sym?.k === "const") visitConst(sym);
@@ -2092,15 +2153,22 @@ function computeProveKey(decls: Decls, f: FnSym, solverId: string): string {
 function findExposedCallees(decls: Decls, targetSet: ReadonlySet<FnSym>): Set<FnSym> {
   const exposed = new Set<FnSym>();
   for (const mod of decls.mods) {
-    const exVals = new Set(mod.exports.values());
-    for (const f of decls.fns) {
-      if (f.mod === mod && exVals.has(f.name)) exposed.add(f);
+    for (const expName of mod.exports.keys()) {
+      const sym = decls.lookupExportedValue(mod, expName);
+      if (sym?.k === "fn") exposed.add(sym);
     }
     const visit = (n: Node, currentFn: FnSym | undefined): void => {
       const nextFn = n.kind === K.FunctionDeclaration ? decls.fns.find((x) => x.decl === n) : currentFn;
       if (n.kind === K.CallExpression) {
         const target = callFns.get(n);
         if (target && (!nextFn || !targetSet.has(nextFn))) exposed.add(target);
+      } else if (n.kind === K.PropertyAccessExpression) {
+        const pa = n as ts.PropertyAccessExpression;
+        if (isId(pa.expression) && !localOf.has(pa.expression) && !(pa.parent?.kind === K.CallExpression && (pa.parent as ts.CallExpression).expression === pa)) {
+          const ns = mod.nsImports.get(pa.expression.text);
+          const sym = ns && !ns.typeOnly ? decls.lookupExportedValue(ns.mod, pa.name.text) : undefined;
+          if (sym?.k === "fn") exposed.add(sym);
+        }
       } else if (isId(n) && !localOf.has(n)) {
         const p = n.parent;
         const skip = !p

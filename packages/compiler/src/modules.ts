@@ -43,6 +43,10 @@ export type TypeSym =
   | CStructSym
   | { k: "error" };
 
+export type ExportEntry =
+  | { k: "local"; local: string; typeOnly: boolean }
+  | { k: "reexport"; mod: Module; name: string; typeOnly: boolean };
+
 export interface Module {
   pf: ParsedFile;
   file: string;
@@ -51,10 +55,14 @@ export interface Module {
   layer: Layer;
   values: Map<string, ValueSym>;
   types: Map<string, TypeSym>;
-  /** exported name -> local name */
-  exports: Map<string, string>;
+  /** exported name -> local or re-exported symbol entry */
+  exports: Map<string, ExportEntry>;
   /** local name -> imported module and exported name (relative imports only) */
-  imports: Map<string, { mod: Module; name: string }>;
+  imports: Map<string, { mod: Module; name: string; typeOnly: boolean }>;
+  /** local name -> module namespace import (`import * as ns from "./x.szigyr"`) */
+  nsImports: Map<string, { mod: Module; typeOnly: boolean }>;
+  /** C value names imported as type-only, for clearer E2002 diagnostics if used in value position. */
+  typeOnlyCValues: Set<string>;
   /** `declare module "c:..."` blocks of this file: specifier -> C function name -> symbol (§14.1). */
   cdecls: Map<string, Map<string, CFnSym>>;
   /** `declare module "c:..."` constants (SPEC-v1 §9). */
@@ -107,21 +115,21 @@ export function declBindings(d: ts.VariableDeclaration): { id: ts.Identifier; el
   return (d.name as ts.ObjectBindingPattern).elements.flatMap((el) => (isId(el.name) ? [{ id: el.name, el }] : []));
 }
 
-/** Syntactic export table: exported name -> local name (E7001 check in P1, and module linking). */
-function exportTable(sf: ts.SourceFile): Map<string, string> {
-  const out = new Map<string, string>();
+/** Syntactic exported names (including re-exports) for P1 import/export name checks. */
+function exportNames(sf: ts.SourceFile): Set<string> {
+  const out = new Set<string>();
   for (const s of sf.statements) {
     if (s.kind === K.ExportDeclaration) {
       const ec = (s as ts.ExportDeclaration).exportClause;
-      if (ec?.kind === K.NamedExports) for (const e of (ec as ts.NamedExports).elements) out.set(e.name.text, (e.propertyName as ts.Identifier | undefined)?.text ?? e.name.text);
+      if (ec?.kind === K.NamedExports) for (const e of (ec as ts.NamedExports).elements) out.add(e.name.text);
       continue;
     }
     if (!hasMod(s, K.ExportKeyword)) continue;
     if (s.kind === K.VariableStatement) {
-      for (const d of (s as ts.VariableStatement).declarationList.declarations) for (const b of declBindings(d)) out.set(b.id.text, b.id.text);
+      for (const d of (s as ts.VariableStatement).declarationList.declarations) for (const b of declBindings(d)) out.add(b.id.text);
     } else {
       const name = (s as Node & { name?: Node }).name;
-      if (isId(name)) out.set(name.text, name.text);
+      if (isId(name)) out.add(name.text);
     }
   }
   return out;
@@ -133,14 +141,17 @@ function declaredNames(sf: ts.SourceFile): Set<string> {
   for (const s of sf.statements) {
     if (s.kind === K.VariableStatement) for (const d of (s as ts.VariableStatement).declarationList.declarations) for (const b of declBindings(d)) out.add(b.id.text);
     else if (s.kind === K.ImportDeclaration) {
-      const nb = (s as ts.ImportDeclaration).importClause?.namedBindings;
-      if (nb?.kind === K.NamedImports) for (const e of (nb as ts.NamedImports).elements) out.add(e.name.text);
+      const ic = (s as ts.ImportDeclaration).importClause;
+      if (ic?.name) out.add(ic.name.text);
+      const nb = ic?.namedBindings;
+      if (nb?.kind === K.NamespaceImport) out.add((nb as ts.NamespaceImport).name.text);
+      else if (nb?.kind === K.NamedImports) for (const e of (nb as ts.NamedImports).elements) out.add(e.name.text);
     } else { const n = (s as Node & { name?: Node }).name; if (isId(n)) out.add(n.text); }
   }
   return out;
 }
 
-/** P1 part of Q009: imported names must be exported by the target; exported names must exist. */
+/** P1 part of Q009: imported/re-exported names must be exported by the target; local exported names must exist. */
 export function checkImportNames(files: ParsedFile[], display: (p: string) => string): Diagnostic[] {
   const byPath = new Map(files.map((f) => [f.path, f]));
   const out: Diagnostic[] = [];
@@ -151,11 +162,25 @@ export function checkImportNames(files: ParsedFile[], display: (p: string) => st
     const own = declaredNames(pf.sourceFile);
     for (const s of pf.sourceFile.statements) {
       if (s.kind === K.ExportDeclaration) {
-        const ec = (s as ts.ExportDeclaration).exportClause;
-        if (ec?.kind === K.NamedExports) for (const e of (ec as ts.NamedExports).elements) {
-          const local = (e.propertyName ?? e.name) as ts.Identifier;
-          if (!own.has(local.text)) diag(pf, local, `cannot export unknown name '${local.text}'`);
+        const d = s as ts.ExportDeclaration;
+        const ec = d.exportClause;
+        if (ec?.kind !== K.NamedExports) continue;
+        if (d.moduleSpecifier) {
+          if (d.moduleSpecifier.kind !== K.StringLiteral) continue;
+          const target = byPath.get(canonPath(dirname(pf.path), (d.moduleSpecifier as ts.StringLiteral).text));
+          if (!target) continue;
+          const ex = exportNames(target.sourceFile);
+          for (const e of (ec as ts.NamedExports).elements) {
+            const orig = (e.propertyName ?? e.name) as ts.Identifier;
+            if (!ex.has(orig.text)) diag(pf, orig, `module does not export '${orig.text}'`);
+          }
+        } else {
+          for (const e of (ec as ts.NamedExports).elements) {
+            const local = (e.propertyName ?? e.name) as ts.Identifier;
+            if (!own.has(local.text)) diag(pf, local, `cannot export unknown name '${local.text}'`);
+          }
         }
+        continue;
       }
       if (s.kind !== K.ImportDeclaration) continue;
       const d = s as ts.ImportDeclaration;
@@ -163,7 +188,7 @@ export function checkImportNames(files: ParsedFile[], display: (p: string) => st
       const target = byPath.get(canonPath(dirname(pf.path), (d.moduleSpecifier as ts.StringLiteral).text));
       const nb = d.importClause?.namedBindings;
       if (!target || nb?.kind !== K.NamedImports) continue;
-      const ex = exportTable(target.sourceFile);
+      const ex = exportNames(target.sourceFile);
       for (const e of (nb as ts.NamedImports).elements) {
         const name = (e.propertyName ?? e.name) as ts.Identifier;
         if (!ex.has(name.text)) diag(pf, name, `module does not export '${name.text}'`);
@@ -194,15 +219,55 @@ export class Program {
       const sf = pf.sourceFile;
       const mod: Module = {
         pf, sf, file: display(pf.path), layer: directiveOf(sf.statements) ?? "managed",
-        values: new Map(), types: new Map(), exports: exportTable(sf), imports: new Map(), cdecls: new Map(), cconsts: new Map(), cstructs: new Map(),
+        values: new Map(), types: new Map(), exports: new Map(), imports: new Map(), nsImports: new Map(), typeOnlyCValues: new Set(),
+        cdecls: new Map(), cconsts: new Map(), cstructs: new Map(),
       };
       this.mods.push(mod);
       this.byPath.set(pf.path, mod);
     }
+    for (const mod of this.mods) this.buildExports(mod);
     for (const mod of this.mods) this.shells(mod);
     for (const mod of this.mods) this.classIfaceConstraints(mod); // before any type reference is resolved (D013)
     for (const mod of this.mods) this.resolveCStructs(mod); // before signatures/aliases reference CStructs
     for (const mod of this.mods) this.signatures(mod);
+  }
+
+  private buildExports(mod: Module): void {
+    for (const s of mod.sf.statements) {
+      if (s.kind === K.ExportDeclaration) {
+        const d = s as ts.ExportDeclaration;
+        const ec = d.exportClause;
+        if (ec?.kind !== K.NamedExports) continue;
+        if (d.moduleSpecifier) {
+          if (d.moduleSpecifier.kind !== K.StringLiteral) continue;
+          const target = this.byPath.get(canonPath(dirname(mod.pf.path), (d.moduleSpecifier as ts.StringLiteral).text));
+          if (!target) continue;
+          for (const e of (ec as ts.NamedExports).elements) {
+            if (!isId(e.name)) continue;
+            const orig = (e.propertyName ?? e.name) as ts.Identifier;
+            if (!isId(orig)) continue;
+            mod.exports.set(e.name.text, { k: "reexport", mod: target, name: orig.text, typeOnly: !!d.isTypeOnly || e.isTypeOnly });
+          }
+        } else {
+          for (const e of (ec as ts.NamedExports).elements) {
+            if (!isId(e.name)) continue;
+            const local = (e.propertyName ?? e.name) as ts.Identifier;
+            if (!isId(local)) continue;
+            mod.exports.set(e.name.text, { k: "local", local: local.text, typeOnly: !!d.isTypeOnly || e.isTypeOnly });
+          }
+        }
+        continue;
+      }
+      if (!hasMod(s, K.ExportKeyword)) continue;
+      if (s.kind === K.VariableStatement) {
+        for (const d of (s as ts.VariableStatement).declarationList.declarations) {
+          for (const b of declBindings(d)) mod.exports.set(b.id.text, { k: "local", local: b.id.text, typeOnly: false });
+        }
+      } else {
+        const name = (s as Node & { name?: Node }).name;
+        if (isId(name)) mod.exports.set(name.text, { k: "local", local: name.text, typeOnly: false });
+      }
+    }
   }
 
   private shells(mod: Module): void {
@@ -242,33 +307,58 @@ export class Program {
           if (d.moduleSpecifier.kind !== K.StringLiteral) break;
           const spec = (d.moduleSpecifier as ts.StringLiteral).text;
           const ic = d.importClause;
-          if (ic?.name) { mod.values.set(ic.name.text, { k: "error" }); mod.types.set(ic.name.text, { k: "error" }); }
+          const declTypeOnly = ic?.phaseModifier === K.TypeKeyword;
           const nb = ic?.namedBindings;
-          if (nb?.kind === K.NamespaceImport) { mod.values.set(nb.name.text, { k: "error" }); mod.types.set(nb.name.text, { k: "error" }); break; }
-          if (!nb || nb.kind !== K.NamedImports) break;
-          const target = this.byPath.get(canonPath(dirname(mod.pf.path), spec));
+          if (spec.startsWith("npm:")) {
+            if (declTypeOnly) {
+              if (ic?.name) { mod.values.set(ic.name.text, { k: "error" }); mod.types.set(ic.name.text, { k: "error" }); }
+              if (nb?.kind === K.NamespaceImport) { mod.values.set((nb as ts.NamespaceImport).name.text, { k: "error" }); mod.types.set((nb as ts.NamespaceImport).name.text, { k: "error" }); }
+              else if (nb?.kind === K.NamedImports) for (const e of (nb as ts.NamedImports).elements) { mod.values.set(e.name.text, { k: "error" }); mod.types.set(e.name.text, { k: "error" }); }
+              break;
+            }
+            if (ic?.name) mod.values.set(ic.name.text, { k: "jsref" });
+            if (nb?.kind === K.NamespaceImport) mod.values.set((nb as ts.NamespaceImport).name.text, { k: "jsref" });
+            else if (nb?.kind === K.NamedImports) {
+              for (const e of (nb as ts.NamedImports).elements) {
+                mod.values.set(e.name.text, e.isTypeOnly ? { k: "error" } : { k: "jsref" }); // §7.4
+              }
+            }
+            break;
+          }
           if (spec.startsWith("c:")) { // §14.1: binds this file's own declarations, never another file
+            if (ic?.name) { mod.values.set(ic.name.text, { k: "error" }); mod.types.set(ic.name.text, { k: "error" }); }
+            if (nb?.kind === K.NamespaceImport) { mod.values.set((nb as ts.NamespaceImport).name.text, { k: "error" }); mod.types.set((nb as ts.NamespaceImport).name.text, { k: "error" }); break; }
+            if (nb?.kind !== K.NamedImports) break;
             const fns = mod.cdecls.get(spec);
             const consts = mod.cconsts.get(spec);
             const structs = mod.cstructs.get(spec);
-            for (const e of nb.elements) {
+            for (const e of (nb as ts.NamedImports).elements) {
               const orig = (e.propertyName ?? e.name) as ts.Identifier;
               if (!isId(orig)) { mod.values.set(e.name.text, { k: "error" }); mod.types.set(e.name.text, { k: "error" }); continue; }
+              const isTO = declTypeOnly || e.isTypeOnly;
               const vs = fns?.get(orig.text) ?? consts?.get(orig.text);
               const ts = structs?.get(orig.text);
-              if (vs) mod.values.set(e.name.text, vs);
-              else if (ts) mod.types.set(e.name.text, ts);
+              if (vs) {
+                if (isTO) mod.typeOnlyCValues.add(e.name.text);
+                else mod.values.set(e.name.text, vs);
+              } else if (ts) mod.types.set(e.name.text, ts);
               else { mod.values.set(e.name.text, { k: "error" }); mod.types.set(e.name.text, { k: "error" }); }
             }
             break;
           }
-          for (const e of nb.elements) {
-            if (spec.startsWith("npm:")) mod.values.set(e.name.text, { k: "jsref" }); // §7.4
-            else {
-              const orig = (e.propertyName ?? e.name) as ts.Identifier;
-              if (target && isId(orig) && target.exports.has(orig.text)) mod.imports.set(e.name.text, { mod: target, name: orig.text });
-              else { mod.values.set(e.name.text, { k: "error" }); mod.types.set(e.name.text, { k: "error" }); }
-            }
+          const target = this.byPath.get(canonPath(dirname(mod.pf.path), spec));
+          if (ic?.name) { mod.values.set(ic.name.text, { k: "error" }); mod.types.set(ic.name.text, { k: "error" }); }
+          if (nb?.kind === K.NamespaceImport) {
+            const nsId = (nb as ts.NamespaceImport).name;
+            if (target) mod.nsImports.set(nsId.text, { mod: target, typeOnly: declTypeOnly });
+            else { mod.values.set(nsId.text, { k: "error" }); mod.types.set(nsId.text, { k: "error" }); }
+            break;
+          }
+          if (!nb || nb.kind !== K.NamedImports) break;
+          for (const e of (nb as ts.NamedImports).elements) {
+            const orig = (e.propertyName ?? e.name) as ts.Identifier;
+            if (target && isId(orig) && target.exports.has(orig.text)) mod.imports.set(e.name.text, { mod: target, name: orig.text, typeOnly: declTypeOnly || e.isTypeOnly });
+            else { mod.values.set(e.name.text, { k: "error" }); mod.types.set(e.name.text, { k: "error" }); }
           }
           break;
         }
@@ -396,7 +486,13 @@ export class Program {
 
   private classMembers(cls: ClassSym, e: TypeEnv): void {
     const mod = e.mod;
-    for (const h of cls.decl.heritageClauses ?? []) for (const t of h.types) if (isId(t.expression)) cls.implements.push(this.typeRef(t.expression, t.typeArguments, t, e));
+    for (const h of cls.decl.heritageClauses ?? []) for (const t of h.types) {
+      if (isId(t.expression)) cls.implements.push(this.typeRef(t.expression, t.typeArguments, t, e));
+      else if (t.expression.kind === K.PropertyAccessExpression && isId((t.expression as ts.PropertyAccessExpression).expression) && isId((t.expression as ts.PropertyAccessExpression).name)) {
+        const pa = t.expression as ts.PropertyAccessExpression;
+        cls.implements.push(this.qualifiedTypeRef(pa.expression as ts.Identifier, pa.name as ts.Identifier, t.typeArguments, t, e));
+      }
+    }
     for (const m of cls.decl.members) {
       if (m.kind === K.PropertyDeclaration) {
         const p = m as ts.PropertyDeclaration;
@@ -540,20 +636,41 @@ export class Program {
     }
   }
 
-  /** Follows import-then-export chains of any length; a cycle (a (module, name) pair met twice) resolves to nothing (Q226). `table` picks the symbol table: types or values. */
-  private follow<S>(mod: Module, name: string, table: (m: Module) => Map<string, S>, seen: Set<string>): S | undefined {
-    const own = table(mod).get(name);
-    if (own) return own;
-    const imp = mod.imports.get(name);
-    if (!imp) return undefined;
-    const hop = `${mod.file}\0${name}`;
+  /** Follows import/export/re-export chains of any length; a cycle resolves to nothing (Q226). `table` picks the symbol table: types or values. */
+  private followLocal<S>(mod: Module, name: string, table: (m: Module) => Map<string, S>, seen: Set<string>, allowTypeOnly: boolean): { sym: S; typeOnly: boolean } | undefined {
+    const hop = `L\0${mod.file}\0${name}`;
     if (seen.has(hop)) return undefined;
     seen.add(hop);
-    const local = imp.mod.exports.get(imp.name);
-    return local === undefined ? undefined : this.follow(imp.mod, local, table, seen);
+    const own = table(mod).get(name);
+    if (own) return { sym: own, typeOnly: false };
+    const imp = mod.imports.get(name);
+    if (!imp) return undefined;
+    if (!allowTypeOnly && imp.typeOnly) return undefined;
+    const res = this.followExport(imp.mod, imp.name, table, seen, allowTypeOnly);
+    return res ? { sym: res.sym, typeOnly: res.typeOnly || imp.typeOnly } : undefined;
   }
-  lookupType(mod: Module, name: string): TypeSym | undefined { return this.follow(mod, name, (m) => m.types, new Set()); }
-  lookupValue(mod: Module, name: string): ValueSym | undefined { return this.follow(mod, name, (m) => m.values, new Set()); }
+  private followExport<S>(mod: Module, name: string, table: (m: Module) => Map<string, S>, seen: Set<string>, allowTypeOnly: boolean): { sym: S; typeOnly: boolean } | undefined {
+    const hop = `E\0${mod.file}\0${name}`;
+    if (seen.has(hop)) return undefined;
+    seen.add(hop);
+    const exp = mod.exports.get(name);
+    if (!exp) return undefined;
+    if (!allowTypeOnly && exp.typeOnly) return undefined;
+    const res = exp.k === "local"
+      ? this.followLocal(mod, exp.local, table, seen, allowTypeOnly)
+      : this.followExport(exp.mod, exp.name, table, seen, allowTypeOnly);
+    return res ? { sym: res.sym, typeOnly: res.typeOnly || exp.typeOnly } : undefined;
+  }
+  lookupType(mod: Module, name: string): TypeSym | undefined { return this.followLocal(mod, name, (m) => m.types, new Set(), true)?.sym; }
+  lookupValue(mod: Module, name: string): ValueSym | undefined { return this.followLocal(mod, name, (m) => m.values, new Set(), false)?.sym; }
+  lookupExportedType(mod: Module, name: string): TypeSym | undefined { return this.followExport(mod, name, (m) => m.types, new Set(), true)?.sym; }
+  lookupExportedValue(mod: Module, name: string): ValueSym | undefined { return this.followExport(mod, name, (m) => m.values, new Set(), false)?.sym; }
+  isTypeOnlyValue(mod: Module, name: string): boolean {
+    return mod.typeOnlyCValues.has(name) || mod.imports.get(name)?.typeOnly === true || this.followLocal(mod, name, (m) => m.values, new Set(), true)?.typeOnly === true;
+  }
+  isExportedTypeOnly(mod: Module, name: string): boolean {
+    return mod.exports.get(name)?.typeOnly === true || this.followExport(mod, name, (m) => m.values, new Set(), true)?.typeOnly === true;
+  }
 
   /** Resolves a type node (§3, §12). Unknown names are E2000; errors become ERROR (Q003 cascade). */
   /** `voidOk`: the node is a return type, where `void` may be written (Q028). */
@@ -593,8 +710,22 @@ export class Program {
         const f = t as ts.FunctionTypeNode;
         return this.signature(f, undefined, e);
       }
+      case K.ArrayType:
+        return this.arrayType((t as ts.ArrayTypeNode).elementType, "Array", e);
+      case K.TypeOperator: {
+        const op = t as ts.TypeOperatorNode;
+        if (op.operator === K.ReadonlyKeyword && op.type.kind === K.ArrayType) {
+          return this.arrayType((op.type as ts.ArrayTypeNode).elementType, "ReadonlyArray", e);
+        }
+        return ERROR;
+      }
       case K.TypeReference: {
         const r = t as ts.TypeReferenceNode;
+        if (r.typeName.kind === K.QualifiedName) {
+          const q = r.typeName as ts.QualifiedName;
+          if (isId(q.left) && isId(q.right)) return this.qualifiedTypeRef(q.left, q.right, r.typeArguments, r, e);
+          return ERROR;
+        }
         if (!isId(r.typeName)) return ERROR;
         const id = r.typeName;
         // Q130: a Promise type is only the whole return type of a function (not a type argument, field, parameter or variable)
@@ -623,6 +754,55 @@ export class Program {
     return record(fields, struct);
   }
 
+  private arrayType(elNode: ts.TypeNode, name: "Array" | "ReadonlyArray", e: TypeEnv): Type {
+    const el = this.typeOf(elNode, e);
+    if (el.k === "error") return ERROR;
+    if (holdsOwned(el) && !ownedDeep(el)) {
+      this.rep.at(e.mod, "E3007", elNode, `'${name}' cannot hold the owned type '${show(el)}'`, { kind: "managed-owned", container: name, actual: show(el) });
+    }
+    return { k: "gen", name, args: [el] };
+  }
+
+  private instantiateTypeSym(sym: TypeSym, name: string, argNodes: ts.NodeArray<ts.TypeNode> | undefined, args: Type[], whole: Node, e: TypeEnv): Type {
+    const arity = (n: number): boolean => {
+      if (args.length === n) return true;
+      this.rep.at(e.mod, "E2002", whole, `'${name}' takes ${n} type argument(s)`);
+      return false;
+    };
+    if (sym.k === "error") return ERROR;
+    if (sym.k === "cstruct") return arity(0) ? sym.type : ERROR;
+    if (sym.k === "alias" && sym.busy) { this.rep.at(e.mod, "E2002", whole, `type alias '${name}' refers to itself`); return ERROR; } // Q085
+    const body = sym.k === "alias" ? this.aliasBody(sym) : undefined;
+    const ps = sym.k === "alias" ? sym.tparams! : sym.k === "class" ? sym.cls.tparams : sym.iface.tparams;
+    if (!arity(ps.length)) return ERROR;
+    const bad = ps.findIndex((p, i) => p.constraint && args[i]!.k !== "error" && !assignable(args[i]!, subst(p.constraint, bindTParams(ps, args))));
+    if (bad >= 0) { this.rep.at(e.mod, "E2002", argNodes![bad]!, `type argument does not implement '${show(ps[bad]!.constraint!)}'`); return ERROR; }
+    ps.forEach((p, i) => this.insts.push({ mod: e.mod, node: argNodes![i]!, p, arg: args[i]! })); // Q127
+    if (body) {
+      const r = subst(body, bindTParams(ps, args));
+      this.substInsts.push({ mod: e.mod, node: whole, t: r, args }); // Q174
+      return r;
+    }
+    const t: Type = sym.k === "iface" ? { k: "iface", iface: sym.iface, args } : { k: "class", cls: (sym as Extract<TypeSym, { k: "class" }>).cls, args };
+    this.substInsts.push({ mod: e.mod, node: whole, t, args }); // Q174
+    return t;
+  }
+
+  qualifiedTypeRef(left: ts.Identifier, right: ts.Identifier, argNodes: ts.NodeArray<ts.TypeNode> | undefined, whole: Node, e: TypeEnv): Type {
+    const args = (argNodes ?? []).map((a) => this.typeOf(a, e));
+    const ns = e.mod.nsImports.get(left.text);
+    if (!ns) {
+      if (e.mod.types.get(left.text)?.k !== "error") this.rep.at(e.mod, "E2000", left, `unknown namespace '${left.text}'`, { name: left.text });
+      return ERROR;
+    }
+    const sym = this.lookupExportedType(ns.mod, right.text);
+    if (!sym) {
+      this.rep.at(e.mod, "E2000", right, `unknown type '${left.text}.${right.text}'`, { name: `${left.text}.${right.text}` });
+      return ERROR;
+    }
+    return this.instantiateTypeSym(sym, right.text, argNodes, args, whole, e);
+  }
+
   typeRef(id: ts.Identifier, argNodes: ts.NodeArray<ts.TypeNode> | undefined, whole: Node, e: TypeEnv): Type {
     const name = id.text;
     const args = (argNodes ?? []).map((a) => (name === "Struct" || name === "CStruct" ? ERROR : this.typeOf(a, e, name === "Promise" || name === "Ptr" || name === "ConstPtr" || name === "CHandle"))); // `Promise<void>` (Q028); `Ptr<void>` (§14.4)
@@ -634,25 +814,7 @@ export class Program {
     const tp = e.tparams.get(name);
     if (tp) return arity(0) ? { k: "tparam", p: tp } : ERROR;
     const sym = e.cscope?.get(name) ?? this.lookupType(e.mod, name);
-    if (sym) {
-      if (sym.k === "error") return ERROR;
-      if (sym.k === "cstruct") return arity(0) ? sym.type : ERROR;
-      if (sym.k === "alias" && sym.busy) { this.rep.at(e.mod, "E2002", whole, `type alias '${name}' refers to itself`); return ERROR; } // Q085
-      const body = sym.k === "alias" ? this.aliasBody(sym) : undefined;
-      const ps = sym.k === "alias" ? sym.tparams! : sym.k === "class" ? sym.cls.tparams : sym.iface.tparams;
-      if (!arity(ps.length)) return ERROR;
-      const bad = ps.findIndex((p, i) => p.constraint && args[i]!.k !== "error" && !assignable(args[i]!, subst(p.constraint, bindTParams(ps, args))));
-      if (bad >= 0) { this.rep.at(e.mod, "E2002", argNodes![bad]!, `type argument does not implement '${show(ps[bad]!.constraint!)}'`); return ERROR; }
-      ps.forEach((p, i) => this.insts.push({ mod: e.mod, node: argNodes![i]!, p, arg: args[i]! })); // Q127
-      if (body) {
-        const r = subst(body, bindTParams(ps, args));
-        this.substInsts.push({ mod: e.mod, node: whole, t: r, args }); // Q174
-        return r;
-      }
-      const t: Type = sym.k === "iface" ? { k: "iface", iface: sym.iface, args } : { k: "class", cls: (sym as Extract<TypeSym, { k: "class" }>).cls, args };
-      this.substInsts.push({ mod: e.mod, node: whole, t, args }); // Q174
-      return t;
-    }
+    if (sym) return this.instantiateTypeSym(sym, name, argNodes, args, whole, e);
     if (name === "Struct") {
       const a = argNodes?.[0];
       if (argNodes?.length !== 1 || a!.kind !== K.TypeLiteral) { this.rep.at(e.mod, "E2002", whole, "Struct takes one record type literal"); return ERROR; }

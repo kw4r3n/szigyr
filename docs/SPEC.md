@@ -12,10 +12,10 @@ Normative reference for **Szigyr** (`szigyr`, `.szigyr`). Unlisted syntax/types/
 
 ## 1. Modules & Top-Level
 
-- **ESM only**: Named `import`/`export` (`import {a as b} from "./x.szigyr"`, `export {a}`, or inline `export`).
+- **ESM only**: Named `import`/`export` (`import {a as b} from "./x.szigyr"`, `export {a}`, or inline `export`), named re-exports (`export {a, b as c} from "./x.szigyr"`), module namespace imports (`import * as ns from "./x.szigyr"`, `ns.Type` in type positions / `ns.val` in value positions; exporting `ns` itself `E7001`), and type-only `import type`/`export type` (`import {type T, v}`, `export {type T, v}`) on `.szigyr` and `c:` modules (value use `E2002`).
   - Relative paths start `./` or `../`, end `.szigyr` (canonical realpath id). Special: `"npm:<pkg>"` (§7), `"c:<pkg>:<header>"` (§9).
-  - Acyclic `import`->`export` chains of any depth; cycles fail at use (`E2000`).
-  - Forbidden: `export default`/`export *` (`E1003`); `import()`, `require()`, default/ns/side-effect imports, `import/export type`, `export...from`, missing target (`E7001`).
+  - Acyclic `import`/`export` chains of any depth; cycles fail at use (`E2000`).
+  - Forbidden: `export default`/`export *` (`E1003`); `import()`, `require()`, local default imports, side-effect imports, `import type` on `npm:`, `c:`/`npm:` re-exports, missing target (`E7001`).
 - **Top-level**: `import`/`export`, `function`, `type`, `interface`, `class`, `const` (typed `E2006`; lit or immutable record/array lit, incl. `const {a,b}:T={...}`; `Native & Copy` readable in `strict`/`rt`), `test(...)`, `declare module "c:..."`. Top-level `let` or mutable/non-lit `const`/`static`: `E5002`.
 - **Reserved (`E1000` decl)**: §12 globals, §13 reserved, `__szigyr_rt*`, `__proto__`/`constructor`/`prototype`/`toString`/`valueOf`. Values/types share duplicate check (`E1000`).
 
@@ -67,7 +67,7 @@ Bounds are **never inferred** from bodies. Write `T extends C` or `T extends C1 
 |Mutable `{f:T}` (`!Owned`)|M|-|-|-|-|-|∀f:Codec|
 |`Struct<{...}>` (fields `Native`)|A|ro&Copy|Y|!Copy|∀f:Send|-|ro&∀f:Codec|
 |Tagged union/`T\|null`/`Result`|A|∀m:Copy|∀m:Native&Copy|-|∀m:Send|-|∀m:Codec|
-|`Array`/`ReadonlyArray` (`!Owned`)|M|-|-|-|-|-|∀T:Codec|
+|`Array<T>`/`T[]` / `ReadonlyArray<T>`/`readonly T[]` (`!Owned`)|M|-|-|-|-|-|∀T:Codec|
 |`Map<K,V>`/`Set<K>` (`!Owned` V)|M|-|-|-|-|-|-|
 |`Vec<T>` / `Pool<T>`|A|-|Y|Y|T:Send|-|-|
 |`Handle<T>` (`===`)|A|Y|Y|-|T:Send|-|-|
@@ -95,13 +95,13 @@ Bounds are **never inferred** from bodies. Write `T extends C` or `T extends C1 
 
 - **Records/`Struct`**: Closed; no `?` (`E1008`), excess props, or dup keys (`E1000`). Spread `{...a,k:v}` needs context (dup explicit keys `E1000`). Style: `{readonly...}` (Copy), `Struct<{...}>` (mutable/owned; same type if all `readonly & Native & Copy`).
 - **Unions/`Result`**: Tagged unions (distinct string-lit `kind`, no lone surr `E2012`), string-lit unions, `T|null`. Shared fields readable; writable only if identical non-`readonly` in all members (`E2002`). `Result<T,E>` = `{readonly kind:"ok";readonly value:T}|{readonly kind:"err";readonly error:E}`; `ok`/`err` need context (`E2006`).
-- **Classes/Interfaces**: Single-level nominal `class` (no `extends` `E1000`, `implements` OK, no `abstract`/accessors/index-sigs/`#private`/param-props; `private`/`readonly`/`static` OK; definite init `E2002`; methods `managed`/call-only, `async` OK, no directives; `new C(...)`). `interface`: method sigs only (no `extends`/dupes). `Array<T>` invar; `ReadonlyArray<T>` covar.
+- **Classes/Interfaces**: Single-level nominal `class` (no `extends` `E1000`, `implements` OK incl. `ns.Iface`, no `abstract`/accessors/index-sigs/`#private`/param-props; `private`/`readonly`/`static` OK; definite init `E2002`; methods `managed`/call-only, `async` OK, no directives; `new C(...)` / `new ns.C(...)`). `interface`: method sigs only (no `extends`/dupes). `Array<T>` (`T[]`) invar; `ReadonlyArray<T>` (`readonly T[]`) covar. `e satisfies T`: checks `e` with context `T` (`E2002`) without widening (`e`'s inferred type is kept; no runtime op).
 - **Subtyping**: Identity + `never->T`, `T->T|null`, `null->T|null`, lit->`string`/lit-union, member->tagged-union, `class->interface`, `Array<S>/ReadonlyArray<S>->ReadonlyArray<T>` (`S->T`), fn contra/covariant, `Ptr->ConstPtr`, fake->authority, arg-only `Vec/Ref<Vec>/Mut<Vec>->Ref<Slice>/Mut<Slice>` & `Mut<X>->Ref<X>`.
-- **Forbidden (`E1000` unless noted)**: `any` (`E1004`), `object`, `Function`, `{}`, `symbol`, `bigint`, `enum`, `namespace`, `as` (`E1005`), `!` (`E1006`), `satisfies`, `is`, `asserts`, overloads, merging, `declare` (outside `c:`), conditional/mapped/template/indexed types, `keyof`, `typeof`, utility types, `T[]`, tuples, array destructuring, opt/default/rest params (`E1008`), `var` (`E1001`), `throw`/`try`/`catch`/`finally` (`E1007`), `with`/`eval`/`delete`/`in`/`instanceof`/`void` op/comma/`arguments`/generators/`for..in`/labels/regex/tagged-templates/unscoped `this`.
+- **Forbidden (`E1000` unless noted)**: `any` (`E1004`), `object`, `Function`, `{}`, `symbol`, `bigint`, `enum`, `namespace`, `as` (`E1005`), `!` (`E1006`), `is`, `asserts`, overloads, merging, `declare` (outside `c:`), conditional/mapped/template/indexed types, `keyof`, `typeof`, utility types, non-`readonly[]` type operators (`E1000`), tuples, array destructuring, opt/default/rest params (`E1008`), `var` (`E1001`), `throw`/`try`/`catch`/`finally` (`E1007`), `with`/`eval`/`delete`/`in`/`instanceof`/`void` op/comma/`arguments`/generators/`for..in`/labels/regex/tagged-templates/unscoped `this`.
 
 ## 4. Statements, Expressions & Narrowing
 
-- **Control**: `const`, `let`(init req), `using`, `await using`, `if/else`, `while`, `do/while`, `for(;;)`, `for(const x of c)` (`Array`/`ReadonlyArray`/`Set`/`Map.keys()/values()`), `switch` (exhaustive `E2005`: all members, `true`+`false`, or `default`; per-case block scope, no implicit fallthrough for non-empty cases `E2002`, empty `case "a": case "b":` grouping allowed), `break`, `continue`, `return`. Non-`void` fallthrough: `E2002`.
+- **Control**: `const`, `let`(init req), `using`, `await using`, `if/else`, `while`, `do/while`, `for(;;)`, `for(const|let x of c)` (`Array`/`ReadonlyArray`/`Set`/`Map.keys()/values()`), `switch` (exhaustive `E2005`: all members, `true`+`false`, or `default`; per-case block scope, no implicit fallthrough for non-empty cases `E2002`, empty `case "a": case "b":` grouping allowed), `break`, `continue`, `return`. Non-`void` fallthrough: `E2002`.
 - **Narrowing**: `=== null`/`!== null`, `.kind === "..."`, lit `===`, `switch`, `&&`/`||`/`!`, early `return`/`panic`, assigns narrow `readonly`-path locals/params. `?.` on `T|null` prop/method (`?.[i]`/`f?.()` `E1000`); `??` needs `T|null` lhs.
 - **Literals/`new`/Arrows**: Arrow/fn-expr params annotated (`E2006`), ret inferred. Untyped `{...}`/`[]`/`[null]`: `E2006`. Templates (`managed`) interpolate `string`/lit/num/`boolean`; string `+`: `E2002`. `new` (`managed`): `new C(...)`, `new Set<K>()`, `new Map<K,V>()`.
 - **Async (`managed`)**: `Promise<T>` valid only as `await` operand (incl. `await (c?g():h())`), `Promise.all([...])` elem, or async `return` (`E2002`). Unawaited `Promise`: `E2002`.
@@ -140,7 +140,7 @@ Bad index: `T002`; `.create` OOM: `T006`. Process-unique Pool/Arena IDs; `u32` g
 - **Fakes** *(cap-assignable; `FakeClock`/`SeededRandom`/`MemoryLog`/`FakeFs`/`FakeSpawn`/`FakeAudio`/`FakeNet`/`FakeProc` usable as type annotations as well as namespaces)*: `FakeClock.create(startMs)` (`+ advance(ms)`), `SeededRandom.create(seed:u32)`, `MemoryLog.create()` (`+ entries():Array<{readonly level:"info"|"warn"|"error";readonly message:string}>`), `FakeFs.create()` *(shared byte/UTF-8 + dir/stat/symlink virtual store; requires existing parent dir matching `nodeFs`, `+ addSymlink(path:string,target:string):Result<null,IoError>`)*, `FakeSpawn.create()`, `TestAlloc.create():Alloc`, `FakeAudio.create()` (`+ renderFrames(frames:usize):Array<f32>`, advances active open stream; `T006` if none open), `FakeProc.create()` (`+ setEnv(name,val)`, `+ setCwd(p)`, `+ setArgs(xs)`, `+ exitCode():u8`, `+ onRun(fn:(req:ProcRequest)=>Result<ProcOutput,IoError>)`, `+ calls():Array<ProcRequest>`), `FakeNet.create()` (`+ onFetch(fn:(req:HttpClientRequest)=>Result<HttpResponse,IoError>)`, `+ requests():Array<HttpClientRequest>`, in-memory loopback `serve`).
 - **`Pure`**: Safe (no `"use unsafe"`), local mut (`let`/`Set`/`Array`) OK, no authority/fn/`interface`/`unknown`/`JsRef`/`Ptr*`/`CHandle`/`Ring*`/`Port`/`AudioStream`/fake params.
 - **`Mutatable`**: Safe top-level fns/`class` methods not touching `Test`, no `Ffi`/`Js`/`JsRef`/`Ptr*`/`CHandle` params (`Alloc`/`Spawn`/`Port`/fakeables/single-thread `Ring*` OK).
-- **`npm:` (`managed`)**: `import { parse } from "npm:yaml"` binds `parse:JsRef`. Throws -> `JsError`; `js.callback` traps unwind to host.
+- **`npm:` (`managed`)**: Named, default (`import d from`), namespace (`import * as ns from`), and combined (`import d, { a } from`) ESM/CJS imports bind `JsRef`. Throws -> `JsError`; `js.callback` traps unwind to host. (`import type` on `npm:` is rejected `E7001`.)
 
 ## 8. Concurrency & Portable Audio
 

@@ -29,9 +29,6 @@ function applyFirstFix(src: string): { diag: Diagnostic; fixed: string; after: D
 
 describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
   it("reports specific E1000 messages and structured data for common TS constructs", () => {
-    const arr = checkSrc("export function f(xs: i32[]): usize { return xs.length; }\n").diags[0]!;
-    expect(arr).toMatchObject({ code: "E1000", message: "array shorthand 'T[]' is not allowed; use 'Array<T>'", data: { kind: "array-shorthand" } });
-
     const inc = checkSrc("export function f(): void { let n: i32 = 0; n++; }\n").diags[0]!;
     expect(inc).toMatchObject({ code: "E1000", message: "'++' is not allowed; use '+= 1'", data: { kind: "inc-dec", op: "++" } });
 

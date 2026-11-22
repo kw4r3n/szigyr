@@ -83,9 +83,9 @@ function loadProgram(entryFile: string, shared?: Parser): Program {
       const wanted = new Map<string, { from: ParsedFile; spec: ts.StringLiteral }>();
       for (const pf of round) {
         for (const s of pf.sourceFile.statements) {
-          if (s.kind !== SyntaxKind.ImportDeclaration) continue;
-          const spec = (s as ts.ImportDeclaration).moduleSpecifier;
-          if (spec.kind !== SyntaxKind.StringLiteral) continue;
+          if (s.kind !== SyntaxKind.ImportDeclaration && s.kind !== SyntaxKind.ExportDeclaration) continue;
+          const spec = (s as ts.ImportDeclaration | ts.ExportDeclaration).moduleSpecifier;
+          if (!spec || spec.kind !== SyntaxKind.StringLiteral) continue;
           const t = (spec as ts.StringLiteral).text;
           if (!/^\.\.?\//.test(t) || !t.endsWith(".szigyr")) continue; // npm: and malformed specifiers are not loaded
           const p = canonPath(dirname(pf.path), t);
@@ -315,8 +315,7 @@ async function loadChecked(files: ParsedFile[], entryFile: string, tests: boolea
 /** Q061: `szigyr run` entry must be an exported managed `function main(sys: System): void | Promise<void>`. */
 export function checkMain(decls: Decls, entryFile: string): void {
   const mod = decls.mods.find((m) => m.pf.path === canonPath(entryFile));
-  const local = mod?.exports.get("main");
-  const sym = local !== undefined ? decls.lookupValue(mod!, local) : undefined;
+  const sym = mod ? decls.lookupExportedValue(mod, "main") : undefined;
   if (sym?.k !== "fn") throw new Error(`${entryFile}: no exported function 'main'`);
   const { layer, sig } = sym;
   const p0 = sig.params[0];
@@ -434,7 +433,8 @@ export function queryFile(entryFile: string, parser?: Parser): QueryResult {
   const entryMod = decls?.mods.find((m) => m.pf.path === entryPath);
   if (!decls || !entryMod) return { file, diagnostics: a.diagnostics, symbols: [] };
   const traps = a.diagnostics.length === 0 ? trapSites(entryMod.pf) : undefined;
-  const exportedSet = new Set(entryMod.exports.values());
+  const exportedSet = new Set<string>();
+  for (const entry of entryMod.exports.values()) if (entry.k === "local") exportedSet.add(entry.local);
   const rangeOf = (n: Node): Range => ({ start: entryMod.pf.position(n.getStart(entryMod.sf)), end: entryMod.pf.position(n.end) });
   const symbols: QuerySymbol[] = [];
   for (const f of decls.fns) {

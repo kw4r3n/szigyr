@@ -552,6 +552,7 @@ function computeCacheKey(decls: Decls, entryMod: Module, target: { readonly mod:
     if (p.kind === K.PropertyAssignment && (p as ts.PropertyAssignment).name === n) return true;
     if (p.kind === K.BindingElement && (p as ts.BindingElement).propertyName === n) return true;
     if (p.kind === K.TypeReference && (p as ts.TypeReferenceNode).typeName === n) return true;
+    if (p.kind === K.QualifiedName) return true;
     if ((p.kind === K.PropertySignature || p.kind === K.PropertyDeclaration || p.kind === K.MethodDeclaration || p.kind === K.MethodSignature) && (p as { name?: Node }).name === n) return true;
     return false;
   };
@@ -564,6 +565,24 @@ function computeCacheKey(decls: Decls, entryMod: Module, target: { readonly mod:
       } else if (n.kind === K.TypeReference) {
         const tn = (n as ts.TypeReferenceNode).typeName;
         if (isId(tn)) visitType(decls.lookupType(mod, tn.text));
+        else if (tn.kind === K.QualifiedName) {
+          const q = tn as ts.QualifiedName;
+          if (isId(q.left) && isId(q.right)) {
+            const ns = mod.nsImports.get(q.left.text);
+            if (ns) visitType(decls.lookupExportedType(ns.mod, q.right.text));
+          }
+        }
+      } else if (n.kind === K.PropertyAccessExpression) {
+        const pa = n as ts.PropertyAccessExpression;
+        if (isId(pa.expression) && !localOf.has(pa.expression)) {
+          const ns = mod.nsImports.get(pa.expression.text);
+          if (ns && !ns.typeOnly) {
+            const sym = decls.lookupExportedValue(ns.mod, pa.name.text);
+            if (sym?.k === "fn") visitFn(sym);
+            else if (sym?.k === "const") visitConst(sym);
+            else if (sym?.k === "class") visitType({ k: "class", cls: sym.cls, mod: sym.mod });
+          }
+        }
       } else if (isId(n) && !localOf.has(n) && !isNonValueNamePos(n)) {
         const sym = decls.lookupValue(mod, n.text);
         if (sym?.k === "fn") visitFn(sym);

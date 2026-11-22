@@ -32,7 +32,9 @@ export const sliceGroups = new WeakMap<Node, SliceGroupEntry[][]>();
 interface Frame { loop: boolean; depth: number; breaks: State[]; continues: State[]; moves: { sym: LocalSym; node: Node }[] }
 
 const strip = (e: ts.Expression): ts.Expression => {
-  while (e.kind === K.ParenthesizedExpression) e = (e as ts.ParenthesizedExpression).expression;
+  while (e.kind === K.ParenthesizedExpression || e.kind === K.SatisfiesExpression) {
+    e = e.kind === K.ParenthesizedExpression ? (e as ts.ParenthesizedExpression).expression : (e as ts.SatisfiesExpression).expression;
+  }
   return e;
 };
 const genName = (t: Type | undefined): string | undefined => { const u = t && unref(t); return u?.k === "gen" ? u.name : undefined; };
@@ -123,6 +125,7 @@ class Flow {
   private markAwaited(e: Node): void {
     this.awaited.add(e);
     if (e.kind === K.ParenthesizedExpression) this.markAwaited((e as ts.ParenthesizedExpression).expression);
+    else if (e.kind === K.SatisfiesExpression) this.markAwaited((e as ts.SatisfiesExpression).expression);
     else if (e.kind === K.ConditionalExpression) { const cd = e as ts.ConditionalExpression; this.markAwaited(cd.whenTrue); this.markAwaited(cd.whenFalse); }
   }
   readonly m: ModuleCheck;

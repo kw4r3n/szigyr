@@ -82,7 +82,6 @@ accept/78-reexport-loop-warning
 accept/79-forAll-basic.szigyr
 accept/80-forAll-generatable-types.szigyr
 accept/81-audio-and-sleep.szigyr
-reject/E1000-array-suffix-type.szigyr
 reject/E1000-await-in-non-async-arrow.szigyr
 reject/E1000-await-outside-async.szigyr
 reject/E1000-break-in-arrow-inside-loop.szigyr
@@ -131,7 +130,6 @@ reject/E1000-runtime-prefix-field.szigyr
 reject/E1000-runtime-prefix-function.szigyr
 reject/E1000-runtime-prefix-local.szigyr
 reject/E1000-runtime-prefix-parameter.szigyr
-reject/E1000-satisfies.szigyr
 reject/E1000-this-in-field-initializer.szigyr
 reject/E1000-this-in-function-expression.szigyr
 reject/E1000-this-in-static-method.szigyr
@@ -225,6 +223,7 @@ reject/E2002-generic-class-key-instantiation.szigyr
 reject/E2002-generic-map-key-through-type-parameter.szigyr
 reject/E2002-generic-set-element-record.szigyr
 reject/E2002-implements-generic-method-arity.szigyr
+reject/E2002-import-type-as-value
 reject/E2002-includes-array-element.szigyr
 reject/E2002-indexof-record-element.szigyr
 reject/E2002-inferred-return-union.szigyr
@@ -304,6 +303,7 @@ reject/E2002-return-u32-from-usize.szigyr
 reject/E2002-ring-create-arenabuf.szigyr
 reject/E2002-ring-element-arenabuf.szigyr
 reject/E2002-ring-element-struct-arenabuf.szigyr
+reject/E2002-satisfies-mismatch.szigyr
 reject/E2002-set-element-null-union.szigyr
 reject/E2002-set-element-record.szigyr
 reject/E2002-shift-non-numeric-rhs.szigyr
@@ -656,6 +656,7 @@ reject/E4010-polymorphic-recursion-direct.szigyr
 reject/E5001-console.szigyr
 reject/E5001-math-random.szigyr
 reject/E5001-new-date.szigyr
+reject/E5002-const-array-shorthand.szigyr
 reject/E5002-const-array.szigyr
 reject/E5002-const-map.szigyr
 reject/E5002-module-destructuring-call.szigyr
@@ -717,10 +718,11 @@ reject/E6005-forAll-named-fn.szigyr
 reject/E7001-default-import.szigyr
 reject/E7001-detmath-import.szigyr
 reject/E7001-dynamic-import.szigyr
-reject/E7001-namespace-import.szigyr
+reject/E7001-export-namespace
+reject/E7001-import-type-npm.szigyr
 reject/E7001-reexport-c-import.szigyr
 reject/E7001-reexport-from-c-module.szigyr
-reject/E7001-reexport.szigyr
+reject/E7001-reexport-npm.szigyr
 reject/E7001-require.szigyr
 reject/E7002-duplicate-declare.szigyr
 reject/E7002-import-undeclared-name.szigyr
@@ -887,6 +889,7 @@ run/261-proc-and-fake-proc.szigyr
 run/262-net-and-fake-net.szigyr
 run/263-url-httpserver-stop-fakefs.szigyr
 run/264-utf8-json-exitcode-ensures-strcmp.szigyr
+run/265-wave1a-ts-relaxations
 run/27-trap-ownedcell-empty.szigyr
 run/28-trap-shift-range.szigyr
 run/29-trap-invariant.szigyr

@@ -1,0 +1,4 @@
+// expect: E7001 @ 4:10
+// stage: 1
+import * as ns from "./a.szigyr";
+export { ns };

@@ -1,0 +1,2 @@
+export { SCALE as FACTOR, mulScale, pickFirst, applyRt, Counter } from "./lib.szigyr";
+export type { Pair, Greeter } from "./lib.szigyr";

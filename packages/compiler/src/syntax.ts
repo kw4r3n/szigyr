@@ -118,6 +118,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
   /** `declare module "c:..."` blocks of this file, specifier -> declared C function names (§14.1). */
   const cDeclares = new Map<string, Set<string>>();
   const cImports = new Set<string>();
+  const localNsImports = new Set<string>();
   const stmts = sf.statements;
   for (const s0 of stmts) {
     if (s0.kind === K.ModuleDeclaration) moduleDecl(s0 as ts.ModuleDeclaration); // §14.1: before imports resolve against it
@@ -259,17 +260,25 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
 
   function importDecl(d: ts.ImportDeclaration): void {
     const ic = d.importClause;
-    const nb = ic?.namedBindings;
-    if (!ic || ic.phaseModifier || ic.name || nb?.kind !== K.NamedImports || d.attributes ||
-        (nb as ts.NamedImports).elements.some((e) => e.isTypeOnly || (e.propertyName && !(isId(e.propertyName) && e.propertyName.text !== "default")))) {
-      at("E7001", d, "only 'import { a, b as c } from \"...\"' is allowed", { kind: "invalid-import" });
+    if (!ic || d.attributes || (ic.phaseModifier && ic.phaseModifier !== K.TypeKeyword)) {
+      at("E7001", d, "invalid import declaration", { kind: "invalid-import" });
       return;
     }
-    if (d.moduleSpecifier.kind === K.StringLiteral && (d.moduleSpecifier as ts.StringLiteral).text.startsWith("c:")) {
-      const spec = (d.moduleSpecifier as ts.StringLiteral).text;
-      if (!cSpecifierOk(spec)) { at("E7002", d.moduleSpecifier, "a 'c:' specifier is 'c:<package>:<header>'", { specifier: spec }); return; }
+    const isTypeDecl = ic.phaseModifier === K.TypeKeyword;
+    const nb = ic.namedBindings;
+    const specNode = d.moduleSpecifier;
+    const badNamed = (ni: ts.NamedImports): boolean =>
+      ni.elements.some((e) => (isTypeDecl && e.isTypeOnly) || (e.propertyName && !(isId(e.propertyName) && e.propertyName.text !== "default")));
+
+    if (specNode.kind === K.StringLiteral && (specNode as ts.StringLiteral).text.startsWith("c:")) {
+      const spec = (specNode as ts.StringLiteral).text;
+      if (ic.name || nb?.kind !== K.NamedImports || badNamed(nb as ts.NamedImports)) {
+        at("E7001", d, "only named imports are allowed from 'c:' modules", { kind: "invalid-import" });
+        return;
+      }
+      if (!cSpecifierOk(spec)) { at("E7002", specNode, "a 'c:' specifier is 'c:<package>:<header>'", { specifier: spec }); return; }
       const declared = cDeclares.get(spec);
-      if (!declared) { at("E7002", d.moduleSpecifier, `no 'declare module "${spec}"' in this file`, { specifier: spec }); return; }
+      if (!declared) { at("E7002", specNode, `no 'declare module "${spec}"' in this file`, { specifier: spec }); return; }
       for (const e of (nb as ts.NamedImports).elements) {
         const orig = e.propertyName?.text ?? e.name.text;
         if (!declared.has(orig)) at("E7002", e.propertyName ?? e.name, `'${orig}' is not declared in '${spec}'`, { specifier: spec, name: orig });
@@ -277,21 +286,51 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       }
       return;
     }
-    if (d.moduleSpecifier.kind !== K.StringLiteral || !specifierOk((d.moduleSpecifier as ts.StringLiteral).text)) {
-      const spec = d.moduleSpecifier.kind === K.StringLiteral ? (d.moduleSpecifier as ts.StringLiteral).text : undefined;
-      at("E7001", d.moduleSpecifier, "module specifier must be './x.szigyr', '../x.szigyr' or 'npm:name'", { kind: "invalid-specifier", ...(spec !== undefined ? { specifier: spec } : {}) });
-      if (d.moduleSpecifier.kind === K.StringLiteral) {
-        const s = (d.moduleSpecifier as ts.StringLiteral).text;
+    if (specNode.kind !== K.StringLiteral || !specifierOk((specNode as ts.StringLiteral).text)) {
+      const spec = specNode.kind === K.StringLiteral ? (specNode as ts.StringLiteral).text : undefined;
+      at("E7001", specNode, "module specifier must be './x.szigyr', '../x.szigyr' or 'npm:name'", { kind: "invalid-specifier", ...(spec !== undefined ? { specifier: spec } : {}) });
+      if (specNode.kind === K.StringLiteral) {
+        const s = (specNode as ts.StringLiteral).text;
         if (s.startsWith("./") || s.startsWith("../")) {
           const next = s.endsWith(".ts") ? `${s.slice(0, -3)}.szigyr` : `${s}.szigyr`;
-          fix(`rewrite module specifier to '${next}'`, d.moduleSpecifier.getStart(sf), d.moduleSpecifier.end, JSON.stringify(next));
+          fix(`rewrite module specifier to '${next}'`, specNode.getStart(sf), specNode.end, JSON.stringify(next));
         }
       }
       return;
     }
-    const specText = (d.moduleSpecifier as ts.StringLiteral).text;
-    if (!specText.startsWith("npm:") && canonPath(dirname(pf.path), specText) === DETMATH_PATH) { // §12 (Q191); by realpath, so a symlink does not hide it (Q253)
-      at("E7001", d.moduleSpecifier, "the bundled DetMath module cannot be imported; use the DetMath namespace", { kind: "detmath-import", specifier: specText });
+    const specText = (specNode as ts.StringLiteral).text;
+    if (specText.startsWith("npm:")) {
+      if (isTypeDecl || (nb?.kind === K.NamedImports && (nb as ts.NamedImports).elements.some((e) => e.isTypeOnly))) {
+        at("E7001", d, "type-only import is not allowed for 'npm:' modules", { kind: "invalid-import" });
+        return;
+      }
+      if (nb?.kind === K.NamedImports && (nb as ts.NamedImports).elements.some((e) => e.propertyName && !(isId(e.propertyName) && e.propertyName.text !== "default"))) {
+        at("E7001", d, "invalid import specifier", { kind: "invalid-import" });
+        return;
+      }
+      if (ic.name) { declName(ic.name); topName(ic.name); }
+      if (nb?.kind === K.NamespaceImport) { declName((nb as ts.NamespaceImport).name); topName((nb as ts.NamespaceImport).name); }
+      else if (nb?.kind === K.NamedImports) {
+        for (const e of (nb as ts.NamedImports).elements) { declName(e.name); topName(e.name); }
+      }
+      return;
+    }
+    if (canonPath(dirname(pf.path), specText) === DETMATH_PATH) { // §12 (Q191); by realpath, so a symlink does not hide it (Q253)
+      at("E7001", specNode, "the bundled DetMath module cannot be imported; use the DetMath namespace", { kind: "detmath-import", specifier: specText });
+      return;
+    }
+    if (ic.name) {
+      at("E7001", d, "default import is only allowed for 'npm:' modules", { kind: "invalid-import" });
+      return;
+    }
+    if (nb?.kind === K.NamespaceImport) {
+      const id = (nb as ts.NamespaceImport).name;
+      declName(id); topName(id);
+      localNsImports.add(id.text);
+      return;
+    }
+    if (nb?.kind !== K.NamedImports || badNamed(nb as ts.NamedImports)) {
+      at("E7001", d, "invalid import declaration", { kind: "invalid-import" });
       return;
     }
     for (const e of (nb as ts.NamedImports).elements) { declName(e.name); topName(e.name); }
@@ -299,17 +338,55 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
 
   function exportDecl(d: ts.ExportDeclaration): void {
     if (d.moduleSpecifier) {
-      if (!d.exportClause || d.exportClause.kind === K.NamespaceExport) at("E1003", d, "'export *' is not allowed", { kind: "export-star" });
-      else at("E7001", d, "re-export is not allowed", { kind: "re-export" });
-    } else if (d.isTypeOnly || d.exportClause?.kind !== K.NamedExports) {
-      at("E7001", d, "only 'export { a, b as c }' is allowed", { kind: "invalid-export" });
-    } else {
+      if (!d.exportClause || d.exportClause.kind === K.NamespaceExport) {
+        at("E1003", d, "'export *' is not allowed", { kind: "export-star" });
+        return;
+      }
+      if (d.exportClause.kind !== K.NamedExports || d.attributes) {
+        at("E7001", d, "only 'export { a, b as c } from \"./x.szigyr\"' is allowed", { kind: "invalid-export" });
+        return;
+      }
+      const specNode = d.moduleSpecifier;
+      if (specNode.kind !== K.StringLiteral) {
+        at("E7001", specNode, "module specifier must be './x.szigyr' or '../x.szigyr'", { kind: "invalid-specifier" });
+        return;
+      }
+      const spec = (specNode as ts.StringLiteral).text;
+      if (spec.startsWith("c:") || spec.startsWith("npm:")) {
+        at("E7001", d, "re-export is only allowed from relative '.szigyr' modules", { kind: "re-export", specifier: spec });
+        return;
+      }
+      if (!(spec.startsWith("./") || spec.startsWith("../")) || !spec.endsWith(".szigyr")) {
+        at("E7001", specNode, "module specifier must be './x.szigyr' or '../x.szigyr'", { kind: "invalid-specifier", specifier: spec });
+        if (spec.startsWith("./") || spec.startsWith("../")) {
+          const next = spec.endsWith(".ts") ? `${spec.slice(0, -3)}.szigyr` : `${spec}.szigyr`;
+          fix(`rewrite module specifier to '${next}'`, specNode.getStart(sf), specNode.end, JSON.stringify(next));
+        }
+        return;
+      }
+      if (canonPath(dirname(pf.path), spec) === DETMATH_PATH) {
+        at("E7001", specNode, "the bundled DetMath module cannot be re-exported", { kind: "detmath-import", specifier: spec });
+        return;
+      }
       for (const e of (d.exportClause as ts.NamedExports).elements) {
         if (isId(e.name) && e.name.text === "default") { at("E1003", d, "default export is not allowed", { kind: "default-export" }); return; }
-        if (e.isTypeOnly || !isId(e.name) || (e.propertyName && !isId(e.propertyName))) { at("E7001", d, "only 'export { a, b as c }' is allowed", { kind: "invalid-export" }); return; }
-        const local = (e.propertyName ?? e.name) as ts.Identifier;
-        if (cImports.has(local.text)) at("E7001", local, `cannot re-export C function '${local.text}'`, { kind: "c-reexport", name: local.text });
+        if ((d.isTypeOnly && e.isTypeOnly) || !isId(e.name) || (e.propertyName && (!isId(e.propertyName) || e.propertyName.text === "default"))) {
+          at("E7001", d, "only 'export { a, b as c } from \"./x.szigyr\"' is allowed", { kind: "invalid-export" });
+          return;
+        }
       }
+      return;
+    }
+    if (d.exportClause?.kind !== K.NamedExports) {
+      at("E7001", d, "only 'export { a, b as c }' is allowed", { kind: "invalid-export" });
+      return;
+    }
+    for (const e of (d.exportClause as ts.NamedExports).elements) {
+      if (isId(e.name) && e.name.text === "default") { at("E1003", d, "default export is not allowed", { kind: "default-export" }); return; }
+      if ((d.isTypeOnly && e.isTypeOnly) || !isId(e.name) || (e.propertyName && !isId(e.propertyName))) { at("E7001", d, "only 'export { a, b as c }' is allowed", { kind: "invalid-export" }); return; }
+      const local = (e.propertyName ?? e.name) as ts.Identifier;
+      if (cImports.has(local.text)) at("E7001", local, `cannot re-export C function '${local.text}'`, { kind: "c-reexport", name: local.text });
+      else if (localNsImports.has(local.text)) at("E7001", local, `cannot export module namespace '${local.text}'`, { kind: "namespace-export", name: local.text });
     }
   }
 
@@ -415,7 +492,9 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     for (const h of c.heritageClauses ?? []) {
       if (h.token !== K.ImplementsKeyword) { e1000(h, "'extends' on a class"); continue; }
       for (const t of h.types) {
-        if (!isId(t.expression)) e1000(t.expression, "this implements clause");
+        const exp = t.expression;
+        const ok = isId(exp) || (exp.kind === K.PropertyAccessExpression && isId((exp as ts.PropertyAccessExpression).expression) && isId((exp as ts.PropertyAccessExpression).name));
+        if (!ok) e1000(t.expression, "this implements clause");
         for (const a of t.typeArguments ?? []) type(a);
       }
     }
@@ -507,7 +586,6 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       return;
     }
     if (isLet && where === "module") { at("E5002", list, "module-level 'let' is not allowed", { kind: "module-let" }); return; }
-    if (isLet && where === "for-of") { e1000(list, "'for (let ... of ...)'"); return; }
     for (const d of list.declarations) {
       if (d.exclamationToken) e1000(d.exclamationToken, "definite assignment assertion");
       if (isId(d.name)) { declName(d.name); bind(d.name); }
@@ -536,6 +614,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
    * shortcut: readonly-ness behind a type alias is not resolved here (needs P2 names); upgrade with module resolution (Q072).
    */
   function immutable(e: ts.Expression, t: ts.TypeNode | undefined): boolean {
+    if (t?.kind === K.ArrayType) return false;
     if (t?.kind === K.TypeReference) {
       const tn = (t as ts.TypeReferenceNode).typeName;
       if (isId(tn) && MUTABLE_TYPES.has(tn.text)) return false;
@@ -551,6 +630,8 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         const u = e as ts.PrefixUnaryExpression;
         return u.operator === K.MinusToken && u.operand.kind === K.NumericLiteral;
       }
+      case K.SatisfiesExpression:
+        return literal((e as ts.SatisfiesExpression).expression);
       case K.ObjectLiteralExpression:
         return (e as ts.ObjectLiteralExpression).properties.every((p) => p.kind === K.PropertyAssignment && literal((p as ts.PropertyAssignment).initializer));
       case K.ArrayLiteralExpression:
@@ -609,7 +690,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         const x = s as ts.ForOfStatement;
         if (x.awaitModifier) e1000(x.awaitModifier, "'for await'");
         if (x.initializer.kind === K.VariableDeclarationList) varList(x.initializer as ts.VariableDeclarationList, "for-of");
-        else e1000(x.initializer, "for-of without 'const'");
+        else e1000(x.initializer, "for-of without 'const' or 'let'");
         expr(x.expression);
         loopBody(x.statement);
       }); return;
@@ -783,9 +864,8 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       }
       case K.SatisfiesExpression: {
         const x = e as ts.SatisfiesExpression;
-        const s = pf.tokenAfter(x.expression.end);
-        report("E1000", s, s + "satisfies".length, "'satisfies' is not allowed", { syntax: "satisfies" });
         expr(x.expression);
+        type(x.type);
         return;
       }
       case K.NonNullExpression:
@@ -827,8 +907,9 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       }
       case K.TypeReference: {
         const r = t as ts.TypeReferenceNode;
-        if (!isId(r.typeName)) e1000(r.typeName, "qualified type name");
-        else if (E1000_TYPE_NAMES.has(r.typeName.text)) e1000(r.typeName, `'${r.typeName.text}'`);
+        const qOk = r.typeName.kind === K.QualifiedName && isId((r.typeName as ts.QualifiedName).left) && isId((r.typeName as ts.QualifiedName).right);
+        if (!isId(r.typeName) && !qOk) e1000(r.typeName, "qualified type name");
+        else if (isId(r.typeName) && E1000_TYPE_NAMES.has(r.typeName.text)) e1000(r.typeName, `'${r.typeName.text}'`);
         for (const a of r.typeArguments ?? []) type(a);
         return;
       }
@@ -854,9 +935,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         return;
       }
       case K.ArrayType: {
-        const el = (t as ts.ArrayTypeNode).elementType;
-        at("E1000", t, "array shorthand 'T[]' is not allowed; use 'Array<T>'", { kind: "array-shorthand" });
-        fix("use 'Array<T>'", t.getStart(sf), t.end, `Array<${sf.text.slice(el.getStart(sf), el.end)}>`);
+        type((t as ts.ArrayTypeNode).elementType);
         return;
       }
       case K.TupleType:
@@ -865,9 +944,15 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       case K.IntersectionType:
         at("E1000", t, "intersection types '&' are only allowed in type parameter constraints", { kind: "intersection-type" });
         return;
-      case K.TypeOperator:
+      case K.TypeOperator: {
+        const op = t as ts.TypeOperatorNode;
+        if (op.operator === K.ReadonlyKeyword && op.type.kind === K.ArrayType) {
+          type((op.type as ts.ArrayTypeNode).elementType);
+          return;
+        }
         at("E1000", t, "type operator is not allowed", { kind: "type-operator" });
         return;
+      }
       case K.TypeQuery:
         at("E1000", t, "'typeof' type query is not allowed", { kind: "type-query" });
         return;

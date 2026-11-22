@@ -3,14 +3,14 @@
 import { NodeFlags, SyntaxKind as K, isId, type Node, type ts } from "./parse.ts";
 import type { Checker } from "./checker.ts";
 import type { Diagnostic } from "./diagnostics.ts";
-import { tparamShells, type FnSym, type Layer, type LocalSym } from "./modules.ts";
+import { tparamShells, type FnSym, type Layer, type LocalSym, type ValueSym } from "./modules.ts";
 import { BUILTIN_FUNCTIONS, GLOBAL_AUTHORITIES, NAMESPACES, RESERVED, contractBanned, genMember, genMembers, nsMember, nsMembers, opaqueMember, opaqueMembers, stringMember, stringMembers, type Member } from "./builtins.ts";
 import { isDeterministic } from "./determinism.ts";
 import { isGeneratable } from "./gendesc.ts";
 import {
   AUDIO_CONFIG_RECORD, BOOL, ERROR, ERROR_RECORD, F64, NEVER, NULL, NUM_NAMES, STR, UNKNOWN, USIZE, VOID, assignable, audioStateOk, bindTParams, borrowOk, boxable, comparable, field, fn, gen, hasArenaBuf, hasAuthority, hasCap, hasInt64, hasLayout, hasPtr, hasRawPtr, hasTParam,
   isAuthority, isBool, isCopy, isInt, isInt64, isNative, isNull, isNum, isOwned, isOwnedCap, isStr, movesLike, holdsOwned, ownedDeep, ptrTargetOk, isTaggedUnion, kindOf, keyOk, intLiteralFits, literalFits, nonNull, nullable, num, opaque, parseExactInt, result, resultParts,
-  same, sendable, show, subst, tparamHasCap, unify, union, unref, castable, collectTParams, layerOk, type FnType, type NumName, type Type,
+  same, sendable, show, subst, tparamHasCap, unify, union, unref, castable, collectTParams, layerOk, type ClassSym, type FnType, type NumName, type Type,
   hasLoneSurrogate,
 } from "./types.ts";
 
@@ -97,11 +97,12 @@ const fnCalleeIds = new WeakSet<Node>();
 export const promiseOk = new WeakSet<Node>();
 const optCall = new WeakSet<Node>();
 /** Q130: these get their Promise type from a sub-expression, which is the one reported. */
-export const PROMISE_CONTAINERS = new Set<K>([K.ObjectLiteralExpression, K.ArrayLiteralExpression, K.ConditionalExpression, K.ParenthesizedExpression, K.BinaryExpression]);
+export const PROMISE_CONTAINERS = new Set<K>([K.ObjectLiteralExpression, K.ArrayLiteralExpression, K.ConditionalExpression, K.ParenthesizedExpression, K.BinaryExpression, K.SatisfiesExpression]);
 /** Q130: an `await` operand may be a conditional expression whose branches (nested conditionals included) are Promise expressions. */
 function allowAwaited(c: Checker, e: Node): void {
   promiseOk.add(e);
   if (e.kind === K.ParenthesizedExpression) allowAwaited(c, (e as ts.ParenthesizedExpression).expression);
+  else if (e.kind === K.SatisfiesExpression) allowAwaited(c, (e as ts.SatisfiesExpression).expression);
   else if (e.kind === K.ConditionalExpression) { allowAwaited(c, (e as ts.ConditionalExpression).whenTrue); allowAwaited(c, (e as ts.ConditionalExpression).whenFalse); }
 }
 /** A Promise, also inside `| null` or as array elements (`xs.map(g)`). Other holders only get one from a reported expression. */
@@ -170,6 +171,20 @@ function exprUnrecorded(c: Checker, e: ts.Expression, want?: Type): Type {
     case K.AsExpression: case K.NonNullExpression:
       expr(c, (e as ts.AsExpression | ts.NonNullExpression).expression);
       return ERROR;
+    case K.SatisfiesExpression: {
+      const s = e as ts.SatisfiesExpression;
+      const target = c.typeOf(s.type);
+      c.walkTypePos(s.type, "local", { unsafe: c.fx.unsafe, cdecl: false });
+      if (c.fx.layer !== "managed") c.layerType(target, s.type, c.fx.layer);
+      if (promiseOk.has(e)) promiseOk.add(s.expression);
+      const actual = expr(c, s.expression, isErr(target) ? want : target);
+      if (!isErr(target) && !isErr(actual) && !assignable(actual, target)) {
+        c.at("E2002", s.expression, `expected '${show(target)}', got '${show(actual)}'`, { expected: show(target), actual: show(actual) });
+        attachConvertFix(c, s.expression, actual, target);
+        return ERROR;
+      }
+      return actual;
+    }
     case K.PostfixUnaryExpression:
       expr(c, (e as ts.PostfixUnaryExpression).operand);
       return ERROR;
@@ -235,6 +250,15 @@ function ident(c: Checker, id: ts.Identifier): Type {
       default: throw new Error(`P2: unexpected symbol kind for '${name}'`);
     }
   }
+  const ns = c.mod.nsImports.get(name);
+  if (ns) {
+    c.at("E2002", id, ns.typeOnly ? `'${name}' is type-only and cannot be used as a value` : `module namespace '${name}' can only be used as a member access receiver`, { name });
+    return ERROR;
+  }
+  if (c.prog.isTypeOnlyValue(c.mod, name)) {
+    c.at("E2002", id, `'${name}' is type-only and cannot be used as a value`, { kind: "type-only", name });
+    return ERROR;
+  }
   unresolved(c, id);
   return ERROR;
 }
@@ -266,8 +290,42 @@ function contractLocal(c: Checker, id: ts.Identifier, s: LocalSym): void {
 type MemberResult = { kind: "value"; type: Type; readonly: boolean } | { kind: "method"; sig: FnType; managedOnly?: boolean; layer?: Layer } | { kind: "variadic" } | { kind: "error" };
 const MERR: MemberResult = { kind: "error" };
 
-/** True when `id` names a namespace object, not shadowed by a declaration. */
-const isNamespace = (c: Checker, id: ts.Identifier): boolean => NAMESPACES.has(id.text) && !c.scope.lookup(id.text) && !c.prog.lookupValue(c.mod, id.text);
+/** True when `id` names a builtin namespace object, not shadowed by a declaration. */
+const isNamespace = (c: Checker, id: ts.Identifier): boolean => NAMESPACES.has(id.text) && !c.scope.lookup(id.text) && !c.prog.lookupValue(c.mod, id.text) && !c.mod.nsImports.has(id.text) && !c.prog.isTypeOnlyValue(c.mod, id.text);
+
+const lookupNs = (c: Checker, id: ts.Identifier) =>
+  !c.scope.lookup(id.text) ? c.mod.nsImports.get(id.text) : undefined;
+
+function classStaticMember(c: Checker, cls: ClassSym, name: ts.Identifier, inCall: boolean): MemberResult {
+  const f = cls.fields.get(name.text), me = cls.methods.get(name.text);
+  if (f?.static && (!f.private || c.fx.cls === cls)) return { kind: "value", type: f.type, readonly: f.readonly };
+  if (me?.static && (!me.private || c.fx.cls === cls)) return inCall ? { kind: "method", sig: me.sig, layer: "managed" } : (c.at("E2002", name, "a method can only be called"), MERR);
+  c.at("E2002", name, `'${cls.name}' has no static member '${name.text}'`);
+  return MERR;
+}
+
+function lookupModuleFn(c: Checker, e: ts.Expression): { sym?: FnSym; nonFn?: ValueSym; typeOnly?: string; missingProp?: ts.PropertyAccessExpression } {
+  if (isId(e)) {
+    if (c.scope.lookup(e.text)) return {};
+    const sym = c.prog.lookupValue(c.mod, e.text);
+    if (sym) return sym.k === "fn" ? { sym } : { nonFn: sym };
+    if (c.prog.isTypeOnlyValue(c.mod, e.text)) return { typeOnly: e.text };
+    return {};
+  }
+  if (e.kind === K.PropertyAccessExpression) {
+    const p = e as ts.PropertyAccessExpression;
+    if (!isId(p.expression)) return {};
+    const ns = lookupNs(c, p.expression);
+    if (!ns) return {};
+    if (p.questionDotToken) return { missingProp: p };
+    if (ns.typeOnly) return { typeOnly: p.expression.text };
+    const sym = c.prog.lookupExportedValue(ns.mod, p.name.text);
+    if (sym) return sym.k === "fn" ? { sym } : { nonFn: sym };
+    if (c.prog.isExportedTypeOnly(ns.mod, p.name.text)) return { typeOnly: p.name.text };
+    return { missingProp: p };
+  }
+  return {};
+}
 
 function levenshtein(a: string, b: string): number {
   const m = a.length, n = b.length;
@@ -358,13 +416,43 @@ function member(c: Checker, p: ts.PropertyAccessExpression, inCall: boolean): Me
     return fromMember(c, m, name, inCall);
   }
   if (isId(recvNode) && !c.scope.lookup(recvNode.text)) {
+    const ns = c.mod.nsImports.get(recvNode.text);
+    if (ns) {
+      if (p.questionDotToken) { c.at("E2002", name, "'?.' cannot be used on a module namespace"); return MERR; }
+      if (ns.typeOnly) { c.at("E2002", recvNode, `'${recvNode.text}' is type-only and cannot be used as a value`, { kind: "type-only", name: recvNode.text }); return MERR; }
+      const sym = c.prog.lookupExportedValue(ns.mod, name.text);
+      if (!sym) {
+        if (c.prog.isExportedTypeOnly(ns.mod, name.text)) c.at("E2002", name, `'${name.text}' is type-only and cannot be used as a value`, { kind: "type-only", name: name.text });
+        else c.at("E2001", name, `module '${recvNode.text}' has no exported value '${name.text}'`, { receiver: recvNode.text, member: name.text });
+        return MERR;
+      }
+      switch (sym.k) {
+        case "const": return { kind: "value", type: sym.type, readonly: true };
+        case "fn":
+          if (c.fx.layer !== "managed" || sym.layer !== "managed") c.at("E4003", name, `the function '${sym.name}' cannot be used as a value here`);
+          if (c.fx.contract) c.at("E6002", name, `a contract cannot refer to the function value '${sym.name}'`);
+          return { kind: "value", type: sym.sig, readonly: true };
+        case "class": c.at("E2002", name, `class '${sym.cls.name}' is not a value`); return MERR;
+        case "jsref":
+          if (c.fx.contract) c.at("E6002", name, `a contract cannot refer to '${name.text}'`);
+          return { kind: "value", type: opaque("JsRef"), readonly: true };
+        default: return MERR;
+      }
+    }
     const sym = c.prog.lookupValue(c.mod, recvNode.text);
-    if (sym?.k === "class") { // static members
-      const f = sym.cls.fields.get(name.text), me = sym.cls.methods.get(name.text);
-      if (f?.static && (!f.private || c.fx.cls === sym.cls)) return { kind: "value", type: f.type, readonly: f.readonly };
-      if (me?.static && (!me.private || c.fx.cls === sym.cls)) return inCall ? { kind: "method", sig: me.sig, layer: "managed" } : (c.at("E2002", name, "a method can only be called"), MERR);
-      c.at("E2002", name, `'${sym.cls.name}' has no static member '${name.text}'`);
-      return MERR;
+    if (sym?.k === "class") return classStaticMember(c, sym.cls, name, inCall);
+  }
+  if (recvNode.kind === K.PropertyAccessExpression && isId((recvNode as ts.PropertyAccessExpression).expression)) {
+    const outer = recvNode as ts.PropertyAccessExpression;
+    const ns = lookupNs(c, outer.expression as ts.Identifier);
+    if (ns) {
+      if (outer.questionDotToken) { c.at("E2002", outer.name, "'?.' cannot be used on a module namespace"); return MERR; }
+      if (ns.typeOnly) { c.at("E2002", outer.expression, `'${(outer.expression as ts.Identifier).text}' is type-only and cannot be used as a value`, { kind: "type-only", name: (outer.expression as ts.Identifier).text }); return MERR; }
+      const sym = c.prog.lookupExportedValue(ns.mod, outer.name.text);
+      if (sym?.k === "class") {
+        if (p.questionDotToken) { c.at("E2002", name, "'?.' cannot be used on a class static member"); return MERR; }
+        return classStaticMember(c, sym.cls, name, inCall);
+      }
     }
   }
   let recv = expr(c, recvNode);
@@ -500,7 +588,10 @@ function lvalue(c: Checker, e0: ts.Expression): Type {
       c.forget(`${s.id}`); // an unstable local has no key above, but is logged all the same
       return s.mutable ? s.type : ERROR;
     }
-    if (c.prog.lookupValue(c.mod, e.text)) { c.at("E2002", e, `'${e.text}' cannot be assigned`); return ERROR; }
+    if (c.mod.nsImports.has(e.text) || c.prog.isTypeOnlyValue(c.mod, e.text) || c.prog.lookupValue(c.mod, e.text)) {
+      c.at("E2002", e, `'${e.text}' cannot be assigned`);
+      return ERROR;
+    }
     unresolved(c, e);
     return ERROR;
   }
@@ -915,9 +1006,13 @@ function audioOpenCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExp
   if (!S && !isErr(st) && !audioStateOk(st)) { c.at("E2013", args[1]!, `'${show(st)}' cannot be passed as audio callback state`, { reason: "invalid-state", actual: show(st) }); return ERROR; }
   const a = args[2]!;
   const bad = (msg: string, reason = "invalid-callback"): Type => { c.at("E2013", a, msg, { reason }); return ERROR; };
-  if (!isId(a) || c.scope.lookup(a.text)) return bad(`'open' takes the name of a module-level 'use rt' function`);
-  const sym = c.prog.lookupValue(c.mod, a.text);
-  if (sym?.k !== "fn") return bad(`'${a.text}' is not a module-level function`);
+  const fnRef = lookupModuleFn(c, a);
+  if (!fnRef.sym) {
+    if (fnRef.typeOnly) return bad(`'${fnRef.typeOnly}' is type-only and cannot be used as an audio callback`);
+    if (fnRef.nonFn || fnRef.missingProp) return bad(`'${a.getText(c.fx.mod.sf)}' is not a module-level function`);
+    return bad(`'open' takes the name of a module-level 'use rt' function`);
+  }
+  const sym = fnRef.sym;
   if (sym.sig.tparams.length) return bad(`the audio callback '${sym.name}' cannot be generic`);
   if (sym.layer !== "rt") return bad(`the audio callback '${sym.name}' must be a 'use rt' function (got ${sym.layer})`);
   if (sym.unsafe) return bad(`the audio callback '${sym.name}' cannot use 'use unsafe'`);
@@ -1022,11 +1117,11 @@ function resourceCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpr
     if (sym.layer !== "managed") c.fnSites.push({ from: c.fn, callee: sym, refs: new Map(), node: cleanupArg, mod: c.mod });
     return sym;
   };
-  if (isId(cleanupArg) && !c.scope.lookup(cleanupArg.text)) {
-    const sym = c.prog.lookupValue(c.mod, cleanupArg.text);
-    if (sym?.k === "fn") cleanupFn = checkCleanupSym(sym);
-    else if (c.fx.layer !== "managed") c.at("E4003", cleanupArg, "cleanup must be the name of a module-level strict / rt function");
-    else checkTo(c, cleanupArg, fn(expParams, VOID));
+  const fnRef = lookupModuleFn(c, cleanupArg);
+  if (fnRef.sym) {
+    cleanupFn = checkCleanupSym(fnRef.sym);
+  } else if (fnRef.typeOnly) {
+    c.at("E2002", cleanupArg, `'${fnRef.typeOnly}' is type-only and cannot be used as a value`, { kind: "type-only", name: fnRef.typeOnly });
   } else if (c.fx.layer !== "managed") {
     c.at("E4003", cleanupArg, "cleanup must be the name of a module-level strict / rt function");
   } else {
@@ -1053,9 +1148,12 @@ function isolateCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpre
     [S, R].forEach((t, i) => { if (!isErr(t) && !sendable(t)) c.at("E2010", e.typeArguments![i]!, `'${show(t)}' cannot be sent to an isolate`, { actual: show(t) }); });
     if (isErr(S) || isErr(R)) return ERROR;
   }
-  if (!isId(a) || c.scope.lookup(a.text)) return bad(`'isolate' takes the name of a module-level managed function`, "not-module-fn");
-  const sym = c.prog.lookupValue(c.mod, a.text);
-  if (sym?.k !== "fn") return bad(`'${a.text}' is not a module-level function`, "not-module-fn");
+  const isoFnRef = lookupModuleFn(c, a);
+  if (!isoFnRef.sym) {
+    if (isoFnRef.typeOnly) return bad(`'${isoFnRef.typeOnly}' is type-only and cannot be an isolate entry`, "not-module-fn");
+    return bad(`'isolate' takes the name of a module-level managed function`, "not-module-fn");
+  }
+  const sym = isoFnRef.sym;
   if (sym.sig.tparams.length) return bad(`the isolate entry '${sym.name}' cannot be generic`, "generic-entry");
   if (sym.layer !== "managed") return bad(`the isolate entry '${sym.name}' is a ${sym.layer} function; isolates run managed functions`, "non-managed-entry");
   const sig = sym.sig;
@@ -1095,25 +1193,29 @@ function floatPolyArg(c: Checker, a: ts.Expression, wantFloat: FloatNum): Type {
   return ERROR;
 }
 
+function callFnSym(c: Checker, sym: FnSym, e: ts.CallExpression, anchor: Node, want: Type | undefined): Type {
+  callFns.set(e, sym);
+  if (!c.callCheck(sym)) c.at("E4001", anchor, `a ${c.fx.layer} function cannot call the ${sym.layer} function '${sym.name}'`, { callerLayer: c.fx.layer, calleeLayer: sym.layer });
+  if (sym.sig.params.some(hasRawPtr) || hasRawPtr(sym.sig.ret)) { // §14.4.3: an unsafe operation (Q218: a CHandle in the signature does not count)
+    c.noteUnsafeOp(anchor);
+    if (!c.fx.unsafe) c.at("E4008", anchor, `'${sym.name}' has Ptr in its signature; calling it is an unsafe operation`, { op: sym.name });
+  }
+  if (c.fx.contract && !isDeterministic(sym.sig, sym.unsafe)) c.at("E6002", anchor, `a contract can only call deterministic functions ('${sym.name}' is not)`, { kind: "nondet-call", name: sym.name });
+  const got = callSig(c, sym.sig, e, anchor, want, sym.layer === "managed" ? undefined : sym.layer);
+  if (sym.layer !== "managed") c.fnSites.push({ from: c.fn, callee: sym, refs: callFnArgs.get(e) ?? new Map(), node: anchor, mod: c.mod, targs: callTArgs.get(e) }); // Q189 (b): E4005 per instantiation
+  return got;
+}
+
 function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
   // `a?.m(args)`: the arguments may not run (Q133)
   if (e.flags & NodeFlags.OptionalChain && !optCall.has(e)) { optCall.add(e); try { return c.branch(() => call(c, e, want)); } finally { optCall.delete(e); } } // D161: the marker must not outlive this visit; a shared parser hands the next entry the same nodes
   const callee = e.expression;
   if (isId(callee) && !c.scope.lookup(callee.text)) {
     const sym = c.prog.lookupValue(c.mod, callee.text);
+    if (!sym && c.mod.nsImports.has(callee.text)) { c.at("E2002", callee, `module namespace '${callee.text}' is not callable`, { name: callee.text }); return ERROR; }
+    if (!sym && c.prog.isTypeOnlyValue(c.mod, callee.text)) { c.at("E2002", callee, `'${callee.text}' is type-only and cannot be used as a value`, { kind: "type-only", name: callee.text }); return ERROR; }
     if (!sym && BUILTIN_FUNCTIONS.has(callee.text)) return builtinCall(c, e, callee, want);
-    if (sym?.k === "fn") {
-      callFns.set(e, sym);
-      if (!c.callCheck(sym)) c.at("E4001", callee, `a ${c.fx.layer} function cannot call the ${sym.layer} function '${sym.name}'`, { callerLayer: c.fx.layer, calleeLayer: sym.layer });
-      if (sym.sig.params.some(hasRawPtr) || hasRawPtr(sym.sig.ret)) { // §14.4.3: an unsafe operation (Q218: a CHandle in the signature does not count)
-        c.noteUnsafeOp(callee);
-        if (!c.fx.unsafe) c.at("E4008", callee, `'${sym.name}' has Ptr in its signature; calling it is an unsafe operation`, { op: sym.name });
-      }
-      if (c.fx.contract && !isDeterministic(sym.sig, sym.unsafe)) c.at("E6002", callee, `a contract can only call deterministic functions ('${sym.name}' is not)`, { kind: "nondet-call", name: sym.name });
-      const got = callSig(c, sym.sig, e, callee, want, sym.layer === "managed" ? undefined : sym.layer);
-      if (sym.layer !== "managed") c.fnSites.push({ from: c.fn, callee: sym, refs: callFnArgs.get(e) ?? new Map(), node: callee, mod: c.mod, targs: callTArgs.get(e) }); // Q189 (b): E4005 per instantiation
-      return got;
-    }
+    if (sym?.k === "fn") return callFnSym(c, sym, e, callee, want);
     if (sym?.k === "cfn") { // §14.1 / §14.3: unsafe callers only; rt + unsafe drops the Ffi argument
       c.noteUnsafeOp(callee); // §14.4.2
       if (!c.fx.unsafe) c.at("E4008", callee, `the C function '${sym.name}' can only be called from a function with 'use unsafe'`, { op: sym.name });
@@ -1125,6 +1227,29 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
   }
   if (callee.kind === K.PropertyAccessExpression) {
     const p = callee as ts.PropertyAccessExpression;
+    if (isId(p.expression)) {
+      const nsMod = lookupNs(c, p.expression);
+      if (nsMod) {
+        if (p.questionDotToken) { c.at("E2002", p.name, "'?.' cannot be used on a module namespace"); return ERROR; }
+        if (nsMod.typeOnly) { c.at("E2002", p.expression, `'${p.expression.text}' is type-only and cannot be used as a value`, { kind: "type-only", name: p.expression.text }); return ERROR; }
+        const sym = c.prog.lookupExportedValue(nsMod.mod, p.name.text);
+        if (!sym) {
+          if (c.prog.isExportedTypeOnly(nsMod.mod, p.name.text)) c.at("E2002", p.name, `'${p.name.text}' is type-only and cannot be used as a value`, { kind: "type-only", name: p.name.text });
+          else c.at("E2001", p.name, `module '${p.expression.text}' has no exported value '${p.name.text}'`, { receiver: p.expression.text, member: p.name.text });
+          return ERROR;
+        }
+        if (sym.k === "fn") return callFnSym(c, sym, e, p.name, want);
+        if (sym.k === "class") { c.at("E2002", p.name, `use 'new ${p.expression.text}.${p.name.text}(...)'`); return ERROR; }
+        if (sym.k === "const") {
+          const ct = unref(sym.type);
+          if (ct.k === "fn") return callSig(c, ct, e, p.name, want);
+          if (!isErr(ct)) c.at("E2002", p.name, `'${show(ct)}' is not callable`);
+          return ERROR;
+        }
+        if (sym.k === "jsref") { c.at("E2002", p.name, `'JsRef' is not callable`); return ERROR; }
+        return ERROR;
+      }
+    }
     if (isId(p.expression) && p.expression.text === "Resource" && !c.scope.lookup("Resource") && !c.prog.lookupValue(c.mod, "Resource")) return resourceCall(c, e, p, want);
     const a0 = e.arguments[0];
     if (a0 && isId(p.expression) && p.expression.text === "Promise" && p.name.text === "all" && isNamespace(c, p.expression)) { // Q130
@@ -1379,16 +1504,20 @@ function fnArgRef(c: Checker, a: ts.Expression, target: Layer): { ref: FnArgRef;
         c.at("E4001", a, `a ${c.fx.layer} function parameter cannot be passed to an rt function parameter`, { callerLayer: c.fx.layer, calleeLayer: target });
       const idx = c.fn.sig.params.findIndex((p, i) => unref(p).k === "fn" && c.fn!.decl.parameters[i]?.name.kind === K.Identifier && (c.fn!.decl.parameters[i]!.name as ts.Identifier).text === a.text);
       if (idx >= 0) return { ref: { param: idx }, t: local.declared };
-    } else if (!local) {
-      const sym = c.prog.lookupValue(c.mod, a.text);
-      if (sym?.k === "fn") {
-        if (sym.sig.tparams.length) { c.at("E4003", a, `the generic function '${sym.name}' cannot be used as a function argument`); return undefined; }
-        if (sym.layer === "rt" && sym.unsafe) { c.at("E4001", a, `the rt + unsafe function '${sym.name}' can only be passed to 'cfn'`, { callerLayer: c.fx.layer, calleeLayer: sym.layer }); return undefined; } // §14.6
-        if (sym.layer === "managed" || (target === "rt" && sym.layer !== "rt"))
-          c.at("E4001", a, `a ${target} function parameter cannot take the ${sym.layer} function '${sym.name}'`, { callerLayer: c.fx.layer, calleeLayer: sym.layer });
-        return { ref: { fn: sym }, t: sym.sig };
-      }
     }
+  }
+  const fnRef = lookupModuleFn(c, a);
+  if (fnRef.sym) {
+    const sym = fnRef.sym;
+    if (sym.sig.tparams.length) { c.at("E4003", a, `the generic function '${sym.name}' cannot be used as a function argument`); return undefined; }
+    if (sym.layer === "rt" && sym.unsafe) { c.at("E4001", a, `the rt + unsafe function '${sym.name}' can only be passed to 'cfn'`, { callerLayer: c.fx.layer, calleeLayer: sym.layer }); return undefined; } // §14.6
+    if (sym.layer === "managed" || (target === "rt" && sym.layer !== "rt"))
+      c.at("E4001", a, `a ${target} function parameter cannot take the ${sym.layer} function '${sym.name}'`, { callerLayer: c.fx.layer, calleeLayer: sym.layer });
+    return { ref: { fn: sym }, t: sym.sig };
+  }
+  if (fnRef.typeOnly) {
+    c.at("E2002", a, `'${fnRef.typeOnly}' is type-only and cannot be used as a value`, { kind: "type-only", name: fnRef.typeOnly });
+    return undefined;
   }
   c.at("E4003", a, "a function argument must be the name of a module-level strict / rt function or a function parameter of the caller");
   return undefined;
@@ -1454,9 +1583,13 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
       };
       const boundary = (t: Type): boolean =>
         t.k === "num" || isBool(t) || (t.k === "gen" && (t.name === "Ptr" || t.name === "ConstPtr") && pointeeOk(t));
-      if (!isId(a) || c.scope.lookup(a.text)) { c.at("E4003", a, "'cfn' takes the name of a module-level rt function", { kind: "cfn-arg" }); return ERROR; }
-      const sym = c.prog.lookupValue(c.mod, a.text);
-      if (sym?.k !== "fn") { c.at("E4003", a, "'cfn' takes the name of a module-level rt function", { kind: "cfn-arg" }); return ERROR; }
+      const fnRef = lookupModuleFn(c, a);
+      if (!fnRef.sym) {
+        if (fnRef.typeOnly) c.at("E2002", a, `'${fnRef.typeOnly}' is type-only and cannot be used as a value`, { kind: "type-only", name: fnRef.typeOnly });
+        else c.at("E4003", a, "'cfn' takes the name of a module-level rt function", { kind: "cfn-arg" });
+        return ERROR;
+      }
+      const sym = fnRef.sym;
       if (sym.sig.tparams.length) { c.at("E4003", a, `'cfn' cannot take the generic function '${sym.name}'`, { kind: "generic-fn", name: sym.name }); return ERROR; }
       if (sym.layer !== "rt") { c.at("E4001", a, `'cfn' takes an rt function, not the ${sym.layer} function '${sym.name}'`, { callerLayer: c.fx.layer, calleeLayer: sym.layer }); return ERROR; }
       if (sym.sig.params.some((p) => !boundary(p)) || !(boundary(sym.sig.ret) || (sym.sig.ret.k === "prim" && sym.sig.ret.name === "void"))) {
@@ -1534,12 +1667,17 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
         });
         return !bad;
       };
-      if (isId(a)) {
-        if (c.scope.lookup(a.text)) { c.at("E2002", a, "'forAll' takes a module-level function name or a function expression"); return VOID; }
-        const sym = c.prog.lookupValue(c.mod, a.text);
-        if (!sym) { unresolved(c, a); return VOID; }
+      const fnRef = lookupModuleFn(c, a);
+      if (fnRef.sym || fnRef.nonFn || fnRef.typeOnly || fnRef.missingProp || (isId(a) && !c.scope.lookup(a.text))) {
+        if (fnRef.typeOnly) { c.at("E2002", a, `'${fnRef.typeOnly}' is type-only and cannot be used as a value`, { kind: "type-only", name: fnRef.typeOnly }); return VOID; }
+        if (fnRef.missingProp) {
+          c.at("E2001", fnRef.missingProp.name, `module '${(fnRef.missingProp.expression as ts.Identifier).text}' has no exported value '${fnRef.missingProp.name.text}'`, { receiver: (fnRef.missingProp.expression as ts.Identifier).text, member: fnRef.missingProp.name.text });
+          return VOID;
+        }
+        const sym = fnRef.sym ?? fnRef.nonFn;
+        if (!sym) { if (isId(a)) unresolved(c, a); return VOID; }
         if (sym.k === "cfn") { c.at("E4003", a, `the C function '${sym.name}' cannot be passed to 'forAll'`, { kind: "cfn-in-forAll", name: sym.name }); return VOID; }
-        if (sym.k !== "fn") { c.at("E2002", a, `'${a.text}' is not a function`); return VOID; }
+        if (sym.k !== "fn") { c.at("E2002", a, `'${a.getText(c.fx.mod.sf)}' is not a function`); return VOID; }
         if (sym.sig.tparams.length) { c.at("E2002", a, `'forAll' cannot take generic function '${sym.name}'`); return VOID; }
         if (sym.layer === "rt" && sym.unsafe) { c.at("E4001", a, `the rt + unsafe function '${sym.name}' cannot be passed to 'forAll'`, { callerLayer: c.fx.layer, calleeLayer: sym.layer }); return VOID; }
         if (sym.unsafe) { c.at("E4008", a, `the unsafe function '${sym.name}' cannot be passed to 'forAll'`, { op: sym.name }); return VOID; }
@@ -1548,6 +1686,7 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
         if (checkParams(sym.sig.params, () => a)) forAllMeta.set(e, { params: sym.sig.params, checkBool: false });
         return VOID;
       }
+      if (isId(a)) { c.at("E2002", a, "'forAll' takes a module-level function name or a function expression"); return VOID; }
       if (isFnExpr(a)) {
         if (a.modifiers?.some((m) => m.kind === K.AsyncKeyword)) { c.at("E2002", a, "'forAll' callback cannot be async"); return VOID; }
         if (a.typeParameters?.length) { c.at("E2002", a, "'forAll' callback cannot be generic"); return VOID; }
@@ -1588,10 +1727,18 @@ function bannedCall(c: Checker, p: ts.PropertyAccessExpression, recv: Type | und
     }
   };
   if (!recv) {
-    if (!isId(p.expression)) return contractBanned().has(n);
-    const id = p.expression.text;
-    if (NAMESPACES.has(id)) return bad(nsMember(id, n)); // a namespace (`Vec`, `Math`) has no type
-    return c.prog.lookupValue(c.mod, id)?.k === "class" ? false : contractBanned().has(n); // a static call on a user class (Q232)
+    if (isId(p.expression)) {
+      const id = p.expression.text;
+      if (c.mod.nsImports.has(id)) return false;
+      if (NAMESPACES.has(id)) return bad(nsMember(id, n)); // a namespace (`Vec`, `Math`) has no type
+      return c.prog.lookupValue(c.mod, id)?.k === "class" ? false : contractBanned().has(n); // a static call on a user class (Q232)
+    }
+    if (p.expression.kind === K.PropertyAccessExpression && isId((p.expression as ts.PropertyAccessExpression).expression)) {
+      const outer = p.expression as ts.PropertyAccessExpression;
+      const ns = lookupNs(c, outer.expression as ts.Identifier);
+      if (ns && !ns.typeOnly && c.prog.lookupExportedValue(ns.mod, outer.name.text)?.k === "class") return false;
+    }
+    return contractBanned().has(n);
   }
   return by(recv);
 }
@@ -1621,14 +1768,38 @@ function observeOnly(c: Checker, root: Node): void {
 
 function newExpr(c: Checker, e: ts.NewExpression, want: Type | undefined): Type {
   const id = e.expression;
+  const checkClass = (sym: ValueSym, anchor: Node, label: string): Type => {
+    if (sym.k === "class") {
+      const cls = sym.cls;
+      const self: Type = { k: "class", cls, args: cls.tparams.map((p) => ({ k: "tparam", p })) };
+      return callSig(c, { ...cls.ctor, tparams: cls.tparams, ret: self }, e, anchor, want);
+    }
+    c.at("E2002", anchor, `'${label}' is not a class`);
+    return ERROR;
+  };
+  if (id.kind === K.PropertyAccessExpression && isId((id as ts.PropertyAccessExpression).expression)) {
+    const p = id as ts.PropertyAccessExpression;
+    const ns = lookupNs(c, p.expression as ts.Identifier);
+    if (ns) {
+      if (p.questionDotToken) { c.at("E2002", p.name, "'?.' cannot be used on a module namespace"); return ERROR; }
+      if (ns.typeOnly) { c.at("E2002", p.expression, `'${(p.expression as ts.Identifier).text}' is type-only and cannot be used as a value`, { kind: "type-only", name: (p.expression as ts.Identifier).text }); return ERROR; }
+      const sym = c.prog.lookupExportedValue(ns.mod, p.name.text);
+      if (!sym) {
+        if (c.prog.isExportedTypeOnly(ns.mod, p.name.text)) c.at("E2002", p.name, `'${p.name.text}' is type-only and cannot be used as a value`, { kind: "type-only", name: p.name.text });
+        else c.at("E2001", p.name, `module '${(p.expression as ts.Identifier).text}' has no exported value '${p.name.text}'`, { receiver: (p.expression as ts.Identifier).text, member: p.name.text });
+        return ERROR;
+      }
+      return checkClass(sym, p.name, `${(p.expression as ts.Identifier).text}.${p.name.text}`);
+    }
+  }
   if (!isId(id)) { c.at("E2002", id, "'new' needs a class name"); return ERROR; }
   const sym = c.scope.lookup(id.text) ? undefined : c.prog.lookupValue(c.mod, id.text);
-  if (sym?.k === "class") {
-    const cls = sym.cls;
-    const self: Type = { k: "class", cls, args: cls.tparams.map((p) => ({ k: "tparam", p })) };
-    return callSig(c, { ...cls.ctor, tparams: cls.tparams, ret: self }, e, id, want);
+  if (sym) return checkClass(sym, id, id.text);
+  if (!c.scope.lookup(id.text) && c.prog.isTypeOnlyValue(c.mod, id.text)) {
+    c.at("E2002", id, `'${id.text}' is type-only and cannot be used as a value`, { kind: "type-only", name: id.text });
+    return ERROR;
   }
-  if (!sym && (id.text === "Map" || id.text === "Set") && !c.scope.lookup(id.text)) { // Q029
+  if ((id.text === "Map" || id.text === "Set") && !c.scope.lookup(id.text)) { // Q029
     if (e.arguments?.length) { c.at("E2001", id, `'new ${id.text}' takes no arguments`); return ERROR; }
     const n = id.text === "Map" ? 2 : 1;
     if (e.typeArguments) {
@@ -1644,7 +1815,6 @@ function newExpr(c: Checker, e: ts.NewExpression, want: Type | undefined): Type 
     c.at("E2006", id, `cannot infer the type arguments of '${id.text}'`);
     return ERROR;
   }
-  if (sym) { c.at("E2002", id, `'${id.text}' is not a class`); return ERROR; }
   unresolved(c, id);
   return ERROR;
 }

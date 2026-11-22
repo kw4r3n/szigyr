@@ -1,10 +1,10 @@
 // C backend for strict / rt functions (D101-D103): one translation unit for the program's module-level strict / rt functions,
 // plus a Node-API wrapper per function that managed JS calls. Every subexpression goes through a temporary, in source order (D103).
 import { readFileSync } from "node:fs";
-import { NodeFlags, SyntaxKind as K, type Node, type ts } from "./parse.ts";
+import { NodeFlags, SyntaxKind as K, isId, type Node, type ts } from "./parse.ts";
 import { assignTarget, callFnArgs, callFns, callTArgs, exprTypes, resourceCalls } from "./expr.ts";
 import { sliceGroups } from "./ownership.ts";
-import type { CFnSym, FnSym, Module, Program } from "./modules.ts";
+import type { CFnSym, ConstSym, FnSym, Module, Program } from "./modules.ts";
 import { layout, elemDesc, type Lay } from "./layout.ts";
 import { DETMATH_PATH } from "./detmath.ts";
 import { cPointeeOf, cTypeOf, parseCSpec } from "./cdecl.ts";
@@ -72,6 +72,18 @@ const fnParamIdx = (f: FnSym): number[] => f.sig.params.flatMap((pt, i) => (unre
 export function emitC(prog: Program, target: CTarget = "native", opts?: { proved?: ProvedChecks }): EmittedC | undefined {
   // §12 (D117): managed DetMath calls run the JS module directly; C compiles only DetMath functions reached from strict / rt.
   const resolveFn = (mod: Module, name: string): FnSym | undefined => { const v = prog.lookupValue(mod, name); return v?.k === "fn" ? v : undefined; }; // across imports and re-exports (Q226)
+  const resolveFnExpr = (mod: Module, e: ts.Expression): FnSym | undefined => {
+    if (isId(e)) return resolveFn(mod, e.text);
+    if (e.kind === K.PropertyAccessExpression) {
+      const p = e as ts.PropertyAccessExpression;
+      if (isId(p.expression)) {
+        const ns = mod.nsImports.get(p.expression.text);
+        const v = ns && !ns.typeOnly ? prog.lookupExportedValue(ns.mod, p.name.text) : undefined;
+        return v?.k === "fn" ? v : undefined;
+      }
+    }
+    return undefined;
+  };
   const fns = prog.fns.filter((f) => f.layer !== "managed" && f.mod.pf.path !== DETMATH_PATH);
   if (!fns.length) return undefined;
   let eliminated = 0;
@@ -129,7 +141,7 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
         }
         return;
       }
-      if (n.kind === K.CallExpression && (n as ts.CallExpression).expression.kind === K.Identifier) {
+      if (n.kind === K.CallExpression) {
         const fn = callFns.get(n); // as the checker resolved it: a local binding shadows the module name
         if (fn && fn.layer !== "managed" && (fn.sig.tparams.length || fnParamIdx(fn).length)) {
           const p = mod.pf.position(n.getStart(mod.sf));
@@ -887,6 +899,7 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
 
     exVoid(e: ts.Expression): void {
       if (e.kind === K.ParenthesizedExpression) { this.exVoid((e as ts.ParenthesizedExpression).expression); return; }
+      if (e.kind === K.SatisfiesExpression) { this.exVoid((e as ts.SatisfiesExpression).expression); return; }
       const t = exprTypes.get(e);
       if (t && t.k === "prim" && (t.name === "void" || t.name === "never")) {
         if (e.kind === K.ConditionalExpression) { // `c ? f() : g()` of void calls: the chosen branch as a statement
@@ -905,6 +918,7 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
     ex(e: ts.Expression): string {
       switch (e.kind) {
         case K.ParenthesizedExpression: return this.ex((e as ts.ParenthesizedExpression).expression);
+        case K.SatisfiesExpression: return this.ex((e as ts.SatisfiesExpression).expression);
         case K.NumericLiteral: return this.lit(e as ts.NumericLiteral, false, this.typeOf(e));
         case K.TrueKeyword: return "true";
         case K.StringLiteral: case K.NoSubstitutionTemplateLiteral: return `((int32_t)${litId((e as ts.StringLiteral).text)})`; // Q043: a `kind` value
@@ -949,6 +963,20 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
       return t.name === "f32" ? `((float)${s})` : s;
     }
 
+    emitConst(sym: ConstSym, anchor: Node, label: string): string {
+      const saved = [this.mod, this.sf] as const;
+      this.mod = sym.mod; this.sf = sym.mod.sf;
+      try {
+        if (sym.bind) { // Q225 (b): `const { a }: T = { a: 1 }` is the property `a` of the initializer's record literal
+          const key = ((sym.bind.propertyName ?? sym.bind.name) as ts.Identifier).text;
+          const prop = (sym.decl.initializer as ts.ObjectLiteralExpression).properties.find((p) => p.kind === K.PropertyAssignment && (p.name as ts.Identifier | ts.StringLiteral).text === key) as ts.PropertyAssignment | undefined;
+          if (!prop) throw this.no(anchor, `the destructured constant '${label}'`);
+          return this.conv(this.ex(prop.initializer), this.typeOf(prop.initializer), sym.type);
+        }
+        return this.conv(this.ex(sym.decl.initializer!), this.typeOf(sym.decl.initializer!), sym.type);
+      } finally { [this.mod, this.sf] = saved; }
+    }
+
     ident(id: ts.Identifier): string {
       const l = this.lookup(id.text);
       if (l) return this.t(this.typeOf(id), this.narrow(l.c, l.t, this.typeOf(id)), id); // a snapshot: a later operand may assign the local (D103, Q172)
@@ -965,20 +993,7 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
         }
         if (isBool(gv.type)) return this.t(gv.type, `((${gv.name}) != 0)`, id);
       }
-      const sym = gv?.k === "const" ? gv : undefined;
-      if (sym) { // §1: a literal, or a record literal of literals; translated at each use (D104)
-        const saved = [this.mod, this.sf] as const;
-        this.mod = sym.mod; this.sf = sym.mod.sf;
-        try {
-          if (sym.bind) { // Q225 (b): `const { a }: T = { a: 1 }` is the property `a` of the initializer's record literal
-            const key = ((sym.bind.propertyName ?? sym.bind.name) as ts.Identifier).text;
-            const prop = (sym.decl.initializer as ts.ObjectLiteralExpression).properties.find((p) => p.kind === K.PropertyAssignment && (p.name as ts.Identifier | ts.StringLiteral).text === key) as ts.PropertyAssignment | undefined;
-            if (!prop) throw this.no(id, `the destructured constant '${id.text}'`);
-            return this.conv(this.ex(prop.initializer), this.typeOf(prop.initializer), sym.type);
-          }
-          return this.conv(this.ex(sym.decl.initializer!), this.typeOf(sym.decl.initializer!), sym.type);
-        } finally { [this.mod, this.sf] = saved; }
-      }
+      if (gv?.k === "const") return this.emitConst(gv, id, id.text); // §1: a literal, or a record literal of literals; translated at each use (D104)
       throw this.no(id, `the name '${id.text}' here`);
     }
 
@@ -1156,6 +1171,7 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
     /** An lvalue: a local, or a field path from one (`s.a.b`, `(*u_m).x`). `read`: narrowed locals read as their narrowed type. */
     place(e: ts.Expression, read = false): string {
       if (e.kind === K.ParenthesizedExpression) return this.place((e as ts.ParenthesizedExpression).expression, read);
+      if (e.kind === K.SatisfiesExpression) return this.place((e as ts.SatisfiesExpression).expression, read);
       if (e.kind === K.Identifier) { const l = this.lookup((e as ts.Identifier).text); if (l) return read ? this.narrow(l.c, l.t, this.typeOf(e)) : l.c; }
       if (e.kind === K.PropertyAccessExpression) {
         const p = e as ts.PropertyAccessExpression;
@@ -1175,11 +1191,19 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
 
     prop(p: ts.PropertyAccessExpression): string {
       const name = p.name.text;
-      if (p.expression.kind === K.Identifier && !this.lookup((p.expression as ts.Identifier).text) && (p.expression as ts.Identifier).text === "Math") {
-        if (name === "PI") return "3.141592653589793"; if (name === "E") return "2.718281828459045";
-      }
-      if (p.expression.kind === K.Identifier && !this.lookup((p.expression as ts.Identifier).text) && (p.expression as ts.Identifier).text === "Number") {
-        const c = NUMBER_CONSTS[name]; if (c) return c;
+      if (p.expression.kind === K.Identifier && !this.lookup((p.expression as ts.Identifier).text)) {
+        const nsId = (p.expression as ts.Identifier).text;
+        const ns = this.mod.nsImports.get(nsId);
+        if (ns && !ns.typeOnly) {
+          const gv = prog.lookupExportedValue(ns.mod, name);
+          if (gv?.k === "const") return this.emitConst(gv, p.name, `${nsId}.${name}`);
+        }
+        if (nsId === "Math") {
+          if (name === "PI") return "3.141592653589793"; if (name === "E") return "2.718281828459045";
+        }
+        if (nsId === "Number") {
+          const c = NUMBER_CONSTS[name]; if (c) return c;
+        }
       }
       const rt = this.typeOf(p.expression);
       if ((isGen(rt, "Vec") || isGen(rt, "Slice")) && name === "length") { const s = this.seq(p.expression); return this.t({ k: "num", name: "usize" }, s.len, p); }
@@ -1313,8 +1337,7 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
             }
             case "cfn": { // §14.6: the trampoline for a module-level rt function, as a Ptr to it
               const a = e.arguments[0]!;
-              if (a.kind !== K.Identifier) throw this.no(a, "'cfn' of a non-name");
-              const fn = resolveFn(this.mod, (a as ts.Identifier).text);
+              const fn = resolveFnExpr(this.mod, a);
               if (!fn) throw this.no(a, "'cfn' of an unknown function");
               return this.t(t, trampoline(fn, this.where), e);
             }
@@ -1340,6 +1363,8 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
         throw this.no(callee, `calling '${name}'`);
       }
       if (callee.kind !== K.PropertyAccessExpression) throw this.no(callee, "this callee");
+      const nsFn = callFns.get(e);
+      if (nsFn) return this.userCall(e, nsFn, stmt);
       const p = callee as ts.PropertyAccessExpression, m = p.name.text;
       if (p.expression.kind === K.Identifier && !this.lookup((p.expression as ts.Identifier).text)) {
         const ns = (p.expression as ts.Identifier).text;
@@ -1667,7 +1692,7 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
       }
       const callee = inst(fn, fn.sig.tparams.length ? targs : [], fnArgs, this.where);
       const args = e.arguments.map((a0, i) => {
-        let a = a0; while (a.kind === K.ParenthesizedExpression) a = (a as ts.ParenthesizedExpression).expression; // D157: `f((p.borrow()))` is the same borrowed argument
+        let a = a0; while (a.kind === K.ParenthesizedExpression || a.kind === K.SatisfiesExpression) a = a.kind === K.ParenthesizedExpression ? (a as ts.ParenthesizedExpression).expression : (a as ts.SatisfiesExpression).expression; // D157: `f((p.borrow()))` is the same borrowed argument
         const pt = callee.params[i]!, inner = unref(pt), mode = borrowMode(pt);
         if (inner.k === "fn") return ""; // Q189 (b): no runtime value (the slot keeps argument indices aligned)
         if (a.kind === K.CallExpression && (a as ts.CallExpression).expression.kind === K.PropertyAccessExpression) {

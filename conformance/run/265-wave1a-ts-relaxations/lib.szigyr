@@ -1,0 +1,43 @@
+export type Pair = { readonly x: i32; readonly y: i32 };
+
+export interface Greeter {
+  greet(): string;
+}
+
+export const SCALE: i32 = 10;
+
+export class Counter {
+  static readonly BASE: i32 = 100;
+  private v: i32;
+  constructor(init: i32) {
+    this.v = init;
+  }
+  inc(by: i32): i32 {
+    this.v += by;
+    return this.v;
+  }
+}
+
+export function mulScale(x: i32): i32 {
+  "use rt";
+  return x * SCALE + (1 satisfies i32);
+}
+
+export function pickFirst<T extends Native & Copy>(a: T, b: T, first: boolean): T {
+  "use owned";
+  return first ? a : b;
+}
+
+export function applyRt(x: i32, f: (v: i32) => i32): i32 {
+  "use rt";
+  return f(x) + SCALE;
+}
+
+export function sumPlusOne(xs: readonly i32[]): i32 {
+  let acc: i32 = 0;
+  for (let x of xs) {
+    x += 1;
+    acc += x;
+  }
+  return acc;
+}

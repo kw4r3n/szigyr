@@ -26,7 +26,6 @@ const cases: [string, string, string, string][] = [
   ["E1001", "var x: i32 = 1;\n", "const x: i32", "var x"],
   ["E1002", "export function f(a: i32): boolean {\n  return a == 1;\n}\n", "a === 1", "=="],
   ["E1002", "export function f(a: i32): boolean {\n  return a != 1;\n}\n", "a !== 1", "!="],
-  ["E1000", "export function f(xs: i32[]): usize {\n  return xs.length;\n}\n", "Array<i32>", "[]"],
   ["E1000", "export function f(): void {\n  let i: i32 = 0;\n  i++;\n}\n", "i += 1;", "i++"],
   ["E1000", "export function f(): void {\n  for (let i: i32 = 3; i > 0; i--) {}\n}\n", "i -= 1)", "i--"],
   ["E2003", "export function f(a: Array<f64>): boolean {\n  let i = 0;\n  return i < a.length;\n}\n", "let i: usize = 0", "let i = 0"],
