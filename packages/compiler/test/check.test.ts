@@ -432,3 +432,24 @@ it("E2002 suggests >>> for unsigned >> and >> for signed >>>", () => {
   expect(ds[0]).toMatchObject({ code: "E2002", message: expect.stringContaining(">>>") });
   expect(ds[1]).toMatchObject({ code: "E2002", message: expect.stringContaining(">>") });
 });
+
+it("E4001 explicitly names rt+unsafe when called from managed code", () => {
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-rtunsafe-`));
+  const f = join(dir, "main.szigyr");
+  writeFileSync(f, `function rtu(x: i32): i32 {
+  "use rt";
+  "use unsafe";
+  return x;
+}
+export function main(sys: System): void {
+  sys.log.info(\`\${rtu(1)}\`);
+}
+`);
+  const ds = check(f);
+  expect(ds).toHaveLength(1);
+  expect(ds[0]).toMatchObject({
+    code: "E4001",
+    message: expect.stringContaining("rt+unsafe"),
+    data: { callerLayer: "managed", calleeLayer: "rt+unsafe" },
+  });
+});

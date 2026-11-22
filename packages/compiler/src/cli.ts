@@ -306,6 +306,7 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
     if (cmd === "mutate") {
       let targets = 0, killed = 0, survived = 0, timeout = 0, cached = 0;
       const skipped: { fn: string; reason: string }[] = [];
+      const skippedTests: string[] = [];
       const seen = new Set<string>();
       for (const f of files) {
         const analysis = all ? analyze(f, parser) : undefined;
@@ -325,6 +326,7 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
         timeout += r.summary.timeout;
         cached += r.summary.cached;
         skipped.push(...r.summary.skipped);
+        if (r.summary.skippedTests) skippedTests.push(...r.summary.skippedTests);
         for (const m of r.mutants) {
           if (json) {
             out(line({
@@ -345,8 +347,8 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
         }
       }
       out(json
-        ? line({ kind: "summary", targets, killed, survived, timeout, cached, skipped })
-        : `${killed} killed, ${timeout} timeout, ${survived} survived (${cached} cached; ${targets} targets, ${skipped.length} skipped)\n`);
+        ? line({ kind: "summary", targets, killed, survived, timeout, cached, skipped, ...(skippedTests.length ? { skippedTests } : {}) })
+        : `${killed} killed, ${timeout} timeout, ${survived} survived (${cached} cached; ${targets} targets, ${skipped.length} skipped${skippedTests.length ? `, ${skippedTests.length} c-only test(s) skipped` : ""})\n`);
       return failOnSurvived && survived > 0 ? 1 : 0;
     }
     if (cmd === "run") {

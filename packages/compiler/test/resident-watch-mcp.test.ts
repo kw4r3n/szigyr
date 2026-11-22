@@ -344,7 +344,7 @@ describe("resident incremental checker, --watch mode, and stdio MCP server", () 
 
     // szigyr_test, szigyr_mutate & szigyr_run (subprocess-isolated)
     const tst = await rpc({ jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "szigyr_test", arguments: { file, backend: "js" } } });
-    expect(tst.result.structuredContent).toMatchObject({ ok: true, results: [{ name: "add", ok: true }] });
+    expect(tst.result.structuredContent).toMatchObject({ ok: true, results: [{ name: "add", ok: true }], summary: { passed: 1, failed: 0, skipped: 0 } });
 
     const virtTestDep = join(dir, "virt-test-dep.szigyr");
     const virtTestMain = join(dir, "virt-test-main.szigyr");

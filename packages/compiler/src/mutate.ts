@@ -51,6 +51,7 @@ export interface MutateSummary {
   readonly timeout: number;
   readonly cached: number;
   readonly skipped: readonly SkippedTarget[];
+  readonly skippedTests?: readonly string[];
 }
 
 export interface BaselineFailure {
@@ -384,11 +385,15 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
     reached: Set<number>;
   }
   const activeTests: BaselineTest[] = [];
+  const skippedTests: string[] = [];
   for (let i = 0; i < registeredTests.length; i++) {
     const t = registeredTests[i]!;
     const out = await runOneTest(t.fn, 0, Infinity, true);
     if (!out.ok) {
-      if (out.kind === "conly") continue; // Q275: skip tests that reach C-only code
+      if (out.kind === "conly") {
+        skippedTests.push(t.file === entryDisplay ? t.name : `${t.file} > ${t.name}`);
+        continue; // Q275: skip tests that reach C-only code
+      }
       return {
         diagnostics: [],
         baselineFailure: { file: t.file, name: t.name, failure: out.failure ?? out.kind, ...(out.trap ? { trap: out.trap } : {}), ...(out.pos ? { pos: out.pos } : {}) },
@@ -501,7 +506,7 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
     else survived++;
     if (r.cached) cached++;
   }
-  return { diagnostics: [], baselineFailure: null, mutants: reports, summary: { targets: targets.length, killed, survived, timeout, cached, skipped } };
+  return { diagnostics: [], baselineFailure: null, mutants: reports, summary: { targets: targets.length, killed, survived, timeout, cached, skipped, ...(skippedTests.length ? { skippedTests } : {}) } };
   } finally {
     rt.setForeignTrapCheck(undefined);
     rt.stopFakeIsolates();

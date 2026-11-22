@@ -275,7 +275,7 @@ test("pure safe test", (t: Test) => {
   t.eq(safeCalc(3, 4), 7);
 });
 `;
-    const { file, cacheFile } = tmpFile("mixed.szigyr", src);
+    const { dir, file, cacheFile } = tmpFile("mixed.szigyr", src);
     const res = await mutate(file, { cache: false, cacheFile });
     expect(res.diagnostics).toEqual([]);
     expect(res.baselineFailure).toBeNull();
@@ -283,6 +283,15 @@ test("pure safe test", (t: Test) => {
     expect(res.mutants.length).toBeGreaterThan(0);
     expect(res.mutants.every((m) => m.fn === "safeCalc")).toBe(true);
     expect(res.mutants.every((m) => m.status === "killed")).toBe(true);
+    expect(res.summary.skippedTests).toEqual(["calls unsafe stub"]);
+
+    const cliJson = szigyr(dir, "mutate", "--no-cache", "--json", file);
+    expect(cliJson.code).toBe(0);
+    expect(jsonLines(cliJson.out).find((l) => l.kind === "summary")?.skippedTests).toEqual(["calls unsafe stub"]);
+
+    const cliText = szigyr(dir, "mutate", "--no-cache", file);
+    expect(cliText.code).toBe(0);
+    expect(cliText.out).toContain("1 c-only test(s) skipped");
   });
 });
 

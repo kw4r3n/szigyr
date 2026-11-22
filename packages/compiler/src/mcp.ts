@@ -218,7 +218,7 @@ async function handleWorker(req: WorkerReq, parser: Parser): Promise<[unknown, b
           ...(req.filter !== undefined ? { filter: req.filter } : {}),
         });
         if (r.diagnostics.length) {
-          return [{ ok: false, file: req.file, backend: req.backend, diagnostics: r.diagnostics, results: [], durationMs: ms() }];
+          return [{ ok: false, file: req.file, backend: req.backend, diagnostics: r.diagnostics, results: [], summary: { passed: 0, failed: 0, skipped: 0 }, durationMs: ms() }];
         }
         rs.push(r);
       }
@@ -231,8 +231,11 @@ async function handleWorker(req: WorkerReq, parser: Parser): Promise<[unknown, b
           mismatch = Object.fromEntries(backends.map((b, i) => [b, rs[i]!.results]));
         }
       }
-      const ok = !mismatch && r0.results.every((t) => t.ok);
-      return [{ ok, file: req.file, backend: req.backend, diagnostics: [], results: r0.results, ...(r0.skipped ? { skipped: r0.skipped } : {}), ...(mismatch ? { mismatch } : {}), durationMs: ms() }];
+      const passed = r0.results.filter((t) => t.ok).length;
+      const failed = r0.results.length - passed;
+      const skipped = r0.skipped ?? 0;
+      const ok = !mismatch && failed === 0;
+      return [{ ok, file: req.file, backend: req.backend, diagnostics: [], results: r0.results, summary: { passed, failed, skipped }, ...(r0.skipped ? { skipped: r0.skipped } : {}), ...(mismatch ? { mismatch } : {}), durationMs: ms() }];
     }
     if (req.op === "run") {
       const backends = workerBackends(req.backend);

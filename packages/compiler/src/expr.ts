@@ -1210,7 +1210,10 @@ function resourceCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpr
   const checkCleanupSym = (sym: FnSym): FnSym | undefined => {
     if (sym.sig.tparams.length) { c.at("E4003", cleanupArg, `the generic function '${sym.name}' cannot be used as a cleanup callback`); return undefined; }
     if (sym.sig.min !== undefined) { c.at("E2002", cleanupArg, `cleanup function '${sym.name}' cannot have default parameters`); return undefined; }
-    if (!c.callCheck(sym)) c.at("E4001", cleanupArg, `a ${c.fx.layer} function cannot use the ${sym.layer} function '${sym.name}' as cleanup`, { callerLayer: c.fx.layer, calleeLayer: sym.layer });
+    if (!c.callCheck(sym)) {
+      const calleeTag = sym.layer === "rt" && sym.unsafe ? "rt+unsafe" : sym.layer;
+      c.at("E4001", cleanupArg, `a ${c.fx.layer} function cannot use the ${calleeTag} function '${sym.name}' as cleanup`, { callerLayer: c.fx.layer, calleeLayer: calleeTag });
+    }
     if (sym.sig.params.some(hasRawPtr) || hasRawPtr(sym.sig.ret)) {
       c.noteUnsafeOp(cleanupArg);
       if (!c.fx.unsafe) c.at("E4008", cleanupArg, `'${sym.name}' has Ptr in its signature; using it as cleanup is an unsafe operation`);
@@ -1303,7 +1306,12 @@ function floatPolyArg(c: Checker, a: ts.Expression, wantFloat: FloatNum): Type {
 
 function callFnSym(c: Checker, sym: FnSym, e: ts.CallExpression, anchor: Node, want: Type | undefined): Type {
   callFns.set(e, sym);
-  if (!c.callCheck(sym)) c.at("E4001", anchor, `a ${c.fx.layer} function cannot call the ${sym.layer} function '${sym.name}'`, { callerLayer: c.fx.layer, calleeLayer: sym.layer });
+  if (!c.callCheck(sym)) {
+    const isRtUnsafe = sym.layer === "rt" && sym.unsafe;
+    const calleeTag = isRtUnsafe ? "rt+unsafe" : sym.layer;
+    const extra = isRtUnsafe ? " (rt+unsafe functions can only be called from rt+unsafe or passed to 'cfn')" : "";
+    c.at("E4001", anchor, `a ${c.fx.layer} function cannot call the ${calleeTag} function '${sym.name}'${extra}`, { callerLayer: c.fx.layer, calleeLayer: calleeTag });
+  }
   if (sym.sig.params.some(hasRawPtr) || hasRawPtr(sym.sig.ret)) { // §14.4.3: an unsafe operation (Q218: a CHandle in the signature does not count)
     c.noteUnsafeOp(anchor);
     if (!c.fx.unsafe) c.at("E4008", anchor, `'${sym.name}' has Ptr in its signature; calling it is an unsafe operation`, { op: sym.name });
@@ -1644,7 +1652,7 @@ function fnArgRef(c: Checker, a: ts.Expression, target: Layer): { ref: FnArgRef;
   if (fnRef.sym) {
     const sym = fnRef.sym;
     if (sym.sig.tparams.length) { c.at("E4003", a, `the generic function '${sym.name}' cannot be used as a function argument`); return undefined; }
-    if (sym.layer === "rt" && sym.unsafe) { c.at("E4001", a, `the rt + unsafe function '${sym.name}' can only be passed to 'cfn'`, { callerLayer: c.fx.layer, calleeLayer: sym.layer }); return undefined; } // §14.6
+    if (sym.layer === "rt" && sym.unsafe) { c.at("E4001", a, `the rt + unsafe function '${sym.name}' can only be passed to 'cfn'`, { callerLayer: c.fx.layer, calleeLayer: "rt+unsafe" }); return undefined; } // §14.6
     if (sym.layer === "managed" || (target === "rt" && sym.layer !== "rt"))
       c.at("E4001", a, `a ${target} function parameter cannot take the ${sym.layer} function '${sym.name}'`, { callerLayer: c.fx.layer, calleeLayer: sym.layer });
     return { ref: { fn: sym }, t: sym.sig };
@@ -1814,7 +1822,7 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
         if (sym.k === "cfn") { c.at("E4003", a, `the C function '${sym.name}' cannot be passed to 'forAll'`, { kind: "cfn-in-forAll", name: sym.name }); return VOID; }
         if (sym.k !== "fn") { c.at("E2002", a, `'${a.getText(c.fx.mod.sf)}' is not a function`); return VOID; }
         if (sym.sig.tparams.length) { c.at("E2002", a, `'forAll' cannot take generic function '${sym.name}'`); return VOID; }
-        if (sym.layer === "rt" && sym.unsafe) { c.at("E4001", a, `the rt + unsafe function '${sym.name}' cannot be passed to 'forAll'`, { callerLayer: c.fx.layer, calleeLayer: sym.layer }); return VOID; }
+        if (sym.layer === "rt" && sym.unsafe) { c.at("E4001", a, `the rt + unsafe function '${sym.name}' cannot be passed to 'forAll'`, { callerLayer: c.fx.layer, calleeLayer: "rt+unsafe" }); return VOID; }
         if (sym.unsafe) { c.at("E4008", a, `the unsafe function '${sym.name}' cannot be passed to 'forAll'`, { op: sym.name }); return VOID; }
         if (hasPromise(sym.sig.ret)) { c.at("E2002", a, "'forAll' does not support async functions or Promise returns"); return VOID; }
         if (!sym.sig.params.length) { c.at("E2002", a, "'forAll' function must have at least one parameter"); return VOID; }
