@@ -1,0 +1,6 @@
+// expect: E3006 @ 5:3
+// stage: 2
+function g(v: Ref<Vec<i32>>): void {
+  "use owned";
+  v[0] &= 1;
+}

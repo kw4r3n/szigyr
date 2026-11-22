@@ -322,7 +322,21 @@ class Flow {
         this.state = join(a, this.state);
         return;
       }
-      case K.PrefixUnaryExpression: this.ex((e as ts.PrefixUnaryExpression).operand, "read"); return;
+      case K.PrefixUnaryExpression: {
+        const u = e as ts.PrefixUnaryExpression;
+        if (u.operator === K.PlusPlusToken || u.operator === K.MinusMinusToken) {
+          const mark = this.active.length;
+          this.lhs(assignTarget(u.operand));
+          this.active.length = mark;
+        } else this.ex(u.operand, "read");
+        return;
+      }
+      case K.PostfixUnaryExpression: {
+        const mark = this.active.length;
+        this.lhs(assignTarget((e as ts.PostfixUnaryExpression).operand));
+        this.active.length = mark;
+        return;
+      }
       case K.AwaitExpression: this.markAwaited((e as ts.AwaitExpression).expression); this.ex((e as ts.AwaitExpression).expression, "read"); return;
       case K.TemplateExpression: for (const sp of (e as ts.TemplateExpression).templateSpans) this.ex(sp.expression, "read"); return;
       case K.ObjectLiteralExpression: {
@@ -426,7 +440,8 @@ class Flow {
       this.state = join(s0, this.state);
       return;
     }
-    if (k === K.PlusEqualsToken || k === K.MinusEqualsToken || k === K.AsteriskEqualsToken || k === K.SlashEqualsToken || k === K.PercentEqualsToken || k === K.AsteriskAsteriskEqualsToken) {
+    if (k === K.PlusEqualsToken || k === K.MinusEqualsToken || k === K.AsteriskEqualsToken || k === K.SlashEqualsToken || k === K.PercentEqualsToken || k === K.AsteriskAsteriskEqualsToken ||
+      k === K.AmpersandEqualsToken || k === K.BarEqualsToken || k === K.CaretEqualsToken || k === K.LessThanLessThanEqualsToken || k === K.GreaterThanGreaterThanEqualsToken || k === K.GreaterThanGreaterThanGreaterThanEqualsToken) {
       const mark = this.active.length;
       this.lhs(assignTarget(b.left));
       this.ex(b.right, "read");

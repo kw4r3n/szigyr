@@ -1,0 +1,6 @@
+// expect: E2002 @ 5:3
+// stage: 1
+function f(): void {
+  const x: i32 = 0;
+  x++;
+}

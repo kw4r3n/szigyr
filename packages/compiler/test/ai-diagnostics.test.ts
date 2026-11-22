@@ -29,11 +29,11 @@ function applyFirstFix(src: string): { diag: Diagnostic; fixed: string; after: D
 
 describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
   it("reports specific E1000 messages and structured data for common TS constructs", () => {
-    const inc = checkSrc("export function f(): void { let n: i32 = 0; n++; }\n").diags[0]!;
-    expect(inc).toMatchObject({ code: "E1000", message: "'++' is not allowed; use '+= 1'", data: { kind: "inc-dec", op: "++" } });
+    const inc = checkSrc("export function f(n: i32): i32 { const y = n++; return y; }\n").diags[0]!;
+    expect(inc).toMatchObject({ code: "E1000", message: "'++' is only allowed as a statement or for-loop incrementor", data: { kind: "inc-dec", op: "++" } });
 
-    const dec = checkSrc("export function f(): void { let n: i32 = 1; --n; }\n").diags[0]!;
-    expect(dec).toMatchObject({ code: "E1000", message: "'--' is not allowed; use '-= 1'", data: { kind: "inc-dec", op: "--" } });
+    const dec = checkSrc("export function f(n: i32): i32 { const y = --n; return y; }\n").diags[0]!;
+    expect(dec).toMatchObject({ code: "E1000", message: "'--' is only allowed as a statement or for-loop incrementor", data: { kind: "inc-dec", op: "--" } });
 
     const tup = checkSrc("type Pair = [i32, string];\n").diags[0]!;
     expect(tup).toMatchObject({ code: "E1000", message: "tuple types are not allowed; use a record '{ readonly ... }' or 'Struct<{ ... }>'", data: { kind: "tuple-type" } });
@@ -48,8 +48,8 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
     const forIn = checkSrc("export function f(xs: Array<i32>): void { for (const k in xs) {} }\n").diags[0]!;
     expect(forIn).toMatchObject({ code: "E1000", message: "'for..in' is not allowed; use 'for..of' or an index loop", data: { kind: "for-in" } });
 
-    const bitAndEq = checkSrc("export function f(x: i32): void { x &= 1; }\n").diags[0]!;
-    expect(bitAndEq).toMatchObject({ code: "E1000", message: "operator '&=' is not allowed", data: { kind: "operator", op: "&=" } });
+    const logOrEq = checkSrc("export function f(x: boolean): void { x ||= true; }\n").diags[0]!;
+    expect(logOrEq).toMatchObject({ code: "E1000", message: "operator '||=' is not allowed", data: { kind: "operator", op: "||=" } });
 
     const inter = checkSrc("type A = { readonly a: i32 };\ntype B = { readonly b: i32 };\ntype C = A & B;\n").diags[0]!;
     expect(inter).toMatchObject({ code: "E1000", data: { kind: "intersection-type" } });
@@ -62,19 +62,6 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
 
     const idxT = checkSrc("type A = { readonly x: i32 };\ntype X = A[\"x\"];\n").diags[0]!;
     expect(idxT).toMatchObject({ code: "E1000", message: "indexed access types are not allowed", data: { kind: "indexed-access-type" } });
-  });
-
-  it("flattens 3-part string concatenation into a single template literal quick fix", () => {
-    const src = 'export function joinColon(a: string, b: string): string {\n  return a + ":" + b;\n}\n';
-    const { diag, fixed, after } = applyFirstFix(src);
-    expect(diag.code).toBe("E2002");
-    expect(fixed).toContain("return `${a}:${b}`;");
-    expect(after).toEqual([]);
-
-    const nested = 'export function join4(a: string, b: string, c: string): string {\n  return a + (":" + b) + ("-" + c);\n}\n';
-    const r2 = applyFirstFix(nested);
-    expect(r2.fixed).toContain("return `${a}:${b}-${c}`;");
-    expect(r2.after).toEqual([]);
   });
 
   it("attaches declare 'i' as 'usize' fix on E2002 in checkTo", () => {

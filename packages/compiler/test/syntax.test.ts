@@ -47,9 +47,12 @@ it("check follows relative imports and reports a missing file at the specifier (
 
 // Forms the conformance corpus does not pin: default-deny branches and defaults from open questions.
 const forms: [string, string, string[]][] = [
-  ["postfix ++", "function f(x: i32): void { x++; }", ["E1000@1:28"]],
+  ["statement/for-inc ++/-- allowed", "function f(x: i32): void { x++; --x; for (let i: i32 = 0; i < 3; i++) {} }", []],
+  ["value-position postfix ++", "function f(x: i32): i32 { return x++; }", ["E1000@1:34"]],
+  ["value-position prefix --", "function f(x: i32): i32 { return --x; }", ["E1000@1:34"]],
   ["typeof value", "function f(x: i32): boolean { return typeof x === \"number\"; }", ["E1000@1:38"]],
-  ["bitwise compound assignment (Q071)", "function f(x: i32): void { x &= 1; }", ["E1000@1:30"]],
+  ["bitwise compound assignment", "function f(x: i32): void { x &= 1; x <<= 1; x >>= 1; }", []],
+  ["logical assignment rejected", "function f(x: boolean): void { x ||= true; }", ["E1000@1:34"]],
   ["nested destructuring (Q052)", "type P = { readonly a: Q };\nfunction f(p: P): void { const { a: { b } } = p; }", ["E1000@2:37"]],
   ["destructuring assignment", "function f(a: i32, b: i32): void { [a, b] = [b, a]; }", ["E1000@1:36"]],
   ["'this' parameter", "function f(this: X): void {}", ["E1000@1:12"]],

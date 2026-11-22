@@ -24,13 +24,14 @@ const UNSAFE_DIRECTIVE = "use unsafe";
 const CONTRACTS = new Set(["requires", "ensures", "invariant"]);
 /** Q054: annotation heads that make a module-level const mutable. */
 const MUTABLE_TYPES = new Set(["Array", "Map", "Set", "Vec", "Pool", "Arena"]);
-// Bitwise compound and logical assignments are not in SPEC (Q071): they fall to E1000.
+// Logical assignments (&&=, ||=, ??=) are disallowed and fall to E1000.
 const BINARY_OPS = new Set<K>([
   K.PlusToken, K.MinusToken, K.AsteriskToken, K.SlashToken, K.PercentToken, K.AsteriskAsteriskToken,
   K.LessThanToken, K.LessThanEqualsToken, K.GreaterThanToken, K.GreaterThanEqualsToken, K.EqualsEqualsEqualsToken, K.ExclamationEqualsEqualsToken,
   K.AmpersandToken, K.BarToken, K.CaretToken, K.LessThanLessThanToken, K.GreaterThanGreaterThanToken, K.GreaterThanGreaterThanGreaterThanToken,
   K.AmpersandAmpersandToken, K.BarBarToken, K.QuestionQuestionToken,
   K.EqualsToken, K.PlusEqualsToken, K.MinusEqualsToken, K.AsteriskEqualsToken, K.SlashEqualsToken, K.PercentEqualsToken, K.AsteriskAsteriskEqualsToken,
+  K.AmpersandEqualsToken, K.BarEqualsToken, K.CaretEqualsToken, K.LessThanLessThanEqualsToken, K.GreaterThanGreaterThanEqualsToken, K.GreaterThanGreaterThanGreaterThanEqualsToken,
 ]);
 const PREFIX_OPS = new Set<K>([K.MinusToken, K.ExclamationToken, K.TildeToken]);
 
@@ -51,7 +52,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
   const fix = (title: string, start: number, end: number, newText: string): void => {
     out.at(-1)!.fixes = [{ title, edits: [{ range: { start: pf.position(start), end: pf.position(end) }, newText }] }];
   };
-  /** `x++` / `x--` whose value is unused (statement or for-incrementor): `x += 1` is an exact rewrite. */
+  /** `x++` / `x--` whose value is unused (statement or for-incrementor). */
   const unusedIncs = new Set<Node>();
   const e1000 = (n: Node, what: string, data?: Record<string, unknown>): void => at("E1000", n, `${what} is not allowed`, data);
   const nullableFix = (qTok: Node, tNode: ts.TypeNode | undefined): void => {
@@ -550,11 +551,6 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     }
   }
 
-  function incFix(u: Node, op: K, operand: ts.Expression): void {
-    if ((op !== K.PlusPlusToken && op !== K.MinusMinusToken) || !unusedIncs.has(u)) return;
-    fix(`use '${op === K.PlusPlusToken ? "+=" : "-="} 1'`, u.getStart(sf), u.end, `${sf.text.slice(operand.getStart(sf), operand.end)} ${op === K.PlusPlusToken ? "+=" : "-="} 1`);
-  }
-
   function typeAlias(d: ts.TypeAliasDeclaration): void {
     mods(d, [K.ExportKeyword]);
     declName(d.name);
@@ -782,14 +778,15 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         const u = e as ts.PrefixUnaryExpression;
         if (!PREFIX_OPS.has(u.operator)) {
           if (u.operator === K.PlusPlusToken || u.operator === K.MinusMinusToken) {
-            const op = u.operator === K.PlusPlusToken ? "++" : "--";
-            at("E1000", u, `'${op}' is not allowed; use '${op[0]}= 1'`, { kind: "inc-dec", op });
+            if (!unusedIncs.has(u)) {
+              const op = u.operator === K.PlusPlusToken ? "++" : "--";
+              at("E1000", u, `'${op}' is only allowed as a statement or for-loop incrementor`, { kind: "inc-dec", op });
+            }
           } else if (u.operator === K.PlusToken) {
             e1000(u, "unary '+'", { kind: "unary-operator", op: "+" });
           } else {
             e1000(u, "this unary operator");
           }
-          incFix(u, u.operator, u.operand);
         }
         expr(u.operand);
         return;
@@ -874,9 +871,11 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         return;
       case K.PostfixUnaryExpression: {
         const u = e as ts.PostfixUnaryExpression;
-        const op = u.operator === K.PlusPlusToken ? "++" : "--";
-        at("E1000", e, `'${op}' is not allowed; use '${op[0]}= 1'`, { kind: "inc-dec", op });
-        incFix(u, u.operator, u.operand);
+        if (!unusedIncs.has(u)) {
+          const op = u.operator === K.PlusPlusToken ? "++" : "--";
+          at("E1000", e, `'${op}' is only allowed as a statement or for-loop incrementor`, { kind: "inc-dec", op });
+        }
+        expr(u.operand);
         return;
       }
       case K.RegularExpressionLiteral: e1000(e, "regular expression literal", { kind: "regex" }); return;

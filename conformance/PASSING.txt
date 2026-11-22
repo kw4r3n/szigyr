@@ -104,9 +104,11 @@ reject/E1000-for-in.szigyr
 reject/E1000-generator.szigyr
 reject/E1000-getter.szigyr
 reject/E1000-in-operator.szigyr
+reject/E1000-inc-in-value-pos.szigyr
 reject/E1000-intersection-type.szigyr
 reject/E1000-label.szigyr
 reject/E1000-local-redeclares-parameter.szigyr
+reject/E1000-logical-assign.szigyr
 reject/E1000-member-name-constructor-field.szigyr
 reject/E1000-member-name-proto.szigyr
 reject/E1000-member-name-then.szigyr
@@ -114,6 +116,7 @@ reject/E1000-module-array-destructuring.szigyr
 reject/E1000-module-destructuring-duplicate-name.szigyr
 reject/E1000-object-literal-proto.szigyr
 reject/E1000-object-type.szigyr
+reject/E1000-pre-dec-in-value-pos.szigyr
 reject/E1000-reserved-bigint-class.szigyr
 reject/E1000-reserved-i64-type.szigyr
 reject/E1000-reserved-u64-function.szigyr
@@ -184,6 +187,8 @@ reject/E2002-array-spread-not-array.szigyr
 reject/E2002-arrow-inferred-missing-return.szigyr
 reject/E2002-assign-boolean-to-number-var.szigyr
 reject/E2002-await-conditional-null-branch.szigyr
+reject/E2002-bit-compound-i32-ushr.szigyr
+reject/E2002-bit-compound-u32-shr.szigyr
 reject/E2002-bitop-non-numeric-rhs.szigyr
 reject/E2002-cast-class-target.szigyr
 reject/E2002-cast-of-result.szigyr
@@ -224,10 +229,11 @@ reject/E2002-generic-map-key-through-type-parameter.szigyr
 reject/E2002-generic-set-element-record.szigyr
 reject/E2002-implements-generic-method-arity.szigyr
 reject/E2002-import-type-as-value
+reject/E2002-inc-on-const.szigyr
+reject/E2002-inc-on-string.szigyr
 reject/E2002-includes-array-element.szigyr
 reject/E2002-indexof-record-element.szigyr
 reject/E2002-inferred-return-union.szigyr
-reject/E2002-integer-modulo.szigyr
 reject/E2002-interface-structural-conformance.szigyr
 reject/E2002-js-callback-function-argument.szigyr
 reject/E2002-js-callback-returns-value.szigyr
@@ -308,7 +314,8 @@ reject/E2002-set-element-null-union.szigyr
 reject/E2002-set-element-record.szigyr
 reject/E2002-shift-non-numeric-rhs.szigyr
 reject/E2002-slice-to-vec-param.szigyr
-reject/E2002-string-concat-with-plus.szigyr
+reject/E2002-string-lit-union-plus-assign.szigyr
+reject/E2002-string-plus-number.szigyr
 reject/E2002-stringify-map.szigyr
 reject/E2002-struct-compare.szigyr
 reject/E2002-struct-excess-field.szigyr
@@ -492,6 +499,7 @@ reject/E3005-slices-and-root-same-root.szigyr
 reject/E3005-vec-fill-and-mut-inside-argument.szigyr
 reject/E3005-vec-push-and-mut-inside-argument.szigyr
 reject/E3006-arena-alloc-through-ref.szigyr
+reject/E3006-bit-compound-through-ref.szigyr
 reject/E3006-conditional-ref-index-write.szigyr
 reject/E3006-conditional-ref-push.szigyr
 reject/E3006-conditional-ref-slice-fill.szigyr
@@ -499,6 +507,7 @@ reject/E3006-constptr-borrow-into-mut.szigyr
 reject/E3006-constptr-chained-slice-to-mut.szigyr
 reject/E3006-fill-through-ref-slice.szigyr
 reject/E3006-fs-readbytes-ref.szigyr
+reject/E3006-inc-through-ref.szigyr
 reject/E3006-pool-insert-through-ref.szigyr
 reject/E3006-push-through-ref-receiver.szigyr
 reject/E3006-push-through-ref-struct-field.szigyr
@@ -563,6 +572,7 @@ reject/E4001-strict-calls-managed-only-builtin.szigyr
 reject/E4001-strict-calls-managed.szigyr
 reject/E4001-strict-function-to-rt-param.szigyr
 reject/E4001-strict-param-forwarded-to-rt.szigyr
+reject/E4001-string-concat-in-rt.szigyr
 reject/E4001-string-relational-in-rt.szigyr
 reject/E4002-arena-alloc-owned.szigyr
 reject/E4002-arenabuf-string.szigyr
@@ -670,6 +680,7 @@ reject/E6001-invariant-outside-loop.szigyr
 reject/E6001-requires-after-statement.szigyr
 reject/E6001-requires-in-arrow.szigyr
 reject/E6002-contract-assigns-parameter.szigyr
+reject/E6002-contract-bit-compound.szigyr
 reject/E6002-contract-compound-assignment.szigyr
 reject/E6002-contract-element-assignment.szigyr
 reject/E6002-contract-mutating-method.szigyr
@@ -890,6 +901,7 @@ run/262-net-and-fake-net.szigyr
 run/263-url-httpserver-stop-fakefs.szigyr
 run/264-utf8-json-exitcode-ensures-strcmp.szigyr
 run/265-wave1a-ts-relaxations
+run/266-wave1b-operators-and-callbacks.szigyr
 run/27-trap-ownedcell-empty.szigyr
 run/28-trap-shift-range.szigyr
 run/29-trap-invariant.szigyr

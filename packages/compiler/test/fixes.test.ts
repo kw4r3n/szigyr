@@ -26,8 +26,6 @@ const cases: [string, string, string, string][] = [
   ["E1001", "var x: i32 = 1;\n", "const x: i32", "var x"],
   ["E1002", "export function f(a: i32): boolean {\n  return a == 1;\n}\n", "a === 1", "=="],
   ["E1002", "export function f(a: i32): boolean {\n  return a != 1;\n}\n", "a !== 1", "!="],
-  ["E1000", "export function f(): void {\n  let i: i32 = 0;\n  i++;\n}\n", "i += 1;", "i++"],
-  ["E1000", "export function f(): void {\n  for (let i: i32 = 3; i > 0; i--) {}\n}\n", "i -= 1)", "i--"],
   ["E2003", "export function f(a: Array<f64>): boolean {\n  let i = 0;\n  return i < a.length;\n}\n", "let i: usize = 0", "let i = 0"],
   ["E2003", "export function f(n: u8): u8 {\n  let i = 1;\n  return n + i;\n}\n", "let i: u8 = 1", "let i = 1"],
   ["E1000", 'export function f(): i32 {\n  "use strict";\n  return 1;\n}\n', '"use owned"', '"use strict"'],
@@ -37,10 +35,7 @@ const cases: [string, string, string, string][] = [
   ["E5001", 'export function f(): void {\n  console.log("hi");\n}\n', "log.info", "console.log"],
   ["E5001", "export function f(): f64 {\n  return Date.now();\n}\n", "clock.nowMs", "Date.now"],
   ["E5001", "export function f(): f64 {\n  return Math.random();\n}\n", "random.nextF64", "Math.random"],
-  ["E2002", "export function f(a: i32, b: i32): i32 {\n  return a % b;\n}\n", "rem(a, b)", "a % b"],
-  ["E2002", "export function f(a: i32, b: i32): i32 {\n  let x = a;\n  x %= b;\n  return x;\n}\n", "x = rem(x, b)", "x %= b"],
   ["E2007", "export function f(a: i32, b: i32): i32 {\n  let x = a;\n  x /= b;\n  return x;\n}\n", "x = divTrunc(x, b)", "x /= b"],
-  ["E2002", 'export function f(a: string, b: string): string {\n  return a + b;\n}\n', "`${a}${b}`", "a + b"],
   ["E2005", 'type Color = "red" | "green" | "blue";\nexport function f(c: Color): i32 {\n  switch (c) {\n    case "red": return 1;\n  }\n}\n', 'case "green": panic("unhandled");', "E2005"],
 ];
 

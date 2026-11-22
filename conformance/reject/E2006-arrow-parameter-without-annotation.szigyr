@@ -1,6 +1,7 @@
-// expect: E2006 @ 5:17
+// expect: E2006 @ 5:14
 // stage: 1
 // open-question: Q022
-function f(a: Array<f64>): Array<f64> {
-  return a.map((x) => x);
+function f(): (x: f64) => f64 {
+  const g = (x) => x;
+  return g;
 }

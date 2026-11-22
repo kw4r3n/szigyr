@@ -1,0 +1,6 @@
+// expect: E1000 @ 4:13
+// stage: 1
+function f(x: i32): i32 {
+  const y = --x;
+  return y;
+}

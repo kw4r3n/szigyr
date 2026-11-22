@@ -687,6 +687,10 @@ export class Checker {
     const targets: ts.Expression[] = [];
     const walk = (n: Node): void => {
       if (n.kind === K.BinaryExpression && isAssignOp((n as ts.BinaryExpression).operatorToken.kind)) targets.push((n as ts.BinaryExpression).left);
+      else if ((n.kind === K.PrefixUnaryExpression || n.kind === K.PostfixUnaryExpression) &&
+        ((n as ts.PrefixUnaryExpression | ts.PostfixUnaryExpression).operator === K.PlusPlusToken || (n as ts.PrefixUnaryExpression | ts.PostfixUnaryExpression).operator === K.MinusMinusToken)) {
+        targets.push((n as ts.PrefixUnaryExpression | ts.PostfixUnaryExpression).operand);
+      }
       n.forEachChild(walk);
     };
     walk(body);
@@ -1226,7 +1230,8 @@ function findPtrRef(n: Node): Node | undefined {
 }
 
 function isAssignOp(k: K): boolean {
-  return k === K.EqualsToken || k === K.PlusEqualsToken || k === K.MinusEqualsToken || k === K.AsteriskEqualsToken || k === K.SlashEqualsToken || k === K.PercentEqualsToken || k === K.AsteriskAsteriskEqualsToken;
+  return k === K.EqualsToken || k === K.PlusEqualsToken || k === K.MinusEqualsToken || k === K.AsteriskEqualsToken || k === K.SlashEqualsToken || k === K.PercentEqualsToken || k === K.AsteriskAsteriskEqualsToken ||
+    k === K.AmpersandEqualsToken || k === K.BarEqualsToken || k === K.CaretEqualsToken || k === K.LessThanLessThanEqualsToken || k === K.GreaterThanGreaterThanEqualsToken || k === K.GreaterThanGreaterThanGreaterThanEqualsToken;
 }
 /** An authority anywhere in `t`, looking through function types too (E4006 for Q189 (b) parameter types). */
 function hasAuthDeep(t: Type): boolean {
@@ -1341,6 +1346,15 @@ export function capturedAssigned(root: Node): Set<Node> {
         const b = n as ts.BinaryExpression;
         if (isAssignOp(b.operatorToken.kind)) {
           const l = assignTarget(b.left);
+          if (isId(l)) { const bnd = lookup(l.text, sc); if (bnd) assigned.add(bnd.id); }
+        }
+        break;
+      }
+      case K.PrefixUnaryExpression:
+      case K.PostfixUnaryExpression: {
+        const u = n as ts.PrefixUnaryExpression | ts.PostfixUnaryExpression;
+        if (u.operator === K.PlusPlusToken || u.operator === K.MinusMinusToken) {
+          const l = assignTarget(u.operand);
           if (isId(l)) { const bnd = lookup(l.text, sc); if (bnd) assigned.add(bnd.id); }
         }
         break;

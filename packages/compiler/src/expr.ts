@@ -36,7 +36,13 @@ const ARITH = new Set<K>([K.PlusToken, K.MinusToken, K.AsteriskToken, K.SlashTok
 const COMPOUND: Partial<Record<K, K>> = {
   [K.PlusEqualsToken]: K.PlusToken, [K.MinusEqualsToken]: K.MinusToken, [K.AsteriskEqualsToken]: K.AsteriskToken,
   [K.SlashEqualsToken]: K.SlashToken, [K.PercentEqualsToken]: K.PercentToken, [K.AsteriskAsteriskEqualsToken]: K.AsteriskAsteriskToken,
+  [K.AmpersandEqualsToken]: K.AmpersandToken, [K.BarEqualsToken]: K.BarToken, [K.CaretEqualsToken]: K.CaretToken,
+  [K.LessThanLessThanEqualsToken]: K.LessThanLessThanToken, [K.GreaterThanGreaterThanEqualsToken]: K.GreaterThanGreaterThanToken, [K.GreaterThanGreaterThanGreaterThanEqualsToken]: K.GreaterThanGreaterThanGreaterThanToken,
 };
+const BIT_OPS = new Set<K>([
+  K.AmpersandToken, K.BarToken, K.CaretToken,
+  K.LessThanLessThanToken, K.GreaterThanGreaterThanToken, K.GreaterThanGreaterThanGreaterThanToken,
+]);
 /** Operands typed from the other side (literals, string literals, null). */
 const deferrable = (e: ts.Expression): boolean => isLitOnly(e) || e.kind === K.StringLiteral || e.kind === K.NullKeyword || e.kind === K.NoSubstitutionTemplateLiteral;
 /** Arguments that need their parameter type before they can be typed (Q030). */
@@ -165,7 +171,7 @@ function exprUnrecorded(c: Checker, e: ts.Expression, want?: Type): Type {
     case K.ObjectLiteralExpression: return objLit(c, e as ts.ObjectLiteralExpression, want);
     case K.ArrayLiteralExpression: return arrLit(c, e as ts.ArrayLiteralExpression, want);
     case K.ArrowFunction: case K.FunctionExpression: {
-      const w = want && unref(want);
+      const w = want && unref(nonNull(want) ?? want);
       return checkArrow(c, e as ts.ArrowFunction, w?.k === "fn" ? w : undefined, false);
     }
     case K.AsExpression: case K.NonNullExpression:
@@ -186,8 +192,7 @@ function exprUnrecorded(c: Checker, e: ts.Expression, want?: Type): Type {
       return actual;
     }
     case K.PostfixUnaryExpression:
-      expr(c, (e as ts.PostfixUnaryExpression).operand);
-      return ERROR;
+      return incDec(c, e as ts.PostfixUnaryExpression);
   }
   return ERROR; // P1 rejects every other kind
 }
@@ -609,23 +614,6 @@ function lvalue(c: Checker, e0: ts.Expression): Type {
   return ERROR;
 }
 
-const isPlusBin = (n: Node | undefined): n is ts.BinaryExpression =>
-  n?.kind === K.BinaryExpression && (n as ts.BinaryExpression).operatorToken.kind === K.PlusToken;
-
-const parentIsPlus = (n: Node): boolean => {
-  let p = n.parent;
-  while (p?.kind === K.ParenthesizedExpression) p = p.parent;
-  return isPlusBin(p);
-};
-
-/** Tracks string-concatenation E2002 diagnostics across nested `+` chains within a single check. */
-const strConcatDiags = new WeakMap<Node, Diagnostic>();
-
-const getStrConcatDiag = (c: Checker, e: ts.Expression): Diagnostic | undefined => {
-  const d = strConcatDiags.get(assignTarget(e));
-  return d && c.prog.rep.out.includes(d) ? d : undefined;
-};
-
 // ---- operators (§3.1, Q008, Q017 - Q019)
 /** Types two operands; a literal side takes its type from the other side (Q014). */
 function operands(c: Checker, l: ts.Expression, r: ts.Expression, want: Type | undefined): [Type, Type] {
@@ -661,13 +649,37 @@ function arith(c: Checker, op: Node, kind: K, lt: Type, rt: Type): Type {
   if (isNum(lt) && isNum(rt)) {
     if (lt.name !== rt.name) { c.at("E2003", op, `cannot mix '${lt.name}' and '${rt.name}'`, { left: lt.name, right: rt.name }); return ERROR; }
     if (kind === K.SlashToken && isInt(lt)) { c.at("E2007", op, "integer '/' is not allowed; use divTrunc", { type: lt.name }); return ERROR; }
-    if (kind === K.PercentToken && isInt(lt)) { c.at("E2002", op, "integer '%' is not allowed; use 'rem(a, b)'", { kind: "int-rem", type: lt.name }); return ERROR; }
     if (kind === K.AsteriskAsteriskToken && isInt(lt)) { c.at("E2002", op, "integer '**' is not allowed; convert to f64 or use Math.pow", { kind: "int-pow", type: lt.name }); return ERROR; }
     if (kind === K.AsteriskAsteriskToken && !c.callAllowed("managed")) c.at("E4001", op, "'**' is managed-only", { callerLayer: c.fx.layer, calleeLayer: "managed" }); // Q180: pow is not exact (§10.1)
     return lt;
   }
   c.at("E2002", op, `operator cannot be applied to '${show(lt)}' and '${show(rt)}'`, { left: show(lt), right: show(rt) });
   return ERROR;
+}
+
+function bitOp(c: Checker, op: Node, kind: K, lt: Type, rt: Type): Type {
+  if (isErr(lt) || isErr(rt)) return ERROR;
+  if (isNum(lt) && isNum(rt) && lt.name !== rt.name) {
+    c.at("E2003", op, `cannot mix '${lt.name}' and '${rt.name}'`, { left: lt.name, right: rt.name });
+    return ERROR;
+  }
+  const okTypes = kind === K.GreaterThanGreaterThanToken ? ["i32", "i64"] : kind === K.GreaterThanGreaterThanGreaterThanToken ? ["u32", "u64"] : ["i32", "u32", "i64", "u64"];
+  if (!isNum(lt) || !isNum(rt) || !okTypes.includes(lt.name)) {
+    c.at("E2002", op, `bit operator cannot be applied to '${show(lt)}' and '${show(rt)}'`);
+    return ERROR;
+  }
+  return lt;
+}
+
+function incDec(c: Checker, u: ts.PrefixUnaryExpression | ts.PostfixUnaryExpression): Type {
+  const op = u.operator === K.PlusPlusToken ? "++" : "--";
+  const lt = lvalue(c, u.operand);
+  if (isErr(lt)) return ERROR;
+  if (!isNum(lt)) {
+    c.at("E2002", u, `'${op}' cannot be applied to '${show(lt)}'`, { op, actual: show(lt) });
+    return ERROR;
+  }
+  return lt;
 }
 
 function attachIntOpFix(c: Checker, b: ts.BinaryExpression, op: Node, code: string, fnName: string, compound: boolean): void {
@@ -703,9 +715,24 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
   if (base !== undefined) {
     const lt = lvalue(c, b.left);
     const rt = expr(c, b.right, isNum(lt) ? lt : undefined);
+    if (BIT_OPS.has(base)) {
+      const r = bitOp(c, op, base, lt, rt);
+      numFix(c, op, b.left, b.right, lt, rt);
+      return r;
+    }
+    if (k === K.PlusEqualsToken && isStr(lt) && isStr(rt)) {
+      if (lt.k !== "prim" || lt.name !== "string") {
+        c.at("E2002", op, `operator cannot be applied to '${show(lt)}' and '${show(rt)}'`, { left: show(lt), right: show(rt) });
+        return ERROR;
+      }
+      if (!c.callAllowed("managed")) {
+        c.at("E4001", op, "string concatenation is managed-only", { callerLayer: c.fx.layer, calleeLayer: "managed" });
+        return ERROR;
+      }
+      return STR;
+    }
     const r = arith(c, op, base, lt, rt);
     if (k === K.SlashEqualsToken) attachIntOpFix(c, b, op, "E2007", "divTrunc", true);
-    else if (k === K.PercentEqualsToken) attachIntOpFix(c, b, op, "E2002", "rem", true);
     numFix(c, op, b.left, b.right, lt, rt);
     return r;
   }
@@ -750,53 +777,20 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
     case K.AmpersandToken: case K.BarToken: case K.CaretToken:
     case K.LessThanLessThanToken: case K.GreaterThanGreaterThanToken: case K.GreaterThanGreaterThanGreaterThanToken: {
       const [lt, rt] = operands(c, b.left, b.right, want);
-      if (isErr(lt) || isErr(rt)) return ERROR;
-      if (isNum(lt) && isNum(rt) && lt.name !== rt.name) { c.at("E2003", op, `cannot mix '${lt.name}' and '${rt.name}'`, { left: lt.name, right: rt.name }); return ERROR; }
-      const okTypes = k === K.GreaterThanGreaterThanToken ? ["i32", "i64"] : k === K.GreaterThanGreaterThanGreaterThanToken ? ["u32", "u64"] : ["i32", "u32", "i64", "u64"];
-      if (!isNum(lt) || !isNum(rt) || !okTypes.includes(lt.name)) { c.at("E2002", op, `bit operator cannot be applied to '${show(lt)}' and '${show(rt)}'`); return ERROR; }
-      return lt;
+      return bitOp(c, op, k, lt, rt);
     }
   }
   if (ARITH.has(k)) {
     const [lt, rt] = operands(c, b.left, b.right, want);
-    const lDiag = k === K.PlusToken ? getStrConcatDiag(c, b.left) : undefined;
-    const rDiag = k === K.PlusToken ? getStrConcatDiag(c, b.right) : undefined;
-    if (k === K.PlusToken && (isStr(lt) || lDiag) && (isStr(rt) || rDiag)) { // Q019
-      let d = lDiag ?? rDiag;
-      if (!d) {
-        c.at("E2002", op, "use a template literal to concatenate strings", { kind: "string-concat" });
-        d = c.prog.rep.out.at(-1);
+    if (k === K.PlusToken && isStr(lt) && isStr(rt)) {
+      if (!c.callAllowed("managed")) {
+        c.at("E4001", op, "string concatenation is managed-only", { callerLayer: c.fx.layer, calleeLayer: "managed" });
+        return ERROR;
       }
-      if (d?.code === "E2002") strConcatDiags.set(b, d);
-      if (!parentIsPlus(b) && d?.code === "E2002") {
-        const leaves: ts.Expression[] = [];
-        const simpleLeaf = (s: ts.Expression): boolean =>
-          s.kind === K.Identifier || s.kind === K.StringLiteral || s.kind === K.NoSubstitutionTemplateLiteral ||
-          s.kind === K.PropertyAccessExpression || s.kind === K.CallExpression;
-        const collect = (e: ts.Expression): boolean => {
-          const u = assignTarget(e);
-          if (isPlusBin(u)) return collect(u.left) && collect(u.right);
-          const t = exprTypes.get(e) ?? exprTypes.get(u);
-          if (!simpleLeaf(u) || !t || !isStr(t)) return false;
-          leaves.push(u);
-          return true;
-        };
-        if (collect(b)) {
-          const sf = c.fx.mod.sf;
-          const part = (u: ts.Expression): string => {
-            if (u.kind === K.StringLiteral || u.kind === K.NoSubstitutionTemplateLiteral) {
-              return (u as ts.StringLiteral).text.replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$\{/g, "\\${").replace(/\r/g, "\\r").replace(/\n/g, "\\n");
-            }
-            return `\${${u.getText(sf)}}`;
-          };
-          d.fixes = [{ title: "use a template literal", edits: [{ range: { start: c.fx.mod.pf.position(b.getStart(sf)), end: c.fx.mod.pf.position(b.end) }, newText: `\`${leaves.map(part).join("")}\`` }] }];
-        }
-      }
-      return ERROR;
+      return STR;
     }
     const r = arith(c, op, k, lt, rt);
     if (k === K.SlashToken) attachIntOpFix(c, b, op, "E2007", "divTrunc", false);
-    else if (k === K.PercentToken) attachIntOpFix(c, b, op, "E2002", "rem", false);
     numFix(c, op, b.left, b.right, lt, rt);
     return r;
   }
@@ -830,6 +824,7 @@ function equality(c: Checker, op: Node, lt: Type, rt: Type): void {
 }
 
 function prefix(c: Checker, u: ts.PrefixUnaryExpression, want: Type | undefined): Type {
+  if (u.operator === K.PlusPlusToken || u.operator === K.MinusMinusToken) return incDec(c, u);
   if (u.operator === K.MinusToken && isLitOnly(u.operand)) { // negative literal (Q015): anchor at '-'
     if (u.operand.kind === K.NumericLiteral) return numLit(c, u, u.operand as ts.NumericLiteral, true, want);
     const t = expr(c, u.operand, numCtx(want) ?? F64);
@@ -960,15 +955,20 @@ function arrLit(c: Checker, e: ts.ArrayLiteralExpression, want: Type | undefined
   return bad ? ERROR : gen("Array", elem);
 }
 
-/** Arrow functions and function expressions (Q022: parameters annotated, return inferred when not annotated). */
-function checkArrow(c: Checker, e: ts.ArrowFunction | ts.FunctionExpression, want: FnType | undefined, inferRet: boolean): FnType {
+/** Arrow functions and function expressions (parameter types inferred from contextual fn type when present, else E2006; return inferred when not annotated). */
+function checkArrow(c: Checker, e: ts.ArrowFunction | ts.FunctionExpression, want: FnType | undefined, inferRet: boolean, openIds?: Set<number>): FnType {
   if (c.fx.layer !== "managed" && !ensuresArgs.has(e)) c.at("E4003", e, `a function expression cannot be written in ${c.fx.layer} code`); // §2, Q012
   const tps = tparamShells(e.typeParameters, "managed", true);
   const outerTps = c.fx.tparams;
   c.fx.tparams = new Map([...outerTps, ...tps.map((p) => [p.name, p] as const)]);
   e.typeParameters?.forEach((d, i) => { if (d.constraint) c.prog.resolveConstraint(d.constraint, tps[i]!, { mod: c.mod, tparams: c.fx.tparams }); });
-  const params = e.parameters.map((p) => {
-    if (!p.type) { c.at("E2006", p.name, "parameter needs a type annotation"); return ERROR; }
+  const params = e.parameters.map((p, i) => {
+    if (!p.type) {
+      const wt = want && !want.tparams.length ? want.params[i] : undefined;
+      if (wt && !isErr(wt) && !(openIds && hasTParam(wt, openIds))) return wt;
+      c.at("E2006", p.name, "parameter needs a type annotation");
+      return ERROR;
+    }
     c.walkTypePos(p.type, "sig", { unsafe: c.fx.unsafe, cdecl: false });
     return c.typeOf(p.type);
   });
@@ -1391,10 +1391,28 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
     if (!open(p)) { checkTo(c, a, unref(subst(p, m)), true); done[i] = true; }
     else if (!isFnExpr(a) && !ctxSensitive(a)) { const t = expr(c, a); unify(unref(p), t, m, ids); later[i] = t; }
   });
+  const needsArrowParamBind = (): boolean => args.some((a, i) => {
+    if (done[i] || later[i] || !isFnExpr(a)) return false;
+    if (!a.parameters.some((p) => !p.type)) return false;
+    const sp = unref(subst(sig.params[i]!, m));
+    if (sp.k !== "fn") return false;
+    return a.parameters.some((p, pi) => !p.type && !!sp.params[pi] && hasTParam(sp.params[pi]!, ids));
+  });
+  if (needsArrowParamBind()) {
+    if (want && sig.tparams.some((p) => !m.has(p.id))) unify(sig.ret, want, m, ids);
+    if (needsArrowParamBind()) {
+      args.forEach((a, i) => {
+        if (done[i] || later[i] || isFnExpr(a)) return;
+        const p = sig.params[i]!;
+        if (!open(p)) { checkTo(c, a, unref(subst(p, m)), true); done[i] = true; }
+        else { const t = expr(c, a); unify(unref(p), t.k === "lit" ? STR : t, m, ids); later[i] = t; }
+      });
+    }
+  }
   args.forEach((a, i) => { // 2: function expressions
     if (done[i] || later[i] || !isFnExpr(a)) return;
     const p = unref(subst(sig.params[i]!, m));
-    const t = checkArrow(c, a, p.k === "fn" ? p : undefined, p.k === "fn" && hasTParam(p.ret, ids));
+    const t = checkArrow(c, a, p.k === "fn" ? p : undefined, p.k === "fn" && hasTParam(p.ret, ids), ids);
     unify(unref(sig.params[i]!), t, m, ids);
     later[i] = t;
   });
@@ -1648,7 +1666,7 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
       if (args[0]!.kind !== K.StringLiteral && args[0]!.kind !== K.NoSubstitutionTemplateLiteral) c.at("E2002", args[0]!, "test name must be a string literal");
       const f = args[1]!;
       if (!isFnExpr(f) || f.parameters.length !== 1) { c.at("E2002", f, "test body must be '(t: Test) => { ... }'"); return VOID; }
-      const t = checkArrow(c, f, undefined, true);
+      const t = checkArrow(c, f, fn([opaque("Test")], VOID), true);
       if (!isErr(t.params[0]!) && !same(t.params[0]!, opaque("Test"))) c.at("E2002", f.parameters[0]!.type ?? f, "test body takes 't: Test'");
       return VOID;
     }

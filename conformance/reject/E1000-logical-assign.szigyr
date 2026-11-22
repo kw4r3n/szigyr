@@ -1,0 +1,6 @@
+// expect: E1000 @ 4:5
+// stage: 1
+function f(x: boolean): boolean {
+  x ||= true;
+  return x;
+}

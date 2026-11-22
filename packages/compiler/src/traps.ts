@@ -11,7 +11,10 @@ export interface TrapSite { code: string; line: number; col: number }
 const INT_CONV = new Set(["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "usize"]);
 const CALL_TRAPS: Record<string, string[]> = { divTrunc: ["T001", "T007"], rem: ["T007"], panic: ["T006"], requires: ["T004"], ensures: ["T005"], invariant: ["T010"] };
 const INT_OPS = new Set<K>([K.PlusToken, K.MinusToken, K.AsteriskToken, K.PlusEqualsToken, K.MinusEqualsToken, K.AsteriskEqualsToken]);
-const SHIFTS = new Set<K>([K.LessThanLessThanToken, K.GreaterThanGreaterThanToken, K.GreaterThanGreaterThanGreaterThanToken]);
+const SHIFTS = new Set<K>([
+  K.LessThanLessThanToken, K.GreaterThanGreaterThanToken, K.GreaterThanGreaterThanGreaterThanToken,
+  K.LessThanLessThanEqualsToken, K.GreaterThanGreaterThanEqualsToken, K.GreaterThanGreaterThanGreaterThanEqualsToken,
+]);
 const int = (n: Node): boolean => { const t: Type | undefined = exprTypes.get(n); return !!t && isInt(t); };
 
 /** For each rt function declared in `pf` (after a successful check), its trap sites in source order. */
@@ -64,8 +67,12 @@ export function trapSites(pf: ParsedFile): Record<string, TrapSite[]> {
       } else if (n.kind === K.BinaryExpression) {
         const b = n as ts.BinaryExpression, k = b.operatorToken.kind;
         if (INT_OPS.has(k) && int(b)) add("T001", b.operatorToken); // the operation's own type: assignment targets have none recorded
+        if ((k === K.PercentToken || k === K.PercentEqualsToken) && int(b)) add("T007", b.operatorToken);
         if (SHIFTS.has(k)) add("T009", b.operatorToken);
       } else if (n.kind === K.PrefixUnaryExpression && (n as ts.PrefixUnaryExpression).operator === K.MinusToken && int(n) && (n as ts.PrefixUnaryExpression).operand.kind !== K.NumericLiteral) {
+        add("T001", n);
+      } else if ((n.kind === K.PrefixUnaryExpression || n.kind === K.PostfixUnaryExpression) &&
+        ((n as ts.PrefixUnaryExpression | ts.PostfixUnaryExpression).operator === K.PlusPlusToken || (n as ts.PrefixUnaryExpression | ts.PostfixUnaryExpression).operator === K.MinusMinusToken) && int(n)) {
         add("T001", n);
       } else if (n.kind === K.ElementAccessExpression) {
         add("T002", (n as ts.ElementAccessExpression).argumentExpression);

@@ -86,6 +86,19 @@ const ARITH_ASSIGN: Partial<Record<K, "+" | "-" | "*">> = {
   [K.MinusEqualsToken]: "-",
   [K.AsteriskEqualsToken]: "*",
 };
+const BIT_ASSIGN = new Set<K>([
+  K.AmpersandEqualsToken, K.BarEqualsToken, K.CaretEqualsToken,
+  K.LessThanLessThanEqualsToken, K.GreaterThanGreaterThanEqualsToken, K.GreaterThanGreaterThanGreaterThanEqualsToken,
+]);
+const SHIFT_ASSIGN = new Set<K>([
+  K.LessThanLessThanEqualsToken, K.GreaterThanGreaterThanEqualsToken, K.GreaterThanGreaterThanGreaterThanEqualsToken,
+]);
+const truncDivSmt = (l: string, r: string, signed: boolean): string =>
+  signed
+    ? `(ite (>= ${l} 0) (ite (> ${r} 0) (div ${l} ${r}) (- (div ${l} (- ${r})))) (ite (> ${r} 0) (- (div (- ${l}) ${r})) (div (- ${l}) (- ${r}))))`
+    : `(div ${l} ${r})`;
+const truncRemSmt = (l: string, r: string, signed: boolean): string =>
+  `(- ${l} (* ${r} ${truncDivSmt(l, r, signed)}))`;
 
 const displayPath = (p: string): string => relative(process.cwd(), p) || p;
 const smtInt = (v: bigint): string => (v < 0n ? `(- ${-v})` : `${v}`);
@@ -469,6 +482,14 @@ class FnProver {
         case K.AsteriskToken:
           if (trackNonLinear && l.constVal === undefined && r.constVal === undefined) this.nonLinear = true;
           return { smt: `(* ${l.smt} ${r.smt})`, exact, ...(l.constVal !== undefined && r.constVal !== undefined ? { constVal: l.constVal * r.constVal } : {}) };
+        case K.PercentToken:
+          if (r.constVal === undefined && trackNonLinear) this.nonLinear = true;
+          if (r.constVal !== undefined && r.constVal !== 0n) {
+            const smt = truncRemSmt(l.smt, r.smt, isSignedInt(t));
+            const constVal = l.constVal !== undefined ? l.constVal % r.constVal : undefined;
+            return { smt, exact, ...(constVal !== undefined ? { constVal } : {}) };
+          }
+          break;
       }
     }
 
@@ -481,10 +502,7 @@ class FnProver {
         if (r.constVal === undefined && trackNonLinear) this.nonLinear = true;
         if (r.constVal !== undefined && r.constVal !== 0n) {
           const signed = isSignedInt(t);
-          const q = signed
-            ? `(ite (>= ${l.smt} 0) (ite (> ${r.smt} 0) (div ${l.smt} ${r.smt}) (- (div ${l.smt} (- ${r.smt})))) (ite (> ${r.smt} 0) (- (div (- ${l.smt}) ${r.smt})) (div (- ${l.smt}) (- ${r.smt}))))`
-            : `(div ${l.smt} ${r.smt})`;
-          const smt = name === "divTrunc" ? q : `(- ${l.smt} (* ${r.smt} ${q}))`;
+          const smt = name === "divTrunc" ? truncDivSmt(l.smt, r.smt, signed) : truncRemSmt(l.smt, r.smt, signed);
           return { smt, exact: l.exact && r.exact };
         }
       }
@@ -690,8 +708,13 @@ class FnProver {
       return { smt: this.freshForType(t, id.text), exact: false };
     }
 
+    if (e.kind === K.PostfixUnaryExpression) {
+      return this.checkIncDec(e as ts.PostfixUnaryExpression, st);
+    }
+
     if (e.kind === K.PrefixUnaryExpression) {
       const u = e as ts.PrefixUnaryExpression;
+      if (u.operator === K.PlusPlusToken || u.operator === K.MinusMinusToken) return this.checkIncDec(u, st);
       if (u.operator === K.MinusToken && u.operand.kind === K.NumericLiteral) {
         const lit = intLitValue(e, mod.sf);
         if (lit !== undefined) return { smt: smtInt(lit), exact: true, constVal: lit };
@@ -822,11 +845,43 @@ class FnProver {
     if (k === K.EqualsToken) return this.checkAssign(b, undefined, st);
     const comp = ARITH_ASSIGN[k];
     if (comp) return this.checkAssign(b, comp, st);
-    if (k === K.SlashEqualsToken || k === K.PercentEqualsToken) {
-      await this.checkExpr(b.left, st);
-      await this.checkExpr(b.right, st);
-      this.havocTarget(b.left, st);
-      return { smt: this.freshForType(t, "fcomp"), exact: false };
+    if (k === K.SlashEqualsToken || k === K.PercentEqualsToken || BIT_ASSIGN.has(k)) {
+      const left = this.assignTargetNode(b.left);
+      const lt = this.typeOf(left);
+      if (left.kind === K.ElementAccessExpression) {
+        const a = left as ts.ElementAccessExpression;
+        const arrVal = await this.checkExpr(a.expression, st);
+        const lenTerm = this.isLenCall(a.expression) ? arrVal : this.containerLen(a.expression, st);
+        const idx = await this.checkExpr(a.argumentExpression, st);
+        this.addObligation("T002", "index in bounds [0, length)", a.argumentExpression, mod, st, `(and (>= ${idx.smt} 0) (< ${idx.smt} ${lenTerm.smt}))`, idx.exact && lenTerm.exact);
+        st.assumptions.push(`(and (>= ${idx.smt} 0) (< ${idx.smt} ${lenTerm.smt}))`);
+        const rhs = await this.checkExpr(b.right, st);
+        if (k === K.PercentEqualsToken && isInt(lt)) {
+          const cur: TermVal = { smt: this.freshForType(lt, "cur"), exact: false };
+          return this.checkedIntRem(lt as Extract<Type, { k: "num" }>, cur, rhs, b.operatorToken, st, "%=");
+        }
+        if (SHIFT_ASSIGN.has(k)) {
+          const bits = isInt(lt) && INT_BOUNDS[(lt as Extract<Type, { k: "num" }>).name]![3] === 64 ? 64n : 32n;
+          this.addObligation("T009", `shift count in [0, ${bits - 1n}]`, b.operatorToken, mod, st, `(and (>= ${rhs.smt} 0) (< ${rhs.smt} ${smtInt(bits)}))`, rhs.exact);
+        }
+        return { smt: this.freshForType(t, "comp"), exact: false };
+      }
+      if (k === K.PercentEqualsToken && isInt(lt)) {
+        const cur = await this.checkExpr(left, st);
+        const rhs = await this.checkExpr(b.right, st);
+        const val = this.checkedIntRem(lt as Extract<Type, { k: "num" }>, cur, rhs, b.operatorToken, st, "%=");
+        this.writePlace(left, val, st);
+        return val;
+      }
+      await this.checkExpr(left, st);
+      const rhs = await this.checkExpr(b.right, st);
+      if (SHIFT_ASSIGN.has(k)) {
+        const bits = isInt(lt) && INT_BOUNDS[(lt as Extract<Type, { k: "num" }>).name]![3] === 64 ? 64n : 32n;
+        this.addObligation("T009", `shift count in [0, ${bits - 1n}]`, b.operatorToken, mod, st, `(and (>= ${rhs.smt} 0) (< ${rhs.smt} ${smtInt(bits)}))`, rhs.exact);
+      }
+      const val = { smt: this.freshForType(t, BIT_ASSIGN.has(k) ? "bitcomp" : "fcomp"), exact: false };
+      this.writePlace(left, val, st);
+      return val;
     }
 
     if (k === K.AmpersandAmpersandToken) {
@@ -896,8 +951,47 @@ class FnProver {
       const op = k === K.PlusToken ? "+" : k === K.MinusToken ? "-" : "*";
       return this.checkedIntArith(t as Extract<Type, { k: "num" }>, op, l, r, b.operatorToken, st);
     }
+    if (isInt(t) && k === K.PercentToken) {
+      return this.checkedIntRem(t as Extract<Type, { k: "num" }>, l, r, b.operatorToken, st, "%");
+    }
 
     return { smt: this.freshForType(t, "bin"), exact: false };
+  }
+
+  private async checkIncDec(u: ts.PrefixUnaryExpression | ts.PostfixUnaryExpression, st: State): Promise<TermVal> {
+    const op = u.operator === K.PlusPlusToken ? "+" : "-";
+    const left = this.assignTargetNode(u.operand);
+    const lt = this.typeOf(left);
+    const one: TermVal = { smt: "1", exact: true, constVal: 1n };
+    if (left.kind === K.ElementAccessExpression) {
+      const a = left as ts.ElementAccessExpression;
+      const arrVal = await this.checkExpr(a.expression, st);
+      const lenTerm = this.isLenCall(a.expression) ? arrVal : this.containerLen(a.expression, st);
+      const idx = await this.checkExpr(a.argumentExpression, st);
+      this.addObligation("T002", "index in bounds [0, length)", a.argumentExpression, this.f.mod, st, `(and (>= ${idx.smt} 0) (< ${idx.smt} ${lenTerm.smt}))`, idx.exact && lenTerm.exact);
+      st.assumptions.push(`(and (>= ${idx.smt} 0) (< ${idx.smt} ${lenTerm.smt}))`);
+      if (isInt(lt)) {
+        const cur: TermVal = { smt: this.freshForType(lt, "cur"), exact: false };
+        return this.checkedIntArith(lt as Extract<Type, { k: "num" }>, op, cur, one, u, st);
+      }
+      return { smt: this.freshForType(lt, "incdec"), exact: false };
+    }
+    const cur = await this.checkExpr(left, st);
+    const val = isInt(lt)
+      ? this.checkedIntArith(lt as Extract<Type, { k: "num" }>, op, cur, one, u, st)
+      : { smt: this.freshForType(lt, "incdec"), exact: false };
+    this.writePlace(left, val, st);
+    return val;
+  }
+
+  private checkedIntRem(t: Extract<Type, { k: "num" }>, l: TermVal, r: TermVal, anchor: Node, st: State, label = "%"): TermVal {
+    if (r.constVal === undefined) this.nonLinear = true;
+    const nonZero = `(not (= ${r.smt} 0))`;
+    this.addObligation("T007", `${label} divisor != 0`, anchor, this.f.mod, st, nonZero, r.exact);
+    st.assumptions.push(nonZero);
+    const smt = truncRemSmt(l.smt, r.smt, isSignedInt(t));
+    const constVal = l.constVal !== undefined && r.constVal !== undefined && r.constVal !== 0n ? l.constVal % r.constVal : undefined;
+    return { smt, exact: l.exact && r.exact, ...(constVal !== undefined ? { constVal } : {}) };
   }
 
   private checkedIntArith(t: Extract<Type, { k: "num" }>, op: "+" | "-" | "*", l: TermVal, r: TermVal, anchor: Node, st: State): TermVal {
@@ -1327,28 +1421,25 @@ class FnProver {
       if ((name === "divTrunc" || name === "rem") && c.arguments.length === 2) {
         const l = await this.checkExpr(c.arguments[0]!, st);
         const r = await this.checkExpr(c.arguments[1]!, st);
+        if (name === "rem") return this.checkedIntRem(retT as Extract<Type, { k: "num" }>, l, r, callee, st, "rem");
         if (r.constVal === undefined) this.nonLinear = true;
         const signed = isSignedInt(retT);
         const [lo] = INT_BOUNDS[(retT as Extract<Type, { k: "num" }>).name]!;
         const nonZero = `(not (= ${r.smt} 0))`;
         this.addObligation("T007", `${name} divisor != 0`, callee, mod, st, nonZero, r.exact);
-        if (name === "divTrunc" && signed) {
+        if (signed) {
           const noMinDiv = `(not (and (= ${l.smt} ${smtInt(lo)}) (= ${r.smt} (- 1))))`;
           this.addObligation("T001", `${name} signed MIN / -1 check`, callee, mod, st, noMinDiv, l.exact && r.exact);
           st.assumptions.push(nonZero, noMinDiv);
         } else {
-          if (name === "divTrunc") this.unsignedDivAnchors.add(callee);
+          this.unsignedDivAnchors.add(callee);
           st.assumptions.push(nonZero);
         }
         const exact = l.exact && r.exact;
-        const q = signed
-          ? `(ite (>= ${l.smt} 0) (ite (> ${r.smt} 0) (div ${l.smt} ${r.smt}) (- (div ${l.smt} (- ${r.smt})))) (ite (> ${r.smt} 0) (- (div (- ${l.smt}) ${r.smt})) (div (- ${l.smt}) (- ${r.smt}))))`
-          : `(div ${l.smt} ${r.smt})`;
-        const smt = name === "divTrunc" ? q : `(- ${l.smt} (* ${r.smt} ${q}))`;
+        const smt = truncDivSmt(l.smt, r.smt, signed);
         let constVal: bigint | undefined;
         if (l.constVal !== undefined && r.constVal !== undefined && r.constVal !== 0n && !(signed && l.constVal === lo && r.constVal === -1n)) {
-          const qv = l.constVal / r.constVal;
-          constVal = name === "divTrunc" ? qv : l.constVal - qv * r.constVal;
+          constVal = l.constVal / r.constVal;
         }
         return { smt, exact, ...(constVal !== undefined ? { constVal } : {}) };
       }
@@ -1503,8 +1594,20 @@ class FnProver {
       if (n.kind === K.BinaryExpression) {
         const b = n as ts.BinaryExpression;
         const k = b.operatorToken.kind;
-        if (k === K.EqualsToken || ARITH_ASSIGN[k] || k === K.SlashEqualsToken || k === K.PercentEqualsToken) {
+        if (k === K.EqualsToken || ARITH_ASSIGN[k] || k === K.SlashEqualsToken || k === K.PercentEqualsToken || BIT_ASSIGN.has(k)) {
           const lt = strip(b.left);
+          if (isId(lt)) {
+            const sym = localOf.get(lt);
+            if (sym) markSym(sym);
+          } else if (lt.kind === K.PropertyAccessExpression) {
+            const fk = this.fieldKeyOf(lt as ts.PropertyAccessExpression);
+            if (fk) out.add(fk);
+          }
+        }
+      } else if (n.kind === K.PrefixUnaryExpression || n.kind === K.PostfixUnaryExpression) {
+        const u = n as ts.PrefixUnaryExpression | ts.PostfixUnaryExpression;
+        if (u.operator === K.PlusPlusToken || u.operator === K.MinusMinusToken) {
+          const lt = strip(u.operand);
           if (isId(lt)) {
             const sym = localOf.get(lt);
             if (sym) markSym(sym);
@@ -1594,25 +1697,33 @@ class FnProver {
   ): Promise<string[]> {
     const cond = fs.condition ? strip(fs.condition) : undefined;
     const incr = fs.incrementor ? strip(fs.incrementor) : undefined;
-    if (!cond || !incr || incr.kind !== K.BinaryExpression) return [];
-    const ib = incr as ts.BinaryExpression;
-    if (!isId(strip(ib.left)) || localOf.get(strip(ib.left) as ts.Identifier)?.id !== initSym.id) return [];
+    if (!cond || !incr) return [];
 
     // Ensure loop variable is never written inside loop body or condition
     const bodyMods = this.collectModSet(fs.statement);
     if (bodyMods.has(`sym:${initSym.id}`)) return [];
 
     let step: bigint | undefined;
-    const ik = ib.operatorToken.kind;
-    if (ik === K.PlusEqualsToken || ik === K.MinusEqualsToken) {
-      const k = intLitValue(ib.right, this.f.mod.sf);
-      if (k !== undefined && k > 0n) step = ik === K.PlusEqualsToken ? k : -k;
-    } else if (ik === K.EqualsToken && strip(ib.right).kind === K.BinaryExpression) {
-      const rb = strip(ib.right) as ts.BinaryExpression;
-      const rk = rb.operatorToken.kind;
-      if (isId(strip(rb.left)) && localOf.get(strip(rb.left) as ts.Identifier)?.id === initSym.id && (rk === K.PlusToken || rk === K.MinusToken)) {
-        const k = intLitValue(rb.right, this.f.mod.sf);
-        if (k !== undefined && k > 0n) step = rk === K.PlusToken ? k : -k;
+    if (incr.kind === K.BinaryExpression) {
+      const ib = incr as ts.BinaryExpression;
+      if (!isId(strip(ib.left)) || localOf.get(strip(ib.left) as ts.Identifier)?.id !== initSym.id) return [];
+      const ik = ib.operatorToken.kind;
+      if (ik === K.PlusEqualsToken || ik === K.MinusEqualsToken) {
+        const k = intLitValue(ib.right, this.f.mod.sf);
+        if (k !== undefined && k > 0n) step = ik === K.PlusEqualsToken ? k : -k;
+      } else if (ik === K.EqualsToken && strip(ib.right).kind === K.BinaryExpression) {
+        const rb = strip(ib.right) as ts.BinaryExpression;
+        const rk = rb.operatorToken.kind;
+        if (isId(strip(rb.left)) && localOf.get(strip(rb.left) as ts.Identifier)?.id === initSym.id && (rk === K.PlusToken || rk === K.MinusToken)) {
+          const k = intLitValue(rb.right, this.f.mod.sf);
+          if (k !== undefined && k > 0n) step = rk === K.PlusToken ? k : -k;
+        }
+      }
+    } else if (incr.kind === K.PrefixUnaryExpression || incr.kind === K.PostfixUnaryExpression) {
+      const iu = incr as ts.PrefixUnaryExpression | ts.PostfixUnaryExpression;
+      if ((iu.operator === K.PlusPlusToken || iu.operator === K.MinusMinusToken) &&
+        isId(strip(iu.operand)) && localOf.get(strip(iu.operand) as ts.Identifier)?.id === initSym.id) {
+        step = iu.operator === K.PlusPlusToken ? 1n : -1n;
       }
     }
     if (step === undefined || cond.kind !== K.BinaryExpression) return [];
@@ -2198,7 +2309,7 @@ function indexAnchors(f: FnSym): Map<string, Node> {
   const walk = (n: Node): void => {
     if (n.kind === K.ElementAccessExpression) add((n as ts.ElementAccessExpression).argumentExpression);
     else if (n.kind === K.BinaryExpression) add((n as ts.BinaryExpression).operatorToken);
-    else if (n.kind === K.PrefixUnaryExpression) add(n);
+    else if (n.kind === K.PrefixUnaryExpression || n.kind === K.PostfixUnaryExpression) add(n);
     else if (n.kind === K.PropertyAccessExpression) add((n as ts.PropertyAccessExpression).name);
     else if (n.kind === K.CallExpression) {
       const c = n as ts.CallExpression;

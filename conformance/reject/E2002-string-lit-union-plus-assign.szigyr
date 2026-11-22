@@ -1,0 +1,8 @@
+// expect: E2002 @ 6:5
+// stage: 1
+type Tag = "a" | "b";
+function f(): Tag {
+  let t: Tag = "a";
+  t += "b";
+  return t;
+}

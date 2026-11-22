@@ -926,6 +926,7 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
         case K.NullKeyword: return "((sz_null){ false })";
         case K.Identifier: return this.ident(e as ts.Identifier);
         case K.PrefixUnaryExpression: return this.prefix(e as ts.PrefixUnaryExpression);
+        case K.PostfixUnaryExpression: return this.incDec(e as ts.PostfixUnaryExpression);
         case K.BinaryExpression: return this.binary(e as ts.BinaryExpression);
         case K.PropertyAccessExpression: return this.prop(e as ts.PropertyAccessExpression);
         case K.ElementAccessExpression: {
@@ -1008,6 +1009,7 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
     }
 
     prefix(u: ts.PrefixUnaryExpression): string {
+      if (u.operator === K.PlusPlusToken || u.operator === K.MinusMinusToken) return this.incDec(u);
       const t = this.typeOf(u);
       if (u.operator === K.MinusToken && u.operand.kind === K.NumericLiteral) return this.lit(u.operand as ts.NumericLiteral, true, t);
       const v = this.ex(u.operand);
@@ -1039,6 +1041,14 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
             if (t.name === "i64") return `SZ_MULI64(${l}, ${r}, ${this.pos(anchor)})`;
             if (t.name === "u64") return `SZ_MULU64(${l}, ${r}, ${this.pos(anchor)})`;
             return `SZ_AOP(mul, ${c}, ${l}, ${r}, ${this.pos(anchor)})`;
+          case "%":
+            if (this.isProved(anchor)) {
+              if (t.name.startsWith("i")) {
+                return `({ ${c} a_ = (${l}), b_ = (${r}); b_ == (${c})-1 ? (${c})0 : (${c})(a_ % b_); })`;
+              }
+              return `(${c})((${l}) % (${r}))`;
+            }
+            return `SZ_REM(${c}, ${l}, ${r}, ${this.pos(anchor)})`;
           case "&": case "|": case "^": return `(${c})(${l} ${o} ${r})`;
           case "<<": {
             const amt64 = this.isProved(anchor) ? `(uint32_t)(${r})` : `sz_amt64((uint64_t)${r}, ${this.pos(anchor)})`;
@@ -1077,7 +1087,11 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
         return r;
       }
       if (k === K.EqualsToken) return this.assign(b, undefined);
-      const COMP: Partial<Record<K, string>> = { [K.PlusEqualsToken]: "+", [K.MinusEqualsToken]: "-", [K.AsteriskEqualsToken]: "*", [K.SlashEqualsToken]: "/", [K.PercentEqualsToken]: "%" };
+      const COMP: Partial<Record<K, string>> = {
+        [K.PlusEqualsToken]: "+", [K.MinusEqualsToken]: "-", [K.AsteriskEqualsToken]: "*", [K.SlashEqualsToken]: "/", [K.PercentEqualsToken]: "%",
+        [K.AmpersandEqualsToken]: "&", [K.BarEqualsToken]: "|", [K.CaretEqualsToken]: "^",
+        [K.LessThanLessThanEqualsToken]: "<<", [K.GreaterThanGreaterThanEqualsToken]: ">>", [K.GreaterThanGreaterThanGreaterThanEqualsToken]: ">>>",
+      };
       if (COMP[k]) return this.assign(b, COMP[k]);
       if (k === K.EqualsEqualsEqualsToken || k === K.ExclamationEqualsEqualsToken) {
         const lt = this.typeOf(b.left), rt = this.typeOf(b.right);
@@ -1113,22 +1127,49 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
       return this.t(t, this.arith(t, o, l, r, b.operatorToken), b);
     }
 
-    /** `x = e` / `x op= e` (D103 order). The value of the expression is the stored value. */
-    assign(b: ts.BinaryExpression, op: string | undefined): string {
-      const left = assignTarget(b.left); // Q133
+    compoundOp(left: ts.Expression, op: string, evalRhs: (t: Type) => string, opAnchor: Node, resultAnchor: Node): string {
       if (left.kind === K.ElementAccessExpression) {
         const a = left as ts.ElementAccessExpression;
         const { data, len, et } = this.seq(a.expression);
         const i = this.ex(a.argumentExpression);
         const el = elem(et, this.where);
-        if (op) {
-          if (!this.isProved(a.argumentExpression)) this.emit(`sz_chk(${i}, ${len}, ${this.pos(a.argumentExpression)});`);
-          const cur = this.t(et, el.ld(data, i), a);
-          const r = this.ex(b.right);
-          const nv = this.t(et, this.arith(et, op, cur, r, b.operatorToken), b);
-          this.emit(el.st(data, i, nv));
-          return nv;
-        }
+        if (!this.isProved(a.argumentExpression)) this.emit(`sz_chk(${i}, ${len}, ${this.pos(a.argumentExpression)});`);
+        const cur = this.t(et, el.ld(data, i), a);
+        const r = evalRhs(et);
+        const nv = this.t(et, this.arith(et, op, cur, r, opAnchor), resultAnchor);
+        this.emit(el.st(data, i, nv));
+        return nv;
+      }
+      const p = this.place(left);
+      const lt = this.typeOf(left);
+      let cur: string;
+      if (lt.k === "num" && lt.name === "usize" && left.kind === K.PropertyAccessExpression && this.typeOf((left as ts.PropertyAccessExpression).expression).k === "cstruct") {
+        const sv = `t${this.tmp++}`;
+        this.emit(`size_t ${sv} = ${p}; if (${sv} > 4294967295ULL) sz_trap(3, ${this.pos((left as ts.PropertyAccessExpression).name)});`);
+        cur = this.t(lt, `(uint32_t)${sv}`, left);
+      } else cur = this.t(lt, p, left);
+      const r = evalRhs(lt);
+      const nv = this.t(lt, this.arith(lt, op, cur, r, opAnchor), resultAnchor);
+      this.emit(`${p} = ${nv};`);
+      return nv;
+    }
+
+    incDec(u: ts.PrefixUnaryExpression | ts.PostfixUnaryExpression): string {
+      const op = u.operator === K.PlusPlusToken ? "+" : "-";
+      const oneLit = (t: Type): string =>
+        t.k === "num" && isInt(t) ? (t.name === "u64" ? "((uint64_t)1ULL)" : `((${CNUM[t.name]})1LL)`) : t.k === "num" && t.name === "f32" ? "((float)1.0)" : "1.0";
+      return this.compoundOp(assignTarget(u.operand), op, oneLit, u, u);
+    }
+
+    /** `x = e` / `x op= e` (D103 order). The value of the expression is the stored value. */
+    assign(b: ts.BinaryExpression, op: string | undefined): string {
+      const left = assignTarget(b.left); // Q133
+      if (op) return this.compoundOp(left, op, () => this.ex(b.right), b.operatorToken, b);
+      if (left.kind === K.ElementAccessExpression) {
+        const a = left as ts.ElementAccessExpression;
+        const { data, len, et } = this.seq(a.expression);
+        const i = this.ex(a.argumentExpression);
+        const el = elem(et, this.where);
         const r = this.t(et, this.conv(this.ex(b.right), this.typeOf(b.right), et), b);
         if (!this.isProved(a.argumentExpression)) this.emit(`sz_chk(${i}, ${len}, ${this.pos(a.argumentExpression)});`);
         this.emit(el.st(data, i, r));
@@ -1136,18 +1177,6 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
       }
       const p = this.place(left);
       const lt = this.typeOf(left);
-      if (op) {
-        let cur: string;
-        if (lt.k === "num" && lt.name === "usize" && left.kind === K.PropertyAccessExpression && this.typeOf((left as ts.PropertyAccessExpression).expression).k === "cstruct") {
-          const sv = `t${this.tmp++}`;
-          this.emit(`size_t ${sv} = ${p}; if (${sv} > 4294967295ULL) sz_trap(3, ${this.pos((left as ts.PropertyAccessExpression).name)});`);
-          cur = this.t(lt, `(uint32_t)${sv}`, left);
-        } else cur = this.t(lt, p, left);
-        const r = this.ex(b.right);
-        const nv = this.t(lt, this.arith(lt, op, cur, r, b.operatorToken), b);
-        this.emit(`${p} = ${nv};`);
-        return nv;
-      }
       const decl = left.kind === K.Identifier ? this.lookup((left as ts.Identifier).text)?.t : undefined;
       const v = this.conv(this.ex(b.right), this.typeOf(b.right), decl ?? lt);
       this.emit(`${p} = ${v};`);

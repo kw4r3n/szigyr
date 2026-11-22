@@ -1,0 +1,182 @@
+// expect-output: 58|abcx!_ok|11:2.5:2:99:8:5:8:3:6:6|0:-1:1:-1:0:5:5:2:true:2147483648:1073741824:-4:-2147483648:-3:9:1073741829|0:0:0:-1:2:4:4:1073741827:-4:-3:10:6:35
+// stage: 2
+class MBox {
+  n: i32;
+  constructor(n: i32) { this.n = n; }
+}
+
+function wrapApply<T, U>(v: T, f: (x: T) => U): U {
+  return f(v);
+}
+
+type NBox = Struct<{ n: i32; u: u32; b64: u64 }>;
+type NOut = {
+  readonly a: i8;
+  readonly b: i32;
+  readonly c: i64;
+  readonly d: i32;
+  readonly e: i32;
+  readonly f: i32;
+  readonly g: usize;
+  readonly h: u32;
+  readonly i: i32;
+  readonly j: i64;
+  readonly k: u64;
+  readonly l: i32;
+  readonly m: i32;
+};
+
+function rtCheck(x: i32): i32 {
+  "use rt";
+  requires(x >= 0 && x < 100);
+  ensures((r) => r >= 0);
+  let a: i32 = x;
+  a++;
+  ++a;
+  a--;
+  return a;
+}
+
+function rtLoopSum(v: Ref<Vec<i32>>): i32 {
+  "use rt";
+  let acc: i32 = 0;
+  for (let i: usize = 0; i < v.length; i++) {
+    acc += v[i];
+  }
+  return acc;
+}
+
+function strictDriver(alloc: Alloc): NOut {
+  "use owned";
+  const a = i8(-128) % i8(-1);
+  const b = i32(-2147483648) % i32(-1);
+  const c = i64(-9223372036854775808) % i64(-1);
+  const d: i32 = -7 % 3;
+  let e: i32 = 17;
+  e %= 5;
+  const box: NBox = { n: 10, u: 0x80000000, b64: 1 };
+  box.n++;
+  box.n %= 7;
+  box.u >>>= 1;
+  box.u |= 3;
+  box.b64 <<= 63;
+  box.b64 >>>= 60;
+  box.b64 |= 2;
+  let s: i32 = -8;
+  s >>= 1;
+  let j: i64 = -16;
+  j >>= 2;
+  j ^= 1;
+  let g: usize = 0;
+  for (let i: usize = 0; i < 4; i++) {
+    g++;
+  }
+  const v = Vec.create<i32>(alloc, 3);
+  v.push(10);
+  v.push(21);
+  v.push(30);
+  v[0]++;
+  --v[1];
+  v[1] |= 2;
+  v[2] %= 7;
+  const l = rtCheck(5);
+  const m = rtLoopSum(v);
+  return { a, b, c, d, e, f: box.n, g, h: box.u, i: s, j, k: box.b64, l, m };
+}
+
+export function main(sys: System): void {
+  const arr: i32[] = [1, 2, 3];
+  const mapped = arr.map((x, idx) => x + i32(idx));
+  const filtered = mapped.filter(x => x > 1);
+  const sumRed: i32 = filtered.reduce((acc, x) => acc + x, 0);
+  const sumLit = [1, 2, 3].reduce((acc, x) => acc + x, 0);
+  const fnTyped: (a: i32, b: i32) => i32 = (a, b) => a + b;
+  const fnNull: ((x: i32) => i32) | null = (x) => x * 2;
+  const fnSat = ((x) => x + 1) satisfies (x: i32) => i32;
+  const w = wrapApply(i32(5), x => x * 3);
+  let feSum: i32 = 0;
+  mapped.forEach((x, idx) => { feSum += x + i32(idx); });
+  const mp = new Map<string, i32>();
+  mp.set("k", 2);
+  let mpVal: i32 = 0;
+  mp.forEach((v, k) => { if (k === "k") mpVal += v; });
+  const st = new Set<string>();
+  st.add("z");
+  let stCount: usize = 0;
+  st.forEach(k => { if (k === "z") stCount++; });
+  arr.sort((a, b) => f64(b - a));
+  const p1 = sumRed + i32(sumLit) + fnTyped(1, 2) + (fnNull !== null ? fnNull(2) : 0) + fnSat(3) + w + feSum + mpVal + i32(stCount) + arr[0];
+
+  let str: string = "a" + "b";
+  str += "c";
+  const tag: "x" | "y" = "x";
+  str += tag;
+  const rec: { s: string } = { s: str };
+  rec.s += "!";
+  const sArr: string[] = [rec.s];
+  sArr[0] += "_ok";
+
+  let mCnt: i32 = 10;
+  mCnt++;
+  mCnt++;
+  --mCnt;
+  let fInc: f64 = 1.5;
+  fInc++;
+  let f32Inc: f32 = 1.0;
+  ++f32Inc;
+  let i64Inc: i64 = 100;
+  i64Inc--;
+  let u64Inc: u64 = 7;
+  ++u64Inc;
+  const nums: i32[] = [4, 9];
+  nums[0]++;
+  --nums[1];
+  const box = new MBox(2);
+  box.n++;
+  let forSum: i32 = 0;
+  for (let i: i32 = 0; i < 4; i++) { forSum += i; }
+  let downSum: i32 = 0;
+  for (let i: i32 = 3; i > 0; --i) { downSum += i; }
+  const p3 = `${mCnt}:${fInc}:${f32Inc}:${i64Inc}:${u64Inc}:${nums[0]}:${nums[1]}:${box.n}:${forSum}:${downSum}`;
+
+  const r8: i8 = i8(-128) % i8(-1);
+  const rn1: i32 = -7 % 3;
+  const rn2: i32 = 7 % -3;
+  const rn3: i32 = -7 % -3;
+  let r64: i64 = -9223372036854775808;
+  r64 %= -1;
+  let rem64: i64 = 29;
+  rem64 %= 6;
+  let ru64: u64 = 29;
+  ru64 %= 6;
+  let ru: usize = 17;
+  ru %= 5;
+  const negZeroCheck = i32(-6) % i32(3);
+  const nzOk = (1.0 / f64(negZeroCheck)) === Number.POSITIVE_INFINITY;
+  let uHi: u32 = 1;
+  uHi <<= 31;
+  let uSh: u32 = uHi;
+  uSh >>>= 1;
+  uSh |= 3;
+  uSh &= 0xfffffffd;
+  uSh ^= 1;
+  let sSh: i32 = -8;
+  sSh >>= 1;
+  let sShL: i32 = 1;
+  sShL <<= 31;
+  let b64: i64 = -16;
+  b64 >>= 2;
+  b64 ^= 1;
+  let bu64: u64 = 1;
+  bu64 <<= 63;
+  bu64 >>>= 60;
+  bu64 |= 1;
+  const ua: u32[] = [0x80000000];
+  ua[0] >>>= 1;
+  ua[0] |= 5;
+  const p4 = `${r8}:${rn1}:${rn2}:${rn3}:${r64}:${rem64}:${ru64}:${ru}:${nzOk}:${uHi}:${uSh}:${sSh}:${sShL}:${b64}:${bu64}:${ua[0]}`;
+
+  const nr = strictDriver(sys.alloc);
+  const p5 = `${nr.a}:${nr.b}:${nr.c}:${nr.d}:${nr.e}:${nr.f}:${nr.g}:${nr.h}:${nr.i}:${nr.j}:${nr.k}:${nr.l}:${nr.m}`;
+  sys.log.info(`${p1}|${sArr[0]}|${p3}|${p4}|${p5}`);
+}

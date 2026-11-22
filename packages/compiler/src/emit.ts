@@ -31,6 +31,8 @@ const DROP_MODS = new Set<K>([K.ExportKeyword, K.ReadonlyKeyword, K.PrivateKeywo
 const COMPOUND: Partial<Record<K, string>> = {
   [K.PlusEqualsToken]: "+", [K.MinusEqualsToken]: "-", [K.AsteriskEqualsToken]: "*",
   [K.SlashEqualsToken]: "/", [K.PercentEqualsToken]: "%", [K.AsteriskAsteriskEqualsToken]: "**",
+  [K.AmpersandEqualsToken]: "&", [K.BarEqualsToken]: "|", [K.CaretEqualsToken]: "^",
+  [K.LessThanLessThanEqualsToken]: "<<", [K.GreaterThanGreaterThanEqualsToken]: ">>", [K.GreaterThanGreaterThanGreaterThanEqualsToken]: ">>>",
 };
 /** §12 members that can throw a JS exception (Q035): parse errors, out-of-range code points, string / array / Map / Set size limits. */
 const THROWING: Record<string, readonly string[]> = {
@@ -326,6 +328,7 @@ export function emitFile(
       case K.AwaitExpression: // §15.4 (2), D145: a recorded foreign trap (a C thread's or an isolate's) surfaces before the next task, on both backends
         return `${RT}.task(await ${gen((n as ts.AwaitExpression).expression)})`;
       case K.PrefixUnaryExpression: return prefix(n as ts.PrefixUnaryExpression);
+      case K.PostfixUnaryExpression: return incDec(n as ts.PostfixUnaryExpression);
       case K.BinaryExpression: return binary(n as ts.BinaryExpression);
       case K.ElementAccessExpression: {
         const e = n as ts.ElementAccessExpression;
@@ -432,7 +435,9 @@ export function emitFile(
     }
     const orig = splice(s);
     if (!canMutate()) return orig;
-    const deletable = u.kind === K.CallExpression || (u.kind === K.BinaryExpression &&
+    const isIncDec = (u.kind === K.PrefixUnaryExpression || u.kind === K.PostfixUnaryExpression) &&
+      ((u as ts.PrefixUnaryExpression | ts.PostfixUnaryExpression).operator === K.PlusPlusToken || (u as ts.PrefixUnaryExpression | ts.PostfixUnaryExpression).operator === K.MinusMinusToken);
+    const deletable = u.kind === K.CallExpression || isIncDec || (u.kind === K.BinaryExpression &&
       ((u as ts.BinaryExpression).operatorToken.kind === K.EqualsToken || COMPOUND[(u as ts.BinaryExpression).operatorToken.kind] !== undefined));
     if (!deletable) return orig;
     const et = typeOf(u);
@@ -457,7 +462,29 @@ export function emitFile(
     return awaited ? `(await ${AP}(async ${f}, ${recv}))` : `${AP}(${f}, ${recv})`;
   }
 
+  function incDec(u: ts.PrefixUnaryExpression | ts.PostfixUnaryExpression): string {
+    const t = numName(u);
+    const base = u.operator === K.PlusPlusToken ? "+" : "-";
+    const one = t && isInt64(t as NumName) ? "1n" : "1";
+    const left = assignTarget(u.operand);
+    const anchor = at(u);
+    if (left.kind === K.ElementAccessExpression) {
+      needAp = true;
+      const e = left as ts.ElementAccessExpression, ip = at(e.argumentExpression);
+      return `${AP}((${O}, ${KEY}) => { const ${V} = ${op(t, base, `${RT}.at(${O}, ${KEY}, ${ip})`, one, anchor)}; ${RT}.setAt(${O}, ${KEY}, ${V}, ${ip}); return ${V}; }, ${gen(e.expression)}, ${gen(e.argumentExpression)})`;
+    }
+    if (t === "f64") return splice(u);
+    if (left.kind === K.PropertyAccessExpression) {
+      needAp = true;
+      const p = left as ts.PropertyAccessExpression, f = p.name.text;
+      return `${AP}((${O}) => ${O}.${f} = ${op(t, base, `${O}.${f}`, one, anchor)}, ${gen(p.expression)})`;
+    }
+    const l = gen(left);
+    return `${l} = ${op(t, base, l, one, anchor)}`;
+  }
+
   function prefix(u: ts.PrefixUnaryExpression): string {
+    if (u.operator === K.PlusPlusToken || u.operator === K.MinusMinusToken) return incDec(u);
     const t = numName(u) as NumName | undefined;
     if (u.operator === K.MinusToken && u.operand.kind === K.NumericLiteral) { // negative literal (Q015); `-0` of an integer type is +0 (Q090)
       const rawText = u.getText(sf);
@@ -491,12 +518,13 @@ export function emitFile(
     return splice(u);
   }
 
-  /** `l op r` for a numeric type: range check (int + - *), rounding (f32), u32 normalization, shifts. */
+  /** `l op r` for a numeric type: range check (int + - *), rem (int %), rounding (f32), u32 normalization, shifts. */
   function op(t: string | undefined, o: string, l: string, r: string, anchor: string): string {
     if (t && INT_OP[o] && t !== "f32" && t !== "f64") {
       const b = INT32_BOUNDS[t as NumName];
       return b ? `${RT}.chk(${b[0]}, ${b[1]}, (${l}) ${o} (${r}), ${JSON.stringify(t)}, ${anchor})` : `${RT}.${INT_OP[o]}(${JSON.stringify(t)}, ${l}, ${r}, ${anchor})`;
     }
+    if (t && o === "%" && t !== "f32" && t !== "f64") return `${RT}.rem(${JSON.stringify(t)}, ${l}, ${r}, ${anchor})`;
     if (t === "f32" && ["+", "-", "*", "/", "%", "**"].includes(o)) return `${RT}.f32((${l}) ${o} (${r}))`;
     if (o === "<<") return `${RT}.shl(${JSON.stringify(t)}, ${l}, ${r}, ${anchor})`;
     if (o === ">>") return `${RT}.shr(${l}, ${r}, ${anchor})`;
@@ -517,9 +545,14 @@ export function emitFile(
     const base = COMPOUND[k];
     if (base !== undefined) {
       const t = numName(b);
-      const plain = !(t && (t === "f32" || (isInt(typeOf(b)!) && INT_OP[base])));
-      // Check `plain` before `gen(b.right)` so we never walk `b.right` twice (#1).
-      if (plain && left.kind !== K.ElementAccessExpression) return splice(b);
+      const isIntT = !!t && t !== "f32" && t !== "f64";
+      const needsOp = !!t && (
+        t === "f32" ||
+        (isIntT && (!!INT_OP[base] || base === "%" || base === "<<" || base === ">>" || base === ">>>")) ||
+        (t === "u32" && (base === "&" || base === "|" || base === "^"))
+      );
+      // Check `needsOp` before `gen(b.right)` so we never walk `b.right` twice (#1).
+      if (!needsOp && left.kind !== K.ElementAccessExpression) return splice(b);
       const rhs = gen(b.right);
       // Element / property targets evaluate the receiver (and index) once by passing them to an arrow; the right side runs inside it,
       // after the read, as in JS. With `await` on the right the arrow is async and awaited (§10.1 order unchanged).
