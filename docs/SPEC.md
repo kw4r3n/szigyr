@@ -158,7 +158,7 @@ Bad index: `T002`; `.create`/`.filled` OOM: `T006`. Process-unique Pool/Arena ID
 - **P4 (`E2009`)**: `check` runs `pkg-config`+`cc -std=gnu11` `_Static_assert`s on prototypes (no `()`), `const`s, `CStruct` layout; attaches `cc` stderr.
 - **Unsafe (`E4008` outside `"use unsafe"`)**: Safe code calls `"use unsafe"` `strict` fns whose sigs lack raw `Ptr`/`ConstPtr`/`CType`/`CStruct` (`CHandle<CStruct|CType>` OK). Inside `"use unsafe"`:
   1. `Ptr<T>`/`ConstPtr<T>` (`T` allows `void`; args/ret/locals/`Ptr*`/`cast<U>`; no `Struct`/`Vec`/union/`Ptr.box` `E4008`; null->`T015` except `isNull`/`cast`): `isNull():boolean`, `read():T`*(Copy/`CStruct`)*, `write(x:T):void`*(Copy/`CStruct`)*, `offset(n:usize):Ptr<T>`, `slice(n:usize)`*(arg/recv)*, `borrow()`*(arg/recv boxed `Owned`)*, `cast<U>():Ptr<U>`*(keeps `const`)*, `Ptr.null<T>():Ptr<T>`, `Ptr.sizeOf<T>():usize`*(C `sizeof` Copy/`CStruct`/`Ptr*`/`CType`; !`void`/fn; P4/C)*, `Ptr.box<T>(alloc,x):Ptr<T>`*(non-rt `E4004`, OOM `T006`)*, `unbox():T`*(non-rt `E4004`)*.
-  2. `CType<"X">` (`typedef` id; only in `Ptr`/`ConstPtr`/`CHandle`/`cast`).
+  2. `CType<"X">` (`typedef` id, or `"char"` for C `char *`/`const char *`; only in `Ptr`/`ConstPtr`/`CHandle`/`cast`).
   3. `CHandle.create<T>(p:Ptr<T>):CHandle<T>`, `h.get():Ptr<T>` (`T`: `CStruct`|`CType`).
   4. `cfn(f)`: module-level non-generic `"use rt"` (or `"use rt"; "use unsafe"`) fn (`E4001`/`E4003`/`E4007`) -> `Ptr<F>` trampoline.
 - **C-only (`E4009`)**: `c:`/unsafe needs `--backend=c`; JS/Wasm `run`/`test`/`build` emit `E4009` (`check`/`mutate` proceed).

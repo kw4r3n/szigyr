@@ -1254,9 +1254,9 @@ export class Checker {
   }
 }
 
-/** C keywords (§14.2): a `CType` name must be a C identifier that is none of these (nor `bool`). */
+/** C keywords (§14.2 / §9): `"char"` is allowed so `Ptr<CType<"char">>` / `ConstPtr<CType<"char">>` matches C `char *` / `const char *`. */
 const C_RESERVED = new Set([
-  "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else", "enum", "extern",
+  "auto", "break", "case", "const", "continue", "default", "do", "double", "else", "enum", "extern",
   "float", "for", "goto", "if", "inline", "int", "long", "register", "restrict", "return", "short", "signed",
   "sizeof", "static", "struct", "switch", "typedef", "union", "unsigned", "void", "volatile", "while",
   "_Alignas", "_Alignof", "_Atomic", "_Bool", "_Complex", "_Generic", "_Imaginary", "_Noreturn", "_Static_assert", "_Thread_local",

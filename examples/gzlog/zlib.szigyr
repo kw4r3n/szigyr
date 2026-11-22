@@ -1,0 +1,242 @@
+import { appendSlice, copySlice } from "./parse.szigyr";
+
+declare module "c:zlib:stdlib.h" {
+  function calloc(ffi: Ffi, nmemb: usize, size: usize): Ptr<void>;
+  function free(ffi: Ffi, p: Ptr<void>): void;
+}
+
+declare module "c:zlib:zlib.h" {
+  const Z_OK: i32;
+  const Z_STREAM_END: i32;
+  const Z_NO_FLUSH: i32;
+  const Z_FINISH: i32;
+  const Z_DEFLATED: i32;
+  const Z_DEFAULT_COMPRESSION: i32;
+  const Z_DEFAULT_STRATEGY: i32;
+  const MAX_WBITS: i32;
+  type z_stream = CStruct<{
+    next_in: Ptr<u8>;
+    avail_in: u32;
+    total_in: u64;
+    next_out: Ptr<u8>;
+    avail_out: u32;
+    total_out: u64;
+  }>;
+  function zlibVersion(ffi: Ffi): ConstPtr<CType<"char">>;
+  function crc32(ffi: Ffi, crc: u64, buf: ConstPtr<u8>, len: u32): u64;
+  function inflateInit2_(
+    ffi: Ffi,
+    strm: Ptr<z_stream>,
+    windowBits: i32,
+    version: ConstPtr<CType<"char">>,
+    streamSize: i32,
+  ): i32;
+  function inflate(ffi: Ffi, strm: Ptr<z_stream>, flush: i32): i32;
+  function inflateReset(ffi: Ffi, strm: Ptr<z_stream>): i32;
+  function inflateEnd(ffi: Ffi, strm: Ptr<z_stream>): i32;
+  function deflateInit2_(
+    ffi: Ffi,
+    strm: Ptr<z_stream>,
+    level: i32,
+    method: i32,
+    windowBits: i32,
+    memLevel: i32,
+    strategy: i32,
+    version: ConstPtr<CType<"char">>,
+    streamSize: i32,
+  ): i32;
+  function deflate(ffi: Ffi, strm: Ptr<z_stream>, flush: i32): i32;
+  function deflateEnd(ffi: Ffi, strm: Ptr<z_stream>): i32;
+}
+
+import { calloc, free } from "c:zlib:stdlib.h";
+import {
+  MAX_WBITS,
+  Z_DEFAULT_COMPRESSION,
+  Z_DEFAULT_STRATEGY,
+  Z_DEFLATED,
+  Z_FINISH,
+  Z_NO_FLUSH,
+  Z_OK,
+  Z_STREAM_END,
+  crc32,
+  deflate,
+  deflateEnd,
+  deflateInit2_,
+  inflate,
+  inflateEnd,
+  inflateInit2_,
+  inflateReset,
+  z_stream,
+  zlibVersion,
+} from "c:zlib:zlib.h";
+
+export type ZlibError =
+  | "oom"
+  | "invalid-level"
+  | "invalid-stream"
+  | "too-large"
+  | "zlib-error";
+
+function freePtr(ffi: Ffi, p: Ptr<void>): void {
+  "use owned";
+  "use unsafe";
+  if (!p.isNull()) free(ffi, p);
+}
+
+function closeInflate(ffi: Ffi, s: Ptr<z_stream>): void {
+  "use owned";
+  "use unsafe";
+  if (!s.isNull()) {
+    inflateEnd(ffi, s);
+    free(ffi, s.cast<void>());
+  }
+}
+
+function closeDeflate(ffi: Ffi, s: Ptr<z_stream>): void {
+  "use owned";
+  "use unsafe";
+  if (!s.isNull()) {
+    deflateEnd(ffi, s);
+    free(ffi, s.cast<void>());
+  }
+}
+
+export function zlibCrc32(ffi: Ffi, src: Ref<Slice<u8>>): u32 {
+  "use owned";
+  "use unsafe";
+  let acc: u64 = crc32(ffi, 0, Ptr.null<u8>(), 0);
+  if (src.length === 0) return u32(acc & 0xffffffff);
+  const chunkCap: usize = 65536;
+  using buf = Resource.ownWith(calloc(ffi, 1, chunkCap), ffi, freePtr);
+  if (buf.get().isNull()) panic("zlibCrc32: out of memory");
+  const p = buf.get().cast<u8>();
+  let off: usize = 0;
+  while (off < src.length) {
+    const leftBytes = src.length - off;
+    const n: usize = leftBytes < chunkCap ? leftBytes : chunkCap;
+    copySlice(p.slice(n), src.slice(off, off + n));
+    acc = crc32(ffi, acc, p, u32(n));
+    off += n;
+  }
+  return u32(acc & 0xffffffff);
+}
+
+export function gzipDecompressInto(
+  ffi: Ffi,
+  src: Ref<Slice<u8>>,
+  dst: Mut<Vec<u8>>,
+  maxBytes: usize,
+): Result<usize, ZlibError> {
+  "use owned";
+  "use unsafe";
+  dst.clear();
+  if (src.length === 0) return err("invalid-stream");
+
+  const outCap: usize = 65536;
+  using inRes = Resource.ownWith(calloc(ffi, 1, src.length), ffi, freePtr);
+  using outRes = Resource.ownWith(calloc(ffi, 1, outCap), ffi, freePtr);
+  if (inRes.get().isNull() || outRes.get().isNull()) return err("oom");
+
+  const inPtr = inRes.get().cast<u8>();
+  const outPtr = outRes.get().cast<u8>();
+  copySlice(inPtr.slice(src.length), src);
+
+  using rawStrm = Resource.ownWith(calloc(ffi, 1, Ptr.sizeOf<z_stream>()), ffi, freePtr);
+  if (rawStrm.get().isNull()) return err("oom");
+
+  const initRc = inflateInit2_(
+    ffi,
+    rawStrm.get().cast<z_stream>(),
+    16 + MAX_WBITS,
+    zlibVersion(ffi),
+    i32(Ptr.sizeOf<z_stream>()),
+  );
+  if (initRc !== Z_OK) return err("zlib-error");
+
+  using strmRes = Resource.ownWith(rawStrm.take().cast<z_stream>(), ffi, closeInflate);
+  const strmPtr = strmRes.get();
+  strmPtr.write({ ...strmPtr.read(), next_in: inPtr, avail_in: u32(src.length) });
+
+  let total: usize = 0;
+  while (true) {
+    strmPtr.write({ ...strmPtr.read(), next_out: outPtr, avail_out: u32(outCap) });
+    const rc = inflate(ffi, strmPtr, Z_NO_FLUSH);
+    const st = strmPtr.read();
+    const got: usize = outCap - usize(st.avail_out);
+    if (got > maxBytes || total > maxBytes - got) return err("too-large");
+    if (got > 0) {
+      appendSlice(dst, outPtr.slice(got));
+      total += got;
+    }
+    if (rc === Z_STREAM_END) {
+      if (st.avail_in === 0) return ok(total);
+      if (inflateReset(ffi, strmPtr) !== Z_OK) return err("invalid-stream");
+      continue;
+    }
+    if (rc === Z_OK) {
+      if (got === 0 && st.avail_in === 0) return err("invalid-stream");
+      continue;
+    }
+    return err("invalid-stream");
+  }
+}
+
+export function gzipCompressInto(
+  ffi: Ffi,
+  src: Ref<Slice<u8>>,
+  dst: Mut<Vec<u8>>,
+  level: i32,
+): Result<usize, ZlibError> {
+  "use owned";
+  "use unsafe";
+  if (level !== Z_DEFAULT_COMPRESSION && (level < 1 || level > 9)) {
+    return err("invalid-level");
+  }
+  dst.clear();
+
+  const inCap: usize = src.length > 0 ? src.length : 1;
+  const outCap: usize = 65536;
+  using inRes = Resource.ownWith(calloc(ffi, 1, inCap), ffi, freePtr);
+  using outRes = Resource.ownWith(calloc(ffi, 1, outCap), ffi, freePtr);
+  if (inRes.get().isNull() || outRes.get().isNull()) return err("oom");
+
+  const inPtr = inRes.get().cast<u8>();
+  const outPtr = outRes.get().cast<u8>();
+  if (src.length > 0) copySlice(inPtr.slice(src.length), src);
+
+  using rawStrm = Resource.ownWith(calloc(ffi, 1, Ptr.sizeOf<z_stream>()), ffi, freePtr);
+  if (rawStrm.get().isNull()) return err("oom");
+
+  const initRc = deflateInit2_(
+    ffi,
+    rawStrm.get().cast<z_stream>(),
+    level,
+    Z_DEFLATED,
+    16 + MAX_WBITS,
+    8,
+    Z_DEFAULT_STRATEGY,
+    zlibVersion(ffi),
+    i32(Ptr.sizeOf<z_stream>()),
+  );
+  if (initRc !== Z_OK) return err("zlib-error");
+
+  using strmRes = Resource.ownWith(rawStrm.take().cast<z_stream>(), ffi, closeDeflate);
+  const strmPtr = strmRes.get();
+  strmPtr.write({ ...strmPtr.read(), next_in: inPtr, avail_in: u32(src.length) });
+
+  let total: usize = 0;
+  while (true) {
+    strmPtr.write({ ...strmPtr.read(), next_out: outPtr, avail_out: u32(outCap) });
+    const rc = deflate(ffi, strmPtr, Z_FINISH);
+    const st = strmPtr.read();
+    const got: usize = outCap - usize(st.avail_out);
+    if (got > 0) {
+      appendSlice(dst, outPtr.slice(got));
+      total += got;
+    }
+    if (rc === Z_STREAM_END) return ok(total);
+    if (rc === Z_OK && got > 0) continue;
+    return err("zlib-error");
+  }
+}

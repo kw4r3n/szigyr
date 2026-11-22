@@ -65,6 +65,8 @@ void cf_free(void *p);
 void cf_init_pairs(Pair *p, int32_t *cell);
 SizeBox *cf_big_size_box(void);
 int32_t cf_sum_pair(const Pair *p);
+const char *cf_tag(void);
+int32_t cf_tag_first(const char *s);
 #endif
 `);
 
@@ -92,6 +94,14 @@ SizeBox *cf_big_size_box(void) {
 
 int32_t cf_sum_pair(const Pair *p) {
   return p->first + p->second + p->hidden;
+}
+
+const char *cf_tag(void) {
+  return "Z";
+}
+
+int32_t cf_tag_first(const char *s) {
+  return (int32_t)(unsigned char)s[0];
 }
 `);
 
@@ -367,11 +377,41 @@ export function main(sys: System): void {
       ["function f(): usize { \"use owned\"; \"use unsafe\"; return Ptr.sizeOf<string>(); }", "E4007"],
       ["function f(): usize { \"use owned\"; \"use unsafe\"; return Ptr.sizeOf<Vec<i32>>(); }", "E4007"],
       ["declare module \"c:cffiv1:cffiv1.h\" { type Pair = CStruct<{ first: i32 }>; }\nimport { Pair } from \"c:cffiv1:cffiv1.h\";\nfunction f(): usize { \"use owned\"; \"use unsafe\"; return Ptr.sizeOf<CHandle<Pair>>(); }", "E4007"],
+      ["function f(): Ptr<CType<\"int\">> { \"use owned\"; \"use unsafe\"; return Ptr.null<CType<\"int\">>(); }", "E4007"],
     ];
     for (const [src, code] of cases) {
       const ds = check(writeMod(src));
       expect(ds.some((d) => d.code === code), `${src} -> ${JSON.stringify(ds)}`).toBe(true);
     }
+  });
+
+  it("supports Ptr<CType<\"char\">> / ConstPtr<CType<\"char\">> in P2, P4, and C execution", async () => {
+    const f = writeMod(`
+declare module "c:cffiv1:cffiv1.h" {
+  function cf_tag(ffi: Ffi): ConstPtr<CType<"char">>;
+  function cf_tag_first(ffi: Ffi, s: ConstPtr<CType<"char">>): i32;
+}
+import { cf_tag, cf_tag_first } from "c:cffiv1:cffiv1.h";
+
+type TagInfo = Struct<{ sz: usize; first: i32; byte0: u8 }>;
+function probeTag(ffi: Ffi): TagInfo {
+  "use owned";
+  "use unsafe";
+  const p = cf_tag(ffi);
+  const first = cf_tag_first(ffi, p);
+  const byte0 = p.cast<u8>().read();
+  const sz = Ptr.sizeOf<CType<"char">>();
+  return { sz, first, byte0 };
+}
+export function main(sys: System): void {
+  const r = probeTag(sys.ffi);
+  sys.log.info(\`\${r.sz} \${r.first} \${r.byte0}\`);
+}
+`);
+    expect(check(f)).toEqual([]);
+    const res = await run(f, { backend: "c" });
+    expect(res.diagnostics).toEqual([]);
+    expect(res.stdout).toBe("1 90 90\n");
   });
 
   it("supports queryFile and mutateFile alongside C const and CStruct declarations", async () => {

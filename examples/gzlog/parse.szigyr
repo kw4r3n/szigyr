@@ -1,0 +1,453 @@
+export const LEVEL_OTHER: u8 = 0;
+export const LEVEL_DEBUG: u8 = 1;
+export const LEVEL_INFO: u8 = 2;
+export const LEVEL_WARN: u8 = 3;
+export const LEVEL_ERROR: u8 = 4;
+export const LEVEL_ANY: u8 = 255;
+
+export type LogStats = Struct<{
+  readonly bytes: usize;
+  readonly lines: usize;
+  readonly errors: usize;
+  readonly warns: usize;
+  readonly infos: usize;
+  readonly debugs: usize;
+  readonly others: usize;
+  readonly maxLineBytes: usize;
+}>;
+
+export type LineSpan = Struct<{
+  readonly lineNo: usize;
+  readonly start: usize;
+  readonly end: usize;
+  readonly level: u8;
+}>;
+
+export function isGzipMagic(data: Ref<Slice<u8>>): boolean {
+  "use rt";
+  return data.length >= 2 && data[0] === 0x1f && data[1] === 0x8b;
+}
+
+export function copySlice(dst: Mut<Slice<u8>>, src: Ref<Slice<u8>>): void {
+  "use rt";
+  requires(dst.length >= src.length);
+  for (let i: usize = 0; i < src.length; i += 1) {
+    dst[i] = src[i];
+  }
+}
+
+export function appendSlice(dst: Mut<Vec<u8>>, src: Ref<Slice<u8>>): void {
+  "use owned";
+  for (let i: usize = 0; i < src.length; i += 1) {
+    dst.push(src[i]);
+  }
+}
+
+export function asciiUpper(b: u8): u8 {
+  "use rt";
+  if (b >= 97 && b <= 122) return b - 32;
+  return b;
+}
+
+function isAsciiWord(b: u8): boolean {
+  "use rt";
+  return (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b === 95;
+}
+
+function boundBefore(data: Ref<Slice<u8>>, start: usize, pos: usize): boolean {
+  "use rt";
+  requires(start <= pos && pos <= data.length);
+  return pos === start || !isAsciiWord(data[pos - 1]);
+}
+
+function boundAfter(data: Ref<Slice<u8>>, pos: usize, end: usize): boolean {
+  "use rt";
+  requires(pos <= end && end <= data.length);
+  return pos === end || !isAsciiWord(data[pos]);
+}
+
+function match3(data: Ref<Slice<u8>>, pos: usize, c0: u8, c1: u8, c2: u8): boolean {
+  "use rt";
+  requires(pos <= data.length && data.length - pos >= 3);
+  return (
+    asciiUpper(data[pos]) === c0 &&
+    asciiUpper(data[pos + 1]) === c1 &&
+    asciiUpper(data[pos + 2]) === c2
+  );
+}
+
+function match4(data: Ref<Slice<u8>>, pos: usize, c0: u8, c1: u8, c2: u8, c3: u8): boolean {
+  "use rt";
+  requires(pos <= data.length && data.length - pos >= 4);
+  return (
+    asciiUpper(data[pos]) === c0 &&
+    asciiUpper(data[pos + 1]) === c1 &&
+    asciiUpper(data[pos + 2]) === c2 &&
+    asciiUpper(data[pos + 3]) === c3
+  );
+}
+
+function match5(
+  data: Ref<Slice<u8>>,
+  pos: usize,
+  c0: u8,
+  c1: u8,
+  c2: u8,
+  c3: u8,
+  c4: u8,
+): boolean {
+  "use rt";
+  requires(pos <= data.length && data.length - pos >= 5);
+  return (
+    asciiUpper(data[pos]) === c0 &&
+    asciiUpper(data[pos + 1]) === c1 &&
+    asciiUpper(data[pos + 2]) === c2 &&
+    asciiUpper(data[pos + 3]) === c3 &&
+    asciiUpper(data[pos + 4]) === c4
+  );
+}
+
+export function classifyLine(data: Ref<Slice<u8>>, start: usize, end: usize): u8 {
+  "use rt";
+  requires(start <= end && end <= data.length);
+  ensures((r: u8) => r <= 4);
+  let i: usize = start;
+  while (end - i >= 4) {
+    invariant(start <= i && i <= end);
+    if (boundBefore(data, start, i)) {
+      if (end - i >= 5 && boundAfter(data, i + 5, end)) {
+        if (match5(data, i, 69, 82, 82, 79, 82) || match5(data, i, 70, 65, 84, 65, 76)) {
+          return LEVEL_ERROR;
+        }
+        if (match5(data, i, 68, 69, 66, 85, 71) || match5(data, i, 84, 82, 65, 67, 69)) {
+          return LEVEL_DEBUG;
+        }
+      }
+      if (end - i >= 7 && boundAfter(data, i + 7, end)) {
+        if (match4(data, i, 87, 65, 82, 78) && match3(data, i + 4, 73, 78, 71)) {
+          return LEVEL_WARN;
+        }
+      }
+      if (boundAfter(data, i + 4, end)) {
+        if (match4(data, i, 87, 65, 82, 78)) {
+          return LEVEL_WARN;
+        }
+        if (match4(data, i, 73, 78, 70, 79)) {
+          return LEVEL_INFO;
+        }
+      }
+    }
+    i += 1;
+  }
+  return LEVEL_OTHER;
+}
+
+export function scanLogBytes(data: Ref<Slice<u8>>): LogStats {
+  "use rt";
+  ensures((r: LogStats) =>
+    r.bytes === data.length &&
+    r.errors + r.warns + r.infos + r.debugs + r.others === r.lines &&
+    r.lines <= r.bytes &&
+    r.maxLineBytes <= r.bytes
+  );
+  const n = data.length;
+  let lineStart: usize = 0;
+  let lines: usize = 0;
+  let errors: usize = 0;
+  let warns: usize = 0;
+  let infos: usize = 0;
+  let debugs: usize = 0;
+  let others: usize = 0;
+  let maxLineBytes: usize = 0;
+  for (let i: usize = 0; i < n; i += 1) {
+    invariant(
+      lineStart <= i &&
+      lines <= lineStart &&
+      errors + warns + infos + debugs + others === lines &&
+      maxLineBytes <= i
+    );
+    if (data[i] === 10) {
+      const lineEnd: usize = i > lineStart && data[i - 1] === 13 ? i - 1 : i;
+      const lineLen: usize = lineEnd - lineStart;
+      const lvl = classifyLine(data, lineStart, lineEnd);
+      if (lvl === LEVEL_ERROR) errors += 1;
+      else if (lvl === LEVEL_WARN) warns += 1;
+      else if (lvl === LEVEL_INFO) infos += 1;
+      else if (lvl === LEVEL_DEBUG) debugs += 1;
+      else others += 1;
+      lines += 1;
+      if (lineLen > maxLineBytes) maxLineBytes = lineLen;
+      lineStart = i + 1;
+    }
+  }
+  if (lineStart < n) {
+    const lineLen: usize = n - lineStart;
+    const lvl = classifyLine(data, lineStart, n);
+    if (lvl === LEVEL_ERROR) errors += 1;
+    else if (lvl === LEVEL_WARN) warns += 1;
+    else if (lvl === LEVEL_INFO) infos += 1;
+    else if (lvl === LEVEL_DEBUG) debugs += 1;
+    else others += 1;
+    lines += 1;
+    if (lineLen > maxLineBytes) maxLineBytes = lineLen;
+  }
+  return {
+    bytes: n,
+    lines,
+    errors,
+    warns,
+    infos,
+    debugs,
+    others,
+    maxLineBytes,
+  };
+}
+
+export function indexLinesByLevel(
+  data: Ref<Slice<u8>>,
+  wantLevel: u8,
+  out: Mut<Vec<LineSpan>>,
+): usize {
+  "use owned";
+  ensures((r: usize) => r <= data.length);
+  out.clear();
+  const n = data.length;
+  let lineStart: usize = 0;
+  let lineNo: usize = 0;
+  for (let i: usize = 0; i < n; i += 1) {
+    invariant(lineStart <= i && lineNo <= lineStart);
+    if (data[i] === 10) {
+      const lineEnd: usize = i > lineStart && data[i - 1] === 13 ? i - 1 : i;
+      const lvl = classifyLine(data, lineStart, lineEnd);
+      lineNo += 1;
+      if (wantLevel === LEVEL_ANY || lvl === wantLevel) {
+        out.push({ lineNo, start: lineStart, end: lineEnd, level: lvl });
+      }
+      lineStart = i + 1;
+    }
+  }
+  if (lineStart < n) {
+    const lvl = classifyLine(data, lineStart, n);
+    lineNo += 1;
+    if (wantLevel === LEVEL_ANY || lvl === wantLevel) {
+      out.push({ lineNo, start: lineStart, end: n, level: lvl });
+    }
+  }
+  return lineNo;
+}
+
+function encodeAscii(alloc: Alloc, s: string): Vec<u8> {
+  const v = Vec.create<u8>(alloc, s.length);
+  String.encodeUtf8(s, v);
+  return v;
+}
+
+test("isGzipMagic, asciiUpper, copySlice, and appendSlice", (t: Test) => {
+  const alloc = TestAlloc.create();
+  const empty = Vec.create<u8>(alloc, 0);
+  t.eq(isGzipMagic(empty), false);
+
+  const one = Vec.filled<u8>(alloc, 1, 0x1f);
+  t.eq(isGzipMagic(one), false);
+
+  const two = Vec.create<u8>(alloc, 2);
+  two.push(0x1f);
+  two.push(0x8b);
+  t.eq(isGzipMagic(two), true);
+
+  const bad0 = Vec.create<u8>(alloc, 2);
+  bad0.push(0x1e);
+  bad0.push(0x8b);
+  t.eq(isGzipMagic(bad0), false);
+
+  const bad1 = Vec.create<u8>(alloc, 2);
+  bad1.push(0x1f);
+  bad1.push(0x8a);
+  t.eq(isGzipMagic(bad1), false);
+
+  t.eq(asciiUpper(96), u8(96));
+  t.eq(asciiUpper(97), u8(65));
+  t.eq(asciiUpper(122), u8(90));
+  t.eq(asciiUpper(123), u8(123));
+
+  const src = Vec.create<u8>(alloc, 3);
+  src.push(10);
+  src.push(20);
+  src.push(30);
+  const dstCopy = Vec.filled<u8>(alloc, 4, 99);
+  copySlice(dstCopy, src);
+  t.eq(dstCopy[0], u8(10));
+  t.eq(dstCopy[1], u8(20));
+  t.eq(dstCopy[2], u8(30));
+  t.eq(dstCopy[3], u8(99));
+
+  const dstAppend = Vec.filled<u8>(alloc, 1, 7);
+  appendSlice(dstAppend, src);
+  t.eq(dstAppend.length, usize(4));
+  t.eq(dstAppend[0], u8(7));
+  t.eq(dstAppend[1], u8(10));
+  t.eq(dstAppend[3], u8(30));
+});
+
+function checkClassify(t: Test, alloc: Alloc, text: string, expected: u8): void {
+  const buf = encodeAscii(alloc, text);
+  t.eq(classifyLine(buf, 0, buf.length), expected);
+}
+
+test("classifyLine detects levels with case-insensitivity and ASCII word boundaries", (t: Test) => {
+  const alloc = TestAlloc.create();
+  const cases: Array<{ readonly text: string; readonly expected: u8 }> = [
+    { text: "", expected: LEVEL_OTHER },
+    { text: "ERROR disk full", expected: LEVEL_ERROR },
+    { text: "[fatal] panic", expected: LEVEL_ERROR },
+    { text: "warn", expected: LEVEL_WARN },
+    { text: "Warning: retry", expected: LEVEL_WARN },
+    { text: "msg info: ok", expected: LEVEL_INFO },
+    { text: "debug/step", expected: LEVEL_DEBUG },
+    { text: "trace:0", expected: LEVEL_DEBUG },
+    { text: "0error", expected: LEVEL_OTHER },
+    { text: "9error", expected: LEVEL_OTHER },
+    { text: "Aerror", expected: LEVEL_OTHER },
+    { text: "Zerror", expected: LEVEL_OTHER },
+    { text: "aerror", expected: LEVEL_OTHER },
+    { text: "zerror", expected: LEVEL_OTHER },
+    { text: "_error", expected: LEVEL_OTHER },
+    { text: "/error", expected: LEVEL_ERROR },
+    { text: ":error", expected: LEVEL_ERROR },
+    { text: "@error", expected: LEVEL_ERROR },
+    { text: "[error]", expected: LEVEL_ERROR },
+    { text: "`error`", expected: LEVEL_ERROR },
+    { text: "{error}", expected: LEVEL_ERROR },
+    { text: "error0", expected: LEVEL_OTHER },
+    { text: "error9", expected: LEVEL_OTHER },
+    { text: "errorA", expected: LEVEL_OTHER },
+    { text: "errorZ", expected: LEVEL_OTHER },
+    { text: "errora", expected: LEVEL_OTHER },
+    { text: "errorz", expected: LEVEL_OTHER },
+    { text: "error_count", expected: LEVEL_OTHER },
+    { text: "warnX", expected: LEVEL_OTHER },
+    { text: "warx", expected: LEVEL_OTHER },
+    { text: "waxn", expected: LEVEL_OTHER },
+    { text: "wxrn", expected: LEVEL_OTHER },
+    { text: "xarn", expected: LEVEL_OTHER },
+    { text: "warning", expected: LEVEL_WARN },
+    { text: "warninG!", expected: LEVEL_WARN },
+    { text: "WARNIXG", expected: LEVEL_OTHER },
+    { text: "WARNXNG", expected: LEVEL_OTHER },
+    { text: "WARNINX", expected: LEVEL_OTHER },
+    { text: "warnings", expected: LEVEL_OTHER },
+    { text: "warns", expected: LEVEL_OTHER },
+    { text: "xrror", expected: LEVEL_OTHER },
+    { text: "exror", expected: LEVEL_OTHER },
+    { text: "erxor", expected: LEVEL_OTHER },
+    { text: "errxr", expected: LEVEL_OTHER },
+    { text: "errox", expected: LEVEL_OTHER },
+    { text: "infx", expected: LEVEL_OTHER },
+    { text: "inxo", expected: LEVEL_OTHER },
+    { text: "ixfo", expected: LEVEL_OTHER },
+    { text: "xnfo", expected: LEVEL_OTHER },
+  ];
+  for (const c of cases) {
+    checkClassify(t, alloc, c.text, c.expected);
+  }
+
+  // Test non-zero start/end subslice bounds
+  const sub = encodeAscii(alloc, "xx ERROR yy");
+  t.eq(classifyLine(sub, 3, 8), LEVEL_ERROR);
+  t.eq(classifyLine(sub, 4, 8), LEVEL_OTHER);
+});
+
+test("scanLogBytes and indexLinesByLevel handle LF, CRLF, empty lines, and trailing lines", (t: Test) => {
+  const alloc = TestAlloc.create();
+  const empty = Vec.create<u8>(alloc, 0);
+  const es = scanLogBytes(empty);
+  t.eq(es.bytes, usize(0));
+  t.eq(es.lines, usize(0));
+  t.eq(es.maxLineBytes, usize(0));
+
+  const spans = Vec.create<LineSpan>(alloc, 8);
+  spans.push({ lineNo: 99, start: 0, end: 1, level: LEVEL_ERROR });
+  t.eq(indexLinesByLevel(empty, LEVEL_ANY, spans), usize(0));
+  t.eq(spans.length, usize(0));
+
+  const logText =
+    "\n" +
+    "INFO boot\r\n" +
+    "WARNING retry-long-message\n" +
+    "debug x\r\n" +
+    "plain\n" +
+    "FATAL final line without newline";
+  const buf = encodeAscii(alloc, logText);
+  const st = scanLogBytes(buf);
+  t.eq(st.bytes, buf.length);
+  t.eq(st.lines, usize(6));
+  t.eq(st.errors, usize(1));
+  t.eq(st.warns, usize(1));
+  t.eq(st.infos, usize(1));
+  t.eq(st.debugs, usize(1));
+  t.eq(st.others, usize(2));
+  t.eq(st.maxLineBytes, usize(32));
+
+  // Also test when trailing line is shorter than earlier maxLineBytes and covers warn/info/debug
+  const shorterTrail = encodeAscii(alloc, "ERROR longest-line-here\r\nINFO ok\nok");
+  const st2 = scanLogBytes(shorterTrail);
+  t.eq(st2.lines, usize(3));
+  t.eq(st2.errors, usize(1));
+  t.eq(st2.infos, usize(1));
+  t.eq(st2.others, usize(1));
+  t.eq(st2.maxLineBytes, usize(23));
+
+  const warnBuf = encodeAscii(alloc, "warn");
+  const trailWarn = scanLogBytes(warnBuf);
+  t.eq(trailWarn.lines, usize(1));
+  t.eq(trailWarn.warns, usize(1));
+  const infoBuf = encodeAscii(alloc, "info");
+  const trailInfo = scanLogBytes(infoBuf);
+  t.eq(trailInfo.lines, usize(1));
+  t.eq(trailInfo.infos, usize(1));
+  const debugBuf = encodeAscii(alloc, "debug");
+  const trailDebug = scanLogBytes(debugBuf);
+  t.eq(trailDebug.lines, usize(1));
+  t.eq(trailDebug.debugs, usize(1));
+
+  // indexLinesByLevel filtering + all lines
+  t.eq(indexLinesByLevel(buf, LEVEL_ANY, spans), usize(6));
+  t.eq(spans.length, usize(6));
+  t.eq(spans[0].lineNo, usize(1));
+  t.eq(spans[0].level, LEVEL_OTHER);
+  t.eq(spans[1].lineNo, usize(2));
+  t.eq(spans[1].end - spans[1].start, usize(9));
+  t.eq(spans[5].lineNo, usize(6));
+  t.eq(spans[5].level, LEVEL_ERROR);
+
+  t.eq(indexLinesByLevel(buf, LEVEL_WARN, spans), usize(6));
+  t.eq(spans.length, usize(1));
+  t.eq(spans[0].lineNo, usize(3));
+  t.eq(spans[0].level, LEVEL_WARN);
+
+  t.eq(indexLinesByLevel(shorterTrail, LEVEL_ERROR, spans), usize(3));
+  t.eq(spans.length, usize(1));
+  t.eq(spans[0].lineNo, usize(1));
+  t.eq(spans[0].end - spans[0].start, usize(23));
+});
+
+test("forAll property holds for scanLogBytes and indexLinesByLevel", (_t: Test) => {
+  forAll((bytes: Array<u8>) => {
+    const alloc = TestAlloc.create();
+    const vec = Vec.create<u8>(alloc, bytes.length);
+    for (const b of bytes) vec.push(b);
+    const stats = scanLogBytes(vec);
+    const spans = Vec.create<LineSpan>(alloc, 8);
+    const lineCount = indexLinesByLevel(vec, LEVEL_ANY, spans);
+    const errSpans = Vec.create<LineSpan>(alloc, 4);
+    const errScanCount = indexLinesByLevel(vec, LEVEL_ERROR, errSpans);
+    if (stats.bytes !== bytes.length) return false;
+    if (stats.lines !== lineCount || errScanCount !== lineCount) return false;
+    if (spans.length !== stats.lines) return false;
+    if (errSpans.length !== stats.errors) return false;
+    if (stats.errors + stats.warns + stats.infos + stats.debugs + stats.others !== stats.lines) {
+      return false;
+    }
+    return stats.maxLineBytes <= stats.bytes;
+  });
+});

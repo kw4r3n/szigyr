@@ -1,0 +1,26 @@
+import { CodecError, GzipCodec, runGzlog } from "./core.szigyr";
+import { gzipCompressInto, gzipDecompressInto, zlibCrc32 } from "./zlib.szigyr";
+
+class ZlibCodec implements GzipCodec {
+  private readonly ffi: Ffi;
+
+  constructor(ffi: Ffi) {
+    this.ffi = ffi;
+  }
+
+  decompressInto(src: Ref<Slice<u8>>, dst: Mut<Vec<u8>>, maxBytes: usize): Result<usize, CodecError> {
+    return gzipDecompressInto(this.ffi, src, dst, maxBytes);
+  }
+
+  compressInto(src: Ref<Slice<u8>>, dst: Mut<Vec<u8>>, level: i32): Result<usize, CodecError> {
+    return gzipCompressInto(this.ffi, src, dst, level);
+  }
+
+  crc32(src: Ref<Slice<u8>>): u32 {
+    return zlibCrc32(this.ffi, src);
+  }
+}
+
+export function main(sys: System): void {
+  runGzlog(sys.fs, sys.alloc, sys.proc, sys.log, new ZlibCodec(sys.ffi));
+}

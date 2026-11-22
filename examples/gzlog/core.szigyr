@@ -1,0 +1,1009 @@
+import {
+  LEVEL_ANY,
+  LEVEL_DEBUG,
+  LEVEL_ERROR,
+  LEVEL_INFO,
+  LEVEL_OTHER,
+  LEVEL_WARN,
+  LineSpan,
+  appendSlice,
+  indexLinesByLevel,
+  isGzipMagic,
+  scanLogBytes,
+} from "./parse.szigyr";
+
+export type CodecError =
+  | "oom"
+  | "invalid-level"
+  | "invalid-stream"
+  | "too-large"
+  | "zlib-error";
+
+export interface GzipCodec {
+  decompressInto(src: Ref<Slice<u8>>, dst: Mut<Vec<u8>>, maxBytes: usize): Result<usize, CodecError>;
+  compressInto(src: Ref<Slice<u8>>, dst: Mut<Vec<u8>>, level: i32): Result<usize, CodecError>;
+  crc32(src: Ref<Slice<u8>>): u32;
+}
+
+export const DEFAULT_MAX_BYTES: usize = 67108864;
+export const DEFAULT_GREP_LIMIT: usize = 200;
+export const DEFAULT_LEVEL: i32 = 6;
+
+export type FileStatsReport = {
+  readonly path: string;
+  readonly gzipped: boolean;
+  readonly rawBytes: usize;
+  readonly bytes: usize;
+  readonly crc32: string;
+  readonly lines: usize;
+  readonly errors: usize;
+  readonly warns: usize;
+  readonly infos: usize;
+  readonly debugs: usize;
+  readonly others: usize;
+  readonly maxLineBytes: usize;
+};
+
+export type StatsOutput = {
+  readonly fileCount: usize;
+  readonly totalRawBytes: usize;
+  readonly totalBytes: usize;
+  readonly totalLines: usize;
+  readonly errors: usize;
+  readonly warns: usize;
+  readonly infos: usize;
+  readonly debugs: usize;
+  readonly others: usize;
+  readonly files: Array<FileStatsReport>;
+};
+
+export type GrepMatch = {
+  readonly path: string;
+  readonly lineNo: usize;
+  readonly level: string;
+  readonly text: string;
+};
+
+export type GrepOutput = {
+  readonly pattern: string;
+  readonly filesScanned: usize;
+  readonly matchCount: usize;
+  readonly truncated: boolean;
+  readonly matches: Array<GrepMatch>;
+};
+
+export type PackOutput = {
+  readonly src: string;
+  readonly dst: string;
+  readonly level: i32;
+  readonly rawBytes: usize;
+  readonly gzipBytes: usize;
+  readonly crc32: string;
+};
+
+export type UnpackOutput = {
+  readonly src: string;
+  readonly dst: string;
+  readonly gzipBytes: usize;
+  readonly rawBytes: usize;
+  readonly crc32: string;
+};
+
+export type CliAction =
+  | { readonly kind: "help" }
+  | { readonly kind: "stats"; readonly target: string; readonly maxBytes: usize; readonly json: boolean }
+  | {
+      readonly kind: "grep";
+      readonly pattern: string;
+      readonly target: string;
+      readonly level: u8;
+      readonly ignoreCase: boolean;
+      readonly limit: usize;
+      readonly maxBytes: usize;
+      readonly json: boolean;
+    }
+  | { readonly kind: "pack"; readonly src: string; readonly dst: string; readonly level: i32; readonly json: boolean }
+  | { readonly kind: "unpack"; readonly src: string; readonly dst: string; readonly maxBytes: usize; readonly json: boolean }
+  | { readonly kind: "error"; readonly message: string };
+
+type LoadedPayload = {
+  readonly gzipped: boolean;
+  readonly rawBytes: usize;
+  readonly crc32: string;
+};
+
+export function formatHex32(v: u32): string {
+  const hex = "0123456789abcdef";
+  let out = "";
+  for (let k: u32 = 0; k < 8; k += 1) {
+    const nib = usize((v >>> ((7 - k) * 4)) & 0x0f);
+    out += hex.slice(nib, nib + 1);
+  }
+  return out;
+}
+
+export function levelName(code: u8): string {
+  if (code === LEVEL_ERROR) return "ERROR";
+  if (code === LEVEL_WARN) return "WARN";
+  if (code === LEVEL_INFO) return "INFO";
+  if (code === LEVEL_DEBUG) return "DEBUG";
+  return "OTHER";
+}
+
+export function parseLevelFilter(raw: string): u8 | null {
+  const low = raw.toLowerCase();
+  if (low === "error" || low === "fatal") return LEVEL_ERROR;
+  if (low === "warn" || low === "warning") return LEVEL_WARN;
+  if (low === "info") return LEVEL_INFO;
+  if (low === "debug" || low === "trace") return LEVEL_DEBUG;
+  if (low === "other") return LEVEL_OTHER;
+  return null;
+}
+
+export function parsePositiveUsize(raw: string): usize | null {
+  let acc: u64 = 0;
+  for (let i: usize = 0; i < raw.length; i += 1) {
+    const ch = raw.charCodeAt(i);
+    if (ch < 48 || ch > 57) return null;
+    acc = acc * 10 + u64(ch - 48);
+    if (acc > 4294967295) return null;
+  }
+  if (acc === 0) return null;
+  return usize(acc);
+}
+
+export function parseCompressionLevel(raw: string): i32 | null {
+  if (raw.length !== 1) return null;
+  const ch = raw.charCodeAt(0);
+  if (ch < 49 || ch > 57) return null;
+  return i32(ch - 48);
+}
+
+export function parseCliArgs(argv: ReadonlyArray<string>): CliAction {
+  if (argv.length === 0) return { kind: "help" };
+  const cmd = argv[0];
+  if (cmd === "help" || cmd === "--help" || cmd === "-h") return { kind: "help" };
+  if (cmd !== "stats" && cmd !== "grep" && cmd !== "pack" && cmd !== "unpack") {
+    return { kind: "error", message: `unknown command: ${cmd}` };
+  }
+
+  let json = false;
+  let maxBytes = DEFAULT_MAX_BYTES;
+  let grepLevel = LEVEL_ANY;
+  let packLevel = DEFAULT_LEVEL;
+  let ignoreCase = false;
+  let limit = DEFAULT_GREP_LIMIT;
+  const pos: Array<string> = [];
+
+  let i: usize = 1;
+  while (i < argv.length) {
+    const a = argv[i];
+    if (a === "--json") {
+      json = true;
+      i += 1;
+    } else if (a === "-i" || a === "--ignore-case") {
+      if (cmd !== "grep") return { kind: "error", message: `${a} is only valid for grep` };
+      ignoreCase = true;
+      i += 1;
+    } else if (a === "--max-bytes" || a === "--limit" || a === "--level") {
+      if (i + 1 >= argv.length) return { kind: "error", message: `missing value for ${a}` };
+      const val = argv[i + 1];
+      if (a === "--max-bytes") {
+        if (cmd === "pack") return { kind: "error", message: "--max-bytes is not valid for pack" };
+        const n = parsePositiveUsize(val);
+        if (n === null) return { kind: "error", message: `invalid --max-bytes: ${val}` };
+        maxBytes = n;
+      } else if (a === "--limit") {
+        if (cmd !== "grep") return { kind: "error", message: "--limit is only valid for grep" };
+        const n = parsePositiveUsize(val);
+        if (n === null) return { kind: "error", message: `invalid --limit: ${val}` };
+        limit = n;
+      } else {
+        if (cmd === "grep") {
+          const lv = parseLevelFilter(val);
+          if (lv === null) return { kind: "error", message: `invalid --level: ${val}` };
+          grepLevel = lv;
+        } else if (cmd === "pack") {
+          const cl = parseCompressionLevel(val);
+          if (cl === null) return { kind: "error", message: `invalid --level (1..9): ${val}` };
+          packLevel = cl;
+        } else {
+          return { kind: "error", message: `--level is not valid for ${cmd}` };
+        }
+      }
+      i += 2;
+    } else if (a.startsWith("-")) {
+      return { kind: "error", message: `unknown option: ${a}` };
+    } else {
+      pos.push(a);
+      i += 1;
+    }
+  }
+
+  switch (cmd) {
+    case "stats":
+      if (pos.length !== 1) return { kind: "error", message: "usage: gzlog stats <path> [--max-bytes <n>] [--json]" };
+      return { kind: "stats", target: pos[0], maxBytes, json };
+    case "grep":
+      if (pos.length !== 2) {
+        return { kind: "error", message: "usage: gzlog grep <pattern> <path> [--level <lvl>] [-i] [--limit <n>] [--max-bytes <n>] [--json]" };
+      }
+      return { kind: "grep", pattern: pos[0], target: pos[1], level: grepLevel, ignoreCase, limit, maxBytes, json };
+    case "pack":
+      if (pos.length !== 2) return { kind: "error", message: "usage: gzlog pack <src> <dst> [--level <1..9>] [--json]" };
+      return { kind: "pack", src: pos[0], dst: pos[1], level: packLevel, json };
+    default:
+      if (pos.length !== 2) return { kind: "error", message: "usage: gzlog unpack <src> <dst> [--max-bytes <n>] [--json]" };
+      return { kind: "unpack", src: pos[0], dst: pos[1], maxBytes, json };
+  }
+}
+
+function joinDirPath(dir: string, name: string): string {
+  if (dir.endsWith("/")) return dir + name;
+  return `${dir}/${name}`;
+}
+
+function walkDir(fs: Fs, dir: string, out: Array<string>): Result<null, IoError> {
+  const rd = fs.readDir(dir);
+  if (rd.kind === "err") return err(rd.error);
+  for (const ent of rd.value) {
+    const full = joinDirPath(dir, ent.name);
+    if (ent.kind === "file") {
+      out.push(full);
+    } else if (ent.kind === "dir") {
+      const sub = walkDir(fs, full, out);
+      if (sub.kind === "err") return sub;
+    }
+  }
+  return ok(null);
+}
+
+export function collectFiles(fs: Fs, target: string): Result<Array<string>, IoError> {
+  const st = fs.stat(target);
+  if (st.kind === "err") return err(st.error);
+  if (st.value.kind === "file") return ok([target]);
+  if (st.value.kind !== "dir") return err({ code: "EINVAL", message: "target is not a regular file or directory" });
+  const out: Array<string> = [];
+  const walked = walkDir(fs, target, out);
+  if (walked.kind === "err") return err(walked.error);
+  return ok(out);
+}
+
+function codecErrorMessage(e: CodecError): string {
+  switch (e) {
+    case "oom": return "out of memory";
+    case "invalid-level": return "invalid compression level";
+    case "invalid-stream": return "invalid or corrupt gzip stream";
+    case "too-large": return "decompressed size exceeds --max-bytes limit";
+    case "zlib-error": return "zlib compression failed";
+  }
+}
+
+function loadLogPayload(
+  fs: Fs,
+  alloc: Alloc,
+  codec: GzipCodec,
+  path: string,
+  maxBytes: usize,
+  out: Mut<Vec<u8>>,
+): Result<LoadedPayload, string> {
+  const raw = Vec.create<u8>(alloc, 64);
+  const rd = fs.readBytes(path, raw);
+  if (rd.kind === "err") return err(`${rd.error.code}:${rd.error.message}`);
+  const gzipped = isGzipMagic(raw);
+  if (gzipped) {
+    const dec = codec.decompressInto(raw, out, maxBytes);
+    if (dec.kind === "err") return err(`${path}: ${codecErrorMessage(dec.error)}`);
+  } else {
+    out.clear();
+    appendSlice(out, raw);
+  }
+  return ok({ gzipped, rawBytes: raw.length, crc32: formatHex32(codec.crc32(out)) });
+}
+
+function analyzeOneFile(
+  fs: Fs,
+  alloc: Alloc,
+  codec: GzipCodec,
+  path: string,
+  maxBytes: usize,
+  buf: Mut<Vec<u8>>,
+): Result<FileStatsReport, string> {
+  const loaded = loadLogPayload(fs, alloc, codec, path, maxBytes, buf);
+  if (loaded.kind === "err") return err(loaded.error);
+  const st = scanLogBytes(buf);
+  return ok({
+    path,
+    gzipped: loaded.value.gzipped,
+    rawBytes: loaded.value.rawBytes,
+    bytes: st.bytes,
+    crc32: loaded.value.crc32,
+    lines: st.lines,
+    errors: st.errors,
+    warns: st.warns,
+    infos: st.infos,
+    debugs: st.debugs,
+    others: st.others,
+    maxLineBytes: st.maxLineBytes,
+  });
+}
+
+function grepOneFile(
+  fs: Fs,
+  alloc: Alloc,
+  codec: GzipCodec,
+  path: string,
+  wantLevel: u8,
+  maxBytes: usize,
+  re: RegExp,
+  limit: usize,
+  matches: Array<GrepMatch>,
+  buf: Mut<Vec<u8>>,
+  spans: Mut<Vec<LineSpan>>,
+): Result<boolean, string> {
+  const loaded = loadLogPayload(fs, alloc, codec, path, maxBytes, buf);
+  if (loaded.kind === "err") return err(loaded.error);
+  indexLinesByLevel(buf, wantLevel, spans);
+  for (let k: usize = 0; k < spans.length; k += 1) {
+    const sp = spans[k];
+    const lineText = String.decodeUtf8Lossy(buf.slice(sp.start, sp.end));
+    if (re.test(lineText)) {
+      if (matches.length >= limit) return ok(true);
+      matches.push({
+        path,
+        lineNo: sp.lineNo,
+        level: levelName(sp.level),
+        text: lineText,
+      });
+    }
+  }
+  return ok(false);
+}
+
+function cmdStats(
+  fs: Fs,
+  alloc: Alloc,
+  codec: GzipCodec,
+  target: string,
+  maxBytes: usize,
+): Result<StatsOutput, string> {
+  const filesRes = collectFiles(fs, target);
+  if (filesRes.kind === "err") return err(`${filesRes.error.code}:${filesRes.error.message}`);
+  const reports: Array<FileStatsReport> = [];
+  let totalRawBytes: usize = 0;
+  let totalBytes: usize = 0;
+  let totalLines: usize = 0;
+  let errors: usize = 0;
+  let warns: usize = 0;
+  let infos: usize = 0;
+  let debugs: usize = 0;
+  let others: usize = 0;
+  const buf = Vec.create<u8>(alloc, 256);
+
+  for (const p of filesRes.value) {
+    const rep = analyzeOneFile(fs, alloc, codec, p, maxBytes, buf);
+    if (rep.kind === "err") return err(rep.error);
+    const r = rep.value;
+    totalRawBytes += r.rawBytes;
+    totalBytes += r.bytes;
+    totalLines += r.lines;
+    errors += r.errors;
+    warns += r.warns;
+    infos += r.infos;
+    debugs += r.debugs;
+    others += r.others;
+    reports.push(r);
+  }
+  return ok({
+    fileCount: reports.length,
+    totalRawBytes,
+    totalBytes,
+    totalLines,
+    errors,
+    warns,
+    infos,
+    debugs,
+    others,
+    files: reports,
+  });
+}
+
+function cmdGrep(
+  fs: Fs,
+  alloc: Alloc,
+  codec: GzipCodec,
+  pattern: string,
+  target: string,
+  level: u8,
+  ignoreCase: boolean,
+  limit: usize,
+  maxBytes: usize,
+): Result<GrepOutput, string> {
+  const reRes = ignoreCase ? RegExp.compile(pattern, "i") : RegExp.compile(pattern);
+  if (reRes.kind === "err") return err(`invalid pattern: ${reRes.error.message}`);
+  const re = reRes.value;
+
+  const filesRes = collectFiles(fs, target);
+  if (filesRes.kind === "err") return err(`${filesRes.error.code}:${filesRes.error.message}`);
+
+  const matches: Array<GrepMatch> = [];
+  const buf = Vec.create<u8>(alloc, 256);
+  const spans = Vec.create<LineSpan>(alloc, 64);
+  let filesScanned: usize = 0;
+  let truncated = false;
+
+  for (const p of filesRes.value) {
+    const gr = grepOneFile(fs, alloc, codec, p, level, maxBytes, re, limit, matches, buf, spans);
+    if (gr.kind === "err") return err(gr.error);
+    filesScanned += 1;
+    if (gr.value) {
+      truncated = true;
+      break;
+    }
+  }
+  return ok({
+    pattern,
+    filesScanned,
+    matchCount: matches.length,
+    truncated,
+    matches,
+  });
+}
+
+function cmdPack(
+  fs: Fs,
+  alloc: Alloc,
+  codec: GzipCodec,
+  src: string,
+  dst: string,
+  level: i32,
+): Result<PackOutput, string> {
+  const raw = Vec.create<u8>(alloc, 256);
+  const rd = fs.readBytes(src, raw);
+  if (rd.kind === "err") return err(`${rd.error.code}:${rd.error.message}`);
+  const gz = Vec.create<u8>(alloc, 256);
+  const cp = codec.compressInto(raw, gz, level);
+  if (cp.kind === "err") return err(`${src}: ${codecErrorMessage(cp.error)}`);
+  const wr = fs.writeBytesAtomic(dst, gz);
+  if (wr.kind === "err") return err(`${wr.error.code}:${wr.error.message}`);
+  return ok({
+    src,
+    dst,
+    level,
+    rawBytes: raw.length,
+    gzipBytes: gz.length,
+    crc32: formatHex32(codec.crc32(raw)),
+  });
+}
+
+function cmdUnpack(
+  fs: Fs,
+  alloc: Alloc,
+  codec: GzipCodec,
+  src: string,
+  dst: string,
+  maxBytes: usize,
+): Result<UnpackOutput, string> {
+  const gz = Vec.create<u8>(alloc, 256);
+  const rd = fs.readBytes(src, gz);
+  if (rd.kind === "err") return err(`${rd.error.code}:${rd.error.message}`);
+  if (!isGzipMagic(gz)) return err(`${src}: not a gzip file`);
+  const plain = Vec.create<u8>(alloc, 256);
+  const dec = codec.decompressInto(gz, plain, maxBytes);
+  if (dec.kind === "err") return err(`${src}: ${codecErrorMessage(dec.error)}`);
+  const wr = fs.writeBytesAtomic(dst, plain);
+  if (wr.kind === "err") return err(`${wr.error.code}:${wr.error.message}`);
+  return ok({
+    src,
+    dst,
+    gzipBytes: gz.length,
+    rawBytes: plain.length,
+    crc32: formatHex32(codec.crc32(plain)),
+  });
+}
+
+function helpText(): string {
+  return (
+    "gzlog: compressed log analyzer and packer\n" +
+    "  stats <path> [--max-bytes <n>] [--json]\n" +
+    "  grep <pattern> <path> [--level <lvl>] [-i|--ignore-case] [--limit <n>] [--max-bytes <n>] [--json]\n" +
+    "  pack <src> <dst> [--level <1..9>] [--json]\n" +
+    "  unpack <src> <dst> [--max-bytes <n>] [--json]"
+  );
+}
+
+export function runGzlog(fs: Fs, alloc: Alloc, proc: Proc, log: Log, codec: GzipCodec): void {
+  const action = parseCliArgs(proc.args());
+  switch (action.kind) {
+    case "help":
+      log.info(helpText());
+      return;
+    case "error":
+      log.error(action.message);
+      proc.setExitCode(1);
+      return;
+    case "stats": {
+      const res = cmdStats(fs, alloc, codec, action.target, action.maxBytes);
+      if (res.kind === "err") {
+        log.error(res.error);
+        proc.setExitCode(1);
+        return;
+      }
+      const s = res.value;
+      if (action.json) {
+        log.info(JSON.stringify<StatsOutput>(s));
+      } else {
+        log.info(
+          `files=${s.fileCount} lines=${s.totalLines} bytes=${s.totalBytes} error=${s.errors} warn=${s.warns} info=${s.infos} debug=${s.debugs} other=${s.others}`
+        );
+      }
+      return;
+    }
+    case "grep": {
+      const res = cmdGrep(
+        fs,
+        alloc,
+        codec,
+        action.pattern,
+        action.target,
+        action.level,
+        action.ignoreCase,
+        action.limit,
+        action.maxBytes,
+      );
+      if (res.kind === "err") {
+        log.error(res.error);
+        proc.setExitCode(1);
+        return;
+      }
+      const g = res.value;
+      if (action.json) {
+        log.info(JSON.stringify<GrepOutput>(g));
+      } else {
+        for (const m of g.matches) {
+          log.info(`${m.path}:${m.lineNo} [${m.level}] ${m.text}`);
+        }
+      }
+      return;
+    }
+    case "pack": {
+      const res = cmdPack(fs, alloc, codec, action.src, action.dst, action.level);
+      if (res.kind === "err") {
+        log.error(res.error);
+        proc.setExitCode(1);
+        return;
+      }
+      const p = res.value;
+      if (action.json) {
+        log.info(JSON.stringify<PackOutput>(p));
+      } else {
+        log.info(`packed ${p.src} -> ${p.dst} (${p.rawBytes} -> ${p.gzipBytes} bytes, crc32=${p.crc32})`);
+      }
+      return;
+    }
+    case "unpack": {
+      const res = cmdUnpack(fs, alloc, codec, action.src, action.dst, action.maxBytes);
+      if (res.kind === "err") {
+        log.error(res.error);
+        proc.setExitCode(1);
+        return;
+      }
+      const u = res.value;
+      if (action.json) {
+        log.info(JSON.stringify<UnpackOutput>(u));
+      } else {
+        log.info(`unpacked ${u.src} -> ${u.dst} (${u.gzipBytes} -> ${u.rawBytes} bytes, crc32=${u.crc32})`);
+      }
+      return;
+    }
+  }
+}
+
+class FakeGzipCodec implements GzipCodec {
+  private readonly forcedErr: CodecError | null;
+
+  constructor(forcedErr: CodecError | null = null) {
+    this.forcedErr = forcedErr;
+  }
+
+  decompressInto(src: Ref<Slice<u8>>, dst: Mut<Vec<u8>>, maxBytes: usize): Result<usize, CodecError> {
+    dst.clear();
+    if (this.forcedErr !== null) return err(this.forcedErr);
+    if (!isGzipMagic(src)) return err("invalid-stream");
+    const outLen: usize = src.length - 2;
+    if (outLen > maxBytes) return err("too-large");
+    appendSlice(dst, src.slice(2, src.length));
+    return ok(outLen);
+  }
+
+  compressInto(src: Ref<Slice<u8>>, dst: Mut<Vec<u8>>, level: i32): Result<usize, CodecError> {
+    dst.clear();
+    if (this.forcedErr !== null) return err(this.forcedErr);
+    if (level < 1 || level > 9) return err("invalid-level");
+    dst.push(0x1f);
+    dst.push(0x8b);
+    appendSlice(dst, src);
+    return ok(dst.length);
+  }
+
+  crc32(src: Ref<Slice<u8>>): u32 {
+    let h: u32 = 0;
+    for (let i: usize = 0; i < src.length; i += 1) {
+      h = wrapAdd(wrapMul(h, 33), u32(src[i]));
+    }
+    return h;
+  }
+}
+
+test("hex formatting, level parsing, numeric parsing, and forAll", (t: Test) => {
+  t.eq(formatHex32(0), "00000000");
+  t.eq(formatHex32(0x1234abcd), "1234abcd");
+  t.eq(formatHex32(0xffffffff), "ffffffff");
+
+  forAll((v: u32) => {
+    const s = formatHex32(v);
+    if (s.length !== 8) return false;
+    for (let i: usize = 0; i < s.length; i += 1) {
+      const c = s.charCodeAt(i);
+      const isDigit = c >= 48 && c <= 57;
+      const isLowerHex = c >= 97 && c <= 102;
+      if (!isDigit && !isLowerHex) return false;
+    }
+    return true;
+  });
+
+  t.eq(levelName(LEVEL_ERROR), "ERROR");
+  t.eq(levelName(LEVEL_WARN), "WARN");
+  t.eq(levelName(LEVEL_INFO), "INFO");
+  t.eq(levelName(LEVEL_DEBUG), "DEBUG");
+  t.eq(levelName(LEVEL_OTHER), "OTHER");
+
+  t.eq(parseLevelFilter("error"), LEVEL_ERROR);
+  t.eq(parseLevelFilter("FATAL"), LEVEL_ERROR);
+  t.eq(parseLevelFilter("warn"), LEVEL_WARN);
+  t.eq(parseLevelFilter("Warning"), LEVEL_WARN);
+  t.eq(parseLevelFilter("info"), LEVEL_INFO);
+  t.eq(parseLevelFilter("debug"), LEVEL_DEBUG);
+  t.eq(parseLevelFilter("TRACE"), LEVEL_DEBUG);
+  t.eq(parseLevelFilter("other"), LEVEL_OTHER);
+  t.ok(parseLevelFilter("bogus") === null);
+
+  t.eq(parsePositiveUsize("1"), usize(1));
+  t.eq(parsePositiveUsize("4294967295"), usize(4294967295));
+  t.ok(parsePositiveUsize("") === null);
+  t.ok(parsePositiveUsize("0") === null);
+  t.ok(parsePositiveUsize("/") === null);
+  t.ok(parsePositiveUsize(":") === null);
+  t.ok(parsePositiveUsize("4294967296") === null);
+
+  t.eq(parseCompressionLevel("1"), 1);
+  t.eq(parseCompressionLevel("9"), 9);
+  t.ok(parseCompressionLevel("0") === null);
+  t.ok(parseCompressionLevel(":") === null);
+  t.ok(parseCompressionLevel("") === null);
+  t.ok(parseCompressionLevel("10") === null);
+});
+
+test("parseCliArgs parses all commands, flags, and rejects invalid arguments", (t: Test) => {
+  t.eq(parseCliArgs([]), { kind: "help" });
+  t.eq(parseCliArgs(["help"]), { kind: "help" });
+  t.eq(parseCliArgs(["--help"]), { kind: "help" });
+  t.eq(parseCliArgs(["-h"]), { kind: "help" });
+
+  t.eq(parseCliArgs(["stats", "/logs", "--max-bytes", "1024", "--json"]), {
+    kind: "stats",
+    target: "/logs",
+    maxBytes: 1024,
+    json: true,
+  });
+  t.eq(parseCliArgs(["grep", "err", "/logs", "--level", "warn", "--ignore-case", "--limit", "5", "--max-bytes", "99"]), {
+    kind: "grep",
+    pattern: "err",
+    target: "/logs",
+    level: LEVEL_WARN,
+    ignoreCase: true,
+    limit: 5,
+    maxBytes: 99,
+    json: false,
+  });
+  t.eq(parseCliArgs(["grep", "ok", "/logs", "-i", "--json"]), {
+    kind: "grep",
+    pattern: "ok",
+    target: "/logs",
+    level: LEVEL_ANY,
+    ignoreCase: true,
+    limit: DEFAULT_GREP_LIMIT,
+    maxBytes: DEFAULT_MAX_BYTES,
+    json: true,
+  });
+  t.eq(parseCliArgs(["pack", "a.log", "a.gz", "--level", "9", "--json"]), {
+    kind: "pack",
+    src: "a.log",
+    dst: "a.gz",
+    level: 9,
+    json: true,
+  });
+  t.eq(parseCliArgs(["unpack", "a.gz", "a.log"]), {
+    kind: "unpack",
+    src: "a.gz",
+    dst: "a.log",
+    maxBytes: DEFAULT_MAX_BYTES,
+    json: false,
+  });
+
+  const badCmd = parseCliArgs(["bogus"]);
+  t.eq(badCmd.kind, "error");
+  if (badCmd.kind === "error") t.ok(badCmd.message.includes("unknown command"));
+  t.eq(parseCliArgs(["stats"]).kind, "error");
+  t.eq(parseCliArgs(["stats", "--bogus"]).kind, "error");
+  t.eq(parseCliArgs(["stats", "a", "b"]).kind, "error");
+  t.eq(parseCliArgs(["stats", "a", "-i"]).kind, "error");
+  t.eq(parseCliArgs(["stats", "a", "--limit", "2"]).kind, "error");
+  t.eq(parseCliArgs(["stats", "a", "--level", "info"]).kind, "error");
+  t.eq(parseCliArgs(["stats", "a", "--max-bytes"]).kind, "error");
+  t.eq(parseCliArgs(["stats", "a", "--max-bytes", "0"]).kind, "error");
+  t.eq(parseCliArgs(["grep", "p"]).kind, "error");
+  t.eq(parseCliArgs(["grep", "p", "f", "--level", "nope"]).kind, "error");
+  t.eq(parseCliArgs(["grep", "p", "f", "--limit", "abc"]).kind, "error");
+  t.eq(parseCliArgs(["pack", "a"]).kind, "error");
+  t.eq(parseCliArgs(["pack", "a", "b", "--max-bytes", "10"]).kind, "error");
+  t.eq(parseCliArgs(["pack", "a", "b", "--level", "0"]).kind, "error");
+  t.eq(parseCliArgs(["unpack", "a"]).kind, "error");
+  t.eq(parseCliArgs(["unpack", "a", "b", "--ignore-case"]).kind, "error");
+  t.eq(parseCliArgs(["unpack", "a", "b", "--level", "1"]).kind, "error");
+});
+
+test("FakeGzipCodec direct edge cases and boundary conditions", (t: Test) => {
+  const alloc = TestAlloc.create();
+  const codec = new FakeGzipCodec(null);
+  const src = Vec.create<u8>(alloc, 4);
+  String.encodeUtf8("ab\nc", src);
+
+  const gz = Vec.filled<u8>(alloc, 3, 99);
+  t.eq(codec.compressInto(src, gz, 0), err("invalid-level"));
+  t.eq(codec.compressInto(src, gz, 10), err("invalid-level"));
+  t.eq(codec.compressInto(src, gz, 9), ok(usize(6)));
+  const cRes = codec.compressInto(src, gz, 1);
+  t.eq(cRes, ok(usize(6)));
+  t.eq(gz.length, usize(6));
+  t.eq(gz[0], u8(0x1f));
+  t.eq(gz[1], u8(0x8b));
+
+  const out = Vec.create<u8>(alloc, 8);
+  t.eq(codec.decompressInto(gz, out, 4), ok(usize(4)));
+  t.eq(out.length, usize(4));
+  t.eq(codec.decompressInto(gz, out, 3), err("too-large"));
+  t.eq(codec.decompressInto(src, out, 10), err("invalid-stream"));
+
+  const empty = Vec.create<u8>(alloc, 0);
+  t.eq(codec.crc32(empty), u32(0));
+  t.eq(codec.crc32(src), u32(3593040));
+  t.ok(codec.crc32(src) !== codec.crc32(gz));
+});
+
+test("collectFiles walks directories lexicographically, handles trailing slashes, and skips symlinks", (t: Test) => {
+  const fs = FakeFs.create();
+  fs.mkdir("/logs/sub");
+  fs.writeText("/logs/z.log", "z\n");
+  fs.writeText("/logs/sub/a.log", "a\n");
+  fs.addSymlink("/logs/link.log", "/logs/z.log");
+
+  const one = collectFiles(fs, "/logs/z.log");
+  t.eq(one.kind, "ok");
+  if (one.kind === "ok") t.eq(one.value, ["/logs/z.log"]);
+
+  const dir = collectFiles(fs, "/logs/");
+  t.eq(dir.kind, "ok");
+  if (dir.kind === "ok") t.eq(dir.value, ["/logs/sub/a.log", "/logs/z.log"]);
+
+  const missing = collectFiles(fs, "/nope");
+  t.eq(missing.kind, "err");
+
+  const sym = collectFiles(fs, "/logs/link.log");
+  t.eq(sym.kind, "err");
+});
+
+test("runGzlog stats, grep, pack, unpack, help, and error handling", (t: Test) => {
+  const fs = FakeFs.create();
+  const alloc = TestAlloc.create();
+  const codec = new FakeGzipCodec(null);
+
+  fs.mkdir("/ws/sub");
+  fs.writeText("/ws/app.log", "INFO started\nWARN slow disk\nERROR timeout here\n");
+  fs.writeText("/ws/sub/extra.log", "DEBUG trace 1\nplain line\nERROR disk full\n");
+
+  // Help
+  {
+    const proc = FakeProc.create();
+    const log = MemoryLog.create();
+    proc.setArgs([]);
+    runGzlog(fs, alloc, proc, log, codec);
+    t.eq(proc.exitCode(), u8(0));
+    t.ok(log.entries()[0].message.includes("gzlog: compressed log analyzer"));
+  }
+
+  // Invalid CLI
+  {
+    const proc = FakeProc.create();
+    const log = MemoryLog.create();
+    proc.setArgs(["unknown-cmd"]);
+    runGzlog(fs, alloc, proc, log, codec);
+    t.eq(proc.exitCode(), u8(1));
+    t.eq(log.entries()[0].level, "error");
+  }
+
+  // Pack -> real file + Unpack -> verify bytes + delete or move
+  {
+    const proc = FakeProc.create();
+    const log = MemoryLog.create();
+    proc.setArgs(["pack", "/ws/app.log", "/ws/app.log.gz", "--json"]);
+    runGzlog(fs, alloc, proc, log, codec);
+    t.eq(proc.exitCode(), u8(0));
+    const parsed = JSON.parse(log.entries()[0].message);
+    t.eq(parsed.kind, "ok");
+    if (parsed.kind === "ok") {
+      const dec = cast<PackOutput>(parsed.value);
+      t.eq(dec.kind, "ok");
+      if (dec.kind === "ok") {
+        t.eq(dec.value.level, 6);
+        t.eq(dec.value.rawBytes, usize(47));
+        t.eq(dec.value.gzipBytes, usize(49));
+      }
+    }
+  }
+  {
+    const proc = FakeProc.create();
+    const log = MemoryLog.create();
+    proc.setArgs(["pack", "/ws/sub/extra.log", "/ws/sub/extra.log.gz", "--level", "4"]);
+    runGzlog(fs, alloc, proc, log, codec);
+    t.eq(proc.exitCode(), u8(0));
+    t.ok(log.entries()[0].message.includes("packed /ws/sub/extra.log -> /ws/sub/extra.log.gz"));
+  }
+  {
+    const proc = FakeProc.create();
+    const log = MemoryLog.create();
+    proc.setArgs(["unpack", "/ws/app.log.gz", "/ws/restored.log", "--json"]);
+    runGzlog(fs, alloc, proc, log, codec);
+    t.eq(proc.exitCode(), u8(0));
+    t.eq(fs.readText("/ws/restored.log"), fs.readText("/ws/app.log"));
+    const p = JSON.parse(log.entries()[0].message);
+    t.eq(p.kind, "ok");
+  }
+  {
+    const proc = FakeProc.create();
+    const log = MemoryLog.create();
+    proc.setArgs(["unpack", "/ws/app.log.gz", "/ws/restored2.log"]);
+    runGzlog(fs, alloc, proc, log, codec);
+    t.eq(proc.exitCode(), u8(0));
+    t.ok(log.entries()[0].message.includes("unpacked /ws/app.log.gz -> /ws/restored2.log"));
+  }
+
+  // Stats across plain + gzipped directory (text and --json)
+  fs.remove("/ws/restored.log");
+  fs.remove("/ws/restored2.log");
+  fs.remove("/ws/app.log");
+  {
+    const proc = FakeProc.create();
+    const log = MemoryLog.create();
+    proc.setArgs(["stats", "/ws", "--json"]);
+    runGzlog(fs, alloc, proc, log, codec);
+    t.eq(proc.exitCode(), u8(0));
+    const parsed = JSON.parse(log.entries()[0].message);
+    t.eq(parsed.kind, "ok");
+    if (parsed.kind === "ok") {
+      const st = cast<StatsOutput>(parsed.value);
+      t.eq(st.kind, "ok");
+      if (st.kind === "ok") {
+        t.eq(st.value.fileCount, usize(3));
+        t.eq(st.value.totalRawBytes, usize(133));
+        t.eq(st.value.totalBytes, usize(129));
+        t.eq(st.value.errors, usize(3));
+        t.eq(st.value.warns, usize(1));
+        t.eq(st.value.infos, usize(1));
+        t.eq(st.value.debugs, usize(2));
+        t.eq(st.value.others, usize(2));
+        t.eq(st.value.totalLines, usize(9));
+        t.eq(st.value.files[0].gzipped, true);
+        t.ok(st.value.files[0].crc32 !== "00000000");
+      }
+    }
+  }
+  {
+    const proc = FakeProc.create();
+    const log = MemoryLog.create();
+    proc.setArgs(["stats", "/ws/app.log.gz"]);
+    runGzlog(fs, alloc, proc, log, codec);
+    t.eq(proc.exitCode(), u8(0));
+    t.eq(log.entries()[0].message, "files=1 lines=3 bytes=47 error=1 warn=1 info=1 debug=0 other=0");
+  }
+
+  // Grep: exact matches, case-sensitive default, --level, -i, --limit exact & truncated, text mode
+  {
+    const proc = FakeProc.create();
+    const log = MemoryLog.create();
+    proc.setArgs(["grep", "TIMEOUT", "/ws/app.log.gz", "--json"]);
+    runGzlog(fs, alloc, proc, log, codec);
+    t.eq(proc.exitCode(), u8(0));
+    const parsed = JSON.parse(log.entries()[0].message);
+    t.eq(parsed.kind, "ok");
+    if (parsed.kind === "ok") {
+      const g = cast<GrepOutput>(parsed.value);
+      t.eq(g.kind, "ok");
+      if (g.kind === "ok") t.eq(g.value.matchCount, usize(0));
+    }
+  }
+  {
+    const proc = FakeProc.create();
+    const log = MemoryLog.create();
+    proc.setArgs(["grep", "TIMEOUT|DISK", "/ws", "--level", "error", "-i", "--limit", "1", "--json"]);
+    runGzlog(fs, alloc, proc, log, codec);
+    t.eq(proc.exitCode(), u8(0));
+    const parsed = JSON.parse(log.entries()[0].message);
+    t.eq(parsed.kind, "ok");
+    if (parsed.kind === "ok") {
+      const g = cast<GrepOutput>(parsed.value);
+      t.eq(g.kind, "ok");
+      if (g.kind === "ok") {
+        t.eq(g.value.filesScanned, usize(2));
+        t.eq(g.value.matchCount, usize(1));
+        t.eq(g.value.truncated, true);
+        t.eq(g.value.matches[0].lineNo, usize(3));
+        t.eq(g.value.matches[0].level, "ERROR");
+      }
+    }
+  }
+  {
+    const proc = FakeProc.create();
+    const log = MemoryLog.create();
+    proc.setArgs(["grep", "timeout", "/ws", "--limit", "1", "--json"]);
+    runGzlog(fs, alloc, proc, log, codec);
+    t.eq(proc.exitCode(), u8(0));
+    const parsed = JSON.parse(log.entries()[0].message);
+    t.eq(parsed.kind, "ok");
+    if (parsed.kind === "ok") {
+      const g = cast<GrepOutput>(parsed.value);
+      t.eq(g.kind, "ok");
+      if (g.kind === "ok") {
+        t.eq(g.value.filesScanned, usize(3));
+        t.eq(g.value.matchCount, usize(1));
+        t.eq(g.value.truncated, false);
+      }
+    }
+  }
+  {
+    const proc = FakeProc.create();
+    const log = MemoryLog.create();
+    proc.setArgs(["grep", "slow", "/ws/app.log.gz"]);
+    runGzlog(fs, alloc, proc, log, codec);
+    t.eq(proc.exitCode(), u8(0));
+    t.eq(log.entries()[0].message, "/ws/app.log.gz:2 [WARN] WARN slow disk");
+  }
+
+  // Error branches (missing inputs, invalid regex, non-gzip unpack, max-bytes limit, missing dst dir, all CodecError variants)
+  const errRuns: Array<{ readonly args: Array<string>; readonly errCodec: FakeGzipCodec; readonly expectSub: string }> = [
+    { args: ["stats", "/missing"], errCodec: codec, expectSub: "ENOENT" },
+    { args: ["stats", "/ws/app.log.gz", "--max-bytes", "4"], errCodec: codec, expectSub: "--max-bytes" },
+    { args: ["grep", "[", "/ws"], errCodec: codec, expectSub: "invalid pattern" },
+    { args: ["grep", "x", "/missing"], errCodec: codec, expectSub: "ENOENT" },
+    { args: ["grep", "x", "/ws/app.log.gz", "--max-bytes", "4"], errCodec: codec, expectSub: "--max-bytes" },
+    { args: ["pack", "/missing", "/ws/out.gz"], errCodec: codec, expectSub: "ENOENT" },
+    { args: ["pack", "/ws/sub/extra.log", "/missing-dir/out.gz"], errCodec: codec, expectSub: "ENOENT" },
+    { args: ["unpack", "/missing", "/ws/out.log"], errCodec: codec, expectSub: "ENOENT" },
+    { args: ["unpack", "/ws/sub/extra.log", "/ws/out.log"], errCodec: codec, expectSub: "not a gzip file" },
+    { args: ["unpack", "/ws/app.log.gz", "/missing-dir/out.log"], errCodec: codec, expectSub: "ENOENT" },
+    { args: ["unpack", "/ws/app.log.gz", "/ws/out.log", "--max-bytes", "4"], errCodec: codec, expectSub: "--max-bytes" },
+    { args: ["stats", "/ws/app.log.gz"], errCodec: new FakeGzipCodec("oom"), expectSub: "out of memory" },
+    { args: ["pack", "/ws/sub/extra.log", "/ws/out.gz"], errCodec: new FakeGzipCodec("invalid-level"), expectSub: "invalid compression level" },
+    { args: ["pack", "/ws/sub/extra.log", "/ws/out.gz"], errCodec: new FakeGzipCodec("zlib-error"), expectSub: "zlib compression failed" },
+    { args: ["unpack", "/ws/app.log.gz", "/ws/out.log"], errCodec: new FakeGzipCodec("invalid-stream"), expectSub: "corrupt gzip stream" },
+  ];
+  for (const er of errRuns) {
+    const proc = FakeProc.create();
+    const log = MemoryLog.create();
+    proc.setArgs(er.args);
+    runGzlog(fs, alloc, proc, log, er.errCodec);
+    t.eq(proc.exitCode(), u8(1));
+    t.eq(log.entries()[0].level, "error");
+    t.ok(log.entries()[0].message.includes(er.expectSub));
+  }
+});
