@@ -18,9 +18,12 @@ export interface HttpServerConfig { readonly host: string; readonly port: number
 export interface HttpServerRequest { readonly method: string; readonly path: string; readonly query: string; readonly headers: HttpHeader[]; readonly body: string }
 export interface HttpServerResponse { readonly status: number; readonly headers: readonly HttpHeader[]; readonly body: string }
 export interface HttpClientRequest { readonly method: string; readonly url: string; readonly headers: HttpHeader[]; readonly body: string | null }
+export interface QueryParam { readonly name: string; readonly value: string }
 export interface HttpServer {
   readonly host: string;
   readonly port: number;
+  stop(): void;
+  waitClosed(): Promise<void>;
   close(): Promise<void>;
   disposeAsync(): Promise<void>;
   isOpen(): boolean;

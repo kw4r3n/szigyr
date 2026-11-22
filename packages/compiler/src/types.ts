@@ -142,6 +142,7 @@ export const HTTP_SERVER_CONFIG_RECORD = record([ro("host", STR), ro("port", num
 export const HTTP_SERVER_REQUEST_RECORD = record([ro("method", STR), ro("path", STR), ro("query", STR), ro("headers", gen("Array", HTTP_HEADER_RECORD)), ro("body", STR)]);
 export const HTTP_SERVER_RESPONSE_RECORD = record([ro("status", num("u16")), ro("headers", gen("ReadonlyArray", HTTP_HEADER_RECORD)), ro("body", STR)]);
 export const HTTP_CLIENT_REQUEST_RECORD = record([ro("method", STR), ro("url", STR), ro("headers", gen("Array", HTTP_HEADER_RECORD)), ro("body", nullable(STR))]);
+export const QUERY_PARAM_RECORD = record([ro("name", STR), ro("value", STR)]);
 export const DISPOSABLE_IFACE: IfaceSym = { name: "Disposable", tparams: [], methods: new Map([["dispose", fn([], VOID)]]) };
 export const ASYNC_DISPOSABLE_IFACE: IfaceSym = { name: "AsyncDisposable", tparams: [], methods: new Map([["disposeAsync", fn([], gen("Promise", VOID))]]) };
 export const DISPOSABLE: Type = { k: "iface", iface: DISPOSABLE_IFACE, args: [] };

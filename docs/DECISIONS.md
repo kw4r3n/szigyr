@@ -929,3 +929,21 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
   - `rtk bypass pnpm test`: **45 ファイル 446/446 通過**（`packages/std/test/std.test.ts` 20/20、`packages/compiler/test/tool-authorities.test.ts` 6/6 で実 `nodeFs` atomic、`nodeProc` CLI `--` / timeout / `ENOENT` / `shell: false`、`nodeNet` `serve` + `await using` + `fetch` + `ETIMEDOUT` + trap 伝搬 + orphan server 自動停止、`szigyr mutate` 生存ミュータント 0、`E5001`/`E4001`、`buildNode --target=node --backend=c` リロケート実行、`buildBrowser` `node:` ゼロ＆実行を確認）。
   - `rtk bypass pnpm conformance`: **1 ファイル 1,298/1,298 通過**（JS / C / Wasm 全バックエンド一致）。
   - `rtk bypass pnpm bench`: 通過（`proved: 45 checks eliminated`、`rel / hand C`: `dot_f32` `1.00`、`saxpy_f32` `0.99`、`prefix_i32` `1.08`、`stencil_f64` `0.99`、`particles_aos_f32` `1.37`）。
+
+## D178: ツール系ドッグフーディングと 3 点の改善（HttpServer.stop/waitClosed・Url・FakeFs 厳格化＆symlink）（2026-11-22）
+
+- **前提**: D177 コミット（`627f1b5`）の後、実アプリドッグフーディングとして [examples/workspace-tool/](../examples/workspace-tool) を実装・検証し、そこで浮上した 3 つの実用上の課題（[Q296](./OPEN_QUESTIONS.md#q296)）を処理系・標準ライブラリへ取り込んで同アプリと適合テストを刷新した（外部 npm 依存追加なし）。
+- **決定と実装の要点**:
+  1. **`HttpServer.stop()` と `HttpServer.waitClosed()`**:
+     - `packages/std/src/types.ts`・`builtins.ts` に `stop(): void`（`managedOnly`、契約禁止 `E6002`）と `waitClosed(): Promise<void>` を追加した。
+     - `nodeNet.serve` は `inFlight` リクエスト数を追跡し、`stop()` 後はレスポンスへ `Connection: close` を付与して `res.once("finish" / "close")` と `inFlight === 0` の時点で `closeIdleConnections?.()` を呼び出すことで、ハンドラ内からの優雅な自己停止（`/api/shutdown`）でも応答欠落や keep-alive 待ちデッドロックを起こさない。`close()` / `disposeAsync()` / `forceClose` は `inFlight === 0` のときのみ `closeAllConnections?.()` を呼ぶ。`FakeNet.serve` も同等の `stop()` / `waitClosed()` を提供する。
+  2. **`Url` 組込名前空間＋`QueryParam` レコード**:
+     - `types.ts` / `builtins.ts` / `emit.ts` / `runtime-js/src/result.ts` に `QueryParam = { readonly name: string; readonly value: string }` と `Url`（`managedOnly`：`parseQuery`, `getQueryParam`, `formatQuery`, `encodeComponent`, `decodeComponent`）を追加した。`runtime-js/src/result.ts` に配置したため Node・Browser 両ターゲットへ `node:*` 依存なしで自動配線される。UTF-8 マルチバイト（日本語パス等）と孤立サロゲートの置換符号化に対応し、不正 `%ZZ` は `err({ code: "EINVAL" })` を返す。
+  3. **`FakeFs` の `nodeFs` パリティ強化と `addSymlink`**:
+     - `FakeFs` の書込前チェック（`prepareWrite`）で親ディレクトリ自動作成を廃し、親ディレクトリ不在時に `nodeFs` 同様 `ENOENT` を返すよう統一した。
+     - `FakeFs` に `addSymlink(path: string, target: string): Result<null, IoError>`（`managedOnly`、契約禁止 `E6002`）を追加し、16 段までのリンク解決と循環検出 `ELOOP`・`stat` の非追従 `"symlink"`・`readDir` の `"symlink"` 列挙・`exists` のリンク先確認・`remove`/`rename`/atomic 上書を実装した。
+  4. **`examples/workspace-tool/` の刷新**:
+     - `core.szigyr` から自前 ASCII クエリ/パーセント復号と `walkScanDir` の `// szigyr-equivalent` を削除し、`Url` と `FakeFs.addSymlink` テストへ置き換えた。`main.szigyr` の `serve` ループを `srv.stop()` + `await srv.waitClosed()` へ置き換え、`szigyr mutate --all --no-cache` で **225 killed / 5 timeout / 0 survived**（28 targets, 1 skipped）を達成した。
+- **確かめ方**:
+  - `std.test.ts`（`FakeFs` 親欠落 `ENOENT` / `addSymlink` 全操作、`FakeNet.stop`/`waitClosed`）・`tool-authorities.test.ts`（実 `nodeNet` 自己停止、`Url` Node/Browser E2E・`E4001`・`E6002`）・`workspace-tool-example.test.ts`（JS/C/Wasm 一致、`prove` 失敗/不明 0、`mutate` 生存 0、CLI `--`、`build --target=node --backend=c --release` 再配置・UTF-8 HTTP・Playwright Chromium UI・`/api/shutdown` 終了コード 0）がすべて通過。
+  - 新規適合テスト `conformance/run/263-url-httpserver-stop-fakefs.szigyr`・`conformance/reject/E6002-fakefs-addsymlink-in-contract.szigyr` を追加し、`conformance/PASSING.txt` は 943 件（`accept=84 reject=643 run=216`）。

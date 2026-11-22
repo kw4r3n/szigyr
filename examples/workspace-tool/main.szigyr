@@ -1,0 +1,497 @@
+import {
+  CliAction,
+  DeletePayload,
+  ExecPayload,
+  HealthPayload,
+  OkPayload,
+  RunCommandResult,
+  SavePayload,
+  SaveResult,
+  ScanSummary,
+  SnapshotPayload,
+  deleteWorkspaceFile,
+  escapeHtml,
+  handleHttpRequest,
+  joinPath,
+  normalizeRelPath,
+  parentRelDir,
+  parseCliArgs,
+  parseU16,
+  parseU32,
+  probeHealth,
+  readWorkspaceFile,
+  renderDashboardHtml,
+  runSelfCheck,
+  runWorkspaceTool,
+  saveWorkspaceFile,
+  scanWorkspace,
+  snapshotFileBytes,
+} from "./core.szigyr";
+import { isBinaryMetrics, scanBytes } from "./scan.szigyr";
+
+export async function main(sys: System): Promise<void> {
+  const action = parseCliArgs(sys.proc.args(), sys.proc.cwd(), sys.proc.env("SZIGYR_WORKSPACE_ROOT"));
+  switch (action.kind) {
+    case "error": {
+      sys.log.error(action.message);
+      panic("invalid arguments");
+    }
+    case "scan": {
+      const sc = scanWorkspace(sys.fs, sys.alloc, action.root);
+      if (sc.kind === "err") {
+        sys.log.error(`${sc.error.code}:${sc.error.message}`);
+        return;
+      }
+      sys.log.info(JSON.stringify<ScanSummary>(sc.value));
+      return;
+    }
+    case "save": {
+      const sv = saveWorkspaceFile(sys.fs, sys.alloc, action.root, action.path, action.body);
+      if (sv.kind === "err") {
+        sys.log.error(`${sv.error.code}:${sv.error.message}`);
+        return;
+      }
+      sys.log.info(JSON.stringify<SaveResult>(sv.value));
+      return;
+    }
+    case "delete": {
+      const dl = deleteWorkspaceFile(sys.fs, action.root, action.path);
+      if (dl.kind === "err") {
+        sys.log.error(`${dl.error.code}:${dl.error.message}`);
+        return;
+      }
+      sys.log.info(JSON.stringify<OkPayload>({ ok: true, path: action.path }));
+      return;
+    }
+    case "exec": {
+      const ex = await runWorkspaceTool(sys.proc, action.root, action.program, action.args, action.timeoutMs);
+      if (ex.kind === "err") {
+        sys.log.error(`${ex.error.code}:${ex.error.message}`);
+        return;
+      }
+      sys.log.info(JSON.stringify<RunCommandResult>(ex.value));
+      return;
+    }
+    case "selfcheck": {
+      const sc = await runSelfCheck(sys.fs, sys.proc, sys.net, sys.alloc, action.root, action.program, action.args);
+      if (sc.kind === "err") {
+        sys.log.error(`${sc.error.code}:${sc.error.message}`);
+        return;
+      }
+      sys.log.info(sc.value);
+      return;
+    }
+    case "serve": {
+      let srvRef: HttpServer | null = null;
+      const srvRes = await sys.net.serve({ host: action.host, port: action.port }, async (req: HttpServerRequest) => {
+        if (req.method === "POST" && req.path === "/api/shutdown") {
+          const s = srvRef;
+          if (s !== null) s.stop();
+          return {
+            status: 200,
+            headers: [{ name: "content-type", value: "application/json; charset=utf-8" }],
+            body: "{\"stopped\":true}",
+          };
+        }
+        return await handleHttpRequest(sys.fs, sys.proc, sys.alloc, action.root, req);
+      });
+      if (srvRes.kind === "err") {
+        sys.log.error(`${srvRes.error.code}:${srvRes.error.message}`);
+        return;
+      }
+      await using srv = srvRes.value;
+      srvRef = srv;
+      sys.log.info(`listening=http://${srv.host}:${srv.port}`);
+      await srv.waitClosed();
+      return;
+    }
+  }
+}
+
+test("property checks hold for scanBytes and normalizeRelPath", (_t: Test) => {
+  forAll((bytes: Array<u8>) => {
+    const alloc = TestAlloc.create();
+    const vec = Vec.create<u8>(alloc, bytes.length);
+    for (const b of bytes) vec.push(b);
+    const m1 = scanBytes(vec);
+    const m2 = scanBytes(vec);
+    return (
+      m1.bytes === bytes.length &&
+      m1.newlines <= m1.bytes &&
+      m1.nullBytes <= m1.bytes &&
+      m1.nonAscii <= m1.bytes &&
+      m1.fnv64 === m2.fnv64 &&
+      isBinaryMetrics(m1) === (m1.nullBytes > 0)
+    );
+  });
+
+  forAll((raw: string) => {
+    const norm = normalizeRelPath(raw);
+    if (norm === null) return true;
+    if (norm.length === 0 || norm.startsWith("/") || norm.includes("\\")) return false;
+    for (const seg of norm.split("/")) {
+      if (seg.length === 0 || seg === "." || seg === "..") return false;
+    }
+    return true;
+  });
+});
+
+test("scanBytes computes exact counts and FNV-1a across boundaries", (t: Test) => {
+  const alloc = TestAlloc.create();
+  const empty = Vec.create<u8>(alloc, 0);
+  const me = scanBytes(empty);
+  t.eq(me.bytes, usize(0));
+  t.eq(me.newlines, usize(0));
+  t.eq(me.nullBytes, usize(0));
+  t.eq(me.nonAscii, usize(0));
+  t.eq(me.fnv64, u64(14695981039346656037));
+  t.eq(isBinaryMetrics(me), false);
+
+  const sample = Vec.create<u8>(alloc, 6);
+  sample.push(65);  // 'A'
+  sample.push(10);  // '\n'
+  sample.push(0);   // NUL
+  sample.push(127); // max ASCII
+  sample.push(128); // min non-ASCII
+  sample.push(255); // max u8
+  const ms = scanBytes(sample);
+  t.eq(ms.bytes, usize(6));
+  t.eq(ms.newlines, usize(1));
+  t.eq(ms.nullBytes, usize(1));
+  t.eq(ms.nonAscii, usize(2));
+  t.eq(isBinaryMetrics(ms), true);
+  t.ok(ms.fnv64 !== me.fnv64);
+
+  const singleA = Vec.create<u8>(alloc, 1);
+  singleA.push(65);
+  const singleB = Vec.create<u8>(alloc, 1);
+  singleB.push(66);
+  t.ok(scanBytes(singleA).fnv64 !== scanBytes(singleB).fnv64);
+});
+
+test("pure path, HTML, percent decoding, query, and numeric helpers", (t: Test) => {
+  t.eq(escapeHtml(`a&b<c>d"e`), "a&amp;b&lt;c&gt;d&quot;e");
+  t.eq(escapeHtml("plain"), "plain");
+
+  t.eq(normalizeRelPath("docs/readme.md"), "docs/readme.md");
+  t.ok(normalizeRelPath("") === null);
+  t.ok(normalizeRelPath("/abs.txt") === null);
+  t.ok(normalizeRelPath("sub/") === null);
+  t.ok(normalizeRelPath("a//b") === null);
+  t.ok(normalizeRelPath(".") === null);
+  t.ok(normalizeRelPath("./a") === null);
+  t.ok(normalizeRelPath("..") === null);
+  t.ok(normalizeRelPath("a/../b") === null);
+  t.ok(normalizeRelPath("a\\b") === null);
+  t.ok(normalizeRelPath("\0a") === null);
+  t.ok(normalizeRelPath("a\0b") === null);
+
+  t.eq(joinPath("/ws", "a.txt"), "/ws/a.txt");
+  t.eq(joinPath("/ws/", "a.txt"), "/ws/a.txt");
+  t.eq(joinPath("/", "a.txt"), "/a.txt");
+  t.eq(joinPath(".", "a.txt"), "./a.txt");
+
+  t.ok(parentRelDir("a.txt") === null);
+  t.eq(parentRelDir("sub/a.txt"), "sub");
+  t.eq(parentRelDir("a/b/c.txt"), "a/b");
+
+  t.eq(Url.decodeComponent("sub%2F%E6%97%A5%E6%9C%AC%E8%AA%9E.txt"), ok("sub/日本語.txt"));
+  t.eq(Url.decodeComponent("%ZZ").kind, "err");
+  t.eq(Url.encodeComponent("notes/日本語.txt"), "notes%2F%E6%97%A5%E6%9C%AC%E8%AA%9E.txt");
+  t.ok(Url.getQueryParam("", "path") === null);
+  t.eq(Url.getQueryParam("foo=1&path=sub%2F%E6%97%A5%E6%9C%AC%E8%AA%9E.txt", "path"), "sub/日本語.txt");
+  const qParams = Url.parseQuery("a=1&b=%E6%97%A5");
+  t.eq(qParams.length, usize(2));
+  t.eq(Url.formatQuery(qParams), "a=1&b=%E6%97%A5");
+
+  t.ok(parseU32("") === null);
+  t.ok(parseU32("12px") === null);
+  t.ok(parseU32("+1") === null);
+  t.ok(parseU32("1+2") === null);
+  t.ok(parseU32("1/") === null);
+  t.ok(parseU32("1:2") === null);
+  t.eq(parseU32("0"), u32(0));
+  t.eq(parseU32("4294967295"), u32(4294967295));
+  t.ok(parseU32("4294967296") === null);
+  t.eq(parseU16("65535"), u16(65535));
+  t.ok(parseU16("65536") === null);
+  t.ok(parseU16("bad") === null);
+});
+
+test("parseCliArgs parses commands, flags, env override, and errors", (t: Test) => {
+  const emptyErr = parseCliArgs([], "/cwd", null);
+  t.eq(emptyErr.kind, "error");
+
+  const scanEnv = parseCliArgs(["scan"], "/cwd", "/env");
+  t.eq(scanEnv.kind, "scan");
+  if (scanEnv.kind === "scan") t.eq(scanEnv.root, "/env");
+
+  const scanBlankEnv = parseCliArgs(["scan"], "/cwd", "");
+  t.eq(scanBlankEnv.kind, "scan");
+  if (scanBlankEnv.kind === "scan") t.eq(scanBlankEnv.root, "/cwd");
+
+  const scanOneCharEnv = parseCliArgs(["scan"], "/cwd", "e");
+  t.eq(scanOneCharEnv.kind, "scan");
+  if (scanOneCharEnv.kind === "scan") t.eq(scanOneCharEnv.root, "e");
+
+  const scanCliOverride = parseCliArgs(["scan", "--root", "/cli"], "/cwd", "/env");
+  t.eq(scanCliOverride.kind, "scan");
+  if (scanCliOverride.kind === "scan") t.eq(scanCliOverride.root, "/cli");
+
+  const exDefault = parseCliArgs(["exec", "--bin", "node"], "/cwd", null);
+  t.eq(exDefault.kind, "exec");
+  if (exDefault.kind === "exec") t.eq(exDefault.timeoutMs, u32(5000));
+
+  const srDefault = parseCliArgs(["serve"], "/cwd", null);
+  t.eq(srDefault.kind, "serve");
+  if (srDefault.kind === "serve") {
+    t.eq(srDefault.host, "127.0.0.1");
+    t.eq(srDefault.port, u16(3000));
+  }
+
+  const sv = parseCliArgs(["save", "--path", "a.txt", "--body", "hi"], "/cwd", null);
+  t.eq(sv.kind, "save");
+  if (sv.kind === "save") {
+    t.eq(sv.root, "/cwd");
+    t.eq(sv.path, "a.txt");
+    t.eq(sv.body, "hi");
+  }
+  const svNoBody = parseCliArgs(["save", "--path", "b.txt"], "/cwd", null);
+  if (svNoBody.kind === "save") t.eq(svNoBody.body, "");
+  t.eq(parseCliArgs(["save"], "/cwd", null).kind, "error");
+
+  const dl = parseCliArgs(["delete", "--path", "a.txt"], "/cwd", null);
+  t.eq(dl.kind, "delete");
+  if (dl.kind === "delete") t.eq(dl.path, "a.txt");
+  t.eq(parseCliArgs(["delete"], "/cwd", null).kind, "error");
+
+  const ex = parseCliArgs(["exec", "--bin", "node", "--arg", "-v", "--arg", "x", "--timeout", "1500"], "/cwd", null);
+  t.eq(ex.kind, "exec");
+  if (ex.kind === "exec") {
+    t.eq(ex.program, "node");
+    t.eq(ex.args.length, usize(2));
+    t.eq(ex.timeoutMs, u32(1500));
+  }
+  t.eq(parseCliArgs(["exec"], "/cwd", null).kind, "error");
+  t.eq(parseCliArgs(["exec", "--bin", ""], "/cwd", null).kind, "error");
+  t.eq(parseCliArgs(["exec", "--bin", "node", "--timeout", "bad"], "/cwd", null).kind, "error");
+
+  const sr = parseCliArgs(["serve", "--host", "0.0.0.0", "--port", "8080"], "/cwd", null);
+  t.eq(sr.kind, "serve");
+  if (sr.kind === "serve") {
+    t.eq(sr.host, "0.0.0.0");
+    t.eq(sr.port, u16(8080));
+  }
+  t.eq(parseCliArgs(["serve", "--port", "70000"], "/cwd", null).kind, "error");
+
+  const sc = parseCliArgs(["selfcheck", "--bin", "node", "--arg", "-e"], "/cwd", null);
+  t.eq(sc.kind, "selfcheck");
+  if (sc.kind === "selfcheck") {
+    t.eq(sc.program, "node");
+    t.eq(sc.args.length, usize(1));
+  }
+  t.eq(parseCliArgs(["selfcheck"], "/cwd", null).kind, "error");
+  t.eq(parseCliArgs(["selfcheck", "--bin", ""], "/cwd", null).kind, "error");
+
+  t.eq(parseCliArgs(["scan", "--root"], "/cwd", null).kind, "error");
+  t.eq(parseCliArgs(["scan", "--bogus", "1"], "/cwd", null).kind, "error");
+  t.eq(parseCliArgs(["bogus"], "/cwd", null).kind, "error");
+
+  const html = renderDashboardHtml(`/ws/<tag>&"q"`);
+  t.ok(html.includes("/ws/&lt;tag&gt;&amp;&quot;q&quot;"));
+  t.ok(html.includes("/api/scan"));
+});
+
+test("FakeFs workspace scan, save with backup, snapshot, and delete", (t: Test) => {
+  const fs = FakeFs.create();
+  const alloc = TestAlloc.create();
+
+  t.eq(scanWorkspace(fs, alloc, "/missing").kind, "err");
+  fs.writeText("/notdir", "file");
+  t.eq(scanWorkspace(fs, alloc, "/notdir").kind, "err");
+
+  fs.mkdir("/ws");
+  fs.mkdir("/ws/.sub");
+  fs.writeText("/ws/.hidden", "ignore");
+  fs.writeText("/ws/.sub/ignored.txt", "ignore");
+  const missParentWrite = fs.writeText("/no-parent/x.txt", "x");
+  t.eq(missParentWrite.kind, "err");
+  if (missParentWrite.kind === "err") t.eq(missParentWrite.error.code, "ENOENT");
+  fs.writeText("/ws/a.txt", "one\ntwo\n");
+  fs.addSymlink("/ws/link-to-a", "/ws/a.txt");
+  const bin = Vec.create<u8>(alloc, 3);
+  bin.push(0);
+  bin.push(200);
+  bin.push(65);
+  fs.mkdir("/ws/sub");
+  fs.writeBytes("/ws/sub/data.bin", bin);
+
+  fs.mkdir("/ws/d");
+  fs.writeText("/ws/d/x.txt", "z");
+
+  const scanned = scanWorkspace(fs, alloc, "/ws");
+  t.eq(scanned.kind, "ok");
+  if (scanned.kind === "ok") {
+    t.eq(scanned.value.root, "/ws");
+    t.eq(scanned.value.fileCount, usize(3));
+    t.eq(scanned.value.totalBytes, usize(12));
+    t.eq(scanned.value.totalNewlines, usize(2));
+    t.eq(scanned.value.binaryCount, usize(1));
+    t.eq(scanned.value.files[0].path, "a.txt");
+    t.eq(scanned.value.files[0].binary, false);
+    t.eq(scanned.value.files[1].path, "d/x.txt");
+    t.eq(scanned.value.files[2].path, "sub/data.bin");
+    t.eq(scanned.value.files[2].binary, true);
+  }
+
+  t.eq(readWorkspaceFile(fs, "/ws", "../bad").kind, "err");
+  t.eq(readWorkspaceFile(fs, "/ws", "nope.txt").kind, "err");
+  const readOk = readWorkspaceFile(fs, "/ws", "a.txt");
+  t.eq(readOk.kind, "ok");
+  if (readOk.kind === "ok") t.eq(readOk.value, "one\ntwo\n");
+
+  t.eq(saveWorkspaceFile(fs, alloc, "/ws", "../bad", "x").kind, "err");
+  t.eq(saveWorkspaceFile(fs, alloc, "/ws", "a.txt/child.txt", "x").kind, "err");
+
+  fs.mkdir("/ws/lock.txt.bak");
+  fs.writeText("/ws/lock.txt", "v1");
+  t.eq(saveWorkspaceFile(fs, alloc, "/ws", "lock.txt", "v2").kind, "err");
+
+  const sv1 = saveWorkspaceFile(fs, alloc, "/ws", "notes/hello.txt", "first\n");
+  t.eq(sv1.kind, "ok");
+  if (sv1.kind === "ok") {
+    t.eq(sv1.value.backedUp, false);
+    t.eq(sv1.value.bytes, usize(6));
+  }
+  const sv2 = saveWorkspaceFile(fs, alloc, "/ws", "notes/hello.txt", "second\n");
+  t.eq(sv2.kind, "ok");
+  if (sv2.kind === "ok") t.eq(sv2.value.backedUp, true);
+  t.eq(readWorkspaceFile(fs, "/ws", "notes/hello.txt.bak").kind, "ok");
+
+  t.eq(snapshotFileBytes(fs, alloc, "/ws", "../bad", "dst.bin").kind, "err");
+  t.eq(snapshotFileBytes(fs, alloc, "/ws", "notes/hello.txt", "../bad").kind, "err");
+  t.eq(snapshotFileBytes(fs, alloc, "/ws", "notes/hello.txt", "a.txt/sub.bin").kind, "err");
+  t.eq(snapshotFileBytes(fs, alloc, "/ws", "missing.txt", "out.bin").kind, "err");
+  t.eq(snapshotFileBytes(fs, alloc, "/ws", "notes/hello.txt", "sub").kind, "err");
+
+  const snapOk = snapshotFileBytes(fs, alloc, "/ws", "notes/hello.txt", "copy/snap.bin");
+  t.eq(snapOk.kind, "ok");
+  if (snapOk.kind === "ok") t.eq(snapOk.value, usize(7));
+
+  t.eq(deleteWorkspaceFile(fs, "/ws", "../bad").kind, "err");
+  t.eq(deleteWorkspaceFile(fs, "/ws", "no-file.txt").kind, "err");
+  t.eq(deleteWorkspaceFile(fs, "/ws", "copy/snap.bin").kind, "ok");
+  t.eq(fs.exists("/ws/copy/snap.bin"), false);
+});
+
+test("handleHttpRequest and runSelfCheck cover FakeProc and FakeNet routes and error paths", async (t: Test) => {
+  const fs = FakeFs.create();
+  const proc = FakeProc.create();
+  const net = FakeNet.create();
+  const alloc = TestAlloc.create();
+  fs.mkdir("/ws");
+
+  const badExec = await runWorkspaceTool(proc, "/ws", "", [], 100);
+  t.eq(badExec.kind, "err");
+
+  proc.onRun((req: ProcRequest) => {
+    if (req.program === "fail-cmd") return err({ code: "ENOENT", message: "missing bin" });
+    if (req.program === "perm-cmd") return err({ code: "EACCES", message: "denied" });
+    if (req.timeoutMs !== 2000 && req.timeoutMs !== 500) return err({ code: "EINVAL", message: "bad timeout" });
+    return ok({ exitCode: 0, stdout: `ran:${req.program}:${req.args.join(",")}`, stderr: "", timedOut: false });
+  });
+
+  t.eq((await runWorkspaceTool(proc, "/ws", "fail-cmd", [], 100)).kind, "err");
+  const okExec = await runWorkspaceTool(proc, "/ws", "tool", ["a", "b"], 500);
+  t.eq(okExec.kind, "ok");
+  if (okExec.kind === "ok") t.eq(okExec.value.stdout, "ran:tool:a,b");
+
+  // HTTP route coverage
+  t.eq((await handleHttpRequest(fs, proc, alloc, "/ws", { method: "POST", path: "/", query: "", headers: [], body: "" })).status, u16(405));
+  t.eq((await handleHttpRequest(fs, proc, alloc, "/ws", { method: "GET", path: "/", query: "", headers: [], body: "" })).status, u16(200));
+  t.eq((await handleHttpRequest(fs, proc, alloc, "/ws", { method: "POST", path: "/api/health", query: "", headers: [], body: "" })).status, u16(405));
+  t.eq((await handleHttpRequest(fs, proc, alloc, "/ws", { method: "POST", path: "/api/scan", query: "", headers: [], body: "" })).status, u16(405));
+  t.eq((await handleHttpRequest(fs, proc, alloc, "/missing", { method: "GET", path: "/api/scan", query: "", headers: [], body: "" })).status, u16(404));
+  fs.writeText("/asfile", "x");
+  t.eq((await handleHttpRequest(fs, proc, alloc, "/asfile", { method: "GET", path: "/api/scan", query: "", headers: [], body: "" })).status, u16(400));
+  t.eq((await handleHttpRequest(fs, proc, alloc, "/ws", { method: "POST", path: "/api/file", query: "", headers: [], body: "" })).status, u16(405));
+  t.eq((await handleHttpRequest(fs, proc, alloc, "/ws", { method: "GET", path: "/api/file", query: "", headers: [], body: "" })).status, u16(400));
+  t.eq((await handleHttpRequest(fs, proc, alloc, "/ws", { method: "GET", path: "/api/file", query: "path=nope.txt", headers: [], body: "" })).status, u16(404));
+  t.eq((await handleHttpRequest(fs, proc, alloc, "/ws", { method: "GET", path: "/api/save", query: "", headers: [], body: "" })).status, u16(405));
+  t.eq((await handleHttpRequest(fs, proc, alloc, "/ws", { method: "POST", path: "/api/save", query: "", headers: [], body: "{bad" })).status, u16(400));
+  t.eq((await handleHttpRequest(fs, proc, alloc, "/ws", { method: "POST", path: "/api/save", query: "", headers: [], body: "{}" })).status, u16(400));
+  t.eq((await handleHttpRequest(fs, proc, alloc, "/ws", { method: "POST", path: "/api/save", query: "", headers: [], body: JSON.stringify<SavePayload>({ path: "../x", content: "y" }) })).status, u16(400));
+  t.eq((await handleHttpRequest(fs, proc, alloc, "/ws", { method: "GET", path: "/api/snapshot", query: "", headers: [], body: "" })).status, u16(405));
+  t.eq((await handleHttpRequest(fs, proc, alloc, "/ws", { method: "POST", path: "/api/snapshot", query: "", headers: [], body: "{bad" })).status, u16(400));
+  t.eq((await handleHttpRequest(fs, proc, alloc, "/ws", { method: "POST", path: "/api/snapshot", query: "", headers: [], body: "{}" })).status, u16(400));
+  t.eq((await handleHttpRequest(fs, proc, alloc, "/ws", { method: "POST", path: "/api/snapshot", query: "", headers: [], body: JSON.stringify<SnapshotPayload>({ src: "miss.txt", dst: "out.bin" }) })).status, u16(404));
+  t.eq((await handleHttpRequest(fs, proc, alloc, "/ws", { method: "GET", path: "/api/delete", query: "", headers: [], body: "" })).status, u16(405));
+  t.eq((await handleHttpRequest(fs, proc, alloc, "/ws", { method: "POST", path: "/api/delete", query: "", headers: [], body: "{bad" })).status, u16(400));
+  t.eq((await handleHttpRequest(fs, proc, alloc, "/ws", { method: "POST", path: "/api/delete", query: "", headers: [], body: "{}" })).status, u16(400));
+  t.eq((await handleHttpRequest(fs, proc, alloc, "/ws", { method: "POST", path: "/api/delete", query: "", headers: [], body: JSON.stringify<DeletePayload>({ path: "miss.txt" }) })).status, u16(404));
+  await handleHttpRequest(fs, proc, alloc, "/ws", { method: "POST", path: "/api/save", query: "", headers: [], body: JSON.stringify<SavePayload>({ path: "tmp.txt", content: "x" }) });
+  const delOk = await handleHttpRequest(fs, proc, alloc, "/ws", { method: "POST", path: "/api/delete", query: "", headers: [], body: JSON.stringify<DeletePayload>({ path: "tmp.txt" }) });
+  t.eq(delOk.status, u16(200));
+  t.ok(delOk.body.includes("\"ok\":true"));
+  t.eq((await handleHttpRequest(fs, proc, alloc, "/ws", { method: "GET", path: "/api/run", query: "", headers: [], body: "" })).status, u16(405));
+  t.eq((await handleHttpRequest(fs, proc, alloc, "/ws", { method: "POST", path: "/api/run", query: "", headers: [], body: "{bad" })).status, u16(400));
+  t.eq((await handleHttpRequest(fs, proc, alloc, "/ws", { method: "POST", path: "/api/run", query: "", headers: [], body: "{}" })).status, u16(400));
+  t.eq((await handleHttpRequest(fs, proc, alloc, "/ws", { method: "POST", path: "/api/run", query: "", headers: [], body: JSON.stringify<ExecPayload>({ program: "perm-cmd", args: [], timeoutMs: 100 }) })).status, u16(500));
+  t.eq((await handleHttpRequest(fs, proc, alloc, "/ws", { method: "GET", path: "/api/unknown", query: "", headers: [], body: "" })).status, u16(404));
+
+  // Occupy port 1 so runSelfCheck proves ephemeral port 0 allocation
+  const blockRes = await net.serve({ host: "127.0.0.1", port: 1 }, async (_req: HttpServerRequest) => ({ status: 200, headers: [], body: "" }));
+  t.eq(blockRes.kind, "ok");
+  if (blockRes.kind === "ok") {
+    await using _blocker = blockRes.value;
+    const scOk = await runSelfCheck(fs, proc, net, alloc, "/ws", "echo", ["ok"]);
+    t.eq(scOk.kind, "ok");
+    if (scOk.kind === "ok") {
+      t.ok(scOk.value.startsWith("selfcheck:ok:files=3:saved=true:snap={\"src\":\"notes/hello.txt\",\"dst\":\"notes/hello.bak.bin\",\"bytes\":13}:run=0:ran:echo:ok"));
+    }
+  }
+  t.ok(fs.exists("/ws/notes/hello.txt.bak"));
+  t.eq(fs.exists("/ws/notes/hello.bak.bin"), false);
+  t.eq(net.requests().length, usize(9));
+
+  // Selfcheck failure modes and probeHealth FakeNet onFetch coverage
+  t.eq((await runSelfCheck(fs, proc, net, alloc, "/asfile", "echo", [])).kind, "err");
+  t.eq((await runSelfCheck(fs, proc, net, alloc, "/ws", "fail-cmd", [])).kind, "err");
+
+  const probeNet = FakeNet.create();
+  probeNet.onFetch((_req: HttpClientRequest) => err({ code: "ECONNREFUSED", message: "down" }));
+  t.eq((await probeHealth(probeNet, "http://127.0.0.1:9999")).kind, "err");
+  probeNet.onFetch((_req: HttpClientRequest) => ok({ status: 500, headers: [], body: JSON.stringify<HealthPayload>({ status: "ok", root: "/ws" }) }));
+  const badStatus = await probeHealth(probeNet, "http://127.0.0.1:9999");
+  t.eq(badStatus.kind, "err");
+  if (badStatus.kind === "err") t.eq(badStatus.error.code, "EIO");
+  probeNet.onFetch((_req: HttpClientRequest) => ok({ status: 200, headers: [], body: "{bad" }));
+  t.eq((await probeHealth(probeNet, "http://127.0.0.1:9999")).kind, "err");
+  probeNet.onFetch((_req: HttpClientRequest) => ok({ status: 200, headers: [], body: "{}" }));
+  t.eq((await probeHealth(probeNet, "http://127.0.0.1:9999")).kind, "err");
+  probeNet.onFetch((_req: HttpClientRequest) => ok({ status: 200, headers: [], body: JSON.stringify<HealthPayload>({ status: "ok", root: "/ws" }) }));
+  const hOk = await probeHealth(probeNet, "http://127.0.0.1:9999");
+  t.eq(hOk.kind, "ok");
+  if (hOk.kind === "ok") t.eq(hOk.value.root, "/ws");
+
+  // FakeNet graceful stop() + waitClosed() inside handler
+  let srvHandle: HttpServer | null = null;
+  const gRes = await net.serve({ host: "127.0.0.1", port: 0 }, async (req: HttpServerRequest) => {
+    if (req.path === "/stop") {
+      const h = srvHandle;
+      if (h !== null) h.stop();
+    }
+    return { status: 200, headers: [], body: `stopped:${req.path}` };
+  });
+  t.eq(gRes.kind, "ok");
+  if (gRes.kind === "ok") {
+    await using gSrv = gRes.value;
+    srvHandle = gSrv;
+    t.eq(gSrv.isOpen(), true);
+    const stopFetch = await net.fetch(`http://127.0.0.1:${gSrv.port}/stop`);
+    t.eq(stopFetch.kind, "ok");
+    if (stopFetch.kind === "ok") t.eq(stopFetch.value.body, "stopped:/stop");
+    await gSrv.waitClosed();
+    t.eq(gSrv.isOpen(), false);
+  }
+});

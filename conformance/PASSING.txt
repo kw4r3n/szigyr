@@ -674,6 +674,7 @@ reject/E6002-contract-mutating-method.szigyr
 reject/E6002-ensures-assigns.szigyr
 reject/E6002-ensures-consumes-result.szigyr
 reject/E6002-ensures-owned-arg.szigyr
+reject/E6002-fakefs-addsymlink-in-contract.szigyr
 reject/E6002-forAll-in-requires.szigyr
 reject/E6002-fs-readbytes-in-contract.szigyr
 reject/E6002-fs-remove-in-contract.szigyr
@@ -881,6 +882,7 @@ run/26-trap-div-by-zero.szigyr
 run/260-fs-dir-stat-atomic.szigyr
 run/261-proc-and-fake-proc.szigyr
 run/262-net-and-fake-net.szigyr
+run/263-url-httpserver-stop-fakefs.szigyr
 run/27-trap-ownedcell-empty.szigyr
 run/28-trap-shift-range.szigyr
 run/29-trap-invariant.szigyr

@@ -83,3 +83,48 @@ export function jsonParse(text: string, pos?: Pos): Result<unknown, { readonly c
     return trap("T006", `parse: ${e instanceof Error ? e.message : String(e)}`, pos);
   }
 }
+
+export interface QueryParam { readonly name: string; readonly value: string }
+
+export const Url = {
+  parseQuery(query: string): QueryParam[] {
+    const out: QueryParam[] = [];
+    for (const [name, value] of new URLSearchParams(query)) out.push({ name, value });
+    return out;
+  },
+  getQueryParam(query: string, name: string): string | null {
+    return new URLSearchParams(query).get(name);
+  },
+  formatQuery(params: readonly QueryParam[]): string {
+    const sp = new URLSearchParams();
+    for (const p of params) sp.append(p.name, p.value);
+    return sp.toString();
+  },
+  encodeComponent(s: string): string {
+    try {
+      return encodeURIComponent(s);
+    } catch {
+      let fixed = "";
+      for (let i = 0; i < s.length; i++) {
+        const c = s.charCodeAt(i);
+        if (c >= 0xd800 && c <= 0xdbff) {
+          const next = i + 1 < s.length ? s.charCodeAt(i + 1) : 0;
+          if (next >= 0xdc00 && next <= 0xdfff) { fixed += s[i]! + s[i + 1]!; i++; }
+          else fixed += "\uFFFD";
+        } else if (c >= 0xdc00 && c <= 0xdfff) {
+          fixed += "\uFFFD";
+        } else {
+          fixed += s[i]!;
+        }
+      }
+      return encodeURIComponent(fixed);
+    }
+  },
+  decodeComponent(s: string): Result<string, { readonly code: string; readonly message: string }> {
+    try {
+      return ok(decodeURIComponent(s));
+    } catch (e) {
+      return err({ code: "EINVAL", message: e instanceof Error ? e.message : String(e) });
+    }
+  },
+};

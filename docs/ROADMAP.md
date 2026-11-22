@@ -247,6 +247,7 @@
 - [x] `Proc`（`run` / `env` / `cwd` / `args`、`shell: false`、タイムアウト `SIGKILL`、`szigyr run ... [-- <args...>]` 引数受け渡し）＋決定的な偽物 `FakeProc`。
 - [x] `Net`（`fetch` / `serve`、`HttpServer` の `await using` 対応、`nodeNet` trap 伝搬・keep-alive 即時クローズ・終了時サーバ自動回収）＋決定的な偽物 `FakeNet`。
 - **検証（D177）**: `pnpm typecheck` 通過、`pnpm verify:conformance` 通過（`accept=84 reject=642 run=215`、`ok`）、`rtk bypass pnpm test` 45 ファイル 446/446 通過（`tool-authorities.test.ts` 6/6・`std.test.ts` 20/20 含む）、`rtk bypass pnpm conformance` 1 ファイル 1,298/1,298 通過、`rtk bypass pnpm bench` 通過（`dot_f32` 1.00x / `saxpy_f32` 0.99x / `prefix_i32` 1.08x / `stencil_f64` 0.99x / `particles_aos_f32` 1.37x）。
+- **実アプリドッグフーディング＆実用改善（D178、`examples/workspace-tool/`）**: `scan.szigyr`（`"use rt"`・`scanBytes`、`proved=8 failed=0 unknown=0 timeout=0`）＋ `core.szigyr`（`Fs` 拡充・`Proc`・`Net`・`Url`・WebUI・`runSelfCheck`）＋ `main.szigyr`（`HttpServer.stop()`/`waitClosed()` 優雅停止・`FakeFs.addSymlink`/厳格親検証含む単体テスト＋`forAll`）を実装。あわせて `HttpServer.stop()`/`waitClosed()`、`Url`（UTF-8 クエリ／パーセント符号化＋`QueryParam`）、`FakeFs` の親未存在 `ENOENT` 厳格化と `addSymlink` を処理系・標準ライブラリへ追加し、適合テスト 2 件（`run/263`, `reject/E6002`）を加えた。`packages/compiler/test/workspace-tool-example.test.ts`（6/6）で JS/C/Wasm 3 バックエンド一致、`szigyr prove --all`（`failed=0 unknown=0`）、`szigyr mutate --all`（`225 killed / 5 timeout / 0 survived`、28 targets）、CLI `--`、`build --target=node --backend=c --release` 再配置実行・UTF-8 HTTP・Playwright Chromium UI・`/api/shutdown`（終了 0）を検証。
 
 ## 保留
 

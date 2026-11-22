@@ -186,11 +186,21 @@ export const nodeNet: Net = {
       return Promise.resolve(err({ code: "EINVAL", message: `Net.serve: invalid port ${config.port}` }));
     }
     return new Promise((resolve) => {
+      let inFlight = 0;
+      let closing = false;
+      let closed = false;
+      let resolveClosed!: () => void;
+      const closedP = new Promise<void>((r) => { resolveClosed = r; });
+
       const server = http.createServer((req, res) => {
         const chunks: Buffer[] = [];
         req.on("data", (c: Buffer) => chunks.push(c));
         req.on("end", () => {
           void (async () => {
+            inFlight++;
+            const kick = (): void => { if (closing && inFlight === 0) server.closeIdleConnections?.(); };
+            res.once("finish", kick);
+            res.once("close", kick);
             const u = new URL(req.url ?? "/", "http://127.0.0.1");
             const headers: HttpHeader[] = [];
             for (let i = 0; i + 1 < req.rawHeaders.length; i += 2) {
@@ -207,6 +217,7 @@ export const nodeNet: Net = {
               const resp = await handler(httpReq);
               res.statusCode = resp.status;
               for (const h of resp.headers) res.appendHeader(h.name, h.value);
+              if (closing && !res.headersSent) res.setHeader("connection", "close");
               res.end(resp.body);
             } catch (e) {
               const t = asTrap(e);
@@ -214,8 +225,12 @@ export const nodeNet: Net = {
                 ? { code: t.code, ...(t.pos ? { file: t.pos.file, line: t.pos.line, col: t.pos.col } : {}), message: t.message }
                 : { code: "T006", message: String(e) };
               noteIsolateTrap(ft);
+              if (closing && !res.headersSent) res.setHeader("connection", "close");
               if (!res.headersSent) { res.statusCode = 500; res.end("internal error"); }
               else if (!res.writableEnded) { res.end(); }
+            } finally {
+              inFlight--;
+              if (closing && inFlight === 0 && res.writableEnded) server.closeIdleConnections?.();
             }
           })();
         });
@@ -224,20 +239,33 @@ export const nodeNet: Net = {
         server.removeListener("listening", onListening);
         resolve(err(ioError(e)));
       };
+      let forceClose!: () => Promise<void>;
+      const stop = (): void => {
+        if (closing) return;
+        closing = true;
+        activeNetServers.delete(forceClose);
+        server.close(() => { closed = true; resolveClosed(); });
+        server.closeIdleConnections?.();
+      };
+      forceClose = async (): Promise<void> => {
+        stop();
+        if (!closed && inFlight === 0) server.closeAllConnections?.();
+        await closedP;
+      };
       const onListening = (): void => {
         server.removeListener("error", onListenErr);
         const addr = server.address();
         const port = typeof addr === "object" && addr ? addr.port : config.port;
-        let closed = false;
-        const close = async (): Promise<void> => {
-          if (closed) return;
-          closed = true;
-          activeNetServers.delete(close);
-          server.closeAllConnections?.();
-          await new Promise<void>((r) => server.close(() => r()));
-        };
-        activeNetServers.add(close);
-        resolve(ok({ host: config.host, port, close, disposeAsync: close, isOpen: () => !closed }));
+        activeNetServers.add(forceClose);
+        resolve(ok({
+          host: config.host,
+          port,
+          stop,
+          waitClosed: () => closedP,
+          close: forceClose,
+          disposeAsync: forceClose,
+          isOpen: () => !closing && !closed,
+        }));
       };
       server.once("error", onListenErr);
       server.once("listening", onListening);

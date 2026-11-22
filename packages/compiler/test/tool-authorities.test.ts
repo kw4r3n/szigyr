@@ -376,4 +376,94 @@ export async function main(sys: System): Promise<void> {
       await loaded.stop();
     }
   });
+
+  it("supports real nodeNet HttpServer.stop()/waitClosed() self-shutdown and Url E2E (node, browser, strict E4001, contract E6002)", async () => {
+    const dir = makeTmp("d178");
+
+    const stopFile = join(dir, "self-stop.szigyr");
+    writeFileSync(stopFile, `
+export async function main(sys: System): Promise<void> {
+  let srvRef: HttpServer | null = null;
+  const sRes = await sys.net.serve({ host: "127.0.0.1", port: 0 }, async (req: HttpServerRequest) => {
+    if (req.path === "/shutdown") {
+      const s = srvRef;
+      if (s !== null) s.stop();
+      return { status: 200, headers: [], body: "stopped-ok" };
+    }
+    return { status: 200, headers: [], body: "alive" };
+  });
+  if (sRes.kind !== "ok") return;
+  await using srv = sRes.value;
+  srvRef = srv;
+  const p = await sys.net.fetch(\`http://127.0.0.1:\${srv.port}/ping\`);
+  const sd = await sys.net.fetch(\`http://127.0.0.1:\${srv.port}/shutdown\`);
+  await srv.waitClosed();
+  const pStr = p.kind === "ok" ? p.value.body : "err";
+  const sStr = sd.kind === "ok" ? sd.value.body : "err";
+  sys.log.info(\`ping=\${pStr};shut=\${sStr};open=\${srv.isOpen()}\`);
+}
+`);
+    const stopRes = await run(stopFile);
+    expect(stopRes.diagnostics).toEqual([]);
+    expect(stopRes.trap).toBeNull();
+    expect(stopRes.stdout.trim()).toBe("ping=alive;shut=stopped-ok;open=false");
+
+    const urlNodeFile = join(dir, "url-node.szigyr");
+    writeFileSync(urlNodeFile, `
+export function main(sys: System): void {
+  const qp: Array<QueryParam> = Url.parseQuery("a=1&name=%E6%97%A5%E6%9C%AC%E8%AA%9E");
+  const got = Url.getQueryParam("x=1&name=%E6%97%A5%E6%9C%AC%E8%AA%9E", "name") ?? "";
+  const formatted = Url.formatQuery(qp);
+  const enc = Url.encodeComponent("notes/日本語.txt");
+  const dec = Url.decodeComponent(enc);
+  const lone = Url.encodeComponent(\`\${String.fromCodePoint(u32(65))}\${String.fromCodePoint(u32(55296))}\`);
+  const bad = Url.decodeComponent("%ZZ");
+  const decStr = dec.kind === "ok" ? dec.value : "err";
+  const badCode = bad.kind === "err" ? bad.error.code : "ok";
+  sys.log.info(\`got=\${got};fmt=\${formatted};dec=\${decStr};lone=\${lone.length > 0};bad=\${badCode}\`);
+}
+`);
+    const urlRes = await run(urlNodeFile);
+    expect(urlRes.diagnostics).toEqual([]);
+    expect(urlRes.trap).toBeNull();
+    expect(urlRes.stdout.trim()).toBe("got=日本語;fmt=a=1&name=%E6%97%A5%E6%9C%AC%E8%AA%9E;dec=notes/日本語.txt;lone=true;bad=EINVAL");
+
+    const diagFile = join(dir, "diags.szigyr");
+    writeFileSync(diagFile, `
+function strictUrl(): string {
+  "use owned";
+  return Url.encodeComponent("x");
+}
+function strictStop(s: HttpServer): void {
+  "use owned";
+  s.stop();
+}
+function stopInContract(s: HttpServer): i32 {
+  requires(((): boolean => { s.stop(); return true; })());
+  return 1;
+}
+function symInContract(fs: FakeFs): i32 {
+  requires(fs.addSymlink("a", "b").kind === "ok");
+  return 1;
+}
+`);
+    const dCodes = check(diagFile).map((d) => `${d.range.start.line}:${d.code}`);
+    expect(dCodes).toContain("4:E4001");
+    expect(dCodes).toContain("8:E4001");
+    expect(dCodes).toContain("11:E6002");
+    expect(dCodes).toContain("15:E6002");
+
+    const browserOut = join(dir, "url-browser");
+    const bBrowser = await runCli(["build", "--target=browser", "-o", browserOut, urlNodeFile]);
+    expect(bBrowser.code, bBrowser.err).toBe(0);
+    const appMod = await import(pathToFileURL(join(browserOut, "app.js")).href);
+    const loaded = await appMod.load();
+    try {
+      const bRes = await loaded.run();
+      expect(bRes.trap).toBeNull();
+      expect(bRes.stdout.trim()).toBe("got=日本語;fmt=a=1&name=%E6%97%A5%E6%9C%AC%E8%AA%9E;dec=notes/日本語.txt;lone=true;bad=EINVAL");
+    } finally {
+      await loaded.stop();
+    }
+  });
 });

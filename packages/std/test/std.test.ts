@@ -114,6 +114,46 @@ describe("fakes", () => {
     expect(fs.remove("/a").kind).toBe("ok");
     expect(fs.exists("/a")).toBe(false);
     expect(fs.remove("/a").kind).toBe("err"); // ENOENT
+
+    // Strict parent directory enforcement (parity with nodeFs) and addSymlink semantics
+    const missingWrites = [
+      fs.writeText("/no-parent/a.txt", "hi"),
+      fs.writeBytes("/no-parent/b.bin", src),
+      fs.writeTextAtomic("/no-parent/c.txt", "hi"),
+      fs.writeBytesAtomic("/no-parent/d.bin", src),
+    ];
+    for (const r of missingWrites) expect(r).toMatchObject({ kind: "err", error: { code: "ENOENT" } });
+
+    expect(fs.mkdir("/sym/sub")).toEqual({ kind: "ok", value: null });
+    expect(fs.writeText("/sym/sub/real.txt", "payload")).toEqual({ kind: "ok", value: null });
+    expect(fs.addSymlink("/sym/sub/link.txt", "real.txt")).toEqual({ kind: "ok", value: null });
+    expect(fs.addSymlink("/sym/broken", "/sym/missing.txt")).toEqual({ kind: "ok", value: null });
+    expect(fs.addSymlink("/sym/loopA", "loopB")).toEqual({ kind: "ok", value: null });
+    expect(fs.addSymlink("/sym/loopB", "loopA")).toEqual({ kind: "ok", value: null });
+    expect(fs.addSymlink("/sym/sub/link.txt", "other")).toMatchObject({ kind: "err", error: { code: "EEXIST" } });
+    expect(fs.addSymlink("/sym/no-dir/x", "y")).toMatchObject({ kind: "err", error: { code: "ENOENT" } });
+
+    expect(fs.stat("/sym/sub/link.txt")).toMatchObject({ kind: "ok", value: { kind: "symlink" } });
+    expect(fs.readDir("/sym/sub")).toEqual({
+      kind: "ok",
+      value: [{ name: "link.txt", kind: "symlink" }, { name: "real.txt", kind: "file" }],
+    });
+    expect(fs.exists("/sym/sub/link.txt")).toBe(true);
+    expect(fs.exists("/sym/broken")).toBe(false);
+    expect(fs.exists("/sym/loopA")).toBe(false);
+    expect(fs.readText("/sym/sub/link.txt")).toEqual({ kind: "ok", value: "payload" });
+    expect(fs.readBytes("/sym/sub/link.txt", dst)).toEqual({ kind: "ok", value: 7 });
+    expect(fs.readText("/sym/broken")).toMatchObject({ kind: "err", error: { code: "ENOENT" } });
+    expect(fs.readText("/sym/loopA")).toMatchObject({ kind: "err", error: { code: "ELOOP" } });
+
+    expect(fs.rename("/sym/sub/link.txt", "/sym/sub/moved-link")).toEqual({ kind: "ok", value: null });
+    expect(fs.readText("/sym/sub/moved-link")).toEqual({ kind: "ok", value: "payload" });
+    expect(fs.writeTextAtomic("/sym/sub/moved-link", "overwritten")).toEqual({ kind: "ok", value: null });
+    expect(fs.stat("/sym/sub/moved-link")).toMatchObject({ kind: "ok", value: { kind: "file" } });
+    expect(fs.readText("/sym/sub/real.txt")).toEqual({ kind: "ok", value: "payload" });
+    expect(fs.remove("/sym/broken")).toEqual({ kind: "ok", value: null });
+    expect(fs.stat("/sym/broken")).toMatchObject({ kind: "err", error: { code: "ENOENT" } });
+    expect(fs.remove("/sym")).toEqual({ kind: "ok", value: null });
   });
   it("FakeSpawn roundtrip, alloc 2nd param, trap forwarding, and deadlock detection", async () => {
     setForeignTrapCheck(() => {
@@ -225,6 +265,22 @@ describe("fakes", () => {
     const r2 = await n.fetch("https://example.invalid/api");
     expect(r2).toEqual({ kind: "ok", value: { status: 200, headers: [], body: "mock:https://example.invalid/api" } });
     expect(n.requests().map((r) => r.url)).toContain("https://example.invalid/api");
+
+    // stop() inside handler + waitClosed()
+    let stopTarget: { stop(): void; waitClosed(): Promise<void>; isOpen(): boolean } | undefined;
+    const gsRes = await n.serve({ host: "127.0.0.1", port: 0 }, async () => {
+      stopTarget?.stop();
+      return { status: 200, headers: [], body: "bye" };
+    });
+    expect(gsRes.kind).toBe("ok");
+    if (gsRes.kind === "ok") {
+      stopTarget = gsRes.value;
+      expect(stopTarget.isOpen()).toBe(true);
+      const gr = await n.fetch(`http://127.0.0.1:${gsRes.value.port}/shutdown`);
+      expect(gr).toEqual({ kind: "ok", value: { status: 200, headers: [], body: "bye" } });
+      await stopTarget.waitClosed();
+      expect(stopTarget.isOpen()).toBe(false);
+    }
   });
   it("TestAlloc", () => { expect(TestAlloc.create()).toBeDefined(); });
 });

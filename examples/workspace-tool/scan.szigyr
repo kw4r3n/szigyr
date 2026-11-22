@@ -1,0 +1,42 @@
+export type ByteMetrics = {
+  readonly bytes: usize;
+  readonly newlines: usize;
+  readonly nullBytes: usize;
+  readonly nonAscii: usize;
+  readonly fnv64: u64;
+};
+
+export function scanBytes(data: Ref<Slice<u8>>): ByteMetrics {
+  "use rt";
+  ensures((r: ByteMetrics) =>
+    r.newlines <= r.bytes &&
+    r.nullBytes <= r.bytes &&
+    r.nonAscii <= r.bytes
+  );
+  const n = data.length;
+  let newlines: usize = 0;
+  let nullBytes: usize = 0;
+  let nonAscii: usize = 0;
+  let fnv: u64 = 14695981039346656037;
+  const prime: u64 = 1099511628211;
+  for (let i: usize = 0; i < n; i += 1) {
+    invariant(newlines <= i && nullBytes <= i && nonAscii <= i);
+    const b = data[i];
+    if (b === 10) {
+      newlines += 1;
+    }
+    if (b === 0) {
+      nullBytes += 1;
+    }
+    if (b >= 128) {
+      nonAscii += 1;
+    }
+    fnv = wrapMul(fnv ^ u64(b), prime);
+  }
+  return { bytes: n, newlines, nullBytes, nonAscii, fnv64: fnv };
+}
+
+export function isBinaryMetrics(m: ByteMetrics): boolean {
+  "use rt";
+  return m.nullBytes > 0;
+}

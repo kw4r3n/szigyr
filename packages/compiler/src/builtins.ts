@@ -3,7 +3,7 @@ import {
   AUDIO_CONFIG_RECORD, ASYNC_DISPOSABLE, BOOL, DIR_ENTRY_RECORD, DISPOSABLE, ENV_VAR_RECORD, ERROR_RECORD, F64, FILE_STAT_RECORD,
   HTTP_CLIENT_REQUEST_RECORD, HTTP_HEADER_RECORD, HTTP_REQUEST_INIT_RECORD, HTTP_RESPONSE_RECORD, HTTP_SERVER_CONFIG_RECORD,
   HTTP_SERVER_REQUEST_RECORD, HTTP_SERVER_RESPONSE_RECORD, NULL, PROC_OPTIONS_RECORD, PROC_OUTPUT_RECORD, PROC_REQUEST_RECORD,
-  STR, UNKNOWN, USIZE, VOID, fn, gen, newTParam, nullable, num, opaque, result, record, ro, unref,
+  QUERY_PARAM_RECORD, STR, UNKNOWN, USIZE, VOID, fn, gen, newTParam, nullable, num, opaque, result, record, ro, unref,
   type FnType, type GenName, type NumName, type Type, AUTHORITIES, NUM_NAMES, GEN_ARITY, OPAQUE_NAMES,
 } from "./types.ts";
 import { DETMATH_BINARY, DETMATH_UNARY } from "./detmath.ts";
@@ -19,7 +19,7 @@ export const GLOBAL_AUTHORITIES = new Set([
 ]);
 
 /** Namespace objects (Q034). */
-export const NAMESPACES = new Set(["Math", "Number", "JSON", "String", "Promise", "Vec", "Pool", "Arena", "Ring", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeSpawn", "FakeAudio", "FakeNet", "FakeProc", "TestAlloc", "DetMath", "Ptr", "CHandle"]);
+export const NAMESPACES = new Set(["Math", "Number", "JSON", "Url", "String", "Promise", "Vec", "Pool", "Arena", "Ring", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeSpawn", "FakeAudio", "FakeNet", "FakeProc", "TestAlloc", "DetMath", "Ptr", "CHandle"]);
 /** Builtin functions handled by the checker (§12). */
 export const BUILTIN_FUNCTIONS = new Set([...NUM_NAMES, "wrapAdd", "wrapSub", "wrapMul", "divTrunc", "rem", "ok", "err", "panic", "cast", "requires", "ensures", "invariant", "test", "forAll", "cfn"]);
 /** §13: the identifier-like names it reserves (declaring or referencing one is E1000 / E2000, Q231). */
@@ -31,7 +31,7 @@ export const BUILTIN_NAMES = new Set<string>([
   ...SPEC_RESERVED,
   "boolean", "string", "number", "null", "void", "unknown", "never", "Result", "Struct", "RingPair", "JsError", "CastError", "IoError", "AudioConfig",
   "DirEntry", "FileStat", "EnvVar", "ProcOptions", "ProcOutput", "ProcRequest",
-  "HttpHeader", "HttpRequestInit", "HttpResponse", "HttpServerConfig", "HttpServerRequest", "HttpServerResponse", "HttpClientRequest",
+  "HttpHeader", "HttpRequestInit", "HttpResponse", "HttpServerConfig", "HttpServerRequest", "HttpServerResponse", "HttpClientRequest", "QueryParam",
   "Resource", "Disposable", "AsyncDisposable", "CStruct",
   ...Object.keys(GEN_ARITY), ...OPAQUE_NAMES, ...NAMESPACES, ...BUILTIN_FUNCTIONS,
 ]);
@@ -71,6 +71,7 @@ export function builtinType(name: string): Type | undefined {
     case "HttpServerRequest": return HTTP_SERVER_REQUEST_RECORD;
     case "HttpServerResponse": return HTTP_SERVER_RESPONSE_RECORD;
     case "HttpClientRequest": return HTTP_CLIENT_REQUEST_RECORD;
+    case "QueryParam": return QUERY_PARAM_RECORD;
     case "Disposable": return DISPOSABLE;
     case "AsyncDisposable": return ASYNC_DISPOSABLE;
   }
@@ -157,7 +158,7 @@ export function opaqueMembers(name: string): Members {
     // §15.5: `open` is checked in expr.ts (audioOpenCall, E2013) because `render` is a function name.
     Audio: () => AUDIO,
     AudioStream: () => ({ sampleRate: prop(num("u32")), channels: prop(num("u32")), close: mo(m(PORT_FX, [], gen("Promise", VOID))), disposeAsync: mo(m(PORT_FX, [], gen("Promise", VOID))), isOpen: mo(m(RD, [], BOOL)) }),
-    HttpServer: () => ({ host: prop(STR), port: prop(num("u16")), close: mo(m(PORT_FX, [], gen("Promise", VOID))), disposeAsync: mo(m(PORT_FX, [], gen("Promise", VOID))), isOpen: mo(m(RD, [], BOOL)) }),
+    HttpServer: () => ({ host: prop(STR), port: prop(num("u16")), stop: mo(m(PORT_FX, [], VOID)), waitClosed: mo(m(PORT_FX, [], gen("Promise", VOID))), close: mo(m(PORT_FX, [], gen("Promise", VOID))), disposeAsync: mo(m(PORT_FX, [], gen("Promise", VOID))), isOpen: mo(m(RD, [], BOOL)) }),
     JsRef: () => ({}),
     Js: () => {
       const J = opaque("JsRef"), jr = result(J, ERROR_RECORD);
@@ -191,7 +192,7 @@ export function opaqueMembers(name: string): Members {
     FakeClock: () => ({ nowMs: m(RD, [], F64), advance: m(WR, [F64], VOID), sleep: mo(m(PORT_FX, [F64], gen("Promise", VOID))) }),
     SeededRandom: () => RANDOM,
     MemoryLog: () => ({ ...LOG, entries: m(RD, [], gen("Array", record([ro("level", { k: "union", members: [lit("info"), lit("warn"), lit("error")] }), ro("message", STR)]))) }),
-    FakeFs: () => FS,
+    FakeFs: () => ({ ...FS, addSymlink: mo(m(WR, [STR, STR], ioResult(NULL))) }),
     FakeSpawn: () => SPAWN,
     FakeAudio: () => ({ ...AUDIO, renderFrames: mo(m(PORT_FX, [USIZE], gen("Array", num("f32")))) }),
     FakeProc: () => ({ ...PROC, setEnv: mo(m(WR, [STR, STR], VOID)), setCwd: mo(m(WR, [STR], VOID)), setArgs: mo(m(WR, [gen("ReadonlyArray", STR)], VOID)), onRun: mo(m(WR, [fn([PROC_REQUEST_RECORD], ioResult(PROC_OUTPUT_RECORD))], VOID)), calls: mo(m(RD, [], gen("Array", PROC_REQUEST_RECORD))) }),
@@ -328,6 +329,13 @@ export function nsMembers(ns: string): Record<string, Member | "variadic"> {
     case "JSON": return {
       parse: mo(m(RD, [STR], result(UNKNOWN, ERROR_RECORD))), // Q035
       stringify: mo(m(RD, [tT], STR, { tparams: [T], tcheck: "jsonstringify" })),
+    };
+    case "Url": return {
+      parseQuery: mo(m(RD, [STR], gen("Array", QUERY_PARAM_RECORD))),
+      getQueryParam: mo(m(RD, [STR, STR], nullable(STR))),
+      formatQuery: mo(m(RD, [gen("ReadonlyArray", QUERY_PARAM_RECORD)], STR)),
+      encodeComponent: mo(m(RD, [STR], STR)),
+      decodeComponent: mo(m(RD, [STR], result(STR, ERROR_RECORD))),
     };
     case "String": return { fromCodePoint: mo(m(RD, [num("u32")], STR)) };
     case "Promise": return { all: mo(m(RD, [gen("Array", gen("Promise", tT))], gen("Promise", gen("Array", tT)), { tparams: [T] })) };

@@ -1877,3 +1877,12 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
   - (a) `Net` を予約語から外して `System.net: Net`（managed 専用）に追加する。`fetch(url, init?): Promise<Result<HttpResponse, IoError>>`（`http:`/`https:` 限定・UTF-8 `body: string`・任意の第 2 引数 `HttpRequestInit` は `sig.min = 1`・`timeoutMs` 付き）および `serve(cfg: HttpServerConfig, handler): Promise<Result<HttpServer, IoError>>`（`HttpServer` は `AsyncDisposable` で `await using` と `main`/テスト終了時自動クローズに対応）を提供する。テスト用 `FakeNet` は決定的インメモリループバック（`localhost` / `127.0.0.1`）と `onFetch` / `requests` を提供する。
   - (b) バイナリ `fetchBytes` や WebSocket / 生 TCP ソケットも含める。
 - 既定案: (a)。
+
+### Q296 ツール系ドッグフーディング改善（`HttpServer.stop`/`waitClosed`・`Url`・`FakeFs` 厳格化＆symlink）
+- 決定（2026-11-22、オーナー）: (a)。
+- 関連: §7、§12、Q293、Q295
+- 状況: `examples/workspace-tool/` のドッグフーディングにより、① 常駐 `serve` の優雅な停止待機で `while (!stopped) await sys.clock.sleep(20)` のポーリングが要ること、② URL クエリ解析／UTF-8 パーセント符号化が言語組込に無くアプリ側で自前 ASCII 実装が必要になること、③ `FakeFs` が親ディレクトリを自動作成し `symlink` を表現できないため `nodeFs` と挙動がずれ、`Fs` のディレクトリ作成漏れや `symlink` 除外ロジックの単体／変異テストができないことが分かった。
+- 選択肢:
+  - (a) ① `HttpServer` に `stop(): void`（進行中レスポンスに `Connection: close` を付けて返し終えた後にソケットを閉じて停止する冪等な優雅停止）と `waitClosed(): Promise<void>` を追加する。② `QueryParam` レコードと `Url` 組込名前空間（managed 専用：`parseQuery`, `getQueryParam`, `formatQuery`, `encodeComponent`, `decodeComponent`）を追加し、`runtime-js/src/result.ts` の `URLSearchParams` / UTF-8 `encodeURIComponent`（孤立サロゲートも置換文字経由で安全に符号化）で Node/ブラウザ両対応する。③ `FakeFs` の書込で親ディレクトリ未存在を `nodeFs` と同じ `ENOENT` にし、`FakeFs.addSymlink(path, target): Result<null, IoError>`（循環 `ELOOP`・`stat` の `lstat` 化・`readDir` の `"symlink"`・`exists` のリンク先解決）を追加する。
+  - (b) アプリ側のポーリング・自前パーサ・`nodeFs` 専用 E2E 検証のまま据え置く。
+- 既定案: (a)。

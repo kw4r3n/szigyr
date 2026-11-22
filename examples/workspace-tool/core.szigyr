@@ -1,0 +1,596 @@
+import { isBinaryMetrics, scanBytes } from "./scan.szigyr";
+
+export type FileReport = {
+  readonly path: string;
+  readonly bytes: usize;
+  readonly newlines: usize;
+  readonly nullBytes: usize;
+  readonly nonAscii: usize;
+  readonly binary: boolean;
+  readonly sizeText: string;
+  readonly mtimeMs: f64;
+  readonly fnv64: string;
+};
+
+export type ScanSummary = {
+  readonly root: string;
+  readonly fileCount: usize;
+  readonly totalBytes: usize;
+  readonly totalNewlines: usize;
+  readonly binaryCount: usize;
+  readonly files: Array<FileReport>;
+};
+
+export type SaveResult = {
+  readonly path: string;
+  readonly backedUp: boolean;
+  readonly bytes: usize;
+  readonly newlines: usize;
+  readonly fnv64: string;
+};
+
+export type RunCommandResult = {
+  readonly program: string;
+  readonly exitCode: i32;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly timedOut: boolean;
+};
+
+export type SavePayload = { readonly path: string; readonly content: string };
+export type SnapshotPayload = { readonly src: string; readonly dst: string };
+export type DeletePayload = { readonly path: string };
+export type ExecPayload = { readonly program: string; readonly args: Array<string>; readonly timeoutMs: u32 };
+
+export type HealthPayload = { readonly status: string; readonly root: string };
+export type OkPayload = { readonly ok: boolean; readonly path: string };
+export type SnapshotResultPayload = { readonly src: string; readonly dst: string; readonly bytes: usize };
+
+export type CliAction =
+  | { readonly kind: "scan"; readonly root: string }
+  | { readonly kind: "save"; readonly root: string; readonly path: string; readonly body: string }
+  | { readonly kind: "delete"; readonly root: string; readonly path: string }
+  | { readonly kind: "exec"; readonly root: string; readonly program: string; readonly args: Array<string>; readonly timeoutMs: u32 }
+  | { readonly kind: "serve"; readonly root: string; readonly host: string; readonly port: u16 }
+  | { readonly kind: "selfcheck"; readonly root: string; readonly program: string; readonly args: Array<string> }
+  | { readonly kind: "error"; readonly message: string };
+
+type SelfCheckStep = {
+  readonly label: string;
+  readonly method: string;
+  readonly path: string;
+  readonly body: string | null;
+};
+
+export function escapeHtml(s: string): string {
+  return s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll("\"", "&quot;");
+}
+
+export function normalizeRelPath(raw: string): string | null {
+  if (raw.includes("\\")) return null;
+  for (let i: usize = 0; i < raw.length; i += 1) {
+    if (raw.charCodeAt(i) === 0) return null;
+  }
+  const segs = raw.split("/");
+  for (const seg of segs) {
+    if (seg.length === 0 || seg === "." || seg === "..") return null;
+  }
+  return segs.join("/");
+}
+
+export function joinPath(root: string, rel: string): string {
+  return root.endsWith("/") ? `${root}${rel}` : `${root}/${rel}`;
+}
+
+export function parentRelDir(rel: string): string | null {
+  const parts = rel.split("/");
+  if (parts.length <= 1) return null;
+  parts.pop();
+  return parts.join("/");
+}
+
+function isAllDigits(raw: string): boolean {
+  for (let i: usize = 0; i < raw.length; i += 1) {
+    const c = raw.charCodeAt(i);
+    if (c < 48 || c > 57) return false;
+  }
+  return true;
+}
+
+export function parseU32(raw: string): u32 | null {
+  if (!isAllDigits(raw)) return null;
+  const n = Number.parseFloat(raw);
+  if (!(n <= 4294967295)) return null;
+  return u32(n);
+}
+
+export function parseU16(raw: string): u16 | null {
+  const v = parseU32(raw);
+  if (v === null || v > 65535) return null;
+  return u16(v);
+}
+
+export function parseCliArgs(argv: ReadonlyArray<string>, defaultRoot: string, envRoot: string | null): CliAction {
+  if (argv.length === 0) {
+    return { kind: "error", message: "usage: workspace-tool <scan|save|delete|exec|serve|selfcheck> [--root <dir>]" };
+  }
+  const cmd = argv[0];
+  let root = envRoot !== null && envRoot.length > 0 ? envRoot : defaultRoot;
+  let filePath: string | null = null;
+  let body: string | null = null;
+  let host = "127.0.0.1";
+  let port: u16 = 3000;
+  let timeoutMs: u32 = 5000;
+  let program: string | null = null;
+  const cmdArgs: Array<string> = [];
+
+  let i: usize = 1;
+  while (i < argv.length) {
+    const flag = argv[i];
+    if (i + 1 >= argv.length) {
+      return { kind: "error", message: `missing value for ${flag}` };
+    }
+    const val = argv[i + 1];
+    if (flag === "--root") {
+      root = val;
+    } else if (flag === "--path") {
+      filePath = val;
+    } else if (flag === "--body") {
+      body = val;
+    } else if (flag === "--host") {
+      host = val;
+    } else if (flag === "--port") {
+      const p = parseU16(val);
+      if (p === null) return { kind: "error", message: `invalid --port: ${val}` };
+      port = p;
+    } else if (flag === "--timeout") {
+      const t = parseU32(val);
+      if (t === null) return { kind: "error", message: `invalid --timeout: ${val}` };
+      timeoutMs = t;
+    } else if (flag === "--bin") {
+      program = val;
+    } else if (flag === "--arg") {
+      cmdArgs.push(val);
+    } else {
+      return { kind: "error", message: `unknown argument: ${flag}` };
+    }
+    i += 2;
+  }
+
+  switch (cmd) {
+    case "scan":
+      return { kind: "scan", root };
+    case "save":
+      if (filePath === null) return { kind: "error", message: "save requires --path" };
+      return { kind: "save", root, path: filePath, body: body ?? "" };
+    case "delete":
+      if (filePath === null) return { kind: "error", message: "delete requires --path" };
+      return { kind: "delete", root, path: filePath };
+    case "exec":
+      if (program === null || program.length === 0) return { kind: "error", message: "exec requires --bin" };
+      return { kind: "exec", root, program, args: cmdArgs, timeoutMs };
+    case "serve":
+      return { kind: "serve", root, host, port };
+    case "selfcheck":
+      if (program === null || program.length === 0) return { kind: "error", message: "selfcheck requires --bin" };
+      return { kind: "selfcheck", root, program, args: cmdArgs };
+    default:
+      return { kind: "error", message: `unknown command: ${cmd}` };
+  }
+}
+
+export function renderDashboardHtml(root: string): string {
+  const safeRoot = escapeHtml(root);
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>szigyr workspace-tool</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 24px; color: #1f2328; background: #f6f8fa; }
+  main { max-width: 960px; margin: 0 auto; background: #fff; padding: 20px; border: 1px solid #d0d7de; border-radius: 8px; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #e5e7eb; font-size: 13px; }
+  input, textarea, button { font: inherit; padding: 6px 10px; border: 1px solid #d0d7de; border-radius: 6px; }
+  textarea { width: 100%; height: 110px; box-sizing: border-box; font-family: monospace; margin: 8px 0; }
+  button { background: #0969da; color: #fff; border-color: #0969da; cursor: pointer; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+  pre { background: #161b22; color: #e6edf3; padding: 10px; border-radius: 6px; overflow: auto; font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title">szigyr workspace-tool</h1>
+  <div id="ws-root">${safeRoot}</div>
+  <div class="row">
+    <span id="summary">loading...</span>
+    <button id="refresh-btn" type="button">Refresh</button>
+  </div>
+  <table id="files-table">
+    <thead><tr><th>Path</th><th>Bytes</th><th>Lines</th><th>Binary</th><th>FNV-64</th></tr></thead>
+    <tbody id="files-body"></tbody>
+  </table>
+  <section>
+    <h2>Edit / Save</h2>
+    <div class="row">
+      <input id="file-path" type="text" placeholder="notes/hello.txt">
+      <button id="save-btn" type="button">Save</button>
+    </div>
+    <textarea id="file-content" placeholder="file contents..."></textarea>
+  </section>
+  <section>
+    <h2>Run Tool</h2>
+    <div class="row">
+      <input id="cmd-prog" type="text" placeholder="program">
+      <input id="cmd-args" type="text" placeholder="arg1">
+      <button id="run-btn" type="button">Run</button>
+    </div>
+    <pre id="cmd-out"></pre>
+  </section>
+</main>
+<script>
+const esc = (s) => String(s).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+async function loadScan() {
+  const res = await fetch("/api/scan");
+  const data = await res.json();
+  if (!res.ok) { document.getElementById("summary").textContent = data.message || "error"; return; }
+  document.getElementById("summary").textContent = "files=" + data.fileCount + " bytes=" + data.totalBytes + " newlines=" + data.totalNewlines;
+  const rows = data.files.map((f) => '<tr><td><a href="#" data-path="' + esc(f.path) + '">' + esc(f.path) + '</a></td><td>' + f.bytes + '</td><td>' + f.newlines + '</td><td>' + f.binary + '</td><td>' + esc(f.fnv64) + '</td></tr>').join("");
+  document.getElementById("files-body").innerHTML = rows;
+  document.querySelectorAll("[data-path]").forEach((el) => {
+    el.addEventListener("click", async (ev) => {
+      ev.preventDefault();
+      const p = el.getAttribute("data-path");
+      const r = await fetch("/api/file?path=" + encodeURIComponent(p));
+      if (r.ok) {
+        document.getElementById("file-path").value = p;
+        document.getElementById("file-content").value = await r.text();
+      }
+    });
+  });
+}
+document.getElementById("refresh-btn").addEventListener("click", loadScan);
+document.getElementById("save-btn").addEventListener("click", async () => {
+  const path = document.getElementById("file-path").value;
+  const content = document.getElementById("file-content").value;
+  await fetch("/api/save", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path, content }) });
+  await loadScan();
+});
+document.getElementById("run-btn").addEventListener("click", async () => {
+  const program = document.getElementById("cmd-prog").value;
+  const arg = document.getElementById("cmd-args").value;
+  const args = arg ? [arg] : [];
+  const r = await fetch("/api/run", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ program, args, timeoutMs: 3000 }) });
+  document.getElementById("cmd-out").textContent = await r.text();
+});
+loadScan();
+</script>
+</body>
+</html>`;
+}
+
+function scanSingleFile(fs: Fs, root: string, rel: string, buf: Mut<Vec<u8>>): Result<FileReport, IoError> {
+  const full = joinPath(root, rel);
+  const st = fs.stat(full);
+  if (st.kind === "err") return err(st.error);
+  const rb = fs.readBytes(full, buf);
+  if (rb.kind === "err") return err(rb.error);
+  const m = scanBytes(buf);
+  return ok({
+    path: rel,
+    bytes: m.bytes,
+    newlines: m.newlines,
+    nullBytes: m.nullBytes,
+    nonAscii: m.nonAscii,
+    binary: isBinaryMetrics(m),
+    sizeText: `${st.value.size}`,
+    mtimeMs: st.value.mtimeMs,
+    fnv64: `${m.fnv64}`,
+  });
+}
+
+function walkScanDir(
+  fs: Fs,
+  root: string,
+  relDir: string,
+  buf: Mut<Vec<u8>>,
+  out: Array<FileReport>,
+): Result<null, IoError> {
+  const dirPath = relDir.length === 0 ? root : joinPath(root, relDir);
+  const rd = fs.readDir(dirPath);
+  if (rd.kind === "err") return err(rd.error);
+  for (const entry of rd.value) {
+    if (entry.name.startsWith(".")) continue;
+    const rel = relDir.length === 0 ? entry.name : `${relDir}/${entry.name}`;
+    if (entry.kind === "dir") {
+      const sub = walkScanDir(fs, root, rel, buf, out);
+      if (sub.kind === "err") return sub;
+    } else if (entry.kind === "file") {
+      const rep = scanSingleFile(fs, root, rel, buf);
+      if (rep.kind === "err") return err(rep.error);
+      out.push(rep.value);
+    }
+  }
+  return ok(null);
+}
+
+export function scanWorkspace(fs: Fs, alloc: Alloc, root: string): Result<ScanSummary, IoError> {
+  const files: Array<FileReport> = [];
+  const buf = Vec.create<u8>(alloc, 0); // szigyr-equivalent: initial capacity hint; readBytes replaces dst
+  const walked = walkScanDir(fs, root, "", buf, files);
+  if (walked.kind === "err") return err(walked.error);
+  let totalBytes: usize = 0;
+  let totalNewlines: usize = 0;
+  let binaryCount: usize = 0;
+  for (const f of files) {
+    totalBytes += f.bytes;
+    totalNewlines += f.newlines;
+    if (f.binary) binaryCount += 1;
+  }
+  return ok({
+    root,
+    fileCount: files.length,
+    totalBytes,
+    totalNewlines,
+    binaryCount,
+    files,
+  });
+}
+
+export function readWorkspaceFile(fs: Fs, root: string, relPath: string): Result<string, IoError> {
+  const rel = normalizeRelPath(relPath);
+  if (rel === null) return err({ code: "EINVAL", message: `invalid relative path: ${relPath}` });
+  return fs.readText(joinPath(root, rel));
+}
+
+export function saveWorkspaceFile(
+  fs: Fs,
+  alloc: Alloc,
+  root: string,
+  relPath: string,
+  content: string,
+): Result<SaveResult, IoError> {
+  const rel = normalizeRelPath(relPath);
+  if (rel === null) return err({ code: "EINVAL", message: `invalid relative path: ${relPath}` });
+  const parent = parentRelDir(rel);
+  if (parent !== null) {
+    const mk = fs.mkdir(joinPath(root, parent));
+    if (mk.kind === "err") return err(mk.error);
+  }
+  const full = joinPath(root, rel);
+  const bak = `${full}.bak`;
+  let backedUp = false;
+  if (fs.exists(full)) {
+    const prevBuf = Vec.create<u8>(alloc, 0); // szigyr-equivalent: initial capacity hint; readBytes replaces dst
+    const pr = fs.readBytes(full, prevBuf);
+    if (pr.kind === "err") return err(pr.error);
+    const wb = fs.writeBytesAtomic(bak, prevBuf);
+    if (wb.kind === "err") return err(wb.error);
+    backedUp = true;
+  }
+  const wt = fs.writeTextAtomic(full, content);
+  if (wt.kind === "err") return err(wt.error);
+  const buf = Vec.create<u8>(alloc, 0); // szigyr-equivalent: initial capacity hint; readBytes replaces dst
+  const rb = fs.readBytes(full, buf);
+  if (rb.kind === "err") return err(rb.error);
+  const m = scanBytes(buf);
+  return ok({ path: rel, backedUp, bytes: m.bytes, newlines: m.newlines, fnv64: `${m.fnv64}` });
+}
+
+export function snapshotFileBytes(
+  fs: Fs,
+  alloc: Alloc,
+  root: string,
+  srcRel: string,
+  dstRel: string,
+): Result<usize, IoError> {
+  const sRel = normalizeRelPath(srcRel);
+  const dRel = normalizeRelPath(dstRel);
+  if (sRel === null || dRel === null) return err({ code: "EINVAL", message: "invalid snapshot path" });
+  const parent = parentRelDir(dRel);
+  if (parent !== null) {
+    const mk = fs.mkdir(joinPath(root, parent));
+    if (mk.kind === "err") return err(mk.error);
+  }
+  const buf = Vec.create<u8>(alloc, 0); // szigyr-equivalent: initial capacity hint; readBytes replaces dst
+  const rb = fs.readBytes(joinPath(root, sRel), buf);
+  if (rb.kind === "err") return err(rb.error);
+  const wb = fs.writeBytesAtomic(joinPath(root, dRel), buf);
+  if (wb.kind === "err") return err(wb.error);
+  return ok(rb.value);
+}
+
+export function deleteWorkspaceFile(fs: Fs, root: string, relPath: string): Result<null, IoError> {
+  const rel = normalizeRelPath(relPath);
+  if (rel === null) return err({ code: "EINVAL", message: `invalid relative path: ${relPath}` });
+  return fs.remove(joinPath(root, rel));
+}
+
+export async function runWorkspaceTool(
+  proc: Proc,
+  root: string,
+  program: string,
+  args: ReadonlyArray<string>,
+  timeoutMs: u32,
+): Promise<Result<RunCommandResult, IoError>> {
+  const res = await proc.run(program, args, {
+    cwd: root,
+    env: [{ name: "SZIGYR_WORKSPACE", value: root }],
+    stdin: null,
+    timeoutMs,
+  });
+  if (res.kind === "err") return err(res.error);
+  return ok({
+    program,
+    exitCode: res.value.exitCode,
+    stdout: res.value.stdout,
+    stderr: res.value.stderr,
+    timedOut: res.value.timedOut,
+  });
+}
+
+function textResponse(status: u16, contentType: string, body: string): HttpServerResponse {
+  return { status, headers: [{ name: "content-type", value: contentType }], body };
+}
+
+function jsonResponse(status: u16, body: string): HttpServerResponse {
+  return textResponse(status, "application/json; charset=utf-8", body);
+}
+
+function errorJson(status: u16, code: string, message: string): HttpServerResponse {
+  return jsonResponse(status, JSON.stringify<IoError>({ code, message }));
+}
+
+function ioErrorStatus(code: string): u16 {
+  if (code === "ENOENT") return 404;
+  if (code === "EINVAL" || code === "ENOTDIR") return 400;
+  return 500;
+}
+
+function parseJsonBody(raw: string): Result<unknown, HttpServerResponse> {
+  const p = JSON.parse(raw);
+  if (p.kind === "err") return err(errorJson(400, "EINVAL", `invalid json: ${p.error.message}`));
+  return ok(p.value);
+}
+
+export async function handleHttpRequest(
+  fs: Fs,
+  proc: Proc,
+  alloc: Alloc,
+  root: string,
+  req: HttpServerRequest,
+): Promise<HttpServerResponse> {
+  switch (req.path) {
+    case "/":
+      if (req.method !== "GET") return errorJson(405, "EMETHOD", "GET required");
+      return textResponse(200, "text/html; charset=utf-8", renderDashboardHtml(root));
+    case "/api/health":
+      if (req.method !== "GET") return errorJson(405, "EMETHOD", "GET required");
+      return jsonResponse(200, JSON.stringify<HealthPayload>({ status: "ok", root }));
+    case "/api/scan": {
+      if (req.method !== "GET") return errorJson(405, "EMETHOD", "GET required");
+      const sc = scanWorkspace(fs, alloc, root);
+      if (sc.kind === "err") return errorJson(ioErrorStatus(sc.error.code), sc.error.code, sc.error.message);
+      return jsonResponse(200, JSON.stringify<ScanSummary>(sc.value));
+    }
+    case "/api/file": {
+      if (req.method !== "GET") return errorJson(405, "EMETHOD", "GET required");
+      const rel = Url.getQueryParam(req.query, "path");
+      if (rel === null) return errorJson(400, "EINVAL", "missing path query param");
+      const content = readWorkspaceFile(fs, root, rel);
+      if (content.kind === "err") return errorJson(ioErrorStatus(content.error.code), content.error.code, content.error.message);
+      return textResponse(200, "text/plain; charset=utf-8", content.value);
+    }
+    case "/api/save": {
+      if (req.method !== "POST") return errorJson(405, "EMETHOD", "POST required");
+      const j = parseJsonBody(req.body);
+      if (j.kind === "err") return j.error;
+      const d = cast<SavePayload>(j.value);
+      if (d.kind === "err") return errorJson(400, "EINVAL", d.error.message);
+      const sv = saveWorkspaceFile(fs, alloc, root, d.value.path, d.value.content);
+      if (sv.kind === "err") return errorJson(ioErrorStatus(sv.error.code), sv.error.code, sv.error.message);
+      return jsonResponse(200, JSON.stringify<SaveResult>(sv.value));
+    }
+    case "/api/snapshot": {
+      if (req.method !== "POST") return errorJson(405, "EMETHOD", "POST required");
+      const j = parseJsonBody(req.body);
+      if (j.kind === "err") return j.error;
+      const d = cast<SnapshotPayload>(j.value);
+      if (d.kind === "err") return errorJson(400, "EINVAL", d.error.message);
+      const sn = snapshotFileBytes(fs, alloc, root, d.value.src, d.value.dst);
+      if (sn.kind === "err") return errorJson(ioErrorStatus(sn.error.code), sn.error.code, sn.error.message);
+      return jsonResponse(200, JSON.stringify<SnapshotResultPayload>({ src: d.value.src, dst: d.value.dst, bytes: sn.value }));
+    }
+    case "/api/delete": {
+      if (req.method !== "POST") return errorJson(405, "EMETHOD", "POST required");
+      const j = parseJsonBody(req.body);
+      if (j.kind === "err") return j.error;
+      const d = cast<DeletePayload>(j.value);
+      if (d.kind === "err") return errorJson(400, "EINVAL", d.error.message);
+      const dl = deleteWorkspaceFile(fs, root, d.value.path);
+      if (dl.kind === "err") return errorJson(ioErrorStatus(dl.error.code), dl.error.code, dl.error.message);
+      return jsonResponse(200, JSON.stringify<OkPayload>({ ok: true, path: d.value.path }));
+    }
+    case "/api/run": {
+      if (req.method !== "POST") return errorJson(405, "EMETHOD", "POST required");
+      const j = parseJsonBody(req.body);
+      if (j.kind === "err") return j.error;
+      const d = cast<ExecPayload>(j.value);
+      if (d.kind === "err") return errorJson(400, "EINVAL", d.error.message);
+      const ex = await runWorkspaceTool(proc, root, d.value.program, d.value.args, d.value.timeoutMs);
+      if (ex.kind === "err") return errorJson(ioErrorStatus(ex.error.code), ex.error.code, ex.error.message);
+      return jsonResponse(200, JSON.stringify<RunCommandResult>(ex.value));
+    }
+    default:
+      return errorJson(404, "ENOENT", `unknown route: ${req.path}`);
+  }
+}
+
+function expectOk200(step: string, r: Result<HttpResponse, IoError>): Result<HttpResponse, IoError> {
+  if (r.kind === "err") return err({ code: r.error.code, message: `${step}: ${r.error.message}` });
+  if (r.value.status !== 200) return err({ code: "EIO", message: `${step}: status ${r.value.status}` });
+  return ok(r.value);
+}
+
+export async function probeHealth(net: Net, baseUrl: string): Promise<Result<HealthPayload, IoError>> {
+  const checked = expectOk200("health", await net.fetch(`${baseUrl}/api/health`));
+  if (checked.kind === "err") return err(checked.error);
+  const parsed = JSON.parse(checked.value.body);
+  if (parsed.kind === "err") return err({ code: "EINVAL", message: parsed.error.message });
+  const decoded = cast<HealthPayload>(parsed.value);
+  if (decoded.kind === "err") return err({ code: "EINVAL", message: decoded.error.message });
+  return ok(decoded.value);
+}
+
+export async function runSelfCheck(
+  fs: Fs,
+  proc: Proc,
+  net: Net,
+  alloc: Alloc,
+  root: string,
+  checkBin: string,
+  checkArgs: ReadonlyArray<string>,
+): Promise<Result<string, IoError>> {
+  const srvRes = await net.serve({ host: "127.0.0.1", port: 0 }, (req: HttpServerRequest) =>
+    handleHttpRequest(fs, proc, alloc, root, req)
+  );
+  if (srvRes.kind === "err") return err(srvRes.error);
+  await using srv = srvRes.value;
+  const base = `http://${srv.host}:${srv.port}`;
+
+  const steps: Array<SelfCheckStep> = [
+    { label: "home", method: "GET", path: "/", body: null },
+    { label: "health", method: "GET", path: "/api/health", body: null },
+    { label: "save1", method: "POST", path: "/api/save", body: JSON.stringify<SavePayload>({ path: "notes/hello.txt", content: "hello\nworld\n" }) },
+    { label: "save2", method: "POST", path: "/api/save", body: JSON.stringify<SavePayload>({ path: "notes/hello.txt", content: "updated\nline\n" }) },
+    { label: "file", method: "GET", path: `/api/file?path=${Url.encodeComponent("notes/hello.txt")}`, body: null },
+    { label: "snapshot", method: "POST", path: "/api/snapshot", body: JSON.stringify<SnapshotPayload>({ src: "notes/hello.txt", dst: "notes/hello.bak.bin" }) },
+    { label: "scan", method: "GET", path: "/api/scan", body: null },
+    { label: "run", method: "POST", path: "/api/run", body: JSON.stringify<ExecPayload>({ program: checkBin, args: [...checkArgs], timeoutMs: 2000 }) },
+    { label: "delete", method: "POST", path: "/api/delete", body: JSON.stringify<DeletePayload>({ path: "notes/hello.bak.bin" }) },
+  ];
+
+  let snapBody = "";
+  let scanBody = "";
+  let runBody = "";
+
+  for (const step of steps) {
+    const rawRes = step.method === "GET"
+      ? await net.fetch(`${base}${step.path}`)
+      : await net.fetch(`${base}${step.path}`, { method: step.method, headers: [], body: step.body, timeoutMs: null });
+    const checked = expectOk200(step.label, rawRes);
+    if (checked.kind === "err") return err(checked.error);
+    if (step.label === "snapshot") snapBody = checked.value.body;
+    if (step.label === "scan") scanBody = checked.value.body;
+    if (step.label === "run") runBody = checked.value.body;
+  }
+
+  const parsedScan = JSON.parse(scanBody);
+  const parsedRun = JSON.parse(runBody);
+  if (parsedScan.kind !== "ok" || parsedRun.kind !== "ok") return err({ code: "EIO", message: "invalid selfcheck json" });
+  const scanVal = cast<ScanSummary>(parsedScan.value);
+  const runVal = cast<RunCommandResult>(parsedRun.value);
+  if (scanVal.kind !== "ok" || runVal.kind !== "ok") return err({ code: "EIO", message: "invalid selfcheck payload" });
+
+  return ok(`selfcheck:ok:files=${scanVal.value.fileCount}:saved=true:snap=${snapBody}:run=${runVal.value.exitCode}:${runVal.value.stdout.trim()}`);
+}

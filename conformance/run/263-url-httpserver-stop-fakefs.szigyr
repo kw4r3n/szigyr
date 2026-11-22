@@ -1,0 +1,40 @@
+// expect-output: url=notes/日本語.txt;q=a=1&b=2;err=EINVAL;fs=ENOENT:symlink:true:false;net=ok:false
+// stage: 2
+
+export async function main(sys: System): Promise<void> {
+  const enc = Url.encodeComponent("notes/日本語.txt");
+  const dec = Url.decodeComponent(enc);
+  const bad = Url.decodeComponent("%ZZ");
+  const qp = Url.getQueryParam("x=1&path=notes%2F%E6%97%A5%E6%9C%AC%E8%AA%9E.txt", "path") ?? "";
+  const formatted = Url.formatQuery(Url.parseQuery("a=1&b=2"));
+
+  const fs = FakeFs.create();
+  const missW = fs.writeText("/missing/file.txt", "hi");
+  fs.mkdir("/dir");
+  fs.writeText("/dir/target.txt", "ok");
+  fs.addSymlink("/dir/link", "target.txt");
+  fs.addSymlink("/dir/broken", "nope.txt");
+  const st = fs.stat("/dir/link");
+  const missCode = missW.kind === "err" ? missW.error.code : "ok";
+  const linkKind = st.kind === "ok" ? st.value.kind : "err";
+
+  const net = FakeNet.create();
+  let stopped = false;
+  let srvRef: HttpServer | null = null;
+  const sRes = await net.serve({ host: "127.0.0.1", port: 0 }, async (_req: HttpServerRequest) => {
+    const s = srvRef;
+    if (s !== null) s.stop();
+    stopped = true;
+    return { status: 200, headers: [], body: "ok" };
+  });
+  if (sRes.kind !== "ok") return;
+  await using srv = sRes.value;
+  srvRef = srv;
+  const fRes = await net.fetch(`http://127.0.0.1:${srv.port}/quit`);
+  await srv.waitClosed();
+  const body = fRes.kind === "ok" ? fRes.value.body : "err";
+  const decStr = dec.kind === "ok" && dec.value === qp ? dec.value : "err";
+  const badCode = bad.kind === "err" ? bad.error.code : "ok";
+  if (!stopped) return;
+  sys.log.info(`url=${decStr};q=${formatted};err=${badCode};fs=${missCode}:${linkKind}:${fs.exists("/dir/link")}:${fs.exists("/dir/broken")};net=${body}:${srv.isOpen()}`);
+}

@@ -89,40 +89,84 @@ function ancestorsOf(norm: string): string[] {
 export class FakeFs implements Fs {
   private readonly files = new Map<string, { data: Uint8Array; mtimeMs: number }>();
   private readonly dirs = new Set<string>([".", "/"]);
+  private readonly symlinks = new Map<string, { target: string; mtimeMs: number }>();
   private tick = 0;
   static create(): FakeFs { return new FakeFs(); }
+
+  private resolveLink(norm: string): { kind: "ok"; target: string } | { kind: "loop" } | { kind: "missing" } {
+    let cur = norm;
+    for (let hop = 0; hop < 16; hop++) {
+      const sym = this.symlinks.get(cur);
+      if (!sym) return this.files.has(cur) || this.dirs.has(cur) ? { kind: "ok", target: cur } : { kind: "missing" };
+      if (sym.target.startsWith("/")) cur = normFakePath(sym.target);
+      else {
+        const pdir = parentDirOf(cur) ?? ".";
+        cur = normFakePath(pdir === "." ? sym.target : `${pdir}/${sym.target}`);
+      }
+    }
+    return { kind: "loop" };
+  }
+
+  private resolveReadable(path: string, norm: string): Result<string, IoError> {
+    if (!this.symlinks.has(norm)) return ok(norm);
+    const r = this.resolveLink(norm);
+    if (r.kind === "loop") return err({ code: "ELOOP", message: `too many levels of symbolic links: ${path}` });
+    if (r.kind === "missing") return err({ code: "ENOENT", message: `no such file: ${path}` });
+    return ok(r.target);
+  }
+
+  private checkAncestorsDir(path: string, norm: string): IoError | undefined {
+    for (const anc of ancestorsOf(norm)) {
+      if (this.files.has(anc) || this.symlinks.has(anc)) return { code: "ENOTDIR", message: `not a directory: ${anc}` };
+    }
+    const parent = parentDirOf(norm);
+    if (parent && !this.dirs.has(parent)) return { code: "ENOENT", message: `no such file or directory: ${path}` };
+    return undefined;
+  }
 
   private prepareWrite(path: string): Result<string, IoError> {
     if (!path) return err({ code: "EINVAL", message: "empty path" });
     const norm = normFakePath(path);
     if (this.dirs.has(norm)) return err({ code: "EISDIR", message: `illegal operation on a directory: ${path}` });
-    for (const anc of ancestorsOf(norm)) {
-      if (this.files.has(anc)) return err({ code: "ENOTDIR", message: `not a directory: ${anc}` });
+    const ancErr = this.checkAncestorsDir(path, norm);
+    return ancErr ? err(ancErr) : ok(norm);
+  }
+
+  addSymlink(path: string, target: string): Result<null, IoError> {
+    if (!path || !target) return err({ code: "EINVAL", message: "empty symlink path or target" });
+    const norm = normFakePath(path);
+    if (this.files.has(norm) || this.dirs.has(norm) || this.symlinks.has(norm)) {
+      return err({ code: "EEXIST", message: `file already exists: ${path}` });
     }
-    for (const anc of ancestorsOf(norm)) this.dirs.add(anc);
-    return ok(norm);
+    const ancErr = this.checkAncestorsDir(path, norm);
+    if (ancErr) return err(ancErr);
+    this.symlinks.set(norm, { target, mtimeMs: ++this.tick });
+    return ok(null);
   }
 
   readText(path: string) {
     if (!path) return err({ code: "EINVAL", message: "empty path" });
-    const norm = normFakePath(path);
-    if (this.dirs.has(norm)) return err({ code: "EISDIR", message: `illegal operation on a directory: ${path}` });
-    const f = this.files.get(norm);
+    const res = this.resolveReadable(path, normFakePath(path));
+    if (res.kind === "err") return res;
+    if (this.dirs.has(res.value)) return err({ code: "EISDIR", message: `illegal operation on a directory: ${path}` });
+    const f = this.files.get(res.value);
     return f === undefined ? err({ code: "ENOENT", message: `no such file: ${path}` }) : ok(utf8Dec.decode(f.data));
   }
 
   writeText(path: string, text: string) {
     const p = this.prepareWrite(path);
     if (p.kind === "err") return p;
+    this.symlinks.delete(p.value);
     this.files.set(p.value, { data: utf8Enc.encode(text), mtimeMs: ++this.tick });
     return ok(null);
   }
 
   readBytes(path: string, dst: Vec<number>) {
     if (!path) return err({ code: "EINVAL", message: "empty path" });
-    const norm = normFakePath(path);
-    if (this.dirs.has(norm)) return err({ code: "EISDIR", message: `illegal operation on a directory: ${path}` });
-    const f = this.files.get(norm);
+    const res = this.resolveReadable(path, normFakePath(path));
+    if (res.kind === "err") return res;
+    if (this.dirs.has(res.value)) return err({ code: "EISDIR", message: `illegal operation on a directory: ${path}` });
+    const f = this.files.get(res.value);
     if (f === undefined) return err({ code: "ENOENT", message: `no such file: ${path}` });
     if (f.data.byteLength > 0xffffffff) return err({ code: "EFBIG", message: "file exceeds usize limit (4GiB)" });
     replaceU8Vec(dst, f.data);
@@ -132,6 +176,7 @@ export class FakeFs implements Fs {
   writeBytes(path: string, data: Slice<number> | Vec<number>) {
     const p = this.prepareWrite(path);
     if (p.kind === "err") return p;
+    this.symlinks.delete(p.value);
     this.files.set(p.value, { data: new Uint8Array(readU8Slice(data)), mtimeMs: ++this.tick });
     return ok(null);
   }
@@ -139,12 +184,18 @@ export class FakeFs implements Fs {
   exists(path: string): boolean {
     if (!path) return false;
     const norm = normFakePath(path);
+    if (this.symlinks.has(norm)) {
+      const r = this.resolveLink(norm);
+      return r.kind === "ok";
+    }
     return this.files.has(norm) || this.dirs.has(norm);
   }
 
   stat(path: string): Result<FileStat, IoError> {
     if (!path) return err({ code: "EINVAL", message: "empty path" });
     const norm = normFakePath(path);
+    const s = this.symlinks.get(norm);
+    if (s) return ok({ kind: "symlink", size: BigInt(utf8Enc.encode(s.target).byteLength), mtimeMs: s.mtimeMs });
     const f = this.files.get(norm);
     if (f) return ok({ kind: "file", size: BigInt(f.data.byteLength), mtimeMs: f.mtimeMs });
     if (this.dirs.has(norm)) return ok({ kind: "dir", size: 0n, mtimeMs: 0 });
@@ -154,7 +205,7 @@ export class FakeFs implements Fs {
   readDir(path: string): Result<DirEntry[], IoError> {
     if (!path) return err({ code: "EINVAL", message: "empty path" });
     const norm = normFakePath(path);
-    if (this.files.has(norm)) return err({ code: "ENOTDIR", message: `not a directory: ${path}` });
+    if (this.files.has(norm) || this.symlinks.has(norm)) return err({ code: "ENOTDIR", message: `not a directory: ${path}` });
     if (!this.dirs.has(norm)) return err({ code: "ENOENT", message: `no such file or directory: ${path}` });
     const out = new Map<string, FsEntryKind>();
     for (const k of this.files.keys()) {
@@ -162,6 +213,9 @@ export class FakeFs implements Fs {
     }
     for (const d of this.dirs) {
       if (parentDirOf(d) === norm) out.set(baseNameOf(d), "dir");
+    }
+    for (const s of this.symlinks.keys()) {
+      if (parentDirOf(s) === norm) out.set(baseNameOf(s), "symlink");
     }
     const entries: DirEntry[] = [...out.entries()].map(([name, kind]) => ({ name, kind }));
     entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
@@ -171,9 +225,9 @@ export class FakeFs implements Fs {
   mkdir(path: string): Result<null, IoError> {
     if (!path) return err({ code: "EINVAL", message: "empty path" });
     const norm = normFakePath(path);
-    if (this.files.has(norm)) return err({ code: "EEXIST", message: `file already exists: ${path}` });
+    if (this.files.has(norm) || this.symlinks.has(norm)) return err({ code: "EEXIST", message: `file already exists: ${path}` });
     for (const anc of ancestorsOf(norm)) {
-      if (this.files.has(anc)) return err({ code: "ENOTDIR", message: `not a directory: ${anc}` });
+      if (this.files.has(anc) || this.symlinks.has(anc)) return err({ code: "ENOTDIR", message: `not a directory: ${anc}` });
     }
     for (const anc of ancestorsOf(norm)) this.dirs.add(anc);
     this.dirs.add(norm);
@@ -184,10 +238,12 @@ export class FakeFs implements Fs {
     if (!path) return err({ code: "EINVAL", message: "empty path" });
     const norm = normFakePath(path);
     if (norm === "." || norm === "/") return err({ code: "EBUSY", message: `cannot remove root directory: ${path}` });
+    if (this.symlinks.delete(norm)) return ok(null);
     if (this.files.delete(norm)) return ok(null);
     if (this.dirs.has(norm)) {
       const prefix = `${norm}/`;
       for (const k of [...this.files.keys()]) if (k.startsWith(prefix)) this.files.delete(k);
+      for (const s of [...this.symlinks.keys()]) if (s.startsWith(prefix)) this.symlinks.delete(s);
       for (const d of [...this.dirs]) if (d === norm || d.startsWith(prefix)) this.dirs.delete(d);
       return ok(null);
     }
@@ -200,26 +256,38 @@ export class FakeFs implements Fs {
     const dst = normFakePath(to);
     const isFile = this.files.has(src);
     const isDir = this.dirs.has(src);
-    if (!isFile && !isDir) return err({ code: "ENOENT", message: `no such file or directory: ${from}` });
+    const isSym = this.symlinks.has(src);
+    if (!isFile && !isDir && !isSym) return err({ code: "ENOENT", message: `no such file or directory: ${from}` });
     if (src === "." || src === "/" || dst === "." || dst === "/") return err({ code: "EBUSY", message: "cannot rename root directory" });
     if (src === dst) return ok(null);
     const dstParent = parentDirOf(dst);
     if (dstParent) {
-      if (this.files.has(dstParent)) return err({ code: "ENOTDIR", message: `not a directory: ${dstParent}` });
+      if (this.files.has(dstParent) || this.symlinks.has(dstParent)) return err({ code: "ENOTDIR", message: `not a directory: ${dstParent}` });
       if (!this.dirs.has(dstParent)) return err({ code: "ENOENT", message: `no such parent directory: ${dstParent}` });
+    }
+    if (isSym) {
+      if (this.dirs.has(dst)) return err({ code: "EISDIR", message: `is a directory: ${to}` });
+      this.files.delete(dst);
+      const s = this.symlinks.get(src)!;
+      this.symlinks.set(dst, { target: s.target, mtimeMs: ++this.tick });
+      this.symlinks.delete(src);
+      return ok(null);
     }
     if (isFile) {
       if (this.dirs.has(dst)) return err({ code: "EISDIR", message: `is a directory: ${to}` });
+      this.symlinks.delete(dst);
       const f = this.files.get(src)!;
       this.files.set(dst, { data: f.data, mtimeMs: ++this.tick });
       this.files.delete(src);
       return ok(null);
     }
-    if (this.files.has(dst)) return err({ code: "ENOTDIR", message: `not a directory: ${to}` });
+    if (this.files.has(dst) || this.symlinks.has(dst)) return err({ code: "ENOTDIR", message: `not a directory: ${to}` });
     if (dst.startsWith(`${src}/`)) return err({ code: "EINVAL", message: `cannot move directory inside itself: ${to}` });
     if (this.dirs.has(dst)) {
       const dstPrefix = `${dst}/`;
-      const hasChild = [...this.files.keys()].some((k) => k.startsWith(dstPrefix)) || [...this.dirs].some((d) => d.startsWith(dstPrefix));
+      const hasChild = [...this.files.keys()].some((k) => k.startsWith(dstPrefix))
+        || [...this.symlinks.keys()].some((k) => k.startsWith(dstPrefix))
+        || [...this.dirs].some((d) => d.startsWith(dstPrefix));
       if (hasChild) return err({ code: "ENOTEMPTY", message: `directory not empty: ${to}` });
     }
     const srcPrefix = `${src}/`;
@@ -228,6 +296,13 @@ export class FakeFs implements Fs {
         const entry = this.files.get(k)!;
         this.files.delete(k);
         this.files.set(`${dst}${k.slice(src.length)}`, entry);
+      }
+    }
+    for (const s of [...this.symlinks.keys()]) {
+      if (s.startsWith(srcPrefix)) {
+        const entry = this.symlinks.get(s)!;
+        this.symlinks.delete(s);
+        this.symlinks.set(`${dst}${s.slice(src.length)}`, entry);
       }
     }
     for (const d of [...this.dirs]) {
@@ -562,12 +637,27 @@ export class FakeNet implements Net {
     const key = `${config.host}:${port}`;
     this.servers.set(key, handler);
     let closed = false;
-    const close = async (): Promise<void> => {
+    let resolveClosed!: () => void;
+    const closedP = new Promise<void>((r) => { resolveClosed = r; });
+    const stop = (): void => {
       if (closed) return;
       closed = true;
       if (this.servers.get(key) === handler) this.servers.delete(key);
+      resolveClosed();
     };
-    return ok({ host: config.host, port, close, disposeAsync: close, isOpen: () => !closed });
+    const close = async (): Promise<void> => {
+      stop();
+      await closedP;
+    };
+    return ok({
+      host: config.host,
+      port,
+      stop,
+      waitClosed: () => closedP,
+      close,
+      disposeAsync: close,
+      isOpen: () => !closed,
+    });
   }
 
   async fetch(url: string, init?: HttpRequestInit): Promise<Result<HttpResponse, IoError>> {
