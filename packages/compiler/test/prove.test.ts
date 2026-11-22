@@ -176,6 +176,17 @@ export function useGeneric(s: Ref<Slice<i32>>): i32 {
   if (s.length === 0) return 0;
   return idGeneric<i32>(s, 0);
 }
+
+function applyFn(s: Ref<Slice<i32>>, f: (x: i32) => i32): i32 {
+  "use rt";
+  return f(s[0]);
+}
+function addOne(x: i32): i32 { "use rt"; return wrapAdd(x, 1); }
+export function callApplyFn(s: Ref<Slice<i32>>): i32 {
+  "use rt";
+  if (s.length === 0) return 0;
+  return applyFn(s, addOne);
+}
 `;
     const file = writeTmpFile(dir, "kernels.szigyr", src);
     const analysis = analyze(file, parser);
@@ -219,8 +230,11 @@ export function useGeneric(s: Ref<Slice<i32>>): i32 {
     expect(cFnBody(relC.c, "stencil")).not.toContain("SZ_DIV(");
     expect(cFnBody(relC.c, "particles")).not.toContain("sz_chk(");
 
-    // Generic instantiations MUST NOT eliminate checks even with `proved`
-    expect(cFnBody(relC.c, "idGeneric")).toContain("sz_chk(");
+    // Parametric generic functions eliminate proved bounds checks; fn-param specializations keep checks
+    expect(byFn.get("idGeneric")!.summary).toMatchObject({ failed: 0, unknown: 0, timeout: 0 });
+    expect(cFnBody(relC.c, "idGeneric")).not.toContain("sz_chk(");
+    expect(byFn.has("applyFn")).toBe(false);
+    expect(cFnBody(relC.c, "applyFn")).toContain("sz_chk(");
   });
 
   it("proves and eliminates T001, T002 (.slice), T003, T004 (private requires), T005, T007, T009, T010", async () => {
@@ -1013,5 +1027,63 @@ export function entryFn(b: u8): i32 {
     const pRev = await runCli(["prove", "--all", "--strict", "--no-cache", "--json", app, lib]);
     expect(pRev.code, pRev.out + pRev.err).toBe(0);
     expect(jsonLines(pRev.out).find((l) => l.kind === "prove-summary")).toMatchObject({ functions: 3, failed: 0, unknown: 0, timeout: 0 });
+  });
+
+  it("proves Struct field loop invariants with bounded havoc and parametric generic rt functions", async () => {
+    const { dir, cacheFile } = makeTmp("szigyr-struct-gen-");
+    const src = `
+type SynthState = Struct<{
+  active: boolean;
+  history: Vec<f32>;
+  histIdx: usize;
+}>;
+
+export function renderAudio(st: Mut<SynthState>, out: Mut<Slice<f32>>, frames: usize): void {
+  "use rt";
+  requires(st.history.length > 0 && st.histIdx < st.history.length);
+  const count: usize = frames < out.length ? frames : out.length;
+  for (let i: usize = 0; i < count; i += 1) {
+    invariant(st.history.length > 0 && st.histIdx < st.history.length);
+    const prev = st.history[st.histIdx];
+    st.history[st.histIdx] = prev * 0.5;
+    st.active = i === 0;
+    const nextIdx: usize = st.histIdx + 1;
+    st.histIdx = nextIdx === st.history.length ? 0 : nextIdx;
+    out[i] = prev;
+  }
+}
+
+export function pushAllSend<T extends Native & Copy & Send>(tx: Mut<RingTx<T>>, src: Ref<Slice<T>>): usize {
+  "use rt";
+  let n: usize = 0;
+  for (let i: usize = 0; i < src.length; i += 1) {
+    invariant(n <= i);
+    if (tx.push(src[i])) n += 1;
+  }
+  return n;
+}
+
+export function main(sys: System): void {
+  const { tx, rx } = Ring.create<f32>(sys.alloc, 4);
+  const v = Vec.filled<f32>(sys.alloc, 2, 1.0);
+  sys.log.info(\`\${pushAllSend<f32>(tx, v)}:\${rx.pop() ?? 0}\`);
+}
+`;
+    const file = writeTmpFile(dir, "main.szigyr", src);
+    const analysis = analyze(file, parser);
+    expect(analysis.diagnostics).toEqual([]);
+    const pRes = await prove(file, { analysis, cacheFile, parser });
+    expect(pRes.diagnostics).toEqual([]);
+    expect(pRes.summary.failed).toBe(0);
+    expect(pRes.summary.unknown).toBe(0);
+    expect(pRes.summary.timeout).toBe(0);
+
+    const byFn = new Map(pRes.functions.map((f) => [f.fn, f]));
+    expect(byFn.get("renderAudio")!.obligations.some((o) => o.kind === "T010" && o.status === "proved")).toBe(true);
+    expect(byFn.get("pushAllSend")!.summary).toMatchObject({ failed: 0, unknown: 0, timeout: 0 });
+
+    const relC = emitC(analysis.decls!, "native", { proved: pRes.proved })!;
+    expect(cFnBody(relC.c, "renderAudio")).not.toContain("sz_chk(");
+    expect(cFnBody(relC.c, "pushAllSend")).not.toContain("sz_chk(");
   });
 });

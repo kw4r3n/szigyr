@@ -438,6 +438,19 @@ describe("resident incremental checker, --watch mode, and stdio MCP server", () 
     expect(runAllOverlays.result.structuredContent).toMatchObject({ ok: true, backend: "all", stdout: "ans=42\n", diagnostics: [] });
     expect(runAllOverlays.result.structuredContent.mismatch).toBeUndefined();
 
+    // szigyr_run with args + stderr forwarding
+    const runArgsFile = join(dir, "run-args.szigyr");
+    writeFileSync(runArgsFile, `export function main(sys: System): void {\n  sys.log.info(sys.proc.args().join(","));\n  sys.log.warn("mcp-warn");\n  sys.proc.setExitCode(2);\n}\n`);
+    const runWithArgs = await rpc({
+      jsonrpc: "2.0", id: 1411, method: "tools/call",
+      params: { name: "szigyr_run", arguments: { file: runArgsFile, backend: "all", args: ["--mode=fast", "42"] } },
+    });
+    expect(runWithArgs.result.structuredContent).toMatchObject({
+      ok: true, backend: "all", stdout: "--mode=fast,42\n", stderr: "mcp-warn\n", exitCode: 2, diagnostics: [],
+    });
+    expect((await rpc({ jsonrpc: "2.0", id: 1412, method: "tools/call", params: { name: "szigyr_run", arguments: { file: runArgsFile, args: "bad" } } })).error.code).toBe(-32602);
+    expect((await rpc({ jsonrpc: "2.0", id: 1413, method: "tools/call", params: { name: "szigyr_run", arguments: { file: runArgsFile, args: [123] } } })).error.code).toBe(-32602);
+
     // Validation errors for new mutate/backend flags -> -32602
     expect((await rpc({ jsonrpc: "2.0", id: 142, method: "tools/call", params: { name: "szigyr_mutate", arguments: { file, all: "yes" } } })).error.code).toBe(-32602);
     expect((await rpc({ jsonrpc: "2.0", id: 143, method: "tools/call", params: { name: "szigyr_mutate", arguments: { file, failOnSurvived: 1 } } })).error.code).toBe(-32602);

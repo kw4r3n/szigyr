@@ -652,7 +652,7 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
     isVoid(): boolean { return this.isVoidT(this.i.ret); }
     isVoidT(r: Type): boolean { return r.k === "prim" && (r.name === "void" || r.name === "never"); }
     isProved(n: Node): boolean {
-      if (!opts?.proved || this.i.m.size > 0 || this.i.fns.size > 0) return false;
+      if (!opts?.proved || this.i.fns.size > 0) return false;
       if (!opts.proved.anchors.has(n)) return false;
       eliminated++;
       return true;

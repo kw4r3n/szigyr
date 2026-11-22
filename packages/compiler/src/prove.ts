@@ -1655,15 +1655,48 @@ class FnProver {
     }
   }
 
+  /** Resolves the declared type of a nested dotted field path inside a record or tagged union. */
+  private resolveFieldType(root: Type, dottedPath: string): Type | undefined {
+    const step = (t: Type, seg: string): Type | undefined => {
+      const u = unref(t);
+      if (u.k === "record") return u.fields.find((f) => f.name === seg)?.type;
+      if (u.k === "union" && isTaggedUnion(u)) {
+        for (const m of u.members) {
+          const hit = step(m, seg);
+          if (hit) return hit;
+        }
+      }
+      return undefined;
+    };
+    let cur: Type | undefined = root;
+    for (const seg of dottedPath.split(".")) {
+      if (!cur) return undefined;
+      cur = step(cur, seg);
+    }
+    return cur ? unref(cur) : undefined;
+  }
+
   /** Collects variable/field/container-length keys mutated anywhere inside `root`. */
   private collectModSet(root: Node): Set<string> {
     const out = new Set<string>();
+    const addRec = (pfx: string, lpfx: string, t: Type): void => {
+      const u = unref(t);
+      if (u.k === "record") {
+        for (const f of u.fields) {
+          out.add(`${pfx}.${f.name}`);
+          out.add(`${lpfx}.${f.name}`);
+          addRec(`${pfx}.${f.name}`, `${lpfx}.${f.name}`, f.type);
+        }
+      } else if (u.k === "union" && isTaggedUnion(u)) {
+        out.add(`${pfx}.kind`);
+        for (const m of u.members) addRec(pfx, lpfx, m);
+      }
+    };
     const markSym = (sym: LocalSym): void => {
       out.add(`sym:${sym.id}`);
       out.add(`nn:${sym.id}`);
       out.add(`len:${sym.id}`);
-      const u = unref(sym.type);
-      if (u.k === "record") for (const f of u.fields) { out.add(`field:${sym.id}.${f.name}`); out.add(`len:${sym.id}.${f.name}`); }
+      addRec(`field:${sym.id}`, `len:${sym.id}`, sym.type);
     };
     const walk = (n: Node): void => {
       if (n.kind === K.BinaryExpression) {
@@ -1695,9 +1728,9 @@ class FnProver {
         const c = n as ts.CallExpression;
         if (c.expression.kind === K.PropertyAccessExpression) {
           const p = c.expression as ts.PropertyAccessExpression;
-          if ((p.name.text === "push" || p.name.text === "pop" || p.name.text === "clear" || p.name.text === "reset") && isId(strip(p.expression))) {
-            const sym = localOf.get(strip(p.expression) as ts.Identifier);
-            if (sym) out.add(`len:${sym.id}`);
+          if (p.name.text === "push" || p.name.text === "pop" || p.name.text === "clear" || p.name.text === "reset") {
+            const lk = this.lengthKeyOf(p.expression);
+            if (lk) out.add(lk);
           }
         }
         if (callFns.has(c)) {
@@ -1705,9 +1738,20 @@ class FnProver {
           fn?.sig.params.forEach((pt, idx) => {
             if (pt.k === "gen" && pt.name === "Mut" && !(pt.args[0]!.k === "gen" && pt.args[0]!.name === "Slice")) {
               const a = c.arguments[idx];
-              if (a && isId(strip(a))) {
-                const sym = localOf.get(strip(a) as ts.Identifier);
+              if (!a) return;
+              const sa = strip(a);
+              if (isId(sa)) {
+                const sym = localOf.get(sa);
                 if (sym) markSym(sym);
+              } else if (sa.kind === K.PropertyAccessExpression) {
+                const pa = sa as ts.PropertyAccessExpression;
+                const lk = this.lengthKeyOf(pa);
+                if (lk) out.add(lk);
+                const fk = this.fieldKeyOf(pa);
+                if (fk) {
+                  out.add(fk);
+                  if (lk) addRec(fk, lk, this.typeOf(pa));
+                }
               }
             }
           });
@@ -1730,7 +1774,29 @@ class FnProver {
       st.inexact.delete(key);
       if (key.startsWith("nn:")) st.env.set(key, this.fresh("Bool", "h_nn"));
       else if (key.startsWith("len:")) st.env.set(key, this.fresh("Int", "h_len", [0n, MAX_U32]));
-      else {
+      else if (key.startsWith("field:")) {
+        const fm = /^field:(\d+)\.(.+)$/.exec(key);
+        const sym = fm ? this.findLocalById(Number(fm[1])) : undefined;
+        const path = fm?.[2] ?? "";
+        const root = sym ? unref(sym.type) : undefined;
+        const name = sym ? `h_${sym.name}_${path.replaceAll(".", "_")}` : "h_v";
+        if (path === "kind" && root && isTaggedUnion(root)) {
+          const tagV = this.fresh("Int", name);
+          const eqs = root.members.map((mm) => `(= ${tagV} ${smtInt(this.tagId(kindOf(mm)!))})`);
+          st.assumptions.push(eqs.length === 1 ? eqs[0]! : `(or ${eqs.join(" ")})`);
+          st.env.set(key, tagV);
+        } else {
+          const fu = root ? this.resolveFieldType(root, path) : undefined;
+          if (fu?.k === "num" && INT_BOUNDS[fu.name]) {
+            const [lo, hi] = INT_BOUNDS[fu.name]!;
+            st.env.set(key, this.fresh("Int", name, [lo, hi]));
+          } else if (fu && isBool(fu)) {
+            st.env.set(key, this.fresh("Bool", name));
+          } else {
+            st.env.set(key, this.fresh("Int", "h_v"));
+          }
+        }
+      } else {
         const symId = /^sym:(\d+)$/.exec(key)?.[1];
         const sym = symId ? this.findLocalById(Number(symId)) : undefined;
         const u = sym ? unref(sym.type) : undefined;
@@ -2508,7 +2574,7 @@ export async function proveFile(entryFile: string, opts: ProveOptions = {}): Pro
   const allTargets = decls.fns.filter((f) => {
     if (f.mod.pf.path === DETMATH_PATH) return false;
     if (!opts.all && canonPath(f.mod.pf.path) !== entryPath) return false;
-    if (f.unsafe || f.sig.tparams.length > 0 || fnParamCount(f) > 0) return false;
+    if (f.unsafe || fnParamCount(f) > 0) return false;
     return f.layer !== "managed" || hasContractOrLoop(f);
   });
   const targets = opts.skipFiles ? allTargets.filter((f) => !opts.skipFiles!.has(f.mod.pf.path)) : allTargets;

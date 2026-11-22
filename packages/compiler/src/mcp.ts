@@ -129,6 +129,7 @@ const TOOLS = [
         content: { type: "string", description: "Optional unsaved buffer content to run instead of reading `file` from disk." },
         overlays: OVERLAYS_SCHEMA,
         backend: { type: "string", enum: ["js", "c", "wasm", "both", "all"], description: "Target backend (default: js)." },
+        args: { type: "array", items: { type: "string" }, description: "Optional CLI arguments exposed via sys.proc.args()." },
         timeoutMs: TIMEOUT_SCHEMA,
       },
       required: ["file"],
@@ -176,7 +177,7 @@ type WorkerReq =
   | { readonly op: "test"; readonly file: string; readonly backend: string; readonly all?: boolean; readonly filter?: string; readonly content?: string; readonly overlays?: Record<string, string> }
   | { readonly op: "mutate"; readonly file: string; readonly noCache: boolean; readonly all?: boolean; readonly failOnSurvived?: boolean }
   | { readonly op: "prove"; readonly file: string; readonly noCache: boolean; readonly all?: boolean; readonly strict?: boolean; readonly proveTimeoutMs?: number; readonly content?: string; readonly overlays?: Record<string, string> }
-  | { readonly op: "run"; readonly file: string; readonly backend: string; readonly content?: string; readonly overlays?: Record<string, string> };
+  | { readonly op: "run"; readonly file: string; readonly backend: string; readonly args?: readonly string[]; readonly content?: string; readonly overlays?: Record<string, string> };
 
 type WorkerMsg = { readonly id: number; readonly req: WorkerReq } | { readonly shutdown: true };
 type WorkerReply = { readonly id: number; readonly okToolArgs: [unknown, boolean?] };
@@ -238,7 +239,7 @@ async function handleWorker(req: WorkerReq, parser: Parser): Promise<[unknown, b
       const analysis = analyze(req.file, parser);
       const rs: Awaited<ReturnType<typeof run>>[] = [];
       for (const b of backends) {
-        const r = await run(req.file, { backend: b, analysis });
+        const r = await run(req.file, { backend: b, analysis, ...(req.args ? { args: req.args } : {}) });
         if (r.diagnostics.length) {
           return [{ ok: false, file: req.file, backend: req.backend, diagnostics: r.diagnostics, stdout: "", stderr: "", durationMs: ms() }];
         }
@@ -528,11 +529,17 @@ export async function serveMcp(opts: McpOptions = {}): Promise<number> {
       if (!["js", "c", "wasm", "both", "all"].includes(backend)) throw new RpcError(-32602, `unknown backend '${backend}'`);
       let all = false;
       let filter: string | undefined;
+      let runArgs: readonly string[] | undefined;
       if (name === "szigyr_test") {
         if (args.all !== undefined && typeof args.all !== "boolean") throw new RpcError(-32602, "'szigyr_test' 'all' must be a boolean");
         if (args.filter !== undefined && (typeof args.filter !== "string" || !args.filter)) throw new RpcError(-32602, "'szigyr_test' 'filter' must be a non-empty string");
         all = !!args.all;
         filter = args.filter as string | undefined;
+      } else if (args.args !== undefined) {
+        if (!Array.isArray(args.args) || args.args.some((x) => typeof x !== "string")) {
+          throw new RpcError(-32602, "'szigyr_run' 'args' must be an array of strings");
+        }
+        runArgs = args.args as readonly string[];
       }
       if (!inOverlays && !existsSync(file)) return okTool({ ok: false, error: `no such file: ${file}` }, true);
       return await worker.run({
@@ -541,6 +548,7 @@ export async function serveMcp(opts: McpOptions = {}): Promise<number> {
         backend,
         ...(all ? { all: true } : {}),
         ...(filter !== undefined ? { filter } : {}),
+        ...(runArgs !== undefined ? { args: runArgs } : {}),
         ...(content !== undefined ? { content } : {}),
         ...(overlays !== undefined ? { overlays } : {}),
       }, timeoutMs);

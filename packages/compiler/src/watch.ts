@@ -2,7 +2,7 @@
 import { watch, type FSWatcher } from "node:fs";
 import { dirname } from "node:path";
 import { performance } from "node:perf_hooks";
-import type { Diagnostic } from "./diagnostics.ts";
+import { dedupeDiagnostics, type Diagnostic } from "./diagnostics.ts";
 import { analyze, createParser, runTestFile, type Backend, type Parser } from "./index.ts";
 import { canonPath } from "./modules.ts";
 
@@ -164,8 +164,9 @@ export async function startWatch(opts: WatchOptions): Promise<number> {
         for (const pf of a.files) dirs.add(dirname(pf.path));
         all.push(...a.diagnostics, ...(a.warnings ?? []));
       }
-      if (all.length) out(diags(all));
-      errors = all.filter((d) => d.severity === "error").length;
+      const deduped = dedupeDiagnostics(all);
+      if (deduped.length) out(diags(deduped));
+      errors = deduped.filter((d) => d.severity === "error").length;
     } else {
       const res = await runTestPass({ files, backends, json, ...(all ? { all: true } : {}), ...(filter !== undefined ? { filter } : {}), out, diags, parser });
       for (const d of res.dirs) dirs.add(d);

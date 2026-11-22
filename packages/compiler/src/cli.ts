@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { analyze, buildBrowser, buildNode, check, CLI_NAME, CliError, createParser, explainCode, mutate, prove, queryFile, run, shutdownSmt, type Backend, type BrowserBuildMode, type Diagnostic, type NodeBuildBackend, type NodeBuildMode, type RunResult } from "./index.ts";
+import { dedupeDiagnostics } from "./diagnostics.ts";
 import { serveMcp } from "./mcp.ts";
 import { runTestPass, startWatch } from "./watch.ts";
 import { CUnsupported } from "./emit-c.ts";
@@ -289,11 +290,11 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
     }
     if (cmd === "check") {
       if (watch) return await startWatch({ files, mode: "check", json, backends, out, err, parser });
-      let ds = files.flatMap((f) => check(f, parser));
+      let ds = dedupeDiagnostics(files.flatMap((f) => check(f, parser)));
       if (fix) {
         const applied = applyDiagnosticFixes(ds);
         if (applied.length) {
-          ds = files.flatMap((f) => check(f, parser));
+          ds = dedupeDiagnostics(files.flatMap((f) => check(f, parser)));
           for (const item of applied) {
             out(json ? line({ kind: "fixed", file: item.file, applied: item.applied }) : `fixed ${item.file} (${item.applied} edit(s))\n`);
           }

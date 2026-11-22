@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, statSync, symlinkSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
+import { check, createParser } from "../src/index.ts";
 import { CLI_NAME } from "../src/names.ts";
 
 const CLI = new URL("../src/cli.ts", import.meta.url).pathname;
@@ -516,8 +517,8 @@ export async function main(sys: System): Promise<void> {
   expect(jsonLines(j.err)[0]).toMatchObject({ kind: "trap", code: "T006", message: expect.stringContaining("boom in isolate") });
 }, 60000);
 
-// D161: files that share a module are checked with one tsgo process, which hands back the same AST nodes; the checker's per-node markers (`optCall`) must not leak from one entry's check into the next.
-it("check a.ts b.ts reports what each file reports alone, also with a repeated entry (D161)", () => {
+// D161: files that share a module are checked with one tsgo process, which hands back the same AST nodes; the checker's per-node markers (`optCall`) must not leak from one entry's check into the next, while multi-file CLI `check` deduplicates identical diagnostics.
+it("check preserves per-entry marker isolation on shared parser (D161) and deduplicates identical multi-file CLI diagnostics", () => {
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-`));
   writeFileSync(join(dir, "shared.szigyr"), `class A { m(s: string | null): usize { return 1; } }
 export function main(sys: System): void {
@@ -529,10 +530,24 @@ export function main(sys: System): void {
 `);
   for (const n of ["a", "b"]) writeFileSync(join(dir, `${n}.szigyr`), `import { main } from "./shared.szigyr";\nexport function ${n}(): i32 {\n  return 1;\n}\n`);
   const a = join(dir, "a.szigyr"), b = join(dir, "b.szigyr");
+  const c = join(dir, "c.szigyr");
+  writeFileSync(c, `import { main } from "./shared.szigyr";\nexport function c(): i32 {\n  var bad = 1;\n  return 1;\n}\n`);
+
+  const p = createParser();
+  try {
+    expect(check(b, p)).toEqual(check(a, p));
+    expect(check(b, p)).toEqual(check(b, p));
+  } finally {
+    p.close();
+  }
+
   const alone = szigyr("check", "--json", b).out;
   expect(alone).toContain("E2002");
-  expect(szigyr("check", "--json", a, b).out).toBe(szigyr("check", "--json", a).out + alone);
-  expect(szigyr("check", "--json", b, a, b).out).toBe(alone + szigyr("check", "--json", a).out + alone);
+  expect(szigyr("check", "--json", a, b).out).toBe(alone);
+  expect(szigyr("check", "--json", b, a, b).out).toBe(alone);
+  const withDistinct = jsonLines(szigyr("check", "--json", a, b, c).out);
+  expect(withDistinct).toHaveLength(2);
+  expect(withDistinct.map((d) => d.code).sort()).toEqual(["E1001", "E2002"]);
 });
 
 it("--json emits valid JSONL for exit-2 usage/file errors and explain/query/test details", () => {
