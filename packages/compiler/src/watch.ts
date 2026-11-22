@@ -17,6 +17,8 @@ export interface WatchOptions {
   readonly mode: "check" | "test";
   readonly json: boolean;
   readonly backends: Backend[];
+  readonly all?: boolean;
+  readonly filter?: string;
   readonly out: (s: string) => void;
   readonly err?: (s: string) => void;
   readonly parser?: Parser;
@@ -29,6 +31,8 @@ export interface TestPassParams {
   readonly files: string[];
   readonly backends: Backend[];
   readonly json: boolean;
+  readonly all?: boolean;
+  readonly filter?: string;
   readonly out: (s: string) => void;
   readonly diags: (ds: readonly Diagnostic[]) => string;
   readonly parser: Parser;
@@ -37,6 +41,7 @@ export interface TestPassParams {
 export interface TestPassResult {
   readonly passed: number;
   readonly failed: number;
+  readonly skipped: number;
   readonly bad: boolean;
   readonly dirs: string[];
 }
@@ -45,22 +50,30 @@ const jsonLine = (o: unknown): string => `${JSON.stringify(o)}\n`;
 
 /** Executes one `test` pass over `files` and `backends`, shared by CLI `test` and `watch`. */
 export async function runTestPass(params: TestPassParams): Promise<TestPassResult> {
-  const { files, backends, json, out, diags, parser } = params;
-  let failed = 0, passed = 0, bad = false;
+  const { files, backends, json, all, filter, out, diags, parser } = params;
+  let failed = 0, passed = 0, skipped = 0, bad = false;
   const dirs = new Set<string>();
+  const seenByBackend = backends.map(() => new Set<string>());
   for (const f of files) {
     dirs.add(dirname(canonPath(f)));
     const rs: Awaited<ReturnType<typeof runTestFile>>[] = [];
     let diag = false;
     const analysis = analyze(f, parser);
     for (const pf of analysis.files) dirs.add(dirname(pf.path));
-    for (const b of backends) {
-      const cur = await runTestFile(f, { backend: b, analysis });
+    for (const [k, b] of backends.entries()) {
+      const cur = await runTestFile(f, {
+        backend: b,
+        analysis,
+        ...(all ? { all: true, skipTestFiles: seenByBackend[k] } : {}),
+        ...(filter !== undefined ? { filter } : {}),
+      });
       if (cur.diagnostics.length) { out(diags(cur.diagnostics)); bad = true; diag = true; break; }
+      if (all) for (const pf of analysis.files) seenByBackend[k]!.add(pf.path);
       rs.push(cur);
     }
     if (diag) continue;
     const r = rs[0]!;
+    skipped += r.skipped ?? 0;
     // D101: --backend=both / --backend=all compares each test's outcome, trap code and position; a trap's message is not compared.
     const key = (t: (typeof r.results)[number] | undefined): string => JSON.stringify(t && [t.name, t.ok, t.trap ? null : t.failure, t.trap?.code, t.pos?.file, t.pos?.line, t.pos?.col]);
     if (rs.length >= 2 && rs.some((cur) => cur.results.length !== r.results.length)) { // Q266: a result count that differs is a mismatch too
@@ -71,6 +84,7 @@ export async function runTestPass(params: TestPassParams): Promise<TestPassResul
         : `MISMATCH ${f}: backend test count differs (${backends.map((b, k) => `${b}=${rs[k]!.results.length}`).join(", ")})\n`);
     }
     for (const [i, t] of r.results.entries()) {
+      const outFile = all && t.file && canonPath(t.file) !== canonPath(f) ? t.file : f;
       if (rs.length >= 2 && rs.slice(1).some((cur) => key(t) !== key(cur.results[i]))) {
         failed++;
         const resultsByBackend = Object.fromEntries(backends.map((b, k) => [b, rs[k]!.results[i] ?? null]));
@@ -79,23 +93,23 @@ export async function runTestPass(params: TestPassParams): Promise<TestPassResul
         const fmtRes = (res: (typeof r.results)[number] | undefined) =>
           res ? (res.ok ? "ok" : `FAIL ${res.failure ?? res.trap?.code ?? ""}`) : "missing";
         out(json
-          ? jsonLine({ kind: "mismatch", file: f, name: t.name, ...resultsByBackend })
-          : `MISMATCH ${t.name}: ${label} backends disagree\n${backends.map((b, k) => `  ${(`${b}:`).padEnd(pad)} ${fmtRes(rs[k]!.results[i])}`).join("\n")}\n`);
+          ? jsonLine({ kind: "mismatch", file: outFile, name: t.name, ...resultsByBackend })
+          : `MISMATCH ${all && outFile !== f ? `${outFile} > ` : ""}${t.name}: ${label} backends disagree\n${backends.map((b, k) => `  ${(`${b}:`).padEnd(pad)} ${fmtRes(rs[k]!.results[i])}`).join("\n")}\n`);
         continue;
       }
       if (t.ok) passed++; else failed++;
       const pos = t.pos ? { file: t.pos.file, line: t.pos.line, col: t.pos.col } : undefined;
-      out(json ? jsonLine({ kind: "test", file: f, name: t.name, ok: t.ok, ...(t.failure ? { failure: t.failure } : {}), ...(t.trap ? { trap: t.trap.code } : {}), ...(pos ? { pos } : {}), ...(t.detail ? { detail: t.detail } : {}) })
-        : `${t.ok ? "ok" : "FAIL"} ${t.name}${t.ok ? "" : `: ${t.failure ?? ""}${pos ? ` (${pos.file}:${pos.line}:${pos.col})` : ""}`}\n`);
+      out(json ? jsonLine({ kind: "test", file: outFile, name: t.name, ok: t.ok, ...(t.failure ? { failure: t.failure } : {}), ...(t.trap ? { trap: t.trap.code } : {}), ...(pos ? { pos } : {}), ...(t.detail ? { detail: t.detail } : {}) })
+        : `${t.ok ? "ok" : "FAIL"} ${all && outFile !== f ? `${outFile} > ` : ""}${t.name}${t.ok ? "" : `: ${t.failure ?? ""}${pos ? ` (${pos.file}:${pos.line}:${pos.col})` : ""}`}\n`);
     }
   }
-  out(json ? jsonLine({ kind: "summary", passed, failed }) : `${passed} passed, ${failed} failed\n`);
-  return { passed, failed, bad, dirs: [...dirs] };
+  out(json ? jsonLine({ kind: "summary", passed, failed, ...(skipped ? { skipped } : {}) }) : `${passed} passed, ${failed} failed${skipped ? `, ${skipped} skipped` : ""}\n`);
+  return { passed, failed, skipped, bad, dirs: [...dirs] };
 }
 
 /** Runs an incremental resident `check` / `test` watch loop until aborted or signaled. */
 export async function startWatch(opts: WatchOptions): Promise<number> {
-  const { files, mode, json, backends, out } = opts;
+  const { files, mode, json, backends, all, filter, out } = opts;
   const debounceMs = opts.debounceMs ?? 30;
   const parser = opts.parser ?? createParser();
   const ownParser = !opts.parser;
@@ -153,7 +167,7 @@ export async function startWatch(opts: WatchOptions): Promise<number> {
       if (all.length) out(diags(all));
       errors = all.filter((d) => d.severity === "error").length;
     } else {
-      const res = await runTestPass({ files, backends, json, out, diags, parser });
+      const res = await runTestPass({ files, backends, json, ...(all ? { all: true } : {}), ...(filter !== undefined ? { filter } : {}), out, diags, parser });
       for (const d of res.dirs) dirs.add(d);
       errors = res.failed + (res.bad ? 1 : 0);
     }

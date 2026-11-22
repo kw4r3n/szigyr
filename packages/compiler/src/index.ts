@@ -224,12 +224,20 @@ export function rtTrapSites(entryFile: string): Record<string, TrapSite[]> {
 export type Backend = "js" | "c" | "wasm";
 /** `analysis`: the result of `analyze` for this entry file, reused instead of analysing again (D162: `--backend=both` runs both backends over one analysis). */
 export interface RunOptions { backend?: Backend; analysis?: Analysis; args?: readonly string[] }
+export interface TestOptions extends RunOptions { all?: boolean; filter?: string; skipTestFiles?: ReadonlySet<string> }
 
 /** Q265: the cause an isolate's abnormal end recorded (no position, not a Trap); the foreign-trap check below rethrows it as main's own trap. */
 let isolateCause: string | undefined;
 
 /** Emits every file and evaluates them as module factories in memory (D031). Returns the entry's exports and, for C / Wasm backends, its native bridge. */
-async function load(files: ParsedFile[], entryFile: string, tests: boolean, decls?: Decls, backend: Backend = "js"): Promise<{ ex: Record<string, unknown>; native: Record<string, (...a: unknown[]) => unknown> | undefined }> {
+async function load(
+  files: ParsedFile[],
+  entryFile: string,
+  tests: boolean | "all",
+  decls?: Decls,
+  backend: Backend = "js",
+  skipTestFiles?: ReadonlySet<string>,
+): Promise<{ ex: Record<string, unknown>; native: Record<string, (...a: unknown[]) => unknown> | undefined }> {
   const entry = canonPath(entryFile);
   isolateCause = undefined;
   rt.takeIsolateTrap(); // D144: a record a previous program in this process left behind is not this program's
@@ -246,7 +254,9 @@ async function load(files: ParsedFile[], entryFile: string, tests: boolean, decl
     const t = rt.takeIsolateTrap();
     if (t) { isolateCause = t.message; rt.trap(t.code as rt.TrapCode, t.message ?? "trap in an isolate", t.file ? { file: t.file, line: t.line!, col: t.col! } : undefined); }
   });
-  const emitted = new Map(files.map((f) => [f.path, emitFile(f, displayPath(f.path), tests && f.path === entry, c?.keys as Map<never, string> | undefined, decls?.isolateEntries.get(f.path))]));
+  const keepTests = (f: ParsedFile): boolean =>
+    tests === "all" ? f.path !== DETMATH_PATH && !skipTestFiles?.has(f.path) : tests && f.path === entry;
+  const emitted = new Map(files.map((f) => [f.path, emitFile(f, displayPath(f.path), keepTests(f), c?.keys as Map<never, string> | undefined, decls?.isolateEntries.get(f.path))]));
   const npm = new Map<string, unknown>();
   const npmUrls: Record<string, string> = {};
   for (const [path, e] of emitted) {
@@ -290,7 +300,9 @@ async function load(files: ParsedFile[], entryFile: string, tests: boolean, decl
     f(native ? { ...RUNTIME, native } : RUNTIME, (k) => (k.startsWith("npm:") ? npm.get(k) : instantiate(k)), ex);
     return ex;
   };
-  return { ex: instantiate(entry), native };
+  const ex = instantiate(entry);
+  if (tests === "all") for (const f of files) if (f.path !== DETMATH_PATH) instantiate(f.path);
+  return { ex, native };
 }
 
 /** The runtime object generated code receives: runtime-js plus the std fakes. */
@@ -305,9 +317,16 @@ function exclusive<T>(f: () => Promise<T>): Promise<T> {
 }
 
 /** `load`, then rethrows an unhandled rejection of the module bodies (Q140). */
-async function loadChecked(files: ParsedFile[], entryFile: string, tests: boolean, decls?: Decls, backend?: Backend): Promise<{ ex: Record<string, unknown>; native: Record<string, (...a: unknown[]) => unknown> | undefined }> {
+async function loadChecked(
+  files: ParsedFile[],
+  entryFile: string,
+  tests: boolean | "all",
+  decls?: Decls,
+  backend?: Backend,
+  skipTestFiles?: ReadonlySet<string>,
+): Promise<{ ex: Record<string, unknown>; native: Record<string, (...a: unknown[]) => unknown> | undefined }> {
   let out: { ex: Record<string, unknown>; native: Record<string, (...a: unknown[]) => unknown> | undefined } = { ex: {}, native: undefined };
-  const rejected = await rt.capturing(async () => { out = await load(files, entryFile, tests, decls, backend); });
+  const rejected = await rt.capturing(async () => { out = await load(files, entryFile, tests, decls, backend, skipTestFiles); });
   if (rejected.length) throw rejected[0];
   return out;
 }
@@ -363,16 +382,25 @@ async function runNow(entryFile: string, backend?: Backend, analysis?: Analysis,
   return { diagnostics: [], stdout: r.stdout, trap, exitCode: trap ? 3 : (r.exitCode ?? 0) };
 }
 
-/** `szigyr test`: checks, emits the entry file's `test(...)` calls and runs them in order (§9.2, D022). */
-export const runTestFile = (entryFile: string, opts: RunOptions = {}): Promise<{ diagnostics: Diagnostic[]; results: rt.TestResult[] }> => exclusive(() => runTestFileNow(entryFile, opts.backend, opts.analysis));
-async function runTestFileNow(entryFile: string, backend?: Backend, analysis?: Analysis): Promise<{ diagnostics: Diagnostic[]; results: rt.TestResult[] }> {
-  const a = analysis ?? analyze(entryFile);
+/** `szigyr test`: checks, emits `test(...)` calls (entry file or `--all` imported files) and runs them in order (§9.2, D022). */
+export const runTestFile = (entryFile: string, opts: TestOptions = {}): Promise<{ diagnostics: Diagnostic[]; results: rt.TestResult[]; skipped?: number }> =>
+  exclusive(() => runTestFileNow(entryFile, opts));
+async function runTestFileNow(entryFile: string, opts: TestOptions = {}): Promise<{ diagnostics: Diagnostic[]; results: rt.TestResult[]; skipped?: number }> {
+  const a = opts.analysis ?? analyze(entryFile);
   if (a.diagnostics.length) return { diagnostics: a.diagnostics, results: [] };
-  const e4009 = backend !== "c" ? cOnlyDiagnostic(a.files, a.unsafeOps ?? []) : undefined; // §14.7
+  const e4009 = opts.backend !== "c" ? cOnlyDiagnostic(a.files, a.unsafeOps ?? []) : undefined; // §14.7
   if (e4009) return { diagnostics: [e4009], results: [] };
   rt.clearTests();
-  await loadChecked(a.files, entryFile, true, a.decls, backend);
-  try { return { diagnostics: [], results: await rt.runTests() }; } finally { rt.stopFakeIsolates(); stopNodeProcs(); await Promise.all([stopAudioStreams(), stopNodeNetServers()]); rt.clearTests(); }
+  await loadChecked(a.files, entryFile, opts.all ? "all" : true, a.decls, opts.backend, opts.skipTestFiles);
+  try {
+    const total = rt.registeredTestCount();
+    const rawResults = await rt.runTests(opts.filter);
+    const results = opts.all ? rawResults : rawResults.map(({ file: _f, ...rest }) => rest);
+    const skipped = total - results.length;
+    return { diagnostics: [], results, ...(skipped > 0 ? { skipped } : {}) };
+  } finally {
+    rt.stopFakeIsolates(); stopNodeProcs(); await Promise.all([stopAudioStreams(), stopNodeNetServers()]); rt.clearTests();
+  }
 }
 
 /** `szigyr mutate`: JS-only mutation testing with diff cache and witness search (SPEC §16.2, Q275–Q277). */

@@ -19,7 +19,7 @@ import type { ClassSym, Type } from "./types.ts";
 import * as rt from "../../runtime-js/src/index.ts";
 import { FakeAudio, FakeClock, FakeFs, FakeNet, FakeProc, FakeSpawn, MemoryLog, SeededRandom, TestAlloc } from "../../std/src/index.ts";
 
-const MUTATE_VERSION = "5";
+const MUTATE_VERSION = "6";
 
 export interface SkippedTarget {
   readonly fn: string;
@@ -176,7 +176,7 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
       mutants: allMutants,
       exportFns: modTargets.filter((t) => t.fnSym && t.pure).map((t) => t.name),
     };
-    emitted.set(pf.path, emitFile(pf, displayPath(pf.path), isEntry, undefined, undefined, mut));
+    emitted.set(pf.path, emitFile(pf, displayPath(pf.path), opts.all ? pf.path !== DETMATH_PATH : isEntry, undefined, undefined, mut));
   }
 
   // Resolve npm: imports (same as index.ts).
@@ -206,7 +206,7 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
   try {
   // Per-run isolated runtime state (mutant switch, reachability, step fuel, own-requires watch, local test registry).
   type TestFn = (t: rt.Test) => void | Promise<void>;
-  const registeredTests: { name: string; fn: TestFn }[] = [];
+  const registeredTests: { name: string; fn: TestFn; file: string }[] = [];
   const mutState = {
     m: 0,
     steps: 0,
@@ -221,7 +221,7 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
     ...rt,
     FakeAudio, FakeClock, FakeNet, FakeProc, SeededRandom, MemoryLog, FakeFs, FakeSpawn, TestAlloc,
     get m(): number { return mutState.m; },
-    test(name: string, fn: TestFn): void { registeredTests.push({ name, fn }); },
+    test(name: string, fn: TestFn, file = entryDisplay): void { registeredTests.push({ name, fn, file }); },
     hit(fnId: number): void { if (mutState.recording) mutState.reached.add(fnId); },
     step(): void { if (++mutState.steps > mutState.stepLimit) throw new StepLimitReached(); },
     cOnly(): never { throw new COnlyReached(); },
@@ -303,16 +303,21 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
     if (modEx?.[MUT_FNS]) fnTables.set(m.pf.path, modEx[MUT_FNS] as Record<string, (...args: unknown[]) => unknown>);
   }
 
-  // Map top-level `test(...)` statements in entry file to AST nodes and source text (1-to-1 with registeredTests, §1 / §9.2).
-  const testAsts: { source: string; node: Node }[] = [];
-  for (const s of entryMod.sf.statements) {
-    if (s.kind === K.ExpressionStatement) {
-      const ex = (s as ts.ExpressionStatement).expression;
-      if (ex.kind === K.CallExpression && isId((ex as ts.CallExpression).expression) && ((ex as ts.CallExpression).expression as ts.Identifier).text === "test") {
-        testAsts.push({ source: s.getText(entryMod.sf), node: s });
+  // Map top-level `test(...)` statements in included modules to AST nodes and source text (1-to-1 with registeredTests, §1 / §9.2).
+  const testAstsByFile = new Map<string, { source: string; node: Node; mod: Module }[]>();
+  for (const mod of opts.all ? targetMods : [entryMod]) {
+    const list: { source: string; node: Node; mod: Module }[] = [];
+    for (const s of mod.sf.statements) {
+      if (s.kind === K.ExpressionStatement) {
+        const ex = (s as ts.ExpressionStatement).expression;
+        if (ex.kind === K.CallExpression && isId((ex as ts.CallExpression).expression) && ((ex as ts.CallExpression).expression as ts.Identifier).text === "test") {
+          list.push({ source: s.getText(mod.sf), node: s, mod });
+        }
       }
     }
+    testAstsByFile.set(displayPath(mod.pf.path), list);
   }
+  const astCursor = new Map<string, number>();
 
   // Helper to run one test function cleanly.
   type RunOutcome =
@@ -368,6 +373,7 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
   // Q276: baseline m = 0 run. Collect reached functions and step count S per test.
   interface BaselineTest {
     name: string;
+    mod: Module;
     source: string;
     node: Node;
     fn: TestFn;
@@ -383,13 +389,15 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
       if (out.kind === "conly") continue; // Q275: skip tests that reach C-only code
       return {
         diagnostics: [],
-        baselineFailure: { file: entryDisplay, name: t.name, failure: out.failure ?? out.kind, ...(out.trap ? { trap: out.trap } : {}), ...(out.pos ? { pos: out.pos } : {}) },
+        baselineFailure: { file: t.file, name: t.name, failure: out.failure ?? out.kind, ...(out.trap ? { trap: out.trap } : {}), ...(out.pos ? { pos: out.pos } : {}) },
         mutants: [],
         summary: emptySummary,
       };
     }
-    const ta = testAsts[i];
-    activeTests.push({ name: t.name, source: ta?.source ?? "", node: ta?.node ?? entryMod.sf, fn: t.fn, steps: mutState.steps, durationMs: out.durationMs, reached: new Set(mutState.reached) });
+    const curIdx = astCursor.get(t.file) ?? 0;
+    astCursor.set(t.file, curIdx + 1);
+    const ta = testAstsByFile.get(t.file)?.[curIdx];
+    activeTests.push({ name: t.name, mod: ta?.mod ?? entryMod, source: ta?.source ?? "", node: ta?.node ?? entryMod.sf, fn: t.fn, steps: mutState.steps, durationMs: out.durationMs, reached: new Set(mutState.reached) });
   }
 
   // Cache load (Q277).
@@ -424,7 +432,7 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
 
     const reaching = activeTests.filter((t) => t.reached.has(target.fnId));
     const cacheId = `${target.mod.pf.path}::${target.name}`;
-    const key = computeCacheKey(decls, entryMod, target, reaching);
+    const key = computeCacheKey(decls, target, reaching);
     const hit = useCache ? cacheStore[cacheId] : undefined;
 
     if (hit && hit.key === key && hit.results.length === fnMutants.length && hit.results.every((r, i) => r.op === fnMutants[i]!.op)) {
@@ -507,7 +515,7 @@ function writeCache(file: string, store: CacheStore): void {
 }
 
 /** Q277: hash of (target fn + transitive refs across signatures/bodies/types/consts/classes, reaching tests + helpers, version). */
-function computeCacheKey(decls: Decls, entryMod: Module, target: { readonly mod: Module; readonly fnSym?: FnSym; readonly clsSym?: ClassSym }, reaching: readonly { name: string; source: string; node: Node }[]): string {
+function computeCacheKey(decls: Decls, target: { readonly mod: Module; readonly fnSym?: FnSym; readonly clsSym?: ClassSym }, reaching: readonly { mod: Module; name: string; source: string; node: Node }[]): string {
   const seen = new Set<string>();
   const parts: [string, string][] = [];
   const visitFn = (f: FnSym): void => {
@@ -596,9 +604,9 @@ function computeCacheKey(decls: Decls, entryMod: Module, target: { readonly mod:
   };
   if (target.fnSym) visitFn(target.fnSym);
   else if (target.clsSym) visitType({ k: "class", cls: target.clsSym, mod: target.mod });
-  for (const t of reaching) walkDeps(entryMod, t.node);
+  for (const t of reaching) walkDeps(t.mod, t.node);
   parts.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-  const tests = reaching.map((t) => [t.name, t.source] as [string, string]).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));
+  const tests = reaching.map((t) => [t.mod.pf.path, t.name, t.source] as [string, string, string]).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : a[2] < b[2] ? -1 : a[2] > b[2] ? 1 : 0));
   return createHash("sha256").update(JSON.stringify({ v: MUTATE_VERSION, parts, tests })).digest("hex");
 }
 

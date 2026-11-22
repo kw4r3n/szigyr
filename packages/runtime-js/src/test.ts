@@ -4,6 +4,7 @@ import type { Slice } from "./collections.ts";
 import { createRng, formatArgs, generateRaw, materializeArgs, shrinkRaw, type GenDesc } from "./arbitrary.ts";
 
 export interface TestResult {
+  readonly file?: string;
   readonly name: string;
   readonly ok: boolean;
   /** Set when ok is false. */
@@ -148,15 +149,19 @@ export function forAll(
 }
 
 type TestFn = (t: Test) => void | Promise<void>;
-const registry: { name: string; fn: TestFn }[] = [];
+const registry: { name: string; fn: TestFn; file?: string }[] = [];
 /** Registers; the translator emits these calls only for `szigyr test`. Duplicate names are allowed (Q058). */
-export function test(name: string, fn: TestFn): void { registry.push({ name, fn }); }
+export function test(name: string, fn: TestFn, file?: string): void { registry.push({ name, fn, ...(file ? { file } : {}) }); }
+export const registeredTestCount = (): number => registry.length;
 export function clearTests(): void { registry.length = 0; }
 
-/** Runs registered tests in order. A failed assertion ends only that test. */
-export async function runTests(): Promise<TestResult[]> {
+/** Runs registered tests matching `filter` (case-insensitive substring) in order. A failed assertion ends only that test. */
+export async function runTests(filter?: string): Promise<TestResult[]> {
+  const needle = filter?.toLowerCase();
   const out: TestResult[] = [];
-  for (const { name, fn } of [...registry]) {
+  for (const { name, fn, file } of [...registry]) {
+    if (needle !== undefined && !name.toLowerCase().includes(needle)) continue;
+    const withFile = (r: TestResult): TestResult => (file ? { file, ...r } : r);
     takeIsolateTrap();
     try {
       const rejected = await capturing(() => fn(new Test()));
@@ -164,12 +169,12 @@ export async function runTests(): Promise<TestResult[]> {
       task(undefined);
       const ft = takeIsolateTrap();
       if (ft) trap(ft.code as TrapCode, ft.message ?? "trap in an isolate", ft.file ? { file: ft.file, line: ft.line!, col: ft.col! } : undefined);
-      out.push({ name, ok: true });
+      out.push(withFile({ name, ok: true }));
     }
     catch (x) {
       const e = asTrap(x);
-      if (x instanceof TestFailure) out.push({ name, ok: false, failure: x.message, pos: x.pos, ...(x.detail ? { detail: x.detail } : {}) });
-      else if (e) out.push({ name, ok: false, failure: e.message, trap: { code: e.code, pos: e.pos }, pos: e.pos });
+      if (x instanceof TestFailure) out.push(withFile({ name, ok: false, failure: x.message, pos: x.pos, ...(x.detail ? { detail: x.detail } : {}) }));
+      else if (e) out.push(withFile({ name, ok: false, failure: e.message, trap: { code: e.code, pos: e.pos }, pos: e.pos }));
       else throw x; // internal error: do not hide it
     } finally {
       stopFakeIsolates();

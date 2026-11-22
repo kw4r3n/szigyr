@@ -1,5 +1,5 @@
 // Stdio JSON-RPC 2.0 MCP server (`szigyr mcp`) powered by a resident incremental compiler session.
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -87,13 +87,15 @@ const TOOLS = [
   },
   {
     name: "szigyr_test",
-    description: "Run top-level `test(...)` blocks in a .szigyr file under js, c, wasm, both, or all backends.",
+    description: "Run top-level `test(...)` blocks in a .szigyr file (or locally imported modules with `all`) under js, c, wasm, both, or all backends.",
     inputSchema: {
       type: "object",
       properties: {
         file: { type: "string", description: "Path to the .szigyr test file." },
         content: { type: "string", description: "Optional unsaved buffer content to test instead of reading `file` from disk." },
         overlays: OVERLAYS_SCHEMA,
+        all: { type: "boolean", description: "Include colocated `test(...)` blocks from locally imported modules (default: false)." },
+        filter: { type: "string", description: "Only run tests whose names contain this case-insensitive substring." },
         backend: { type: "string", enum: ["js", "c", "wasm", "both", "all"], description: "Target backend (default: js)." },
         timeoutMs: TIMEOUT_SCHEMA,
       },
@@ -171,10 +173,13 @@ class RpcError extends Error {
 }
 
 type WorkerReq =
-  | { readonly op: "test"; readonly file: string; readonly backend: string; readonly content?: string; readonly overlays?: Record<string, string> }
+  | { readonly op: "test"; readonly file: string; readonly backend: string; readonly all?: boolean; readonly filter?: string; readonly content?: string; readonly overlays?: Record<string, string> }
   | { readonly op: "mutate"; readonly file: string; readonly noCache: boolean; readonly all?: boolean; readonly failOnSurvived?: boolean }
   | { readonly op: "prove"; readonly file: string; readonly noCache: boolean; readonly all?: boolean; readonly strict?: boolean; readonly proveTimeoutMs?: number; readonly content?: string; readonly overlays?: Record<string, string> }
   | { readonly op: "run"; readonly file: string; readonly backend: string; readonly content?: string; readonly overlays?: Record<string, string> };
+
+type WorkerMsg = { readonly id: number; readonly req: WorkerReq } | { readonly shutdown: true };
+type WorkerReply = { readonly id: number; readonly okToolArgs: [unknown, boolean?] };
 
 function applyOverlays(parser: Parser, file: string, content: string | undefined, overlays: Record<string, string> | undefined): string[] {
   const applied: string[] = [];
@@ -195,18 +200,22 @@ function workerBackends(backend: string): Backend[] {
   return backend === "all" ? ["js", "c", "wasm"] : backend === "both" ? ["js", "c"] : [backend as Backend];
 }
 
-async function handleWorker(req: WorkerReq): Promise<[unknown, boolean?]> {
-  const parser = createParser();
+async function handleWorker(req: WorkerReq, parser: Parser): Promise<[unknown, boolean?]> {
+  const t0 = performance.now();
+  const ms = (): number => +(performance.now() - t0).toFixed(2);
+  const applied = req.op === "mutate" ? [] : applyOverlays(parser, req.file, req.content, req.overlays);
   try {
-    const t0 = performance.now();
-    const ms = (): number => +(performance.now() - t0).toFixed(2);
     if (req.op === "test") {
       const backends = workerBackends(req.backend);
-      applyOverlays(parser, req.file, req.content, req.overlays);
       const analysis = analyze(req.file, parser);
       const rs: Awaited<ReturnType<typeof runTestFile>>[] = [];
       for (const b of backends) {
-        const r = await runTestFile(req.file, { backend: b, analysis });
+        const r = await runTestFile(req.file, {
+          backend: b,
+          analysis,
+          ...(req.all ? { all: true } : {}),
+          ...(req.filter !== undefined ? { filter: req.filter } : {}),
+        });
         if (r.diagnostics.length) {
           return [{ ok: false, file: req.file, backend: req.backend, diagnostics: r.diagnostics, results: [], durationMs: ms() }];
         }
@@ -222,11 +231,10 @@ async function handleWorker(req: WorkerReq): Promise<[unknown, boolean?]> {
         }
       }
       const ok = !mismatch && r0.results.every((t) => t.ok);
-      return [{ ok, file: req.file, backend: req.backend, diagnostics: [], results: r0.results, ...(mismatch ? { mismatch } : {}), durationMs: ms() }];
+      return [{ ok, file: req.file, backend: req.backend, diagnostics: [], results: r0.results, ...(r0.skipped ? { skipped: r0.skipped } : {}), ...(mismatch ? { mismatch } : {}), durationMs: ms() }];
     }
     if (req.op === "run") {
       const backends = workerBackends(req.backend);
-      applyOverlays(parser, req.file, req.content, req.overlays);
       const analysis = analyze(req.file, parser);
       const rs: Awaited<ReturnType<typeof run>>[] = [];
       for (const b of backends) {
@@ -248,7 +256,6 @@ async function handleWorker(req: WorkerReq): Promise<[unknown, boolean?]> {
       return [{ ok, file: req.file, backend: req.backend, diagnostics: [], stdout: r0.stdout, exitCode: r0.exitCode ?? 0, ...(r0.trap ? { trap: r0.trap } : {}), ...(mismatch ? { mismatch } : {}), durationMs: ms() }];
     }
     if (req.op === "prove") {
-      applyOverlays(parser, req.file, req.content, req.overlays);
       const useCache = !req.noCache && req.content === undefined && req.overlays === undefined;
       const r = await prove(req.file, {
         cache: useCache,
@@ -266,49 +273,122 @@ async function handleWorker(req: WorkerReq): Promise<[unknown, boolean?]> {
     const ok = r.diagnostics.length === 0 && !r.baselineFailure && !(req.failOnSurvived && r.summary.survived > 0);
     return [{ ok, file: req.file, ...r, durationMs: ms() }];
   } finally {
-    await shutdownSmt();
-    parser.close();
+    for (const p of applied) parser.clearOverlay?.(p);
   }
 }
 
-function runWorker(req: WorkerReq, timeoutMs = 30_000): Promise<ReturnType<typeof okTool>> {
-  return new Promise((resolvePromise) => {
+class McpWorker {
+  private child: ChildProcess | null = null;
+  private nextId = 1;
+  private pending: {
+    id: number;
+    file: string;
+    resolve: (res: ReturnType<typeof okTool>) => void;
+    timer: ReturnType<typeof setTimeout>;
+  } | undefined;
+  private stderr = "";
+  private chain: Promise<unknown> = Promise.resolve();
+
+  run(req: WorkerReq, timeoutMs = 30_000): Promise<ReturnType<typeof okTool>> {
+    const p = this.chain.then(() => this.runOne(req, timeoutMs));
+    this.chain = p.catch(() => undefined);
+    return p;
+  }
+
+  private ensureChild(): ChildProcess {
+    if (this.child) return this.child;
     const child = spawn(process.execPath, [fileURLToPath(new URL("./mcp.ts", import.meta.url))], {
       stdio: ["ignore", "pipe", "pipe", "ipc"],
       env: { ...process.env, SZIGYR_MCP_WORKER: "1" },
     });
-    let stderr = "";
-    let reply: ReturnType<typeof okTool> | undefined;
-    let timedOut = false;
-    let settled = false;
-    const done = (res: ReturnType<typeof okTool>): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolvePromise(res);
-    };
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGKILL");
-      done(okTool({ ok: false, file: req.file, error: `timed out after ${timeoutMs}ms`, timedOut: true }, true));
-    }, timeoutMs);
     child.stdout?.resume(); // discard child/native stdout so JSON-RPC transport is never corrupted
-    child.stderr?.on("data", (d) => { stderr += d.toString("utf8"); });
-    child.on("message", (msg: { okToolArgs: [unknown, boolean?] }) => {
-      reply = okTool(msg.okToolArgs[0], msg.okToolArgs[1]);
+    child.stderr?.on("data", (d) => { if (this.child === child) this.stderr += d.toString("utf8"); });
+    child.on("message", (msg: WorkerReply) => {
+      if (this.child !== child) return;
+      const cur = this.pending;
+      if (!cur || msg.id !== cur.id) return;
+      this.pending = undefined;
+      clearTimeout(cur.timer);
+      cur.resolve(okTool(msg.okToolArgs[0], msg.okToolArgs[1]));
     });
     child.on("error", (err) => {
-      if (timedOut) return;
-      if (!reply) reply = okTool({ ok: false, file: req.file, error: err.message }, true);
-      done(reply);
+      if (this.child !== child) return;
+      this.child = null;
+      const cur = this.pending;
+      if (!cur) return;
+      this.pending = undefined;
+      clearTimeout(cur.timer);
+      cur.resolve(okTool({ ok: false, file: cur.file, error: err.message }, true));
     });
     child.on("close", (code, signal) => {
-      if (timedOut) return;
-      if (reply) done(reply);
-      else done(okTool({ ok: false, file: req.file, error: `worker exited (code=${code}, signal=${signal})`, ...(stderr.trim() ? { stderr: stderr.trim() } : {}) }, true));
+      if (this.child !== child) return;
+      this.child = null;
+      const cur = this.pending;
+      if (!cur) return;
+      this.pending = undefined;
+      clearTimeout(cur.timer);
+      const errText = this.stderr.trim();
+      cur.resolve(okTool({ ok: false, file: cur.file, error: `worker exited (code=${code}, signal=${signal})`, ...(errText ? { stderr: errText } : {}) }, true));
     });
-    child.send(req);
-  });
+    this.child = child;
+    return child;
+  }
+
+  private runOne(req: WorkerReq, timeoutMs: number): Promise<ReturnType<typeof okTool>> {
+    return new Promise((resolvePromise) => {
+      const child = this.ensureChild();
+      const id = this.nextId++;
+      this.stderr = "";
+      const timer = setTimeout(() => {
+        if (this.pending?.id !== id) return;
+        this.pending = undefined;
+        if (this.child === child) this.child = null;
+        try { child.kill("SIGKILL"); } catch { /* ignored */ }
+        resolvePromise(okTool({ ok: false, file: req.file, error: `timed out after ${timeoutMs}ms`, timedOut: true }, true));
+      }, timeoutMs);
+      this.pending = { id, file: req.file, resolve: resolvePromise, timer };
+      try {
+        child.send({ id, req } satisfies WorkerMsg);
+      } catch (err) {
+        if (this.pending?.id === id) {
+          this.pending = undefined;
+          clearTimeout(timer);
+          if (this.child === child) this.child = null;
+          resolvePromise(okTool({ ok: false, file: req.file, error: err instanceof Error ? err.message : String(err) }, true));
+        }
+      }
+    });
+  }
+
+  async close(): Promise<void> {
+    const child = this.child;
+    this.child = null;
+    if (!child || child.exitCode !== null || child.signalCode !== null) return;
+    await new Promise<void>((res) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(killTimer);
+        res();
+      };
+      child.once("close", finish);
+      const killTimer = setTimeout(() => {
+        try { child.kill("SIGTERM"); } catch { /* ignored */ }
+        setTimeout(() => {
+          try { child.kill("SIGKILL"); } catch { /* ignored */ }
+          finish();
+        }, 200).unref();
+      }, 1000);
+      killTimer.unref();
+      try {
+        if (child.connected) child.send({ shutdown: true } satisfies WorkerMsg);
+        else child.kill("SIGTERM");
+      } catch {
+        try { child.kill("SIGTERM"); } catch { /* ignored */ }
+      }
+    });
+  }
 }
 
 function parseTimeoutMs(raw: unknown, tool: string): number {
@@ -391,6 +471,7 @@ export async function serveMcp(opts: McpOptions = {}): Promise<number> {
   const output = opts.output ?? process.stdout;
   const parser = opts.parser ?? createParser();
   const ownParser = !opts.parser;
+  const worker = new McpWorker();
 
   const send = (msg: unknown): void => {
     output.write(`${JSON.stringify(msg)}\n`);
@@ -445,11 +526,21 @@ export async function serveMcp(opts: McpOptions = {}): Promise<number> {
       const backend = (args.backend ?? "js") as string;
       const timeoutMs = parseTimeoutMs(args.timeoutMs, name);
       if (!["js", "c", "wasm", "both", "all"].includes(backend)) throw new RpcError(-32602, `unknown backend '${backend}'`);
+      let all = false;
+      let filter: string | undefined;
+      if (name === "szigyr_test") {
+        if (args.all !== undefined && typeof args.all !== "boolean") throw new RpcError(-32602, "'szigyr_test' 'all' must be a boolean");
+        if (args.filter !== undefined && (typeof args.filter !== "string" || !args.filter)) throw new RpcError(-32602, "'szigyr_test' 'filter' must be a non-empty string");
+        all = !!args.all;
+        filter = args.filter as string | undefined;
+      }
       if (!inOverlays && !existsSync(file)) return okTool({ ok: false, error: `no such file: ${file}` }, true);
-      return await runWorker({
+      return await worker.run({
         op: name === "szigyr_run" ? "run" : "test",
         file,
         backend,
+        ...(all ? { all: true } : {}),
+        ...(filter !== undefined ? { filter } : {}),
         ...(content !== undefined ? { content } : {}),
         ...(overlays !== undefined ? { overlays } : {}),
       }, timeoutMs);
@@ -465,7 +556,7 @@ export async function serveMcp(opts: McpOptions = {}): Promise<number> {
       if (all !== undefined && typeof all !== "boolean") throw new RpcError(-32602, "'szigyr_mutate' 'all' must be a boolean");
       if (failOnSurvived !== undefined && typeof failOnSurvived !== "boolean") throw new RpcError(-32602, "'szigyr_mutate' 'failOnSurvived' must be a boolean");
       if (!existsSync(file)) return okTool({ ok: false, error: `no such file: ${file}` }, true);
-      return await runWorker({
+      return await worker.run({
         op: "mutate",
         file,
         noCache: !!noCache,
@@ -487,7 +578,7 @@ export async function serveMcp(opts: McpOptions = {}): Promise<number> {
         throw new RpcError(-32602, "'szigyr_prove' 'proveTimeoutMs' must be a finite integer in [1, 60000]");
       }
       if (!inOverlays && !existsSync(file)) return okTool({ ok: false, error: `no such file: ${file}` }, true);
-      return await runWorker({
+      return await worker.run({
         op: "prove",
         file,
         noCache: !!noCache,
@@ -564,6 +655,7 @@ export async function serveMcp(opts: McpOptions = {}): Promise<number> {
       }
     }
   } finally {
+    await worker.close();
     process.off("SIGINT", closeRl);
     process.off("SIGTERM", closeRl);
     rl.close();
@@ -573,15 +665,33 @@ export async function serveMcp(opts: McpOptions = {}): Promise<number> {
 }
 
 if (process.env.SZIGYR_MCP_WORKER === "1" && process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
-  process.once("message", (req: WorkerReq) => {
-    void (async () => {
+  const parser = createParser();
+  let closing = false;
+  let queue: Promise<void> = Promise.resolve();
+  const shutdown = (): void => {
+    if (closing) return;
+    closing = true;
+    queue = queue.then(async () => {
+      await shutdownSmt();
+      parser.close();
+      process.exit(0);
+    });
+  };
+  process.on("disconnect", shutdown);
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+  process.on("message", (msg: WorkerMsg) => {
+    if ("shutdown" in msg && msg.shutdown) { shutdown(); return; }
+    const { id, req } = msg as { id: number; req: WorkerReq };
+    queue = queue.then(async () => {
+      if (closing) return;
       try {
-        const okToolArgs = await handleWorker(req);
-        process.send!({ okToolArgs }, () => process.exit(0));
+        const okToolArgs = await handleWorker(req, parser);
+        if (process.connected) process.send!({ id, okToolArgs } satisfies WorkerReply);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        process.send!({ okToolArgs: [{ ok: false, file: req.file, error: msg }, true] }, () => process.exit(0));
+        const errMsg = e instanceof Error ? e.message : String(e);
+        if (process.connected) process.send!({ id, okToolArgs: [{ ok: false, file: req.file, error: errMsg }, true] } satisfies WorkerReply);
       }
-    })();
+    });
   });
 }

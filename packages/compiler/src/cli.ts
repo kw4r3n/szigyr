@@ -10,7 +10,7 @@ import { runTestPass, startWatch } from "./watch.ts";
 import { CUnsupported } from "./emit-c.ts";
 import { CBuildError } from "./native.ts";
 
-const USAGE = `usage: ${CLI_NAME} <check|run|test|mutate|prove|query|explain|build|mcp> [--json] [--watch] [--fix] [--no-cache] [--all] [--strict] [--timeout=<ms>] [--fail-on-survived] [--backend=js|c|both|wasm|all] [--target=node|browser] [--mode=app|lib] [--release] [-o <dir>] <file...|code>`;
+const USAGE = `usage: ${CLI_NAME} <check|run|test|mutate|prove|query|explain|build|mcp> [--json] [--watch] [--fix] [--no-cache] [--all] [--filter=<pat>] [--strict] [--timeout=<ms>] [--fail-on-survived] [--backend=js|c|both|wasm|all] [--target=node|browser] [--mode=app|lib] [--release] [-o <dir>] <file...|code>`;
 
 function lineStartsOf(text: string): number[] {
   const starts = [0];
@@ -95,6 +95,7 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
       fix: { type: "boolean" },
       "no-cache": { type: "boolean" },
       all: { type: "boolean" },
+      filter: { type: "string" },
       strict: { type: "boolean" },
       release: { type: "boolean" },
       timeout: { type: "string" },
@@ -120,6 +121,7 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
   const fix = !!args.values.fix;
   const noCache = !!args.values["no-cache"];
   const all = !!args.values.all;
+  const filter = args.values.filter as string | undefined;
   const strict = !!args.values.strict;
   const release = !!args.values.release;
   const rawTimeout = args.values.timeout as string | undefined;
@@ -145,7 +147,7 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
       timeoutMs = Number(rawTimeout);
     }
     if (cmd === "mcp") {
-      if (files.length || rawBackend !== undefined || noCache || watch || fix || all || strict || release || rawTimeout !== undefined || failOnSurvived || target !== undefined) {
+      if (files.length || rawBackend !== undefined || noCache || watch || fix || all || filter !== undefined || strict || release || rawTimeout !== undefined || failOnSurvived || target !== undefined) {
         throw new CliError(`mcp: takes no positional arguments or build/watch/backend flags\n${USAGE}`);
       }
     } else if (cmd === "explain") {
@@ -165,7 +167,9 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
     if (strict && cmd !== "prove") throw new CliError(`${cmd}: --strict is only supported for prove\n${USAGE}`);
     if (rawTimeout !== undefined && cmd !== "prove" && cmd !== "build") throw new CliError(`${cmd}: --timeout is only supported for prove and build\n${USAGE}`);
     if (noCache && cmd !== "mutate" && cmd !== "prove" && !(cmd === "build" && release)) throw new CliError(`${cmd}: --no-cache is only supported for mutate, prove, and build --release\n${USAGE}`);
-    if (all && cmd !== "mutate" && cmd !== "prove") throw new CliError(`${cmd}: --all is only supported for mutate and prove\n${USAGE}`);
+    if (all && cmd !== "test" && cmd !== "mutate" && cmd !== "prove") throw new CliError(`${cmd}: --all is only supported for test, mutate, and prove\n${USAGE}`);
+    if (filter !== undefined && cmd !== "test") throw new CliError(`${cmd}: --filter is only supported for test\n${USAGE}`);
+    if (filter === "") throw new CliError(`test: --filter requires a non-empty pattern\n${USAGE}`);
     if (failOnSurvived && cmd !== "mutate") throw new CliError(`${cmd}: --fail-on-survived is only supported for mutate\n${USAGE}`);
     if (cmd === "build") {
       if (target !== "browser" && target !== "node") throw new CliError(`build: missing or unknown --target '${target ?? ""}' (expected --target=node or --target=browser)\n${USAGE}`);
@@ -360,8 +364,8 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
       err(json ? line({ kind: "trap", code, file, range: { start: { line: l, col }, end: { line: l, col } }, ...(message ? { message } : {}) }) : `trap ${code} at ${file}:${l}:${col}\n${message ? `${message}\n` : ""}`);
       return 3;
     }
-    if (watch) return await startWatch({ files, mode: "test", json, backends, out, err, parser });
-    const tr = await runTestPass({ files, backends, json, out, diags, parser });
+    if (watch) return await startWatch({ files, mode: "test", json, backends, ...(all ? { all: true } : {}), ...(filter !== undefined ? { filter } : {}), out, err, parser });
+    const tr = await runTestPass({ files, backends, json, ...(all ? { all: true } : {}), ...(filter !== undefined ? { filter } : {}), out, diags, parser });
     return tr.failed || tr.bad ? 1 : 0;
   } catch (e) {
     if (e instanceof CUnsupported || e instanceof CBuildError) {

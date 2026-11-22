@@ -46,6 +46,7 @@ const INT32_BOUNDS: Partial<Record<NumName, readonly [number, number]>> = Object
 );
 const EXACT_F32_INTS = new Set<NumName>(["i8", "u8", "i16", "u16"]);
 const UNSIGNED_32_INTS = new Set<NumName>(["u8", "u16", "u32", "usize"]);
+const NUM_SET = new Set<string>(NUM_NAMES);
 const ARITH_MUT: Record<string, string> = { "+": "-", "-": "+", "*": "+" };
 const CMP_MUT: Record<string, string> = { "<": "<=", "<=": "<", ">": ">=", ">=": ">", "===": "!==", "!==": "===" };
 const LOGIC_MUT: Record<string, string> = { "&&": "||", "||": "&&" };
@@ -54,17 +55,18 @@ const unwrapParens = (e: ts.Expression): ts.Expression =>
   e.kind === K.ParenthesizedExpression || e.kind === K.SatisfiesExpression
     ? unwrapParens((e as ts.ParenthesizedExpression | ts.SatisfiesExpression).expression)
     : e;
-/** Whether `n` is a `switch` `case` expression, including parenthesized forms (`case (1):`). */
-const isCaseExpr = (n: Node): boolean => {
-  let cur = n;
+const unwrapParentExpr = (n: Node): { cur: Node; parent: Node | undefined } => {
+  let cur: Node = n;
   while (cur.parent?.kind === K.ParenthesizedExpression || cur.parent?.kind === K.SatisfiesExpression) cur = cur.parent;
-  return cur.parent?.kind === K.CaseClause && (cur.parent as ts.CaseClause).expression === cur;
+  return { cur, parent: cur.parent };
+};
+const isCaseExpr = (n: Node): boolean => {
+  const { cur, parent } = unwrapParentExpr(n);
+  return parent?.kind === K.CaseClause && (parent as ts.CaseClause).expression === cur;
 };
 /** Whether `n` is the whole boolean literal condition of `while`/`do`/`for` (checker/ownership rely on it for return/move soundness). */
 const isLoopCondLit = (n: Node): boolean => {
-  let cur = n;
-  while (cur.parent?.kind === K.ParenthesizedExpression || cur.parent?.kind === K.SatisfiesExpression) cur = cur.parent;
-  const p = cur.parent;
+  const { cur, parent: p } = unwrapParentExpr(n);
   if (!p) return false;
   if (p.kind === K.WhileStatement) return (p as ts.WhileStatement).expression === cur;
   if (p.kind === K.DoStatement) return (p as ts.DoStatement).expression === cur;
@@ -143,6 +145,112 @@ export function emitFile(
     const id = mut!.mutants.length + 1;
     mut!.mutants.push({ id, fnId: curFnId, fn: curFnName, op: opName, range: rangeOf(n), isDeleteStmt });
     return id;
+  };
+  const isVecCreateCapArg = (n: Node): boolean => {
+    const { cur, parent } = unwrapParentExpr(n);
+    if (!parent || parent.kind !== K.CallExpression) return false;
+    const ce = parent as ts.CallExpression;
+    if (ce.arguments[1] !== cur || ce.expression.kind !== K.PropertyAccessExpression) return false;
+    const p = ce.expression as ts.PropertyAccessExpression;
+    return isId(p.expression) && p.expression.text === "Vec" && p.name.text === "create" && !typeOf(p.expression);
+  };
+  const isNegNumLit = (e: ts.Expression): boolean =>
+    e.kind === K.NumericLiteral || (e.kind === K.PrefixUnaryExpression && (e as ts.PrefixUnaryExpression).operator === K.MinusToken && unwrapParens((e as ts.PrefixUnaryExpression).operand).kind === K.NumericLiteral);
+  const litNumVal = (e0: ts.Expression): number | undefined => {
+    let e = unwrapParens(e0);
+    if (e.kind === K.CallExpression) {
+      const ce = e as ts.CallExpression;
+      if (isId(ce.expression) && NUM_SET.has(ce.expression.text) && ce.arguments.length === 1) e = unwrapParens(ce.arguments[0]!);
+      else return undefined;
+    }
+    if (e.kind === K.NumericLiteral) return numValue(e as ts.NumericLiteral);
+    if (e.kind === K.PrefixUnaryExpression && (e as ts.PrefixUnaryExpression).operator === K.MinusToken) {
+      const opnd = unwrapParens((e as ts.PrefixUnaryExpression).operand);
+      if (opnd.kind === K.NumericLiteral) return -numValue(opnd as ts.NumericLiteral);
+    }
+    return undefined;
+  };
+  const isSimplePureExpr = (e0: ts.Expression): boolean => {
+    const e = unwrapParens(e0);
+    if (e.kind === K.Identifier || e.kind === K.NumericLiteral || e.kind === K.ThisKeyword) return true;
+    if (isNegNumLit(e)) return true;
+    if (e.kind === K.PropertyAccessExpression) return isSimplePureExpr((e as ts.PropertyAccessExpression).expression);
+    if (e.kind === K.CallExpression) {
+      const ce = e as ts.CallExpression;
+      return isId(ce.expression) && NUM_SET.has(ce.expression.text) && ce.arguments.length === 1 && isNegNumLit(unwrapParens(ce.arguments[0]!));
+    }
+    return false;
+  };
+  const samePureExpr = (a: ts.Expression, b: ts.Expression): boolean =>
+    isSimplePureExpr(a) && isSimplePureExpr(b) && unwrapParens(a).getText(sf) === unwrapParens(b).getText(sf);
+  const isZeroLit = (e: ts.Expression): boolean => litNumVal(e) === 0;
+  const isNegOf = (neg0: ts.Expression, base: ts.Expression): boolean => {
+    const neg = unwrapParens(neg0);
+    return neg.kind === K.PrefixUnaryExpression && (neg as ts.PrefixUnaryExpression).operator === K.MinusToken && samePureExpr((neg as ts.PrefixUnaryExpression).operand, base);
+  };
+  const singleStmt = (s: ts.Statement): ts.Statement | undefined =>
+    s.kind === K.Block ? ((s as ts.Block).statements.length === 1 ? (s as ts.Block).statements[0] : undefined) : s;
+  const isEquivBoundaryCmp = (b: ts.BinaryExpression): boolean => {
+    const ok = b.operatorToken.kind;
+    if (ok !== K.LessThanToken && ok !== K.LessThanEqualsToken && ok !== K.GreaterThanToken && ok !== K.GreaterThanEqualsToken) return false;
+    const L = unwrapParens(b.left), R = unwrapParens(b.right);
+    if (!isSimplePureExpr(L) || !isSimplePureExpr(R)) return false;
+    const lt = typeOf(L);
+    const lInt = !!lt && isInt(lt);
+    const { cur, parent } = unwrapParentExpr(b);
+    if (!parent) return false;
+    if (parent.kind === K.ConditionalExpression && unwrapParens((parent as ts.ConditionalExpression).condition) === cur) {
+      const ce = parent as ts.ConditionalExpression, T = unwrapParens(ce.whenTrue), F = unwrapParens(ce.whenFalse);
+      if ((samePureExpr(T, L) && samePureExpr(F, R)) || (samePureExpr(T, R) && samePureExpr(F, L))) return true;
+      if (T.kind === K.BinaryExpression && F.kind === K.BinaryExpression &&
+          (T as ts.BinaryExpression).operatorToken.kind === K.MinusToken && (F as ts.BinaryExpression).operatorToken.kind === K.MinusToken) {
+        const tb = T as ts.BinaryExpression, fb = F as ts.BinaryExpression;
+        const tLR = samePureExpr(tb.left, L) && samePureExpr(tb.right, R), tRL = samePureExpr(tb.left, R) && samePureExpr(tb.right, L);
+        const fLR = samePureExpr(fb.left, L) && samePureExpr(fb.right, R), fRL = samePureExpr(fb.left, R) && samePureExpr(fb.right, L);
+        if ((tLR && fRL) || (tRL && fLR)) return true;
+      }
+      if (lInt && isZeroLit(R) && ((samePureExpr(T, L) && isNegOf(F, L)) || (samePureExpr(F, L) && isNegOf(T, L)))) return true;
+      return false;
+    }
+    if (parent.kind === K.IfStatement && !(parent as ts.IfStatement).elseStatement && unwrapParens((parent as ts.IfStatement).expression) === cur) {
+      const ifs = parent as ts.IfStatement, ts1 = singleStmt(ifs.thenStatement);
+      if (!ts1) return false;
+      if (ts1.kind === K.ExpressionStatement) {
+        const ex = unwrapParens((ts1 as ts.ExpressionStatement).expression);
+        if (ex.kind === K.BinaryExpression && (ex as ts.BinaryExpression).operatorToken.kind === K.EqualsToken) {
+          const ae = ex as ts.BinaryExpression, tgt = assignTarget(ae.left), val = unwrapParens(ae.right);
+          return (samePureExpr(tgt, L) && samePureExpr(val, R)) || (samePureExpr(tgt, R) && samePureExpr(val, L));
+        }
+        return false;
+      }
+      if (ts1.kind === K.ReturnStatement && (ts1 as ts.ReturnStatement).expression && ifs.parent?.kind === K.Block) {
+        const retExpr = unwrapParens((ts1 as ts.ReturnStatement).expression!);
+        const ss = (ifs.parent as ts.Block).statements, idx = ss.indexOf(ifs);
+        if (idx < 0) return false;
+        const sNext = ss[idx + 1];
+        if (sNext?.kind === K.ReturnStatement && (sNext as ts.ReturnStatement).expression) {
+          const nextExpr = unwrapParens((sNext as ts.ReturnStatement).expression!);
+          if ((samePureExpr(retExpr, R) && samePureExpr(nextExpr, L)) || (samePureExpr(retExpr, L) && samePureExpr(nextExpr, R))) return true;
+          if (lInt && isZeroLit(R) && ((samePureExpr(retExpr, L) && isNegOf(nextExpr, L)) || (isNegOf(retExpr, L) && samePureExpr(nextExpr, L)))) return true;
+        }
+        if (sNext?.kind === K.IfStatement && !(sNext as ts.IfStatement).elseStatement && samePureExpr(retExpr, R)) {
+          const ifs2 = sNext as ts.IfStatement, ts2 = singleStmt(ifs2.thenStatement);
+          const s3 = ss[idx + 2], c2 = unwrapParens(ifs2.expression);
+          if (ts2?.kind === K.ReturnStatement && (ts2 as ts.ReturnStatement).expression && c2.kind === K.BinaryExpression &&
+              s3?.kind === K.ReturnStatement && (s3 as ts.ReturnStatement).expression && samePureExpr((s3 as ts.ReturnStatement).expression!, L)) {
+            const b2 = c2 as ts.BinaryExpression, o2 = b2.operatorToken.kind;
+            const L2 = unwrapParens(b2.left), R2 = unwrapParens(b2.right);
+            if (samePureExpr(L2, L) && samePureExpr((ts2 as ts.ReturnStatement).expression!, R2)) {
+              const v1 = litNumVal(R), v2 = litNumVal(R2);
+              const isLt = (k: K) => k === K.LessThanToken || k === K.LessThanEqualsToken;
+              const isGt = (k: K) => k === K.GreaterThanToken || k === K.GreaterThanEqualsToken;
+              if (v1 !== undefined && v2 !== undefined && ((isLt(ok) && isGt(o2) && v1 < v2) || (isGt(ok) && isLt(o2) && v1 > v2))) return true;
+            }
+          }
+        }
+      }
+    }
+    return false;
   };
   const emitPreFn = (fn: ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression): string | undefined => {
     if (!fn.body || fn.body.kind !== K.Block) return undefined;
@@ -300,7 +408,7 @@ export function emitFile(
       case K.NumericLiteral: {
         const nt = numName(n) as NumName | undefined;
         const orig = nt === "f32" ? `${RT}.f32(${splice(n)})` : nt && isInt64(nt) ? `${parseExactInt(n.getText(sf), false)!}n` : splice(n); // Q015
-        const t = canMutate() && !isCaseExpr(n) ? typeOf(n) : undefined;
+        const t = canMutate() && !isCaseExpr(n) && !isVecCreateCapArg(n) ? typeOf(n) : undefined;
         if (t?.k === "num") {
           if (isInt64(t.name)) {
             const v = parseExactInt(n.getText(sf), false)!;
@@ -507,7 +615,7 @@ export function emitFile(
       if (t && isInt64(t)) {
         const v = parseExactInt(u.operand.getText(sf), true)!;
         const orig = `${v}n`;
-        if (canMutate() && !isCaseExpr(u)) {
+        if (canMutate() && !isCaseExpr(u) && !isVecCreateCapArg(u)) {
           const mutVal = v === 0n ? "1n" : "0n";
           const id = addMutant(v === 0n ? "0 -> 1" : "num -> 0", u);
           return `(${RT}.m === ${id} ? ${mutVal} : ${orig})`;
@@ -515,7 +623,7 @@ export function emitFile(
         return orig;
       }
       const orig = t === "f32" ? `${RT}.f32(${rawText})` : t && isInt(typeOf(u)!) ? `(${rawText} + 0)` : rawText;
-      if (canMutate() && !isCaseExpr(u) && t) {
+      if (canMutate() && !isCaseExpr(u) && !isVecCreateCapArg(u) && t) {
         const v = -numValue(u.operand as ts.NumericLiteral);
         const mutVal = v === 0 ? 1 : 0;
         if (literalFits(mutVal, t as NumName)) {
@@ -612,7 +720,7 @@ export function emitFile(
     }
     if (CMP_MUT[o] && canMutate()) {
       const skipNarrow = (o === "===" || o === "!==") && hasActiveNarrowing(b) && inConditionContext(b);
-      if (!skipNarrow) {
+      if (!skipNarrow && !isEquivBoundaryCmp(b)) {
         const mutO = CMP_MUT[o]!;
         const id = addMutant(`${o} -> ${mutO}`, b.operatorToken);
         return `${RT}.mCmp(${id}, ${JSON.stringify(o)}, ${JSON.stringify(mutO)}, ${gen(left)}, ${gen(b.right)})`;
@@ -725,7 +833,7 @@ export function emitFile(
         case "ok": case "err": return `${RT}.${name}(${args[0]})`;
         case "panic": case "requires": case "invariant": return `${RT}.${name}(${args[0]}, ${at(callee)})`;
         case "cast": return `${RT}.cast(${args[0]}, ${desc(resultParts(self!)!.ok)})`;
-        case "test": return `${RT}.test(${args.join(", ")})`;
+        case "test": return `${RT}.test(${args.join(", ")}, ${q(file)})`;
         case "forAll": {
           const meta = forAllMeta.get(e)!;
           const descs = `[${meta.params.map((p) => emitGenDesc(genDescOf(p))).join(", ")}]`;
