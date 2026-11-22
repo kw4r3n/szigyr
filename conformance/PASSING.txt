@@ -82,6 +82,8 @@ accept/78-reexport-loop-warning
 accept/79-forAll-basic.szigyr
 accept/80-forAll-generatable-types.szigyr
 accept/81-audio-and-sleep.szigyr
+reject/E1000-array-destructure-nested.szigyr
+reject/E1000-array-destructure-rest.szigyr
 reject/E1000-async-default-await.szigyr
 reject/E1000-await-in-non-async-arrow.szigyr
 reject/E1000-await-outside-async.szigyr
@@ -122,6 +124,7 @@ reject/E1000-object-literal-proto.szigyr
 reject/E1000-object-type.szigyr
 reject/E1000-param-prop-dup-field.szigyr
 reject/E1000-pre-dec-in-value-pos.szigyr
+reject/E1000-regex-flag-g.szigyr
 reject/E1000-reserved-bigint-class.szigyr
 reject/E1000-reserved-i64-type.szigyr
 reject/E1000-reserved-u64-function.szigyr
@@ -141,6 +144,7 @@ reject/E1000-runtime-prefix-parameter.szigyr
 reject/E1000-this-in-field-initializer.szigyr
 reject/E1000-this-in-function-expression.szigyr
 reject/E1000-this-in-static-method.szigyr
+reject/E1000-tuple-rest.szigyr
 reject/E1000-tuple-type.szigyr
 reject/E1000-unknown-directive.szigyr
 reject/E1001-var-in-function.szigyr
@@ -152,11 +156,13 @@ reject/E1005-as-const.szigyr
 reject/E1006-non-null-assertion.szigyr
 reject/E1007-throw.szigyr
 reject/E1007-try-catch.szigyr
+reject/E1008-array-destructure-default.szigyr
 reject/E1008-default-param-in-interface.szigyr
 reject/E1008-default-param.szigyr
 reject/E1008-destructure-default.szigyr
 reject/E1008-optional-param.szigyr
 reject/E1008-optional-property.szigyr
+reject/E1008-tuple-optional.szigyr
 reject/E1009-unsafe-at-file-head.szigyr
 reject/E1009-unsafe-in-function-expression.szigyr
 reject/E1009-unsafe-in-managed-function.szigyr
@@ -172,7 +178,6 @@ reject/E2001-arenabuf-member.szigyr
 reject/E2001-array-flatmap.szigyr
 reject/E2001-detmath-unknown-member.szigyr
 reject/E2001-handle-member.szigyr
-reject/E2001-map-entries.szigyr
 reject/E2001-number-issafeinteger.szigyr
 reject/E2001-number-max-value.szigyr
 reject/E2001-pool-clear.szigyr
@@ -334,6 +339,10 @@ reject/E2002-struct-readonly-field-assign.szigyr
 reject/E2002-tagged-union-unknown-kind.szigyr
 reject/E2002-traps-code-not-literal.szigyr
 reject/E2002-traps-unknown-code.szigyr
+reject/E2002-tuple-destructure-arity.szigyr
+reject/E2002-tuple-hetero-dynamic-index.szigyr
+reject/E2002-tuple-oob-index.szigyr
+reject/E2002-tuple-write.szigyr
 reject/E2002-union-common-field-write-differing.szigyr
 reject/E2002-union-duplicate-kind.szigyr
 reject/E2002-union-i32-or-string.szigyr
@@ -555,6 +564,7 @@ reject/E3007-owned-in-managed-array.szigyr
 reject/E3007-owned-in-map.szigyr
 reject/E3007-owned-in-record-field.szigyr
 reject/E3007-owned-in-result.szigyr
+reject/E3007-owned-in-tuple.szigyr
 reject/E3007-owned-param-prop.szigyr
 reject/E3007-owned-pushed-from-local.szigyr
 reject/E3007-pool-in-array.szigyr
@@ -576,6 +586,7 @@ reject/E4001-managed-calls-rt-unsafe.szigyr
 reject/E4001-managed-function-as-fn-arg.szigyr
 reject/E4001-pow-assign-in-strict.szigyr
 reject/E4001-pow-operator-in-rt.szigyr
+reject/E4001-regex-in-strict.szigyr
 reject/E4001-rt-calls-managed.szigyr
 reject/E4001-rt-calls-rt-unsafe.szigyr
 reject/E4001-rt-calls-strict.szigyr
@@ -607,6 +618,7 @@ reject/E4002-string-param-in-rt.szigyr
 reject/E4002-string-param-in-strict.szigyr
 reject/E4002-struct-string-field.szigyr
 reject/E4002-template-literal-local-in-strict.szigyr
+reject/E4002-tuple-in-strict.szigyr
 reject/E4002-unknown-param-in-strict.szigyr
 reject/E4002-vec-create-string.szigyr
 reject/E4002-vec-element-owned-struct.szigyr
@@ -916,6 +928,7 @@ run/264-utf8-json-exitcode-ensures-strcmp.szigyr
 run/265-wave1a-ts-relaxations
 run/266-wave1b-operators-and-callbacks.szigyr
 run/267-wave1c-interfaces-defaults-param-props.szigyr
+run/268-wave2-tuples-entries-regexp.szigyr
 run/27-trap-ownedcell-empty.szigyr
 run/28-trap-shift-range.szigyr
 run/29-trap-invariant.szigyr

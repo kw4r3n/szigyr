@@ -17,7 +17,8 @@ import {
 const isErr = (t: Type): boolean => t.k === "error";
 const hasErr = (t: Type): boolean =>
   t.k === "error" || (t.k === "record" && t.fields.some((f) => hasErr(f.type))) || (t.k === "union" && t.members.some(hasErr)) ||
-  (t.k === "fn" && (t.params.some(hasErr) || hasErr(t.ret))) || ((t.k === "gen" || t.k === "class" || t.k === "iface") && t.args.some(hasErr));
+  (t.k === "tuple" && t.elems.some(hasErr)) || (t.k === "fn" && (t.params.some(hasErr) || hasErr(t.ret))) ||
+  ((t.k === "gen" || t.k === "class" || t.k === "iface") && t.args.some(hasErr));
 
 /** A numeric expression made only of literals (Q014): it takes the type of its context. */
 export function isLitOnly(e: ts.Expression): boolean {
@@ -114,6 +115,7 @@ function allowAwaited(c: Checker, e: Node): void {
 /** A Promise, also inside `| null` or as array elements (`xs.map(g)`). Other holders only get one from a reported expression. */
 export function hasPromise(t: Type): boolean {
   if (t.k === "gen") return t.name === "Promise" || ((t.name === "Array" || t.name === "ReadonlyArray") && hasPromise(t.args[0]!));
+  if (t.k === "tuple") return t.elems.some(hasPromise);
   return t.k === "union" && t.members.some(hasPromise);
 }
 /** P3 inputs (D070): the local each identifier names, and the signature each call was checked against. */
@@ -143,6 +145,12 @@ function exprUnrecorded(c: Checker, e: ts.Expression, want?: Type): Type {
     case K.StringLiteral: case K.NoSubstitutionTemplateLiteral: return strLit((e as ts.StringLiteral).text, want);
     case K.TrueKeyword: case K.FalseKeyword: return BOOL;
     case K.NullKeyword: return NULL;
+    case K.RegularExpressionLiteral:
+      if (c.fx.layer !== "managed") {
+        c.at("E4001", e, "regular expression literals are managed-only", { callerLayer: c.fx.layer, calleeLayer: "managed" });
+        return ERROR;
+      }
+      return opaque("RegExp");
     case K.ThisKeyword:
       return c.fx.thisType ?? ERROR; // P1 rejects 'this' outside an instance method
     case K.ParenthesizedExpression:
@@ -366,10 +374,6 @@ const didYouMean = (suggestions: readonly string[]): string =>
 function reportUnknownBuiltinMember(c: Checker, name: ts.Identifier, t: Type, available: readonly string[]): MemberResult {
   const n = name.text;
   const recv = show(t);
-  if (t.k === "gen" && t.name === "Map" && n === "entries") {
-    c.at("E2001", name, `'${recv}' has no member 'entries'; use 'keys()', 'values()', or 'forEach((v, k) => ...)'`, { receiver: recv, member: n, suggestions: ["keys", "values", "forEach"] });
-    return MERR;
-  }
   if (t.k === "gen" && (t.name === "Array" || t.name === "ReadonlyArray") && n === "at") {
     c.at("E2001", name, `'${recv}' has no member 'at'; use indexing '[i]' and 'length'`, { receiver: recv, member: n, suggestions: ["[i]", "length"] });
     return MERR;
@@ -519,6 +523,7 @@ function lookupMember(c: Checker, t: Type, name: ts.Identifier, inCall: boolean)
       const m = genMember(t, n);
       return m ? fromMember(c, m, name, inCall) : reportUnknownBuiltinMember(c, name, t, Object.keys(genMembers(t)));
     }
+    case "tuple": return n === "length" ? { kind: "value", type: USIZE, readonly: true } : reportUnknownBuiltinMember(c, name, t, ["length"]);
     case "opaque": { const m = opaqueMember(t.name, n); return m ? fromMember(c, m, name, inCall) : reportUnknownBuiltinMember(c, name, t, Object.keys(opaqueMembers(t.name))); }
     case "resource": {
       if (!inCall) return reportUnknownBuiltinMember(c, name, t, ["borrow", "get", "take"]);
@@ -558,6 +563,16 @@ function propValue(c: Checker, p: ts.PropertyAccessExpression): Type {
   return k && c.narrow.has(k.key) ? c.narrow.get(k.key)! : r.type;
 }
 
+function constIndex(c: Checker, e0: ts.Expression): bigint | null {
+  const e = assignTarget(e0);
+  if (e.kind === K.NumericLiteral) return parseExactInt(e.getText(c.fx.mod.sf), false);
+  if (e.kind === K.PrefixUnaryExpression) {
+    const p = e as ts.PrefixUnaryExpression;
+    if (p.operator === K.MinusToken && p.operand.kind === K.NumericLiteral) return parseExactInt(p.operand.getText(c.fx.mod.sf), true);
+  }
+  return null;
+}
+
 function element(c: Checker, e: ts.ElementAccessExpression, write: boolean): Type {
   const t = unref(expr(c, e.expression));
   const idx = e.argumentExpression;
@@ -566,6 +581,23 @@ function element(c: Checker, e: ts.ElementAccessExpression, write: boolean): Typ
     checkTo(c, idx, USIZE);
     if (write && t.name === "ReadonlyArray") { c.at("E2002", idx, "ReadonlyArray cannot be written"); return ERROR; }
     return t.args[0]!;
+  }
+  if (t.k === "tuple") {
+    checkTo(c, idx, USIZE);
+    if (write) { c.at("E2002", idx, "tuple elements are readonly and cannot be assigned"); return ERROR; }
+    const k = constIndex(c, idx);
+    if (k !== null) {
+      if (k < 0n) return ERROR; // negative index already reported E2008 by checkTo(..., USIZE)
+      if (k >= BigInt(t.elems.length)) {
+        c.at("E2002", idx, `tuple index ${k} is out of bounds for tuple of length ${t.elems.length}`);
+        return ERROR;
+      }
+      return t.elems[Number(k)]!;
+    }
+    if (assignTarget(idx).kind === K.NumericLiteral) return ERROR; // non-integer literal (e.g. 1.5) already reported E2008
+    if (t.elems.every((el) => same(el, t.elems[0]!))) return t.elems[0]!;
+    c.at("E2002", idx, `dynamic index on heterogeneous tuple '${show(t)}' is not allowed; use a constant index literal`);
+    return ERROR;
   }
   if (isStr(t)) {
     c.at("E2001", idx, `'string' cannot be indexed; use 'charCodeAt(i)', 'codePointAt(i)', or 'slice(i, i + 1)'`, { receiver: show(t), suggestions: ["charCodeAt", "codePointAt", "slice"] });
@@ -925,6 +957,21 @@ function objLit(c: Checker, e: ts.ObjectLiteralExpression, want: Type | undefine
 function arrLit(c: Checker, e: ts.ArrayLiteralExpression, want: Type | undefined): Type {
   const w = want && unref(nonNull(want) ?? want);
   if (w && isErr(w)) return ERROR;
+  if (w?.k === "tuple") {
+    if (e.elements.some((x) => x.kind === K.SpreadElement)) {
+      c.at("E2002", e, "spread element is not allowed in a tuple literal");
+      return ERROR;
+    }
+    if (e.elements.length !== w.elems.length) {
+      c.at("E2002", e, `expected tuple of length ${w.elems.length}, got ${e.elements.length}`, { expected: show(w) });
+      return ERROR;
+    }
+    let bad = false;
+    e.elements.forEach((x, i) => {
+      if (isErr(checkTo(c, x, w.elems[i]!))) bad = true;
+    });
+    return bad ? ERROR : w;
+  }
   let elem: Type | undefined;
   if (w) {
     if (w.k !== "gen" || (w.name !== "Array" && w.name !== "ReadonlyArray")) { c.at("E2002", e, `an array literal is not a '${show(w)}'`); return ERROR; }
@@ -1740,7 +1787,7 @@ function bannedCall(c: Checker, p: ts.PropertyAccessExpression, recv: Type | und
   const by = (t: Type): boolean => {
     t = unref(t);
     switch (t.k) {
-      case "class": case "iface": case "record": case "fn": return false;
+      case "class": case "iface": case "record": case "tuple": case "fn": return false;
       case "union": return t.members.some(by); // `T | null` and unions of builtins: banned when any member is
       case "tparam": return t.p.constraint ? by(t.p.constraint) : contractBanned().has(n);
       case "gen": return bad(genMember(t, n));
@@ -1836,6 +1883,10 @@ function newExpr(c: Checker, e: ts.NewExpression, want: Type | undefined): Type 
     if (w?.k === "gen" && w.name === id.text) return w;
     if (w && isErr(w)) return ERROR;
     c.at("E2006", id, `cannot infer the type arguments of '${id.text}'`);
+    return ERROR;
+  }
+  if (id.text === "RegExp" && !c.scope.lookup(id.text)) {
+    c.at("E2002", id, `'new RegExp(...)' is not allowed; use a regex literal '/.../' or 'RegExp.compile(pattern, flags)'`);
     return ERROR;
   }
   unresolved(c, id);

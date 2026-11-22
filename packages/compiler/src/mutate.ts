@@ -94,6 +94,7 @@ export function hasTestType(t: Type, seen = new Set<unknown>()): boolean {
     case "opaque": return t.name === "Test";
     case "record": return t.fields.some((f) => hasTestType(f.type, seen));
     case "union": return t.members.some((m) => hasTestType(m, seen));
+    case "tuple": return t.elems.some((e) => hasTestType(e, seen));
     case "gen": return t.args.some((a) => hasTestType(a, seen));
     case "fn": return t.params.some((p) => hasTestType(p, seen)) || hasTestType(t.ret, seen);
     case "class": {
@@ -666,6 +667,7 @@ function isMutableParam(t: Type): boolean {
   }
   if (t.k === "record") return !t.struct && t.fields.some((f) => !f.readonly || isMutableParam(f.type));
   if (t.k === "union") return t.members.some(isMutableParam);
+  if (t.k === "tuple") return t.elems.some(isMutableParam);
   return false;
 }
 

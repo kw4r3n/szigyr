@@ -3,7 +3,7 @@ import {
   AUDIO_CONFIG_RECORD, ASYNC_DISPOSABLE, BOOL, DIR_ENTRY_RECORD, DISPOSABLE, ENV_VAR_RECORD, ERROR_RECORD, F64, FILE_STAT_RECORD,
   HTTP_CLIENT_REQUEST_RECORD, HTTP_HEADER_RECORD, HTTP_REQUEST_INIT_RECORD, HTTP_RESPONSE_RECORD, HTTP_SERVER_CONFIG_RECORD,
   HTTP_SERVER_REQUEST_RECORD, HTTP_SERVER_RESPONSE_RECORD, NULL, PROC_OPTIONS_RECORD, PROC_OUTPUT_RECORD, PROC_REQUEST_RECORD,
-  QUERY_PARAM_RECORD, STR, UNKNOWN, USIZE, VOID, fn, gen, newTParam, nullable, num, opaque, result, record, ro, unref,
+  QUERY_PARAM_RECORD, REGEXP_MATCH_RECORD, STR, UNKNOWN, USIZE, VOID, fn, gen, newTParam, nullable, num, opaque, result, record, ro, tuple, unref,
   type FnType, type GenName, type NumName, type Type, AUTHORITIES, NUM_NAMES, GEN_ARITY, OPAQUE_NAMES,
 } from "./types.ts";
 import { DETMATH_BINARY, DETMATH_UNARY } from "./detmath.ts";
@@ -19,7 +19,7 @@ export const GLOBAL_AUTHORITIES = new Set([
 ]);
 
 /** Namespace objects (Q034). */
-export const NAMESPACES = new Set(["Math", "Number", "JSON", "Url", "String", "Promise", "Vec", "Pool", "Arena", "Ring", "OwnedCell", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeSpawn", "FakeAudio", "FakeNet", "FakeProc", "TestAlloc", "DetMath", "Ptr", "CHandle"]);
+export const NAMESPACES = new Set(["Math", "Number", "JSON", "Url", "String", "Promise", "Vec", "Pool", "Arena", "Ring", "OwnedCell", "RegExp", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeSpawn", "FakeAudio", "FakeNet", "FakeProc", "TestAlloc", "DetMath", "Ptr", "CHandle"]);
 /** Builtin functions handled by the checker (§12). */
 export const BUILTIN_FUNCTIONS = new Set([...NUM_NAMES, "wrapAdd", "wrapSub", "wrapMul", "divTrunc", "rem", "ok", "err", "panic", "cast", "requires", "ensures", "invariant", "test", "forAll", "cfn"]);
 /** §13: the identifier-like names it reserves (declaring or referencing one is E1000 / E2000, Q231). */
@@ -32,7 +32,7 @@ export const BUILTIN_NAMES = new Set<string>([
   "boolean", "string", "number", "null", "void", "unknown", "never", "Result", "Struct", "RingPair", "JsError", "CastError", "IoError", "AudioConfig",
   "DirEntry", "FileStat", "EnvVar", "ProcOptions", "ProcOutput", "ProcRequest",
   "HttpHeader", "HttpRequestInit", "HttpResponse", "HttpServerConfig", "HttpServerRequest", "HttpServerResponse", "HttpClientRequest", "QueryParam",
-  "Resource", "Disposable", "AsyncDisposable", "CStruct",
+  "RegExpMatch", "Resource", "Disposable", "AsyncDisposable", "CStruct",
   ...Object.keys(GEN_ARITY), ...OPAQUE_NAMES, ...NAMESPACES, ...BUILTIN_FUNCTIONS,
 ]);
 
@@ -41,9 +41,9 @@ export const NONDET_GEN: Record<GenName, boolean> = {
   Array: false, ReadonlyArray: false, Map: false, Set: false, Promise: false, Vec: false, Slice: false, Pool: false, Handle: false, Arena: false, ArenaBuf: false,
   Ref: false, Mut: false, OwnedCell: false, CType: false, RingTx: true, RingRx: true, Ptr: true, ConstPtr: true, CHandle: true, Port: true, // §15.1, §14.4, §14.5, §15.2
 };
-/** The opaque ones (keys: OPAQUE_NAMES): the authorities, `JsRef`, `AudioStream`, `HttpServer` and the fakes, not `Test`. */
+/** The opaque ones (keys: OPAQUE_NAMES): the authorities, `JsRef`, `AudioStream`, `HttpServer` and the fakes, not `Test` or `RegExp`. */
 export const NONDET_OPAQUE: Record<string, boolean> = {
-  ...Object.fromEntries(AUTHORITIES.map((a) => [a, true])), JsRef: true, Test: false, AudioStream: true, HttpServer: true, FakeClock: true, SeededRandom: true, MemoryLog: true, FakeFs: true, FakeSpawn: true, FakeAudio: true, FakeNet: true, FakeProc: true,
+  ...Object.fromEntries(AUTHORITIES.map((a) => [a, true])), JsRef: true, Test: false, AudioStream: true, HttpServer: true, RegExp: false, FakeClock: true, SeededRandom: true, MemoryLog: true, FakeFs: true, FakeSpawn: true, FakeAudio: true, FakeNet: true, FakeProc: true,
 };
 
 /** Builtin type names (§12) that are not generic constructors. Struct and Result are handled by the resolver. */
@@ -72,6 +72,7 @@ export function builtinType(name: string): Type | undefined {
     case "HttpServerResponse": return HTTP_SERVER_RESPONSE_RECORD;
     case "HttpClientRequest": return HTTP_CLIENT_REQUEST_RECORD;
     case "QueryParam": return QUERY_PARAM_RECORD;
+    case "RegExpMatch": return REGEXP_MATCH_RECORD;
     case "Disposable": return DISPOSABLE;
     case "AsyncDisposable": return ASYNC_DISPOSABLE;
   }
@@ -160,6 +161,16 @@ export function opaqueMembers(name: string): Members {
     Audio: () => AUDIO,
     AudioStream: () => ({ sampleRate: prop(num("u32")), channels: prop(num("u32")), close: mo(m(PORT_FX, [], gen("Promise", VOID))), disposeAsync: mo(m(PORT_FX, [], gen("Promise", VOID))), isOpen: mo(m(RD, [], BOOL)) }),
     HttpServer: () => ({ host: prop(STR), port: prop(num("u16")), stop: mo(m(PORT_FX, [], VOID)), waitClosed: mo(m(PORT_FX, [], gen("Promise", VOID))), close: mo(m(PORT_FX, [], gen("Promise", VOID))), disposeAsync: mo(m(PORT_FX, [], gen("Promise", VOID))), isOpen: mo(m(RD, [], BOOL)) }),
+    RegExp: () => ({
+      source: prop(STR),
+      flags: prop(STR),
+      test: mo(m(RD, [STR], BOOL)),
+      exec: mo(m(RD, [STR], nullable(REGEXP_MATCH_RECORD))),
+      findAll: mo(m(RD, [STR], gen("Array", REGEXP_MATCH_RECORD))),
+      replace: mo(m(RD, [STR, STR], STR)),
+      replaceAll: mo(m(RD, [STR, STR], STR)),
+      split: mo(m(RD, [STR], gen("Array", STR))),
+    }),
     JsRef: () => ({}),
     Js: () => {
       const J = opaque("JsRef"), jr = result(J, ERROR_RECORD);
@@ -246,7 +257,7 @@ export function genMembers(t: { name: GenName; args: Type[] }): Members {
     case "ReadonlyArray": return arrayMembers(a, true);
     case "Map": return {
       get: m(RD, [a], nullable(b)), set: m(WR, [a, b], t as Type), has: m(RD, [a], BOOL), delete: m(WR, [a], BOOL), size: prop(USIZE), clear: m(WR, [], VOID),
-      keys: m(RD, [], { k: "iter", elem: a }), values: m(RD, [], { k: "iter", elem: b }), forEach: m(RD, [cb([b, a], VOID)], VOID),
+      keys: m(RD, [], { k: "iter", elem: a }), values: m(RD, [], { k: "iter", elem: b }), entries: m(RD, [], { k: "iter", elem: tuple([a, b]) }), forEach: m(RD, [cb([b, a], VOID)], VOID),
     };
     case "Set": return {
       add: m(WR, [a], t as Type), has: m(RD, [a], BOOL), delete: m(WR, [a], BOOL), size: prop(USIZE), clear: m(WR, [], VOID),
@@ -355,6 +366,7 @@ export function nsMembers(ns: string): Record<string, Member | "variadic"> {
     case "Arena": return { create: m(RD, [opaque("Alloc"), USIZE], gen("Arena")) };
     case "Ring": return { create: m(RD, [opaque("Alloc"), USIZE], record([{ name: "tx", type: gen("RingTx", tT), readonly: false }, { name: "rx", type: gen("RingRx", tT), readonly: false }], true), { tparams: [T], tcheck: "ring" }) }; // §15.1 (Q199)
     case "OwnedCell": return { create: m(RD, [tT], gen("OwnedCell", tT), { tparams: [T], tcheck: "owned" }) };
+    case "RegExp": return { compile: mo(m(RD, [STR, STR], result(opaque("RegExp"), ERROR_RECORD), { min: 1 })) };
     case "Ptr": {
       const T2 = newTParam("T"), tT2: Type = { k: "tparam", p: T2 };
       const T3 = newTParam("T"), tT3: Type = { k: "tparam", p: T3 };

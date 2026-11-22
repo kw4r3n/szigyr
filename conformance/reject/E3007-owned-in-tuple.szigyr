@@ -1,0 +1,5 @@
+// expect: E3007 @ 3:28
+// stage: 2
+function f(alloc: Alloc): [Vec<f32>, i32] {
+  return [Vec.create<f32>(alloc, 1), 0];
+}

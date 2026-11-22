@@ -12,7 +12,7 @@ export const GEN_ARITY: Record<GenName, number> = {
 };
 /** Opaque builtin types: authorities (§7.1), Test, JsRef, the fakes (Q038). */
 export const AUTHORITIES = ["System", "Alloc", "Fs", "Clock", "Random", "Log", "Js", "Ffi", "Spawn", "Audio", "Net", "Proc"] as const; // Ffi: §14.2; Spawn: §15.2; Audio: §15.5; Net/Proc: Q294-Q295
-export const OPAQUE_NAMES = new Set<string>([...AUTHORITIES, "JsRef", "Test", "AudioStream", "HttpServer", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeSpawn", "FakeAudio", "FakeNet", "FakeProc"]);
+export const OPAQUE_NAMES = new Set<string>([...AUTHORITIES, "JsRef", "Test", "AudioStream", "HttpServer", "RegExp", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeSpawn", "FakeAudio", "FakeNet", "FakeProc"]);
 
 export interface Field { name: string; type: Type; readonly: boolean }
 /** Q127: conditions a type parameter takes on from the positions it is used in, checked on every instantiation. */
@@ -63,7 +63,9 @@ export type Type =
   /** `Resource.own` / `Resource.ownWith` binding in a `using` declaration (SPEC-v1 §5). */
   | { k: "resource"; inner: Type }
   /** C ABI struct declared in `declare module "c:..."` (SPEC-v1 §9). */
-  | { k: "cstruct"; name: string; spec: string; fields: Field[] };
+  | { k: "cstruct"; name: string; spec: string; fields: Field[] }
+  /** Immutable fixed-length tuple (managed-only). */
+  | { k: "tuple"; elems: Type[] };
 
 export const ERROR: Type = { k: "error" };
 const prims = new Map<PrimName, Type>();
@@ -73,6 +75,7 @@ export const num = (name: NumName): Type => { let t = nums.get(name); if (!t) nu
 export const BOOL = prim("boolean"), STR = prim("string"), NULL = prim("null"), VOID = prim("void"), UNKNOWN = prim("unknown"), NEVER = prim("never");
 export const F64 = num("f64"), USIZE = num("usize");
 export const gen = (name: GenName, ...args: Type[]): Type => ({ k: "gen", name, args });
+export const tuple = (elems: Type[]): Type => ({ k: "tuple", elems });
 export const opaque = (name: string): Type => ({ k: "opaque", name });
 export const fn = (params: Type[], ret: Type, tparams: TParam[] = []): FnType => ({ k: "fn", tparams, params, ret });
 export const record = (fields: Field[], struct = false): Type => ({ k: "record", fields: [...fields].sort((a, b) => (a.name < b.name ? -1 : 1)), struct });
@@ -143,6 +146,7 @@ export const HTTP_SERVER_REQUEST_RECORD = record([ro("method", STR), ro("path", 
 export const HTTP_SERVER_RESPONSE_RECORD = record([ro("status", num("u16")), ro("headers", gen("ReadonlyArray", HTTP_HEADER_RECORD)), ro("body", STR)]);
 export const HTTP_CLIENT_REQUEST_RECORD = record([ro("method", STR), ro("url", STR), ro("headers", gen("Array", HTTP_HEADER_RECORD)), ro("body", nullable(STR))]);
 export const QUERY_PARAM_RECORD = record([ro("name", STR), ro("value", STR)]);
+export const REGEXP_MATCH_RECORD = record([ro("text", STR), ro("index", USIZE), ro("groups", gen("Array", nullable(STR)))]);
 export const DISPOSABLE_IFACE: IfaceSym = { name: "Disposable", tparams: [], methods: new Map([["dispose", fn([], VOID)]]) };
 export const ASYNC_DISPOSABLE_IFACE: IfaceSym = { name: "AsyncDisposable", tparams: [], methods: new Map([["disposeAsync", fn([], gen("Promise", VOID))]]) };
 export const DISPOSABLE: Type = { k: "iface", iface: DISPOSABLE_IFACE, args: [] };
@@ -167,6 +171,7 @@ export function same(a: Type, b: Type): boolean {
     case "iter": return b.k === "iter" && same(a.elem, b.elem);
     case "resource": return b.k === "resource" && same(a.inner, b.inner);
     case "cstruct": return b.k === "cstruct" && a.name === b.name && a.spec === b.spec && sameFields(a.fields, b.fields);
+    case "tuple": return b.k === "tuple" && sameArgs(a.elems, b.elems);
   }
 }
 const sameArgs = (a: Type[], b: Type[]): boolean => a.length === b.length && a.every((x, i) => same(x, b[i]!));
@@ -189,6 +194,8 @@ export function assignable(s: Type, t: Type, arg = false): boolean {
     if (arg && t.name === "Slice" && s.name === "Vec") return same(s.args[0]!, t.args[0]!);
     return false;
   }
+  if (s.k === "tuple" && t.k === "tuple") return s.elems.length === t.elems.length && s.elems.every((e, i) => assignable(e, t.elems[i]!));
+  if (s.k === "tuple" && t.k === "gen" && t.name === "ReadonlyArray") return s.elems.every((e) => assignable(e, t.args[0]!));
   if (s.k === "fn" && t.k === "fn") {
     const sMin = s.min ?? s.params.length;
     if (sMin > t.params.length || (!t.prefix && s.params.length < t.params.length)) return false;
@@ -217,6 +224,7 @@ export function subst(t: Type, m: Map<number, Type>): Type {
     case "class": case "iface": case "gen": return { ...t, args: t.args.map((x) => subst(x, m)) } as Type;
     case "iter": return { k: "iter", elem: subst(t.elem, m) };
     case "resource": return { k: "resource", inner: subst(t.inner, m) };
+    case "tuple": return tuple(t.elems.map((x) => subst(x, m)));
     default: return t;
   }
 }
@@ -230,6 +238,7 @@ export function hasTParam(t: Type, ids: Set<number>): boolean {
     case "class": case "iface": case "gen": return t.args.some((x) => hasTParam(x, ids));
     case "iter": return hasTParam(t.elem, ids);
     case "resource": return hasTParam(t.inner, ids);
+    case "tuple": return t.elems.some((x) => hasTParam(x, ids));
     default: return false;
   }
 }
@@ -254,6 +263,10 @@ export function unify(p: Type, a: Type, m: Map<number, Type>, ids: Set<number>):
     }
     case "gen":
       if (a.k === "gen" && (a.name === p.name || (p.name === "ReadonlyArray" && a.name === "Array") || (p.name === "Slice" && a.name === "Vec") || (p.name === "Ptr" && a.name === "ConstPtr"))) p.args.forEach((x, i) => unify(x, a.args[i]!, m, ids));
+      else if (p.name === "ReadonlyArray" && a.k === "tuple" && a.elems.length > 0) unify(p.args[0]!, union(a.elems), m, ids);
+      return;
+    case "tuple":
+      if (a.k === "tuple" && a.elems.length === p.elems.length) p.elems.forEach((x, i) => unify(x, a.elems[i]!, m, ids));
       return;
     case "fn":
       if (a.k === "fn") { p.params.forEach((x, i) => { if (a.params[i]) unify(x, a.params[i]!, m, ids); }); unify(p.ret, a.ret, m, ids); }
@@ -297,6 +310,7 @@ export function isCopy(t: Type): boolean {
     case "gen": return t.name === "Handle" || t.name === "ArenaBuf" || t.name === "Ptr" || t.name === "ConstPtr"; // Q188: a handle is three u32s, an ArenaBuf four; §14.4: raw pointers are Copy
     case "prim": return t.name === "boolean" || t.name === "null" || t.name === "string";
     case "record": return t.fields.every((f) => f.readonly && isCopy(f.type));
+    case "tuple": return t.elems.every(isCopy);
     case "union": return t.members.every(isCopy);
     case "tparam": return tparamHasCap(t.p, "Copy");
     default: return false;
@@ -318,17 +332,18 @@ export const isCopyValueRecord = (t: Extract<Type, { k: "record" }>): boolean =>
 
 /** Q174: an owned value (directly, in a union, or in a record / Struct field). */
 export const holdsOwned = (t: Type): boolean =>
-  movesLike(t) || (t.k === "record" && t.fields.some((f) => holdsOwned(f.type))) || (t.k === "union" && t.members.some(holdsOwned));
-/** Q174 (案2): an Array / ReadonlyArray / Map / Set / Promise whose type arguments are, or hold, owned types (E3007). */
+  movesLike(t) || (t.k === "record" && t.fields.some((f) => holdsOwned(f.type))) || (t.k === "union" && t.members.some(holdsOwned)) || (t.k === "tuple" && t.elems.some(holdsOwned));
+/** Q174 (案2): an Array / ReadonlyArray / Map / Set / Promise / tuple whose type arguments are, or hold, owned types (E3007). */
 export const CONTAINERS = new Set(["Array", "ReadonlyArray", "Map", "Set", "Promise"]);
 export const ownedInside = (t: Type | undefined): boolean =>
-  !!t && (t.k === "union" ? t.members.some(ownedInside) : t.k === "gen" && CONTAINERS.has(t.name) && t.args.some((a) => holdsOwned(a) || ownedInside(a)));
+  !!t && (t.k === "union" ? t.members.some(ownedInside) : t.k === "tuple" ? t.elems.some((a) => holdsOwned(a) || ownedInside(a)) : t.k === "gen" && CONTAINERS.has(t.name) && t.args.some((a) => holdsOwned(a) || ownedInside(a)));
 
 /** Q174: a container holding owned values anywhere inside `t`, through record / union / generic / function types and class / interface members. */
 export function ownedDeep(t: Type, seen = new Set<object>()): boolean {
   switch (t.k) {
     case "record": return t.fields.some((f) => ownedDeep(f.type, seen));
     case "union": return t.members.some((m) => ownedDeep(m, seen));
+    case "tuple": return ownedInside(t) || t.elems.some((a) => ownedDeep(a, seen));
     case "gen": return ownedInside(t) || t.args.some((a) => ownedDeep(a, seen));
     case "fn": return t.params.some((p) => ownedDeep(p, seen)) || ownedDeep(t.ret, seen);
     case "class": case "iface": {
@@ -355,7 +370,7 @@ export function movesLike(t: Type): boolean {
 export const isAuthority = (t: Type): boolean => t.k === "opaque" && (AUTHORITIES as readonly string[]).includes(t.name);
 /** An authority anywhere in `t` (E4006 in rt, §6). */
 export const hasAuthority = (t: Type): boolean =>
-  isAuthority(t) || (t.k === "record" && t.fields.some((f) => hasAuthority(f.type))) || (t.k === "union" && t.members.some(hasAuthority)) || (t.k === "gen" && t.args.some(hasAuthority)) || (t.k === "resource" && hasAuthority(t.inner));
+  isAuthority(t) || (t.k === "record" && t.fields.some((f) => hasAuthority(f.type))) || (t.k === "union" && t.members.some(hasAuthority)) || (t.k === "gen" && t.args.some(hasAuthority)) || (t.k === "tuple" && t.elems.some(hasAuthority)) || (t.k === "resource" && hasAuthority(t.inner));
 /** Native data capability (SPEC-v1 §3.4): strict / rt data types excluding authorities, `void`, and `never` (unless return-only). */
 export function isNative(t: Type, allowNever = false): boolean {
   switch (t.k) {
@@ -403,6 +418,7 @@ export function show(t: Type): string {
     case "iter": return `Iterator<${show(t.elem)}>`;
     case "resource": return `Resource<${show(t.inner)}>`;
     case "cstruct": return t.name;
+    case "tuple": return `[${t.elems.map(show).join(", ")}]`;
   }
 }
 
@@ -422,6 +438,7 @@ export function castable(t: Type): boolean {
     case "prim": return t.name === "boolean" || t.name === "string" || t.name === "null";
     case "record": return (!t.struct || t.fields.every((f) => f.readonly)) && t.fields.every((f) => castable(f.type));
     case "union": return t.members.every(castable);
+    case "tuple": return t.elems.every(castable);
     case "gen": return (t.name === "Array" || t.name === "ReadonlyArray") && castable(t.args[0]!);
     default: return false;
   }
@@ -435,6 +452,7 @@ export function comparable(t: Type): boolean {
     case "fn": case "opaque": case "ns": case "iter": case "cstruct": return false;
     case "record": return !isOwned(t) && t.fields.every((f) => comparable(f.type));
     case "union": return t.members.every(comparable);
+    case "tuple": return t.elems.every(comparable);
     case "gen": return t.name !== "Vec" && t.name !== "Slice" && t.name !== "Pool" && t.name !== "Arena" && t.name !== "OwnedCell" && t.name !== "Promise" && t.name !== "RingTx" && t.name !== "RingRx" && t.args.every(comparable);
     default: return true;
   }
@@ -484,6 +502,7 @@ export function hasInt64(t: Type): boolean {
     case "record": return t.fields.some((f) => hasInt64(f.type));
     case "union": return t.members.some(hasInt64);
     case "gen": return t.args.some(hasInt64);
+    case "tuple": return t.elems.some(hasInt64);
     case "resource": return hasInt64(t.inner);
     default: return false;
   }
@@ -576,6 +595,7 @@ export function collectTParams(t: Type, out: TParam[] = []): TParam[] {
     case "union": for (const m of t.members) collectTParams(m, out); break;
     case "fn": for (const p of t.params) collectTParams(p, out); collectTParams(t.ret, out); break;
     case "gen": case "class": case "iface": for (const a of t.args) collectTParams(a, out); break;
+    case "tuple": for (const e of t.elems) collectTParams(e, out); break;
     case "resource": collectTParams(t.inner, out); break;
   }
   return out;
@@ -586,6 +606,7 @@ export function promiseIn(t: Type): boolean {
     case "gen": return t.name === "Promise" || t.args.some(promiseIn);
     case "union": return t.members.some(promiseIn);
     case "record": return t.fields.some((f) => promiseIn(f.type));
+    case "tuple": return t.elems.some(promiseIn);
     case "class": return t.args.some(promiseIn);
     case "resource": return promiseIn(t.inner);
     default: return false;
@@ -602,6 +623,7 @@ export function hasRawPtr(t: Type): boolean {
     case "gen": return t.name === "Ptr" || t.name === "ConstPtr" || t.name === "CType" || (t.name !== "CHandle" && t.args.some(hasRawPtr));
     case "record": return t.fields.some((f) => hasRawPtr(f.type));
     case "union": return t.members.some(hasRawPtr);
+    case "tuple": return t.elems.some(hasRawPtr);
     case "fn": return t.params.some(hasRawPtr) || hasRawPtr(t.ret);
     case "class": case "iface": return t.args.some(hasRawPtr);
     case "resource": return hasRawPtr(t.inner);
@@ -613,6 +635,7 @@ export function hasPtr(t: Type): boolean {
     case "gen": return t.name === "Ptr" || t.name === "ConstPtr" || t.name === "CHandle" || t.args.some(hasPtr);
     case "record": return t.fields.some((f) => hasPtr(f.type));
     case "union": return t.members.some(hasPtr);
+    case "tuple": return t.elems.some(hasPtr);
     case "fn": return t.params.some(hasPtr) || hasPtr(t.ret);
     case "class": case "iface": return t.args.some(hasPtr);
     case "resource": return hasPtr(t.inner);
@@ -625,6 +648,7 @@ export function hasArenaBuf(t: Type): boolean {
     case "gen": return t.name === "ArenaBuf" || t.args.some(hasArenaBuf);
     case "record": return t.fields.some((f) => hasArenaBuf(f.type));
     case "union": return t.members.some(hasArenaBuf);
+    case "tuple": return t.elems.some(hasArenaBuf);
     case "fn": return t.params.some(hasArenaBuf) || hasArenaBuf(t.ret);
     case "class": case "iface": return t.args.some(hasArenaBuf);
     case "resource": return hasArenaBuf(t.inner);
@@ -640,6 +664,7 @@ export function sendable(t: Type): boolean {
     case "num": case "lit": return true;
     case "prim": return t.name === "boolean" || t.name === "null" || t.name === "string";
     case "union": return t.members.every(sendable);
+    case "tuple": return t.elems.every(sendable);
     case "record": return t.struct ? t.fields.every((f) => sendable(f.type)) : t.fields.every((f) => f.readonly && sendable(f.type));
     case "gen":
       return t.name === "Arena" || ((t.name === "Vec" || t.name === "Pool" || t.name === "Handle" || t.name === "RingTx" || t.name === "RingRx") && t.args.every(sendable));

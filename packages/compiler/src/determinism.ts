@@ -15,6 +15,7 @@ function hasForbidden(roots: readonly Type[], badLeaf: (t: Type) => boolean, rej
       case "union": return t.members.some(bad);
       case "gen": return t.args.some(bad);
       case "fn": return t.params.some(bad) || bad(t.ret);
+      case "tuple": return t.elems.some(bad);
       case "resource": return bad(t.inner);
       case "class": {
         if (t.args.some(bad)) return true;

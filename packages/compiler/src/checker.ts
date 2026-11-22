@@ -653,6 +653,7 @@ export class Checker {
               elem = at;
             }
             if (isId(d.name)) this.declare(d.name, elem, { mutable: isLet });
+            else if (d.name.kind === K.ArrayBindingPattern) this.destructureTuple(d.name as ts.ArrayBindingPattern, elem, isLet);
           }
         }
         this.loopEntry(x.statement);
@@ -850,7 +851,7 @@ export class Checker {
       } else {
         t = expr(this, init);
         if (t.k === "lit" || (t.k === "union" && t.members.every((m) => m.k === "lit") && mutableDecl)) t = mutableDecl ? STR : t;
-        if (t.k === "iter") { this.at("E2002", init, "keys() / values() can only be iterated"); t = ERROR; }
+        if (t.k === "iter") { this.at("E2002", init, "keys() / values() / entries() can only be iterated"); t = ERROR; }
       }
       if (isAwaitUsing) {
         if (this.fx.layer !== "managed") this.at("E4002", d.name, `'await using' is only allowed in managed code`);
@@ -868,6 +869,7 @@ export class Checker {
         const sym = this.declare(d.name, t, { mutable: mutableDecl });
         if (init && !d.type && t.k === "num" && isLitOnly(init)) this.litLets.set(sym.id, d.name);
       } else if (d.name.kind === K.ObjectBindingPattern) this.destructure(d.name as ts.ObjectBindingPattern, t);
+      else if (d.name.kind === K.ArrayBindingPattern) this.destructureTuple(d.name as ts.ArrayBindingPattern, t, mutableDecl);
     }
   }
 
@@ -884,6 +886,21 @@ export class Checker {
       exprTypes.set(el.name, ft);
       this.declare(el.name, ft);
     }
+  }
+
+  private destructureTuple(p: ts.ArrayBindingPattern, t0: Type, mutableDecl: boolean): void {
+    const t = unref(t0);
+    if (t.k === "tuple" && p.elements.length > t.elems.length) {
+      this.at("E2002", p, `tuple of length ${t.elems.length} has no element at index ${t.elems.length}`);
+    } else if (t.k !== "tuple" && t.k !== "error") {
+      this.at("E2002", p, `only tuples can be destructured, not '${show(t)}'`);
+    }
+    p.elements.forEach((el, i) => {
+      if (!el.name || !isId(el.name)) return;
+      const et = t.k === "tuple" && i < t.elems.length ? t.elems[i]! : ERROR;
+      exprTypes.set(el.name, et);
+      this.declare(el.name, et, { mutable: mutableDecl });
+    });
   }
 
   /** Q073 (E5001 fix): the authority a global maps to, and a fix that adds it as a parameter and rewrites the call. */
@@ -1219,10 +1236,16 @@ export class Checker {
       }
       case K.ParenthesizedType: this.walkTypePos((node as ts.ParenthesizedTypeNode).type, place, ctx); return;
       case K.ArrayType: this.walkTypePos((node as ts.ArrayTypeNode).elementType, "typearg", ctx); return;
+      case K.TupleType:
+        for (const el of (node as ts.TupleTypeNode).elements) {
+          const tn = el.kind === K.NamedTupleMember ? (el as ts.NamedTupleMember).type : el;
+          this.walkTypePos(tn, "typearg", ctx);
+        }
+        return;
       case K.TypeOperator: {
         const op = node as ts.TypeOperatorNode;
-        if (op.operator === K.ReadonlyKeyword && op.type.kind === K.ArrayType) {
-          this.walkTypePos((op.type as ts.ArrayTypeNode).elementType, "typearg", ctx);
+        if (op.operator === K.ReadonlyKeyword && (op.type.kind === K.ArrayType || op.type.kind === K.TupleType)) {
+          this.walkTypePos(op.type, "typearg", ctx);
         }
         return;
       }
@@ -1260,6 +1283,7 @@ function hasAuthDeep(t: Type): boolean {
     case "fn": return t.params.some(hasAuthDeep) || hasAuthDeep(t.ret);
     case "record": return t.fields.some((f) => hasAuthDeep(f.type));
     case "union": return t.members.some(hasAuthDeep);
+    case "tuple": return t.elems.some(hasAuthDeep);
     case "gen": case "class": case "iface": return t.args.some(hasAuthDeep);
     default: return false;
   }
@@ -1305,6 +1329,7 @@ export function mutable(t: Type): boolean {
   switch (t.k) {
     case "record": return t.fields.some((f) => !f.readonly || mutable(f.type));
     case "union": return t.members.some(mutable);
+    case "tuple": return t.elems.some(mutable);
     case "gen": return t.name !== "ReadonlyArray" || mutable(t.args[0]!);
     case "class": return true;
     default: return false;
@@ -1323,6 +1348,7 @@ export function capturedAssigned(root: Node): Set<Node> {
     if (!n || !sc.fn) return;
     if (isId(n)) { sc.vars.set(n.text, { id: n, fn: sc.fn }); return; }
     if (n.kind === K.ObjectBindingPattern) for (const el of (n as ts.ObjectBindingPattern).elements) bind(el.name, sc);
+    else if (n.kind === K.ArrayBindingPattern) for (const el of (n as ts.ArrayBindingPattern).elements) if (el.name) bind(el.name, sc);
   };
   const lookup = (name: string, sc: LexScope | undefined): { id: ts.Identifier; fn: Node } | undefined => {
     for (let s = sc; s; s = s.parent) { const v = s.vars.get(name); if (v) return v; }

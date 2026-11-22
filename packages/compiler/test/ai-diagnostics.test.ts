@@ -35,8 +35,11 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
     const dec = checkSrc("export function f(n: i32): i32 { const y = --n; return y; }\n").diags[0]!;
     expect(dec).toMatchObject({ code: "E1000", message: "'--' is only allowed as a statement or for-loop incrementor", data: { kind: "inc-dec", op: "--" } });
 
-    const tup = checkSrc("type Pair = [i32, string];\n").diags[0]!;
-    expect(tup).toMatchObject({ code: "E1000", message: "tuple types are not allowed; use a record '{ readonly ... }' or 'Struct<{ ... }>'", data: { kind: "tuple-type" } });
+    const emptyTup = checkSrc("type Pair = [];\n").diags[0]!;
+    expect(emptyTup).toMatchObject({ code: "E1000", message: "empty tuple types '[]' are not allowed", data: { kind: "empty-tuple" } });
+
+    const regexFlag = checkSrc("export function f(): void { const r = /a/g; }\n").diags[0]!;
+    expect(regexFlag).toMatchObject({ code: "E1000", data: { kind: "regex-flag", flags: "g" } });
 
     const ifaceMixed = checkSrc("interface Foo { readonly x: i32; m(): void; }\n").diags[0]!;
     expect(ifaceMixed).toMatchObject({
@@ -89,15 +92,6 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
       message: "'string' cannot be indexed; use 'charCodeAt(i)', 'codePointAt(i)', or 'slice(i, i + 1)'",
       data: { receiver: "string", suggestions: ["charCodeAt", "codePointAt", "slice"] },
     });
-
-    const mapEntries = checkSrc("export function f(m: Map<string, i32>): void { m.entries(); }\n").diags[0]!;
-    expect(mapEntries).toMatchObject({
-      code: "E2001",
-      data: { receiver: "Map<string, i32>", member: "entries", suggestions: ["keys", "values", "forEach"] },
-    });
-    expect(mapEntries.message).toContain("keys()");
-    expect(mapEntries.message).toContain("values()");
-    expect(mapEntries.message).toContain("forEach((v, k) => ...)");
 
     const strReplace = checkSrc('export function f(s: string): string { return s.replace("a", "b"); }\n').diags[0]!;
     expect(strReplace).toMatchObject({ code: "E2001", data: { suggestions: ["replaceAll"] } });

@@ -638,6 +638,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       if (d.exclamationToken) e1000(d.exclamationToken, "definite assignment assertion");
       if (isId(d.name)) { declName(d.name); bind(d.name); }
       else if (d.name.kind === K.ObjectBindingPattern && !isLet && where !== "for-of") bindingPattern(d.name as ts.ObjectBindingPattern);
+      else if (d.name.kind === K.ArrayBindingPattern && (where === "local" || where === "for-of")) arrayBindingPattern(d.name as ts.ArrayBindingPattern);
       else e1000(d.name, "this destructuring");
       if (d.type) type(d.type);
       if (!d.initializer) { if (where !== "for-of") e1000(d.name, "declaration without initializer"); continue; }
@@ -651,6 +652,17 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       if (el.dotDotDotToken) { e1000(el, "rest element"); continue; }
       if (el.propertyName && !isId(el.propertyName)) { e1000(el.propertyName, "this property name"); continue; }
       if (!isId(el.name)) { e1000(el.name ?? el, "nested destructuring"); continue; }
+      declName(el.name);
+      bind(el.name);
+      if (el.initializer) at("E1008", el.name, "destructuring default is not allowed", { kind: "destructure-default", name: el.name.text });
+    }
+  }
+
+  function arrayBindingPattern(p: ts.ArrayBindingPattern): void {
+    for (const el of p.elements) {
+      if (el.dotDotDotToken) { e1000(el, "rest element"); continue; }
+      if (!el.name) continue;
+      if (!isId(el.name)) { e1000(el.name, "nested destructuring"); continue; }
       declName(el.name);
       bind(el.name);
       if (el.initializer) at("E1008", el.name, "destructuring default is not allowed", { kind: "destructure-default", name: el.name.text });
@@ -672,7 +684,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
   }
   function literal(e: ts.Expression): boolean {
     switch (e.kind) {
-      case K.NumericLiteral: case K.StringLiteral: case K.NoSubstitutionTemplateLiteral: case K.TrueKeyword: case K.FalseKeyword: case K.NullKeyword:
+      case K.NumericLiteral: case K.StringLiteral: case K.NoSubstitutionTemplateLiteral: case K.TrueKeyword: case K.FalseKeyword: case K.NullKeyword: case K.RegularExpressionLiteral:
         return true;
       case K.PrefixUnaryExpression: {
         const u = e as ts.PrefixUnaryExpression;
@@ -930,7 +942,28 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         expr(u.operand);
         return;
       }
-      case K.RegularExpressionLiteral: e1000(e, "regular expression literal", { kind: "regex" }); return;
+      case K.RegularExpressionLiteral: {
+        const raw = sf.text.slice(e.getStart(sf), e.end);
+        const last = raw.lastIndexOf("/");
+        const pattern = raw.slice(1, last);
+        const flags = raw.slice(last + 1);
+        const seenFlags = new Set<string>();
+        let badFlag: string | undefined;
+        for (const ch of flags) {
+          if (!"imsu".includes(ch) || seenFlags.has(ch)) { badFlag = ch; break; }
+          seenFlags.add(ch);
+        }
+        if (badFlag !== undefined) {
+          at("E1000", e, `unsupported or duplicate RegExp flag '${badFlag}'; only 'i', 'm', 's', 'u' are allowed`, { kind: "regex-flag", flags });
+        } else {
+          try {
+            new globalThis.RegExp(pattern, flags);
+          } catch (err) {
+            at("E1000", e, `invalid regular expression literal: ${err instanceof Error ? err.message : String(err)}`, { kind: "regex-syntax" });
+          }
+        }
+        return;
+      }
       case K.TypeOfExpression: e1000(e, "'typeof' operator", { kind: "typeof" }); return;
       case K.DeleteExpression: e1000(e, "'delete' operator", { kind: "delete" }); return;
       case K.VoidExpression: e1000(e, "'void' operator", { kind: "void" }); return;
@@ -989,16 +1022,35 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         type((t as ts.ArrayTypeNode).elementType);
         return;
       }
-      case K.TupleType:
-        at("E1000", t, "tuple types are not allowed; use a record '{ readonly ... }' or 'Struct<{ ... }>'", { kind: "tuple-type" });
+      case K.TupleType: {
+        const els = (t as ts.TupleTypeNode).elements;
+        if (!els.length) {
+          at("E1000", t, "empty tuple types '[]' are not allowed", { kind: "empty-tuple" });
+          return;
+        }
+        for (const el of els) {
+          if (el.kind === K.RestType) {
+            e1000(el, "rest element in tuple type", { kind: "tuple-rest" });
+          } else if (el.kind === K.OptionalType) {
+            at("E1008", el, "optional tuple element is not allowed; use 'T | null'", { kind: "optional-tuple-elem" });
+          } else if (el.kind === K.NamedTupleMember) {
+            const nm = el as ts.NamedTupleMember;
+            if (nm.dotDotDotToken) e1000(nm, "rest element in tuple type", { kind: "tuple-rest" });
+            else if (nm.questionToken) at("E1008", nm, "optional tuple element is not allowed; use 'T | null'", { kind: "optional-tuple-elem", name: nm.name.text });
+            type(nm.type);
+          } else {
+            type(el);
+          }
+        }
         return;
+      }
       case K.IntersectionType:
         at("E1000", t, "intersection types '&' are only allowed in type parameter constraints", { kind: "intersection-type" });
         return;
       case K.TypeOperator: {
         const op = t as ts.TypeOperatorNode;
-        if (op.operator === K.ReadonlyKeyword && op.type.kind === K.ArrayType) {
-          type((op.type as ts.ArrayTypeNode).elementType);
+        if (op.operator === K.ReadonlyKeyword && (op.type.kind === K.ArrayType || op.type.kind === K.TupleType)) {
+          type(op.type);
           return;
         }
         at("E1000", t, "type operator is not allowed", { kind: "type-operator" });

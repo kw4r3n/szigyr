@@ -1,0 +1,6 @@
+// expect: E1008 @ 4:13
+// stage: 1
+export function f(p: [i32, i32]): i32 {
+  const [a, b = 1] = p;
+  return a + b;
+}

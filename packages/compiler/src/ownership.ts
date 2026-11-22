@@ -294,7 +294,11 @@ class Flow {
   }
   private declared(n: ts.BindingName): void {
     if (isId(n)) { const s = localOf.get(n); if (s) { this.declDepth.set(s.id, this.loopDepth); this.state?.delete(s.id); } return; }
-    if (n.kind === K.ObjectBindingPattern) for (const el of (n as ts.ObjectBindingPattern).elements) this.declared(el.name as ts.BindingName);
+    if (n.kind === K.ObjectBindingPattern || n.kind === K.ArrayBindingPattern) {
+      for (const el of (n as ts.ObjectBindingPattern | ts.ArrayBindingPattern).elements) {
+        if (el.name) this.declared(el.name as ts.BindingName);
+      }
+    }
   }
 
   // ---- expressions

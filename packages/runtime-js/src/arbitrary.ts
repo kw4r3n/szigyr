@@ -14,7 +14,8 @@ export type GenDesc =
   | { readonly k: "arr"; readonly of: GenDesc }
   | { readonly k: "set"; readonly of: GenDesc }
   | { readonly k: "map"; readonly key: GenDesc; readonly val: GenDesc }
-  | { readonly k: "vec"; readonly of: GenDesc; readonly elem: ElemKind };
+  | { readonly k: "vec"; readonly of: GenDesc; readonly elem: ElemKind }
+  | { readonly k: "tup"; readonly e: readonly GenDesc[] };
 
 /** Deterministic mulberry32 PRNG returning values in [0, 1). */
 export function createRng(seed = 0x9e3779b9): () => number {
@@ -102,6 +103,7 @@ function genOne(d: GenDesc, rng: () => number, size: number): unknown {
     case "union": { const idx = Math.floor(rng() * d.m.length); return { idx, val: genOne(d.m[idx]!, rng, size) }; }
     case "arr": case "vec": case "set": return Array.from({ length: len(15) }, () => genOne(d.of, rng, inner));
     case "map": return Array.from({ length: len(12) }, () => [genOne(d.key, rng, inner), genOne(d.val, rng, inner)]);
+    case "tup": return d.e.map((x) => genOne(x, rng, inner));
   }
 }
 
@@ -130,6 +132,7 @@ function materializeOne(d: GenDesc, raw: unknown): unknown {
       for (const x of xs) v.push(materializeOne(d.of, x));
       return v;
     }
+    case "tup": { const xs = raw as unknown[]; return d.e.map((x, i) => materializeOne(x, xs[i])); }
   }
 }
 
@@ -243,6 +246,17 @@ function shrinkOne(d: GenDesc, v: unknown): unknown[] {
         ...shrinkOne(d.key, k).map((nk): [unknown, unknown] => [nk, val]),
         ...shrinkOne(d.val, val).map((nv): [unknown, unknown] => [k, nv]),
       ]);
+    case "tup": {
+      const xs = v as unknown[], out: unknown[][] = [];
+      for (let i = 0; i < d.e.length; i++) {
+        for (const c of shrinkOne(d.e[i]!, xs[i])) {
+          const next = xs.slice();
+          next[i] = c;
+          out.push(next);
+        }
+      }
+      return out;
+    }
   }
 }
 
@@ -306,6 +320,7 @@ function formatOne(d: GenDesc, raw: unknown): unknown {
     case "union": { const u = raw as { idx: number; val: unknown }; return formatOne(d.m[u.idx]!, u.val); }
     case "arr": case "vec": case "set": return (raw as unknown[]).map((x) => formatOne(d.of, x));
     case "map": return (raw as [unknown, unknown][]).map(([k, v]) => [formatOne(d.key, k), formatOne(d.val, v)]);
+    case "tup": { const xs = raw as unknown[]; return d.e.map((x, i) => formatOne(x, xs[i])); }
   }
 }
 

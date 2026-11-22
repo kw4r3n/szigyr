@@ -1,0 +1,82 @@
+// expect-output: seven:7:11:22:hole:12:3:[9,"hi"]:4:ok:true|a=1,b=2,:3:13|true:true:false:Alpha-42@4:2:Alpha:42:true:1@1,22@3,333@6|1@1,22@3,333@6:1:a b-2:1:a 2:b:a|b|c:a||b:true:err:err:2
+// stage: 2
+
+type Pair = [i32, string];
+type RoPair = readonly [a: i32, b: string];
+
+const RE_WORD: RegExp = /([a-z]+)-(\d+)/i;
+const RE_OPT: RegExp = /(a)(b)?(c)/;
+
+function swapPair(p: Pair): [string, i32] {
+  const [a, b] = p;
+  return [b, a];
+}
+
+function sumRo(xs: readonly i32[]): i32 {
+  let total: i32 = 0;
+  for (const x of xs) total += x;
+  return total;
+}
+
+export function main(sys: System): void {
+  const ro: RoPair = [7, "seven"];
+  const [swS, swN] = swapPair(ro);
+  let [lx, ly] = [i32(10), i32(20)] satisfies [i32, i32];
+  lx += 1;
+  ly += 2;
+  const [, holeVal] = [i32(1), "hole"] satisfies [i32, string];
+  const tri: [i32, i32, i32] = [3, 4, 5];
+  const idx: usize = 2;
+  const dynEl = tri[idx];
+  const jTuple = JSON.stringify<[i32, string]>([9, "hi"]);
+  const parsed = JSON.parse("[4,\"ok\"]");
+  let castOut = "err";
+  if (parsed.kind === "ok") {
+    const c = cast<[i32, string]>(parsed.value);
+    if (c.kind === "ok") castOut = `${c.value[0]}:${c.value[1]}`;
+  }
+  const parsedBad = JSON.parse("[1]");
+  let badCast = false;
+  if (parsedBad.kind === "ok") {
+    badCast = cast<[i32, string]>(parsedBad.value).kind === "err";
+  }
+  const tuplePart = `${swS}:${swN}:${lx}:${ly}:${holeVal}:${sumRo(tri)}:${dynEl + i32(tri.length) - i32(idx) - 3}:${jTuple}:${castOut}:${badCast}`;
+
+  const m = new Map<string, i32>();
+  m.set("a", 1).set("b", 2);
+  let e1 = "";
+  for (const [k, v] of m.entries()) {
+    e1 += `${k}=${v},`;
+  }
+  let e2: i32 = 0;
+  for (const kv of m.entries()) {
+    e2 += kv[1];
+  }
+  let e3: i32 = 0;
+  for (let [k2, v2] of m.entries()) {
+    if (k2 === "b") v2 += 10;
+    e3 += v2;
+  }
+  const mapPart = `${e1}:${e2}:${e3}`;
+
+  const ex = RE_WORD.exec("say Alpha-42 end");
+  const exOut = ex !== null ? `${ex.text}@${ex.index}:${ex.groups.length}:${ex.groups[0] ?? "?"}:${ex.groups[1] ?? "?"}` : "null";
+  const ex2 = RE_OPT.exec("ac");
+  const optNull = ex2 !== null && ex2.groups[1] === null;
+  const digs = /\d+/;
+  const all1 = digs.findAll("x1y22z333").map((x) => `${x.text}@${x.index}`).join(",");
+  const all2 = digs.findAll("x1y22z333").map((x) => `${x.text}@${x.index}`).join(",");
+  const rep1 = RE_WORD.replace("a-1 b-2", "$2:$1");
+  const rep2 = RE_WORD.replaceAll("a-1 b-2", "$2:$1");
+  const sp1 = /[,;]+/.split("a,b;;c").join("|");
+  const sp2 = /(x)?,/.split("a,b").join("|");
+  const comp = RegExp.compile("^[a-z]+$", "im");
+  const compOk = comp.kind === "ok" && comp.value.source === "^[a-z]+$" && comp.value.flags === "im" && comp.value.test("AbC");
+  const badFlag = RegExp.compile("a", "g").kind;
+  const badSyn = RegExp.compile("[").kind;
+  const emptyUni = /()/u.findAll("😀").length;
+
+  const rePart1 = `${RE_WORD.test("Foo-12")}:${RE_WORD.test("Bar-99")}:${RE_WORD.test("---")}:${exOut}:${optNull}:${all1}`;
+  const rePart2 = `${all2}:${rep1}:${rep2}:${sp1}:${sp2}:${compOk}:${badFlag}:${badSyn}:${emptyUni}`;
+  sys.log.info(`${tuplePart}|${mapPart}|${rePart1}|${rePart2}`);
+}

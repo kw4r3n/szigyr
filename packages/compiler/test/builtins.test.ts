@@ -56,7 +56,7 @@ it("documents every builtin global name in SPEC and keeps BUILTIN_NAMES complete
     "Result", "Struct", "RingPair", "JsError", "CastError", "IoError", "AudioConfig",
     "DirEntry", "FileStat", "EnvVar", "ProcOptions", "ProcOutput", "ProcRequest",
     "HttpHeader", "HttpRequestInit", "HttpResponse", "HttpServerConfig", "HttpServerRequest", "HttpServerResponse", "HttpClientRequest", "QueryParam",
-    "Resource", "Disposable", "AsyncDisposable", "CStruct",
+    "RegExpMatch", "Resource", "Disposable", "AsyncDisposable", "CStruct",
     ...Object.keys(GEN_ARITY), ...OPAQUE_NAMES, ...NAMESPACES, ...BUILTIN_FUNCTIONS,
   ]);
   expect([...BUILTIN_NAMES].sort()).toEqual([...expected].sort());

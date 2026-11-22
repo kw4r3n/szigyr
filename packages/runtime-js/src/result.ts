@@ -16,7 +16,8 @@ export type TypeDesc =
   | { readonly k: "lit"; readonly v: readonly string[] }
   | { readonly k: "rec"; readonly f: { readonly [name: string]: TypeDesc } }
   | { readonly k: "union"; readonly m: readonly TypeDesc[] }
-  | { readonly k: "arr"; readonly of: TypeDesc };
+  | { readonly k: "arr"; readonly of: TypeDesc }
+  | { readonly k: "tup"; readonly e: readonly TypeDesc[] };
 
 /** Returns an error message, or null when `x` has the type. Records are exact: extra properties fail. */
 function check(d: TypeDesc, x: unknown, path: string): string | null {
@@ -41,6 +42,11 @@ function check(d: TypeDesc, x: unknown, path: string): string | null {
     case "arr": {
       if (!Array.isArray(x)) return bad("array");
       for (let i = 0; i < x.length; i++) { const e = check(d.of, x[i], `${path}[${i}]`); if (e) return e; }
+      return null;
+    }
+    case "tup": {
+      if (!Array.isArray(x) || x.length !== d.e.length) return bad(`tuple of length ${d.e.length}`);
+      for (let i = 0; i < d.e.length; i++) { const e = check(d.e[i]!, x[i], `${path}[${i}]`); if (e) return e; }
       return null;
     }
     case "rec": {
@@ -189,3 +195,56 @@ export const Url = {
     }
   },
 };
+
+export interface RegExpMatch { readonly text: string; readonly index: number; readonly groups: (string | null)[] }
+
+const toRegExpMatch = (m: RegExpExecArray): RegExpMatch => ({
+  text: m[0] ?? "",
+  index: m.index,
+  groups: Array.from(m.slice(1), (g) => g ?? null),
+});
+
+/** Immutable, stateless regular expression wrapper (no g/y flags or lastIndex state). */
+export class SzRegExp {
+  readonly #re: globalThis.RegExp;
+  readonly source: string;
+  readonly flags: string;
+  constructor(re: globalThis.RegExp) {
+    this.#re = re;
+    this.source = re.source;
+    this.flags = re.flags;
+  }
+  test(s: string): boolean { return this.#re.test(s); }
+  exec(s: string): RegExpMatch | null {
+    const m = this.#re.exec(s);
+    return m ? toRegExpMatch(m) : null;
+  }
+  findAll(s: string): RegExpMatch[] {
+    const g = new globalThis.RegExp(this.#re.source, `${this.flags}g`);
+    return Array.from(s.matchAll(g), toRegExpMatch);
+  }
+  replace(s: string, replacement: string): string { return s.replace(this.#re, replacement); }
+  replaceAll(s: string, replacement: string): string {
+    return s.replaceAll(new globalThis.RegExp(this.#re.source, `${this.flags}g`), replacement);
+  }
+  split(s: string): string[] { return s.split(this.#re).map((part) => part ?? ""); }
+}
+
+export function regexLit(pattern: string, flags: string): SzRegExp {
+  return new SzRegExp(new globalThis.RegExp(pattern, flags));
+}
+
+export function regexCompile(pattern: string, flags = ""): Result<SzRegExp, CastError> {
+  const seen = new Set<string>();
+  for (const ch of flags) {
+    if (!"imsu".includes(ch) || seen.has(ch)) {
+      return err({ code: "EINVAL", message: `unsupported or duplicate RegExp flag '${ch}'; only 'i', 'm', 's', 'u' are allowed` });
+    }
+    seen.add(ch);
+  }
+  try {
+    return ok(new SzRegExp(new globalThis.RegExp(pattern, flags)));
+  } catch (e) {
+    return err({ code: "SyntaxError", message: e instanceof Error ? e.message : String(e) });
+  }
+}

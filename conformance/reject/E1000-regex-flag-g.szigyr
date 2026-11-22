@@ -1,0 +1,5 @@
+// expect: E1000 @ 4:13
+// stage: 1
+export function f(): void {
+  const r = /abc/g;
+}

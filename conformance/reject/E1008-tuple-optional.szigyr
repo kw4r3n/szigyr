@@ -1,0 +1,5 @@
+// expect: E1008 @ 3:28
+// stage: 1
+export function f(p: [i32, string?]): i32 {
+  return p[0];
+}

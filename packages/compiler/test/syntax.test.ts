@@ -93,7 +93,12 @@ const forms: [string, string, string[]][] = [
   ["non-trailing default param rejected", "function f(a: i32 = 1, b: i32): i32 { return a + b; }", ["E1008@1:24"]],
   ["constructor parameter properties allowed", "class A { constructor(private readonly x: i32, public y: i32 = 0) {} }", []],
   ["this in constructor default param rejected", "class A { x: i32 = 1; constructor(y: i32 = this.x) {} }", ["E1000@1:44"]],
-  ["regex literal", "function f(): void { const r = /a/; }", ["E1000@1:32"]],
+  ["regex literal", "function f(): void { const r = /a/i; }", []],
+  ["regex flag g rejected", "function f(): void { const r = /a/g; }", ["E1000@1:32"]],
+  ["tuple and readonly tuple types allowed", "type A = [i32, string];\ntype B = readonly [x: i32, y: string];", []],
+  ["empty tuple rejected", "type A = [];", ["E1000@1:10"]],
+  ["optional tuple element rejected", "type A = [i32, string?];", ["E1008@1:16"]],
+  ["local and for-of tuple destructuring allowed", "function f(t: [i32, string], xs: [string, i32][]): void { const [, b] = t; let [x, y] = t; for (const [k, v] of xs) {} }", []],
   ["as const is rejected (Q026)", "function f(): i32 { const x: i32 = 1 as const; return x; }", ["E1005@1:38"]],
 ];
 

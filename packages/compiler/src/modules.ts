@@ -11,7 +11,7 @@ export function canonPath(...p: string[]): string {
 }
 import { CAPABILITY_NAMES, RESERVED, builtinType, isGenName } from "./builtins.ts";
 import {
-  ERROR, GEN_ARITY, NULL, VOID, gen, assignable, bindTParams, borrowOk, collectTParams, crossOk, crossTParams, fn, isCopy, isTaggedUnion, same, sendable, hasArenaBuf, hasAuthority, hasCap, hasLayout, field, isNative, keyOk, kindOf, layerOk, promiseIn, structField, tparamHasCap, tparamMayBeAuthority, holdsOwned, ownedDeep, CONTAINERS, newTParam, nonNull, record, result, show, subst, union,
+  ERROR, GEN_ARITY, NULL, VOID, gen, assignable, bindTParams, borrowOk, collectTParams, crossOk, crossTParams, fn, isCopy, isTaggedUnion, same, sendable, hasArenaBuf, hasAuthority, hasCap, hasLayout, field, isNative, keyOk, kindOf, layerOk, promiseIn, structField, tparamHasCap, tparamMayBeAuthority, holdsOwned, ownedDeep, CONTAINERS, newTParam, nonNull, record, result, show, subst, tuple, union,
   type Capability, type ClassSym, type Field, type FnType, type IfaceSym, type TParam, type Type,
   hasLoneSurrogate,
 } from "./types.ts";
@@ -797,10 +797,13 @@ export class Program {
       }
       case K.ArrayType:
         return this.arrayType((t as ts.ArrayTypeNode).elementType, "Array", e);
+      case K.TupleType:
+        return this.tupleType(t as ts.TupleTypeNode, e);
       case K.TypeOperator: {
         const op = t as ts.TypeOperatorNode;
-        if (op.operator === K.ReadonlyKeyword && op.type.kind === K.ArrayType) {
-          return this.arrayType((op.type as ts.ArrayTypeNode).elementType, "ReadonlyArray", e);
+        if (op.operator === K.ReadonlyKeyword) {
+          if (op.type.kind === K.ArrayType) return this.arrayType((op.type as ts.ArrayTypeNode).elementType, "ReadonlyArray", e);
+          if (op.type.kind === K.TupleType) return this.tupleType(op.type as ts.TupleTypeNode, e);
         }
         return ERROR;
       }
@@ -846,6 +849,22 @@ export class Program {
       this.rep.at(e.mod, "E3007", elNode, `'${name}' cannot hold the owned type '${show(el)}'`, { kind: "managed-owned", container: name, actual: show(el) });
     }
     return { k: "gen", name, args: [el] };
+  }
+
+  private tupleType(t: ts.TupleTypeNode, e: TypeEnv): Type {
+    if (!t.elements.length) return ERROR;
+    const elems: Type[] = [];
+    for (const el of t.elements) {
+      const node = el.kind === K.NamedTupleMember ? (el as ts.NamedTupleMember).type : el.kind === K.RestType || el.kind === K.OptionalType ? undefined : el;
+      if (!node) return ERROR;
+      const et = this.typeOf(node, e);
+      if (et.k === "error") return ERROR;
+      if (holdsOwned(et) && !ownedDeep(et)) {
+        this.rep.at(e.mod, "E3007", el, `tuple cannot hold the owned type '${show(et)}'`, { kind: "managed-owned", container: "tuple", actual: show(et) });
+      }
+      elems.push(et);
+    }
+    return tuple(elems);
   }
 
   private instantiateTypeSym(sym: TypeSym, name: string, argNodes: ts.NodeArray<ts.TypeNode> | undefined, args: Type[], whole: Node, e: TypeEnv): Type {

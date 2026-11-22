@@ -12,6 +12,7 @@ export function isGeneratable(t: Type): boolean {
     case "prim": return t.name === "boolean" || t.name === "string" || t.name === "null";
     case "record": return t.fields.every((f) => isGeneratable(f.type));
     case "union": return t.members.every(isGeneratable);
+    case "tuple": return t.elems.every(isGeneratable);
     case "gen":
       switch (t.name) {
         case "Array": case "ReadonlyArray": case "Set": return isGeneratable(t.args[0]!);
@@ -40,6 +41,7 @@ export function genDescOf(t: Type): GenDesc {
       break;
     case "lit": return { k: "lit", v: [t.value] };
     case "record": return { k: "rec", f: t.fields.map((f) => ({ n: f.name, d: genDescOf(f.type) })) };
+    case "tuple": return { k: "tup", e: t.elems.map(genDescOf) };
     case "union": {
       if (t.members.every((m) => m.k === "lit")) return { k: "lit", v: t.members.map((m) => (m as { value: string }).value) };
       const nn = nonNull(t);

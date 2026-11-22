@@ -327,6 +327,11 @@ export function emitFile(
       }
       case K.AwaitExpression: // §15.4 (2), D145: a recorded foreign trap (a C thread's or an isolate's) surfaces before the next task, on both backends
         return `${RT}.task(await ${gen((n as ts.AwaitExpression).expression)})`;
+      case K.RegularExpressionLiteral: {
+        const raw = text.slice(n.getStart(sf), n.end);
+        const last = raw.lastIndexOf("/");
+        return `${RT}.regexLit(${JSON.stringify(raw.slice(1, last))}, ${JSON.stringify(raw.slice(last + 1))})`;
+      }
       case K.PrefixUnaryExpression: return prefix(n as ts.PrefixUnaryExpression);
       case K.PostfixUnaryExpression: return incDec(n as ts.PostfixUnaryExpression);
       case K.BinaryExpression: return binary(n as ts.BinaryExpression);
@@ -769,6 +774,7 @@ export function emitFile(
     if (ns === "String" && m === "encodeUtf8") return `${RT}.strEncodeUtf8(${args[0]}, ${args[1]}, ${at(p.name)})`;
     if (ns === "String" && m === "decodeUtf8") return `${RT}.strDecodeUtf8(${args[0]}, ${at(p.name)})`;
     if (ns === "String" && m === "decodeUtf8Lossy") return `${RT}.strDecodeUtf8Lossy(${args[0]}, ${at(p.name)})`;
+    if (ns === "RegExp" && m === "compile") return `${RT}.regexCompile(${args.join(", ")})`;
     // Q035: builtins that can throw a JS exception panic (T006) at their name.
     const throws = ns ? THROWING[ns] : r?.k === "gen" ? THROWING[r.name] : r && isStr(r) ? THROWING.string : undefined;
     if (throws?.includes(m)) {
@@ -1055,6 +1061,7 @@ function desc(t: Type): string {
     case "union":
       if (t.members.every((m) => m.k === "lit")) return `{k:"lit",v:${JSON.stringify(t.members.map((m) => (m as { value: string }).value))}}`;
       return `{k:"union",m:[${t.members.map(desc).join(",")}]}`;
+    case "tuple": return `{k:"tup",e:[${t.elems.map(desc).join(",")}]}`;
     case "gen": if (t.name === "Array" || t.name === "ReadonlyArray") return `{k:"arr",of:${desc(t.args[0]!)}}`;
   }
   throw new Error(`emit: no cast descriptor for type kind ${t.k}`); // P2 limits cast targets (§3.2)
