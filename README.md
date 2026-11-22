@@ -31,7 +31,7 @@ PATH にリンクしない場合は、パスを直接指定して実行できま
 ```bash
 szigyr check [--json] [--watch] [--fix] <file...>
 szigyr run [--backend=js|c|wasm|both|all] <file> [-- <args...>]
-szigyr test [--backend=js|c|wasm|both|all] [--watch] [--json] <file...>
+szigyr test [--all] [--filter=<pat>] [--backend=js|c|wasm|both|all] [--watch] [--json] <file...>
 szigyr prove [--all] [--strict] [--no-cache] [--timeout=<ms>] [--json] <file...>
 szigyr mutate [--all] [--fail-on-survived] [--no-cache] [--json] <file...>
 szigyr query [--json] <file...>
@@ -66,7 +66,7 @@ stdio JSON-RPC 2.0 MCP サーバとして起動します（未リンクの場合
 ```
 
 - **リソース**: `szigyr://spec`（言語仕様全文 `docs/SPEC.md`）、`szigyr://builtins`（組み込み関数・名前空間・型の JSON カタログ）
-- **ツール**: `szigyr_check`, `szigyr_query`, `szigyr_explain`, `szigyr_test`, `szigyr_run`, `szigyr_prove`, `szigyr_mutate`
+- **ツール**: `szigyr_check`, `szigyr_query`, `szigyr_explain`, `szigyr_test`（`all` / `filter` 対応）, `szigyr_run`, `szigyr_prove`, `szigyr_mutate`（常駐ワーカーでパーサ / SMT を再利用）
 
 既存アプリを `.szigyr` へ書き換える場合も、AI エージェントには作業前に `szigyr://spec`（または [`docs/SPEC.md`](docs/SPEC.md)）と `szigyr://builtins` を参照させると仕様に沿ったコードを生成できます。
 

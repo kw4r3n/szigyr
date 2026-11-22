@@ -630,7 +630,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     if (!isLet && !(list.flags & NodeFlags.Const)) {
       const s = list.getStart(sf);
       at("E1001", list, "'var' is not allowed");
-      fix(`use '${where === "local" || where === "for" ? "let" : "const"}'`, s, s + 3, where === "local" || where === "for" ? "let" : "const"); // 'let' is not allowed at module level or in for-of
+      fix(`use '${where === "local" || where === "for" ? "let" : "const"}'`, s, s + 3, where === "local" || where === "for" ? "let" : "const"); // 'let' is not allowed at module level
       return;
     }
     if (isLet && where === "module") { at("E5002", list, "module-level 'let' is not allowed", { kind: "module-let" }); return; }

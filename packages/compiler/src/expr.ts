@@ -81,10 +81,26 @@ export function checkTo(c: Checker, e: ts.Expression, want: Type, arg = false): 
   }
   return t;
 }
+function attachNonNullCondFix(c: Checker, e: ts.Expression, t: Type): void {
+  const nn = nonNull(t);
+  if (!nn || isBool(nn)) return;
+  const d = c.prog.rep.out.at(-1);
+  if (d?.code !== "E2004") return;
+  const sf = c.fx.mod.sf, s = e.getStart(sf), txt = sf.text.slice(s, e.end);
+  const wrapped = e.kind === K.BinaryExpression || e.kind === K.ConditionalExpression ? `(${txt})` : txt;
+  d.fixes = [{
+    title: "compare with '!== null'",
+    edits: [{ range: { start: c.fx.mod.pf.position(s), end: c.fx.mod.pf.position(e.end) }, newText: `${wrapped} !== null` }],
+  }];
+}
+
 /** E2004: conditions are boolean only (§3.1). */
 export function cond(c: Checker, e: ts.Expression): void {
   const t = expr(c, e);
-  if (!isBool(t) && !isErr(t)) c.at("E2004", e, `condition must be boolean, got '${show(t)}'`, { actual: show(t) });
+  if (!isBool(t) && !isErr(t)) {
+    c.at("E2004", e, `condition must be boolean, got '${show(t)}'`, { actual: show(t) });
+    attachNonNullCondFix(c, e, t);
+  }
 }
 
 /** The type P2 gave each checked expression (last check wins), read by the JS emitter (§10, D030). */
@@ -668,12 +684,42 @@ function attachLitLetFix(c: Checker, d: Diagnostic, side: ts.Expression, other: 
   return true;
 }
 
-/** SPEC §11 fix for an E2003 just reported at `op`: an operand that is an untyped `let x = 0` gets the other side's type. */
-function numFix(c: Checker, op: Node, l: ts.Expression, r: ts.Expression, lt: Type, rt: Type): void {
+/** SPEC §11 fix for an E2003 just reported at `op`: an operand that is an untyped `let x = 0` gets the other side's type, or else explicit numeric casts. */
+function numFix(c: Checker, op: Node, l: ts.Expression, r: ts.Expression, lt: Type, rt: Type, lhsFixed = false, want?: Type): void {
   const d = c.prog.rep.out.at(-1);
-  if (d?.code !== "E2003" || d.range.start.line !== c.fx.mod.pf.position(op.getStart(c.fx.mod.sf)).line || d.range.start.col !== c.fx.mod.pf.position(op.getStart(c.fx.mod.sf)).col) return;
+  const sf = c.fx.mod.sf, pf = c.fx.mod.pf;
+  if (d?.code !== "E2003" || d.range.start.line !== pf.position(op.getStart(sf)).line || d.range.start.col !== pf.position(op.getStart(sf)).col) return;
   attachLitLetFix(c, d, l, rt);
   attachLitLetFix(c, d, r, lt);
+  if (d.fixes?.length || lt.k !== "num" || rt.k !== "num" || lt.name === rt.name) return;
+  const mk = (node: ts.Expression, target: string, label: string) => {
+    const s = node.getStart(sf);
+    return { title: `convert ${label} to '${target}'`, edits: [{ range: { start: pf.position(s), end: pf.position(node.end) }, newText: `${target}(${sf.text.slice(s, node.end)})` }] };
+  };
+  const fixes = lhsFixed ? [mk(r, lt.name, "right")] : want?.k === "num" && want.name === lt.name
+    ? [mk(r, lt.name, "right"), mk(l, rt.name, "left")]
+    : [mk(l, rt.name, "left"), mk(r, lt.name, "right")];
+  d.fixes = fixes;
+}
+
+function attachStrTemplateFix(c: Checker, b: ts.BinaryExpression, op: Node, lt: Type, rt: Type): void {
+  if (b.operatorToken.kind !== K.PlusToken || !c.callAllowed("managed")) return;
+  const okMix = (isStr(lt) && (isNum(rt) || isBool(rt))) || (isStr(rt) && (isNum(lt) || isBool(lt)));
+  if (!okMix) return;
+  const d = c.prog.rep.out.at(-1);
+  const sf = c.fx.mod.sf, pf = c.fx.mod.pf;
+  if (d?.code !== "E2002" || d.range.start.line !== pf.position(op.getStart(sf)).line || d.range.start.col !== pf.position(op.getStart(sf)).col) return;
+  const part = (e: ts.Expression): string => {
+    if (e.kind === K.StringLiteral || e.kind === K.NoSubstitutionTemplateLiteral) {
+      const val = (e as ts.StringLiteral).text;
+      if (!/[`$\\\r\n]/.test(val)) return val;
+    }
+    return `\${${e.getText(sf)}}`;
+  };
+  d.fixes = [{
+    title: "use template literal",
+    edits: [{ range: { start: pf.position(b.getStart(sf)), end: pf.position(b.end) }, newText: `\`${part(b.left)}${part(b.right)}\`` }],
+  }];
 }
 
 function arith(c: Checker, op: Node, kind: K, lt: Type, rt: Type): Type {
@@ -749,7 +795,7 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
     const rt = expr(c, b.right, isNum(lt) ? lt : undefined);
     if (BIT_OPS.has(base)) {
       const r = bitOp(c, op, base, lt, rt);
-      numFix(c, op, b.left, b.right, lt, rt);
+      numFix(c, op, b.left, b.right, lt, rt, true);
       return r;
     }
     if (k === K.PlusEqualsToken && isStr(lt) && isStr(rt)) {
@@ -765,16 +811,16 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
     }
     const r = arith(c, op, base, lt, rt);
     if (k === K.SlashEqualsToken) attachIntOpFix(c, b, op, "E2007", "divTrunc", true);
-    numFix(c, op, b.left, b.right, lt, rt);
+    numFix(c, op, b.left, b.right, lt, rt, true);
     return r;
   }
   switch (k) {
     case K.AmpersandAmpersandToken: case K.BarBarToken: {
       const m0 = c.mark();
       const lt = expr(c, b.left);
-      if (!isBool(lt) && !isErr(lt)) c.at("E2004", b.left, "operand must be boolean", { actual: show(lt) });
+      if (!isBool(lt) && !isErr(lt)) { c.at("E2004", b.left, "operand must be boolean", { actual: show(lt) }); attachNonNullCondFix(c, b.left, lt); }
       const rt = c.branch(() => expr(c, b.right), c.facts(b.left, k === K.AmpersandAmpersandToken), m0);
-      if (!isBool(rt) && !isErr(rt)) c.at("E2004", b.right, "operand must be boolean", { actual: show(rt) });
+      if (!isBool(rt) && !isErr(rt)) { c.at("E2004", b.right, "operand must be boolean", { actual: show(rt) }); attachNonNullCondFix(c, b.right, rt); }
       return BOOL;
     }
     case K.QuestionQuestionToken: {
@@ -823,7 +869,8 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
     }
     const r = arith(c, op, k, lt, rt);
     if (k === K.SlashToken) attachIntOpFix(c, b, op, "E2007", "divTrunc", false);
-    numFix(c, op, b.left, b.right, lt, rt);
+    attachStrTemplateFix(c, b, op, lt, rt);
+    numFix(c, op, b.left, b.right, lt, rt, false, want);
     return r;
   }
   return ERROR; // P1 rejects every other binary operator

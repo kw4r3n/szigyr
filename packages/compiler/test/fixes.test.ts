@@ -36,6 +36,14 @@ const cases: [string, string, string, string][] = [
   ["E5001", "export function f(): f64 {\n  return Date.now();\n}\n", "clock.nowMs", "Date.now"],
   ["E5001", "export function f(): f64 {\n  return Math.random();\n}\n", "random.nextF64", "Math.random"],
   ["E2007", "export function f(a: i32, b: i32): i32 {\n  let x = a;\n  x /= b;\n  return x;\n}\n", "x = divTrunc(x, b)", "x /= b"],
+  ["E2004", "export function f(s: string | null): usize {\n  if (s) return s.length;\n  return 0;\n}\n", "s !== null", "if (s)"],
+  ["E2004", "export function f(s: string | null): boolean {\n  return s && s.length > 0;\n}\n", "s !== null", "return s &&"],
+  ["E2002", 'export function f(x: i32): string {\n  return "n=" + x;\n}\n', "`n=${x}`", '"n=" + x'],
+  ["E2002", 'export function f(x: i32): string {\n  return x + "px";\n}\n', "`${x}px`", 'x + "px"'],
+  ["E2002", 'export function f(b: boolean): string {\n  return "ok=" + b;\n}\n', "`ok=${b}`", '"ok=" + b'],
+  ["E2003", "export function f(a: i32, b: f64): f64 {\n  return a + b;\n}\n", "f64(a)", "a + b"],
+  ["E2003", "export function f(a: i32, b: f64): i32 {\n  return a + b;\n}\n", "i32(b)", "a + b"],
+  ["E2003", "export function f(a: i32, b: f64): i32 {\n  let x: i32 = a;\n  x += b;\n  return x;\n}\n", "i32(b)", "+= b"],
   ["E2005", 'type Color = "red" | "green" | "blue";\nexport function f(c: Color): i32 {\n  switch (c) {\n    case "red": return 1;\n  }\n}\n', 'case "green": panic("unhandled");', "E2005"],
 ];
 
@@ -128,4 +136,14 @@ it("attaches concrete-type, resource-escape, conflictAt, cycle, and CLI kind/mis
   const code = await cliMain(["check", "--json", cycle], (s) => { cliOut += s; }, () => {});
   expect(code).toBe(1);
   expect(JSON.parse(cliOut.trim().split("\n")[0]!)).toMatchObject({ kind: "diagnostic", code: "E4005" });
+
+  // E2004 boolean | null gets no '!== null' fix; compound E2003 only offers RHS conversion
+  const boolNull = join(dir, "bool-null.szigyr");
+  writeFileSync(boolNull, "export function f(b: boolean | null): i32 {\n  if (b) return 1;\n  return 0;\n}\n");
+  expect(check(boolNull)[0]?.fixes).toBeUndefined();
+
+  const compound = join(dir, "compound-e2003.szigyr");
+  writeFileSync(compound, "export function f(a: i32, b: f64): i32 {\n  let x: i32 = a;\n  x += b;\n  return x;\n}\n");
+  const cd = check(compound).find((d) => d.code === "E2003");
+  expect(cd?.fixes?.map((fx) => fx.title)).toEqual(["convert right to 'i32'"]);
 });
