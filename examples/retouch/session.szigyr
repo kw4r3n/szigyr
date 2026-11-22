@@ -128,24 +128,15 @@ export class RetouchSession implements Disposable {
   }
 
   stats(): ImageStats {
-    const buf = this.current.take();
-    const s = computeImageStats(buf, this.width, this.height);
-    this.current.put(buf);
-    return s;
+    return this.current.withRef((buf) => computeImageStats(buf, this.width, this.height));
   }
 
   toPpm(): string {
-    const buf = this.current.take();
-    const ppm = exportPpm(buf, this.width, this.height);
-    this.current.put(buf);
-    return ppm;
+    return this.current.withRef((buf) => exportPpm(buf, this.width, this.height));
   }
 
   snapshotRgba(alloc: Alloc): Vec<u8> {
-    const buf = this.current.take();
-    const out = clonePixels(alloc, buf);
-    this.current.put(buf);
-    return out;
+    return this.current.withRef((buf) => clonePixels(alloc, buf));
   }
 
   applyPreset(alloc: Alloc, preset: RetouchPreset): boolean {

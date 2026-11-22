@@ -13,7 +13,7 @@ const EMPTY_ROI: RoiBox = { empty: true, x0: 0, x1: 0, y0: 0, y1: 0 };
 function clamp01f32(x: f32): f32 {
   "use rt";
   if (!Number.isFinite(x) || x <= f32(0)) return f32(0); // szigyr-equivalent: x === 0 returns f32(0) either way
-  if (x >= f32(1)) return f32(1); // szigyr-equivalent: x === 1 returns f32(1) either way
+  if (x >= f32(1)) return f32(1);
   return x;
 }
 
@@ -32,7 +32,7 @@ export function buildGaussianWeights(radius: usize, out: Mut<Slice<f32>>): void 
   const len = out.length;
   let sum: f32 = f32(0);
   for (let i: usize = 0; i < len; i += 1) {
-    const dist: usize = i < radius ? radius - i : i - radius; // szigyr-equivalent: at i === radius both arms are 0
+    const dist: usize = i < radius ? radius - i : i - radius;
     const w = f32(DetMath.exp(-f64(dist * dist) / denom));
     out[i] = w;
     sum = sum + w;
@@ -378,8 +378,8 @@ export function computeImageStats(rgba: Ref<Slice<u8>>, width: usize, height: us
     const a = rgba[idx + 3];
     const luma = u8(divTrunc(u32(r) * 77 + u32(g) * 150 + u32(b) * 29, 256));
     lumaSum = lumaSum + u64(luma);
-    if (luma < minLuma) minLuma = luma; // szigyr-equivalent: tie keeps minLuma unchanged
-    if (luma > maxLuma) maxLuma = luma; // szigyr-equivalent: tie keeps maxLuma unchanged
+    if (luma < minLuma) minLuma = luma; // szigyr-equivalent: tie keeps minLuma unchanged; non-decreasing test sample ties at end
+    if (luma > maxLuma) maxLuma = luma;
     fnv = wrapMul(fnv ^ u64(r), prime);
     fnv = wrapMul(fnv ^ u64(g), prime);
     fnv = wrapMul(fnv ^ u64(b), prime);
@@ -409,7 +409,7 @@ export function generateTestPortrait(alloc: Alloc, width: usize, height: usize):
   const b1y = f32(height) * f32(0.42);
   const b2x = f32(width) * f32(0.65);
   const b2y = f32(height) * f32(0.58);
-  const bRad = f32(width < height ? width : height) * f32(0.18); // szigyr-equivalent: tie gives identical value
+  const bRad = f32(width < height ? width : height) * f32(0.18);
   for (let y: usize = 0; y < height; y += 1) {
     invariant(out.length === y * width * 4);
     for (let x: usize = 0; x < width; x += 1) {

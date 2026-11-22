@@ -316,7 +316,7 @@ function walkScanDir(
 
 export function scanWorkspace(fs: Fs, alloc: Alloc, root: string): Result<ScanSummary, IoError> {
   const files: Array<FileReport> = [];
-  const buf = Vec.create<u8>(alloc, 0); // szigyr-equivalent: initial capacity hint; readBytes replaces dst
+  const buf = Vec.create<u8>(alloc, 0);
   const walked = walkScanDir(fs, root, "", buf, files);
   if (walked.kind === "err") return err(walked.error);
   let totalBytes: usize = 0;
@@ -361,7 +361,7 @@ export function saveWorkspaceFile(
   const bak = `${full}.bak`;
   let backedUp = false;
   if (fs.exists(full)) {
-    const prevBuf = Vec.create<u8>(alloc, 0); // szigyr-equivalent: initial capacity hint; readBytes replaces dst
+    const prevBuf = Vec.create<u8>(alloc, 0);
     const pr = fs.readBytes(full, prevBuf);
     if (pr.kind === "err") return err(pr.error);
     const wb = fs.writeBytesAtomic(bak, prevBuf);
@@ -370,7 +370,7 @@ export function saveWorkspaceFile(
   }
   const wt = fs.writeTextAtomic(full, content);
   if (wt.kind === "err") return err(wt.error);
-  const buf = Vec.create<u8>(alloc, 0); // szigyr-equivalent: initial capacity hint; readBytes replaces dst
+  const buf = Vec.create<u8>(alloc, 0);
   const rb = fs.readBytes(full, buf);
   if (rb.kind === "err") return err(rb.error);
   const m = scanBytes(buf);
@@ -392,7 +392,7 @@ export function snapshotFileBytes(
     const mk = fs.mkdir(joinPath(root, parent));
     if (mk.kind === "err") return err(mk.error);
   }
-  const buf = Vec.create<u8>(alloc, 0); // szigyr-equivalent: initial capacity hint; readBytes replaces dst
+  const buf = Vec.create<u8>(alloc, 0);
   const rb = fs.readBytes(joinPath(root, sRel), buf);
   if (rb.kind === "err") return err(rb.error);
   const wb = fs.writeBytesAtomic(joinPath(root, dRel), buf);
