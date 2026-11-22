@@ -623,6 +623,8 @@ export class RingTx<T = unknown> {
       if (s.onPush) {
         const z = s.cod ? s.cod.z : NUM_SIZE[s.elem as NumType]!;
         s.onPush(new Uint8Array(s.sab, RING_ELEMS + slot * z, z).slice());
+        // MessagePort fallback copies each pushed slot to the remote receiver; advance local head so writes don't wedge at cap.
+        s.pos![0] = (tail + 1) >>> 0;
       }
     }
     return true;

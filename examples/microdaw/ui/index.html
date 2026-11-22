@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MicroDAW · Szigyr Wasm Studio</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <main class="studio">
+    <header class="topbar">
+      <div class="brand">
+        <h1>MICRODAW</h1>
+        <span class="sub">Szigyr <code>"use rt"</code> + Wasm AudioWorklet</span>
+      </div>
+      <div class="transport">
+        <button id="btn-play" class="btn btn-primary" type="button">Play</button>
+        <button id="btn-reset" class="btn" type="button">Reset</button>
+        <label class="inline-field">
+          Preset
+          <select id="sel-preset">
+            <option value="acid">Acid Bass</option>
+            <option value="arp">C Minor Arp</option>
+            <option value="ambient">Ambient Pad</option>
+            <option value="empty">Empty</option>
+          </select>
+        </label>
+      </div>
+      <div class="badges">
+        <span id="status-pill" class="pill">Loading…</span>
+        <span id="coi-badge" class="pill pill-muted">Checking COI…</span>
+      </div>
+    </header>
+
+    <section class="panel controls">
+      <div class="wave-group" role="group" aria-label="Waveform">
+        <button class="wave-btn active" data-wave="0" type="button">SAW</button>
+        <button class="wave-btn" data-wave="1" type="button">SQR</button>
+        <button class="wave-btn" data-wave="2" type="button">TRI</button>
+        <button class="wave-btn" data-wave="3" type="button">SIN</button>
+      </div>
+      <label class="slider">
+        <span>BPM <strong id="val-bpm">120</strong></span>
+        <input id="rng-bpm" type="range" min="60" max="200" step="1" value="120" />
+      </label>
+      <label class="slider">
+        <span>Cutoff <strong id="val-cutoff">2400 Hz</strong></span>
+        <input id="rng-cutoff" type="range" min="120" max="12000" step="20" value="2400" />
+      </label>
+      <label class="slider">
+        <span>Attack <strong id="val-attack">8 ms</strong></span>
+        <input id="rng-attack" type="range" min="2" max="500" step="2" value="8" />
+      </label>
+      <label class="slider">
+        <span>Release <strong id="val-release">220 ms</strong></span>
+        <input id="rng-release" type="range" min="20" max="1500" step="10" value="220" />
+      </label>
+      <label class="slider">
+        <span>Gain <strong id="val-gain">65%</strong></span>
+        <input id="rng-gain" type="range" min="0" max="100" step="1" value="65" />
+      </label>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>16-Step Sequencer</h2>
+        <div class="meter-wrap">
+          <span id="tel-readout">step: 1 · voices: 0</span>
+          <div class="meter"><div id="peak-fill" class="meter-fill"></div></div>
+        </div>
+      </div>
+      <div id="step-grid" class="step-grid" aria-label="16-Step Piano Roll"></div>
+    </section>
+
+    <section class="bottom-row">
+      <div class="panel pads-panel">
+        <h2>Audition Pads (A–K)</h2>
+        <div id="pad-row" class="pad-row"></div>
+      </div>
+      <div class="panel scope-panel">
+        <h2>Oscilloscope</h2>
+        <canvas id="scope" width="420" height="96"></canvas>
+      </div>
+    </section>
+  </main>
+  <script type="module" src="./ui.js"></script>
+</body>
+</html>

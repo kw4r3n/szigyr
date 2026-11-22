@@ -1,0 +1,311 @@
+const B64_ALPHA: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+export type DesktopAction =
+  | { readonly kind: "help" }
+  | {
+      readonly kind: "run";
+      readonly webDir: string;
+      readonly title: string;
+      readonly width: i32;
+      readonly height: i32;
+      readonly smokeMs: u32 | null;
+    }
+  | { readonly kind: "error"; readonly message: string };
+
+export function encodeBase64(data: Ref<Slice<u8>>): string {
+  let out = "";
+  const n = data.length;
+  let i: usize = 0;
+  while (i < n) {
+    const b0 = u32(data[i]);
+    const has1 = i + 1 < n;
+    const has2 = i + 2 < n;
+    // szigyr-equivalent[0 -> 1]: only high 4/2 bits of zero-pad b1/b2 enter encoded sextets
+    const b1 = has1 ? u32(data[i + 1]) : u32(0);
+    // szigyr-equivalent[0 -> 1]: has2=false emits '=' instead of reading low bits of b2
+    const b2 = has2 ? u32(data[i + 2]) : u32(0);
+    const triple = (b0 << 16) | (b1 << 8) | b2;
+    const i0 = usize((triple >>> 18) & 63);
+    const i1 = usize((triple >>> 12) & 63);
+    const i2 = usize((triple >>> 6) & 63);
+    const i3 = usize(triple & 63);
+    out += B64_ALPHA.slice(i0, i0 + 1) + B64_ALPHA.slice(i1, i1 + 1);
+    out += has1 ? B64_ALPHA.slice(i2, i2 + 1) : "=";
+    out += has2 ? B64_ALPHA.slice(i3, i3 + 1) : "=";
+    i += 3;
+  }
+  return out;
+}
+
+export function mimeTypeForPath(relPath: string): string {
+  if (relPath.endsWith(".html")) return "text/html; charset=utf-8";
+  if (relPath.endsWith(".css")) return "text/css; charset=utf-8";
+  if (relPath.endsWith(".js") || relPath.endsWith(".mjs")) return "application/javascript; charset=utf-8";
+  if (relPath.endsWith(".json")) return "application/json; charset=utf-8";
+  if (relPath.endsWith(".svg")) return "image/svg+xml";
+  return "application/octet-stream";
+}
+
+export function sanitizeAssetPath(urlPath: string): string | null {
+  if (!urlPath.startsWith("/")) return null;
+  if (urlPath === "/") return "index.html";
+  const rel = urlPath.slice(1);
+  if (rel.includes("\\")) return null;
+  for (let i: usize = 0; i < rel.length; i += 1) {
+    if (rel.charCodeAt(i) === 0) return null;
+  }
+  const segs = rel.split("/");
+  for (const seg of segs) {
+    if (seg.length === 0 || seg === "." || seg === "..") return null;
+  }
+  return segs.join("/");
+}
+
+function parseBoundedPosInt(raw: string, maxVal: u64): u32 | null {
+  let acc: u64 = 0;
+  for (let i: usize = 0; i < raw.length; i += 1) {
+    const ch = raw.charCodeAt(i);
+    if (ch < 48 || ch > 57) return null;
+    acc = acc * 10 + u64(ch - 48);
+    if (acc > maxVal) return null;
+  }
+  if (acc === 0) return null;
+  return u32(acc);
+}
+
+export function desktopHelpText(): string {
+  return "Usage: microdaw-desktop [--web-dir <dir>] [--title <title>] [--width <px>] [--height <px>] [--smoke-ms <ms>]";
+}
+
+export function parseDesktopArgs(argv: ReadonlyArray<string>): DesktopAction {
+  let webDir = ".";
+  let title = "MicroDAW Studio";
+  let width: i32 = 1120;
+  let height: i32 = 760;
+  let smokeMs: u32 | null = null;
+
+  let i: usize = 0;
+  while (i < argv.length) {
+    const flag = argv[i];
+    if (flag === "--help" || flag === "-h") return { kind: "help" };
+    if (
+      flag !== "--web-dir" &&
+      flag !== "--title" &&
+      flag !== "--width" &&
+      flag !== "--height" &&
+      flag !== "--smoke-ms"
+    ) {
+      return { kind: "error", message: `unknown argument: ${flag}` };
+    }
+    if (i + 1 >= argv.length) return { kind: "error", message: `missing value for ${flag}` };
+    const val = argv[i + 1];
+    if (flag === "--web-dir") {
+      if (val.length === 0) return { kind: "error", message: "empty --web-dir" };
+      webDir = val;
+    } else if (flag === "--title") {
+      if (val.length === 0) return { kind: "error", message: "empty --title" };
+      title = val;
+    } else if (flag === "--width") {
+      const n = parseBoundedPosInt(val, 8192);
+      if (n === null) return { kind: "error", message: `invalid --width: ${val}` };
+      width = i32(n);
+    } else if (flag === "--height") {
+      const n = parseBoundedPosInt(val, 8192);
+      if (n === null) return { kind: "error", message: `invalid --height: ${val}` };
+      height = i32(n);
+    } else {
+      const n = parseBoundedPosInt(val, 300000);
+      if (n === null) return { kind: "error", message: `invalid --smoke-ms: ${val}` };
+      smokeMs = n;
+    }
+    i += 2;
+  }
+  return { kind: "run", webDir, title, width, height, smokeMs };
+}
+
+function coiHeaders(contentType: string): Array<HttpHeader> {
+  return [
+    { name: "content-type", value: contentType },
+    { name: "cross-origin-opener-policy", value: "same-origin" },
+    { name: "cross-origin-embedder-policy", value: "require-corp" },
+  ];
+}
+
+export function joinAssetPath(baseDir: string, rel: string): string {
+  if (baseDir.endsWith("/")) return baseDir + rel;
+  return `${baseDir}/${rel}`;
+}
+
+export function handleDesktopRequest(
+  fs: Fs,
+  webDir: string,
+  wasmB64: string,
+  req: HttpServerRequest,
+  onReady: (body: string) => void,
+): HttpServerResponse {
+  if (req.method === "GET" && req.path === "/api/health") {
+    return { status: 200, headers: coiHeaders("application/json; charset=utf-8"), body: "{\"ok\":true}" };
+  }
+  if (req.method === "POST" && req.path === "/api/ready") {
+    onReady(req.body);
+    return { status: 200, headers: coiHeaders("application/json; charset=utf-8"), body: "{\"ok\":true}" };
+  }
+  if (req.method === "GET" && req.path === "/program.wasm.b64") {
+    return { status: 200, headers: coiHeaders("text/plain; charset=ascii"), body: wasmB64 };
+  }
+  const rel = sanitizeAssetPath(req.path);
+  if (rel === null) {
+    return { status: 400, headers: coiHeaders("text/plain; charset=utf-8"), body: "bad path" };
+  }
+  const rd = fs.readText(joinAssetPath(webDir, rel));
+  if (rd.kind === "err") {
+    return { status: 404, headers: coiHeaders("text/plain; charset=utf-8"), body: "not found" };
+  }
+  return { status: 200, headers: coiHeaders(mimeTypeForPath(rel)), body: rd.value };
+}
+
+test("encodeBase64 matches RFC 4648 vectors and binary high bytes", (t: Test) => {
+  const alloc = TestAlloc.create();
+  const empty = Vec.create<u8>(alloc, 0);
+  t.eq(encodeBase64(empty), "");
+
+  const vecs: Array<{ readonly text: string; readonly b64: string }> = [
+    { text: "f", b64: "Zg==" },
+    { text: "fo", b64: "Zm8=" },
+    { text: "foo", b64: "Zm9v" },
+    { text: "foob", b64: "Zm9vYg==" },
+    { text: "fooba", b64: "Zm9vYmE=" },
+    { text: "foobar", b64: "Zm9vYmFy" },
+  ];
+  for (const v of vecs) {
+    const buf = Vec.create<u8>(alloc, v.text.length);
+    String.encodeUtf8(v.text, buf);
+    t.eq(encodeBase64(buf), v.b64);
+  }
+
+  const bin = Vec.create<u8>(alloc, 4);
+  bin.push(0x00);
+  bin.push(0xff);
+  bin.push(0xab);
+  bin.push(0xcd);
+  t.eq(encodeBase64(bin), "AP+rzQ==");
+
+  forAll((bytes: Array<u8>) => {
+    const v = Vec.create<u8>(alloc, bytes.length);
+    for (const b of bytes) v.push(b);
+    const enc = encodeBase64(v);
+    if (bytes.length === 0) return enc === "";
+    if (enc.length % 4 !== 0) return false;
+    const expectedLen: usize = divTrunc(bytes.length + 2, 3) * 4;
+    return enc.length === expectedLen;
+  });
+});
+
+test("mimeTypeForPath, sanitizeAssetPath, parseDesktopArgs, and handleDesktopRequest", (t: Test) => {
+  t.eq(mimeTypeForPath("index.html"), "text/html; charset=utf-8");
+  t.eq(mimeTypeForPath("style.css"), "text/css; charset=utf-8");
+  t.eq(mimeTypeForPath("app.js"), "application/javascript; charset=utf-8");
+  t.eq(mimeTypeForPath("mod.mjs"), "application/javascript; charset=utf-8");
+  t.eq(mimeTypeForPath("data.json"), "application/json; charset=utf-8");
+  t.eq(mimeTypeForPath("icon.svg"), "image/svg+xml");
+  t.eq(mimeTypeForPath("prog.wasm"), "application/octet-stream");
+
+  t.eq(sanitizeAssetPath("/"), "index.html");
+  t.eq(sanitizeAssetPath("/ui.js"), "ui.js");
+  t.eq(sanitizeAssetPath("/rt/browser.js"), "rt/browser.js");
+  t.ok(sanitizeAssetPath("ui.js") === null);
+  t.ok(sanitizeAssetPath("") === null);
+  t.ok(sanitizeAssetPath("//etc/passwd") === null);
+  t.ok(sanitizeAssetPath("/a/") === null);
+  t.ok(sanitizeAssetPath("/../secret") === null);
+  t.ok(sanitizeAssetPath("/./a") === null);
+  t.ok(sanitizeAssetPath("/a\\b") === null);
+  t.ok(sanitizeAssetPath("/\0b") === null);
+  t.ok(sanitizeAssetPath("/a\0b") === null);
+
+  t.eq(joinAssetPath("/web/", "ui.js"), "/web/ui.js");
+  t.eq(joinAssetPath("/web", "ui.js"), "/web/ui.js");
+
+  t.ok(desktopHelpText().includes("--smoke-ms"));
+  t.eq(parseDesktopArgs([]), {
+    kind: "run",
+    webDir: ".",
+    title: "MicroDAW Studio",
+    width: 1120,
+    height: 760,
+    smokeMs: null,
+  });
+  t.eq(parseDesktopArgs(["--help"]), { kind: "help" });
+  t.eq(parseDesktopArgs(["-h"]), { kind: "help" });
+  t.eq(parseDesktopArgs(["--web-dir", "/app/web", "--title", "DAW", "--width", "8192", "--height", "480", "--smoke-ms", "300000"]), {
+    kind: "run",
+    webDir: "/app/web",
+    title: "DAW",
+    width: 8192,
+    height: 480,
+    smokeMs: u32(300000),
+  });
+
+  const bogus = parseDesktopArgs(["--bogus"]);
+  t.eq(bogus.kind, "error");
+  if (bogus.kind === "error") t.ok(bogus.message.includes("unknown argument"));
+  t.eq(parseDesktopArgs(["--web-dir"]).kind, "error");
+  t.eq(parseDesktopArgs(["--web-dir", ""]).kind, "error");
+  t.eq(parseDesktopArgs(["--title", ""]).kind, "error");
+  t.eq(parseDesktopArgs(["--width", "0"]).kind, "error");
+  t.eq(parseDesktopArgs(["--width", "8193"]).kind, "error");
+  t.eq(parseDesktopArgs(["--width", "/"]).kind, "error");
+  t.eq(parseDesktopArgs(["--width", ":"]).kind, "error");
+  t.eq(parseDesktopArgs(["--height", "0"]).kind, "error");
+  t.eq(parseDesktopArgs(["--height", "8193"]).kind, "error");
+  t.eq(parseDesktopArgs(["--smoke-ms", "0"]).kind, "error");
+  t.eq(parseDesktopArgs(["--smoke-ms", "300001"]).kind, "error");
+
+  const fs = FakeFs.create();
+  fs.mkdir("/web/rt");
+  fs.writeText("/web/index.html", "<h1>ok</h1>");
+  fs.writeText("/web/rt/browser.js", "export const x = 1;");
+
+  let capturedReady = "";
+  const onReady = (b: string): void => {
+    capturedReady = b;
+  };
+
+  const health = handleDesktopRequest(fs, "/web", "AQID", { method: "GET", path: "/api/health", query: "", headers: [], body: "" }, onReady);
+  t.eq(health.status, u16(200));
+  t.eq(health.body, "{\"ok\":true}");
+  t.eq(health.headers[1], { name: "cross-origin-opener-policy", value: "same-origin" });
+  t.eq(health.headers[2], { name: "cross-origin-embedder-policy", value: "require-corp" });
+
+  const postHealth = handleDesktopRequest(fs, "/web", "AQID", { method: "POST", path: "/api/health", query: "", headers: [], body: "" }, onReady);
+  t.eq(postHealth.status, u16(404));
+
+  const ready = handleDesktopRequest(fs, "/web", "AQID", { method: "POST", path: "/api/ready", query: "", headers: [], body: "{\"ok\":true}" }, onReady);
+  t.eq(ready.status, u16(200));
+  t.eq(capturedReady, "{\"ok\":true}");
+
+  const getReady = handleDesktopRequest(fs, "/web", "AQID", { method: "GET", path: "/api/ready", query: "", headers: [], body: "" }, onReady);
+  t.eq(getReady.status, u16(404));
+
+  const b64 = handleDesktopRequest(fs, "/web", "AQID", { method: "GET", path: "/program.wasm.b64", query: "", headers: [], body: "" }, onReady);
+  t.eq(b64.status, u16(200));
+  t.eq(b64.body, "AQID");
+
+  const postB64 = handleDesktopRequest(fs, "/web", "AQID", { method: "POST", path: "/program.wasm.b64", query: "", headers: [], body: "" }, onReady);
+  t.eq(postB64.status, u16(404));
+
+  const idx = handleDesktopRequest(fs, "/web/", "AQID", { method: "GET", path: "/", query: "", headers: [], body: "" }, onReady);
+  t.eq(idx.status, u16(200));
+  t.eq(idx.headers[0].value, "text/html; charset=utf-8");
+  t.eq(idx.body, "<h1>ok</h1>");
+
+  const jsFile = handleDesktopRequest(fs, "/web", "AQID", { method: "GET", path: "/rt/browser.js", query: "", headers: [], body: "" }, onReady);
+  t.eq(jsFile.status, u16(200));
+  t.eq(jsFile.headers[0].value, "application/javascript; charset=utf-8");
+
+  const bad = handleDesktopRequest(fs, "/web", "AQID", { method: "GET", path: "/../x", query: "", headers: [], body: "" }, onReady);
+  t.eq(bad.status, u16(400));
+
+  const miss = handleDesktopRequest(fs, "/web", "AQID", { method: "GET", path: "/missing.js", query: "", headers: [], body: "" }, onReady);
+  t.eq(miss.status, u16(404));
+});

@@ -412,7 +412,10 @@ function createBridge(meta: WasmMeta, host: WasmHost): {
         else {
           pos[1] = (tail + 1) | 0;
           const cb = p ? p.onPush : (r as { shared?: { onPush?: (b: Uint8Array) => void } }).shared?.onPush;
-          if (cb) cb(dst.slice());
+          if (cb) {
+            cb(dst.slice());
+            pos[0] = (tail + 1) | 0;
+          }
         }
         return 1;
       },

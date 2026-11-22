@@ -1,0 +1,729 @@
+export const NUM_VOICES: usize = 4;
+export const NUM_STEPS: usize = 16;
+export const SAMPLE_RATE: f64 = 48000;
+
+export const WAVE_SAW: u8 = 0;
+export const WAVE_SQUARE: u8 = 1;
+export const WAVE_TRI: u8 = 2;
+export const WAVE_SINE: u8 = 3;
+
+export const CMD_SET_PLAYING: u8 = 1;
+export const CMD_SET_BPM: u8 = 2;
+export const CMD_SET_WAVE: u8 = 3;
+export const CMD_SET_CUTOFF: u8 = 4;
+export const CMD_SET_ATTACK: u8 = 5;
+export const CMD_SET_RELEASE: u8 = 6;
+export const CMD_SET_GAIN: u8 = 7;
+export const CMD_SET_STEP: u8 = 8;
+export const CMD_TRIGGER_NOTE: u8 = 9;
+export const CMD_RESET_SEQ: u8 = 10;
+
+export type SynthCmd = Struct<{
+  readonly kind: u8;
+  readonly a: u8;
+  readonly b: u8;
+  readonly f: f32;
+}>;
+
+export type SynthTelemetry = Struct<{
+  readonly step: u8;
+  readonly playing: u8;
+  readonly activeVoices: u8;
+  readonly peak: f32;
+}>;
+
+export type Voice = Struct<{
+  readonly active: u8;
+  readonly stage: u8;
+  readonly note: u8;
+  readonly age: u32;
+  readonly phase: f64;
+  readonly freq: f64;
+  readonly env: f32;
+  readonly vel: f32;
+}>;
+
+export type StepCell = Struct<{
+  readonly note: u8;
+  readonly vel: f32;
+}>;
+
+export type SynthState = Struct<{
+  cmdRx: RingRx<SynthCmd>;
+  telTx: RingTx<SynthTelemetry>;
+  voices: Vec<Voice>;
+  steps: Vec<StepCell>;
+  playing: u8;
+  wave: u8;
+  curStep: u8;
+  samplesPerStep: u32;
+  cutoff: f32;
+  attack: f32;
+  release: f32;
+  gain: f32;
+  lpL: f32;
+  lpR: f32;
+  stepSample: u32;
+  telAccum: u32;
+  peakHold: f32;
+}>;
+
+function silentVoice(): Voice {
+  "use rt";
+  return {
+    active: 0,
+    stage: 0,
+    note: 0,
+    age: 0,
+    phase: 0.0,
+    freq: 0.0,
+    env: f32(0),
+    vel: f32(0),
+  };
+}
+
+export function bpmToSamplesPerStep(bpm: u32): u32 {
+  "use rt";
+  ensures((r: u32) => r >= 3000 && r <= 18000);
+  // szigyr-equivalent[< -> <=,> -> >=]: exact boundaries 40 and 240 clamp identically either way
+  const lo: u32 = bpm < 40 ? 40 : bpm;
+  // szigyr-equivalent[> -> >=]: exact boundary 240 returns 240 either way
+  const c: u32 = lo > 240 ? 240 : lo;
+  return divTrunc(720000, c);
+}
+
+export function midiToFreq(note: u8): f64 {
+  "use rt";
+  return 440.0 * DetMath.pow(2.0, (f64(note) - 69.0) / 12.0);
+}
+
+export function clampF32(x: f32, lo: f32, hi: f32): f32 {
+  "use rt";
+  // szigyr-equivalent[<= -> <]: exact boundary returns lo either way
+  if (!Number.isFinite(x) || x <= lo) return lo;
+  // szigyr-equivalent[>= -> >]: exact boundary returns hi either way
+  if (x >= hi) return hi;
+  return x;
+}
+
+export function oscSample(wave: u8, phase: f64): f32 {
+  "use rt";
+  if (wave === WAVE_SAW) return f32(2.0 * phase - 1.0);
+  if (wave === WAVE_SQUARE) return phase < 0.5 ? f32(0.8) : f32(-0.8);
+  // szigyr-equivalent[< -> <=]: 4*0.5-1 and 3-4*0.5 both equal 1 at phase=0.5
+  if (wave === WAVE_TRI) return phase < 0.5 ? f32(4.0 * phase - 1.0) : f32(3.0 - 4.0 * phase);
+  return f32(DetMath.sin(6.283185307179586 * phase));
+}
+
+function triggerVoice(st: Mut<SynthState>, note: u8, vel: f32): void {
+  "use rt";
+  const n = st.voices.length;
+  if (n === 0) return;
+  let pick: usize = 0;
+  let foundFree = st.voices[0].active === 0;
+  let bestAge: u32 = st.voices[0].age;
+  // szigyr-equivalent[num -> 0]: starting at i=0 re-checks slot 0 with identical age and active state
+  for (let i: usize = 1; i < n; i += 1) {
+    invariant(pick < n);
+    const v = st.voices[i];
+    if (v.active === 0) {
+      if (!foundFree) {
+        pick = i;
+        foundFree = true;
+      }
+    } else if (!foundFree && v.age > bestAge) {
+      pick = i;
+      bestAge = v.age;
+    }
+  }
+  st.voices[pick] = {
+    active: 1,
+    stage: 1,
+    note,
+    age: 0,
+    phase: 0.0,
+    freq: midiToFreq(note),
+    env: f32(0),
+    vel: clampF32(vel, f32(0.05), f32(1)),
+  };
+}
+
+function applyCmd(st: Mut<SynthState>, cmd: SynthCmd): void {
+  "use rt";
+  if (cmd.kind === CMD_SET_PLAYING) {
+    st.playing = cmd.a !== 0 ? 1 : 0;
+  } else if (cmd.kind === CMD_SET_BPM) {
+    st.samplesPerStep = bpmToSamplesPerStep(u32(cmd.a));
+  } else if (cmd.kind === CMD_SET_WAVE) {
+    st.wave = cmd.a <= WAVE_SINE ? cmd.a : WAVE_SAW;
+  } else if (cmd.kind === CMD_SET_CUTOFF) {
+    st.cutoff = clampF32(cmd.f, f32(120), f32(12000));
+  } else if (cmd.kind === CMD_SET_ATTACK) {
+    st.attack = clampF32(cmd.f, f32(0.002), f32(1));
+  } else if (cmd.kind === CMD_SET_RELEASE) {
+    st.release = clampF32(cmd.f, f32(0.01), f32(2));
+  } else if (cmd.kind === CMD_SET_GAIN) {
+    st.gain = clampF32(cmd.f, f32(0), f32(1));
+  } else if (cmd.kind === CMD_SET_STEP) {
+    const idx = usize(cmd.a);
+    if (idx < st.steps.length) {
+      st.steps[idx] = { note: cmd.b, vel: clampF32(cmd.f, f32(0), f32(1)) };
+    }
+  } else if (cmd.kind === CMD_TRIGGER_NOTE) {
+    if (cmd.a > 0) triggerVoice(st, cmd.a, cmd.f);
+  } else if (cmd.kind === CMD_RESET_SEQ) {
+    st.curStep = 0;
+    st.stepSample = 0;
+    for (let i: usize = 0; i < st.voices.length; i += 1) {
+      st.voices[i] = silentVoice();
+    }
+  }
+}
+
+export function renderAudio(st: Mut<SynthState>, out: Mut<Slice<f32>>, frames: usize): void {
+  "use rt";
+  requires(frames <= divTrunc(out.length, 2));
+  let cmd = st.cmdRx.pop();
+  while (cmd !== null) {
+    applyCmd(st, cmd);
+    cmd = st.cmdRx.pop();
+  }
+
+  const rawAlpha = f32(6.283185307179586 * f64(st.cutoff) / SAMPLE_RATE);
+  // szigyr-equivalent[> -> >=]: exact boundary returns 0.99 either way
+  const alpha = rawAlpha > f32(0.99) ? f32(0.99) : rawAlpha;
+  const atkStep = f32(1.0 / (f64(st.attack) * SAMPLE_RATE));
+  const relStep = f32(1.0 / (f64(st.release) * SAMPLE_RATE));
+
+  for (let i: usize = 0; i < frames; i += 1) {
+    if (st.playing !== 0) {
+      if (st.stepSample === 0) {
+        const idx = usize(st.curStep);
+        if (idx < st.steps.length) {
+          const cell = st.steps[idx];
+          if (cell.note > 0 && cell.vel > f32(0)) {
+            triggerVoice(st, cell.note, cell.vel);
+          }
+        }
+        st.curStep = st.curStep >= 15 ? 0 : st.curStep + 1;
+      }
+      st.stepSample = wrapAdd(st.stepSample, 1);
+      if (st.stepSample >= st.samplesPerStep) st.stepSample = 0;
+    }
+
+    let mixL: f32 = f32(0);
+    let mixR: f32 = f32(0);
+    let activeCount: u8 = 0;
+
+    for (let v: usize = 0; v < st.voices.length; v += 1) {
+      const cur = st.voices[v];
+      if (cur.active !== 0) {
+        let env = cur.env;
+        let stage = cur.stage;
+        let active: u8 = 1;
+        if (stage === 1) {
+          env = f32(env + atkStep);
+          // szigyr-equivalent[>= -> >]: at exact 1.0 release subtracts relStep either way
+          if (env >= f32(1)) {
+            env = f32(1);
+            stage = 2;
+          }
+        } else {
+          env = f32(env - relStep);
+          // szigyr-equivalent[<= -> <]: stage=0 deactivates on <=0
+          if (env <= f32(0)) {
+            env = f32(0);
+            stage = 0;
+            active = 0;
+          }
+        }
+
+        const smp = f32(oscSample(st.wave, cur.phase) * env * cur.vel);
+        const panL = rem(v, 2) === 0 ? f32(0.62) : f32(0.38);
+        mixL = f32(mixL + smp * panL);
+        mixR = f32(mixR + smp * f32(f32(1) - panL));
+
+        let nextPhase = cur.phase + cur.freq / SAMPLE_RATE;
+        // szigyr-equivalent[>= -> >]: modulo-1 phase 1.0 and 0.0 yield identical oscSample output
+        if (nextPhase >= 1.0) nextPhase -= 1.0;
+
+        st.voices[v] = {
+          active,
+          stage,
+          note: cur.note,
+          age: wrapAdd(cur.age, 1),
+          phase: nextPhase,
+          freq: cur.freq,
+          env,
+          vel: cur.vel,
+        };
+        if (active !== 0) activeCount = wrapAdd(activeCount, 1);
+      }
+    }
+
+    st.lpL = f32(st.lpL + alpha * f32(mixL - st.lpL));
+    st.lpR = f32(st.lpR + alpha * f32(mixR - st.lpR));
+    const sL = f32(DetMath.tanh(f64(st.lpL * st.gain)));
+    const sR = f32(DetMath.tanh(f64(st.lpR * st.gain)));
+
+    out[i * 2] = sL;
+    out[i * 2 + 1] = sR;
+
+    const absL = Math.abs(sL);
+    const absR = Math.abs(sR);
+    // szigyr-equivalent[> -> >=]: equal channel magnitudes produce identical peak
+    const framePeak = absL > absR ? absL : absR;
+    // szigyr-equivalent[> -> >=]: equal peak leaves st.peakHold unchanged
+    if (framePeak > st.peakHold) st.peakHold = framePeak;
+
+    st.telAccum = wrapAdd(st.telAccum, 1);
+    if (st.telAccum >= 1024) {
+      const shownStep: u8 = st.playing === 0 ? st.curStep : st.curStep === 0 ? 15 : st.curStep - 1;
+      st.telTx.push({
+        step: shownStep,
+        playing: st.playing,
+        activeVoices: activeCount,
+        peak: st.peakHold,
+      });
+      st.telAccum = 0;
+      st.peakHold = f32(0);
+    }
+  }
+}
+
+export function createInitialSynthState(
+  alloc: Alloc,
+  cmdRx: RingRx<SynthCmd>,
+  telTx: RingTx<SynthTelemetry>,
+): SynthState {
+  "use owned";
+  const voices = Vec.filled<Voice>(alloc, NUM_VOICES, silentVoice());
+  const steps = Vec.filled<StepCell>(alloc, NUM_STEPS, { note: 0, vel: f32(0) });
+  return {
+    cmdRx,
+    telTx,
+    voices,
+    steps,
+    playing: 0,
+    wave: WAVE_SAW,
+    curStep: 0,
+    samplesPerStep: bpmToSamplesPerStep(120),
+    cutoff: f32(2400),
+    attack: f32(0.008),
+    release: f32(0.22),
+    gain: f32(0.65),
+    lpL: f32(0),
+    lpR: f32(0),
+    stepSample: 0,
+    telAccum: 0,
+    peakHold: f32(0),
+  };
+}
+
+function renderTestChunk(t: Test, st: Mut<SynthState>, out: Mut<Vec<f32>>, frames: usize): f32 {
+  renderAudio(st, out, frames);
+  let pk: f32 = f32(0);
+  for (let j: usize = 0; j < frames * 2; j += 1) {
+    const s = out[j];
+    t.ok(Number.isFinite(s) && s >= f32(-1) && s <= f32(1));
+    const a = Math.abs(s);
+    if (a > pk) pk = a;
+  }
+  return pk;
+}
+
+test("bpmToSamplesPerStep, midiToFreq, clampF32, and oscSample", (t: Test) => {
+  t.eq(bpmToSamplesPerStep(0), u32(18000));
+  t.eq(bpmToSamplesPerStep(40), u32(18000));
+  t.eq(bpmToSamplesPerStep(120), u32(6000));
+  t.eq(bpmToSamplesPerStep(240), u32(3000));
+  t.eq(bpmToSamplesPerStep(300), u32(3000));
+
+  t.ok(Math.abs(midiToFreq(69) - 440.0) < 0.001);
+  t.ok(Math.abs(midiToFreq(57) - 220.0) < 0.001);
+
+  t.eq(clampF32(f32(Number.NaN), f32(1), f32(5)), f32(1));
+  t.eq(clampF32(f32(0), f32(1), f32(5)), f32(1));
+  t.eq(clampF32(f32(6), f32(1), f32(5)), f32(5));
+  t.eq(clampF32(f32(3), f32(1), f32(5)), f32(3));
+
+  t.eq(oscSample(WAVE_SAW, 0.0), f32(-1));
+  t.eq(oscSample(WAVE_SAW, 0.5), f32(0));
+  t.eq(oscSample(WAVE_SQUARE, 0.25), f32(0.8));
+  t.eq(oscSample(WAVE_SQUARE, 0.5), f32(-0.8));
+  t.eq(oscSample(WAVE_TRI, 0.25), f32(0));
+  t.eq(oscSample(WAVE_TRI, 0.5), f32(1));
+  t.eq(oscSample(WAVE_TRI, 0.75), f32(0));
+  t.ok(Math.abs(f64(oscSample(WAVE_SINE, 0.25)) - 1.0) < 0.001);
+});
+
+test("initial state defaults, command updates, stereo pan, voice stealing, envelope decay, and 16-step wrap", (t: Test) => {
+  const alloc = TestAlloc.create();
+  const { tx: eCmdTx, rx: eCmdRx } = Ring.create<SynthCmd>(alloc, 16);
+  const { tx: eTelTx } = Ring.create<SynthTelemetry>(alloc, 8);
+  let emptyState = createInitialSynthState(alloc, eCmdRx, eTelTx);
+  emptyState.voices.clear();
+  emptyState.steps.clear();
+  eCmdTx.push({ kind: CMD_TRIGGER_NOTE, a: 60, b: 0, f: f32(1) });
+  eCmdTx.push({ kind: CMD_SET_PLAYING, a: 1, b: 0, f: f32(0) });
+  const emptyOut = Vec.filled<f32>(alloc, 16, f32(0));
+  renderAudio(emptyState, emptyOut, 4);
+  t.eq(emptyOut[0], f32(0));
+
+  const { tx: cmdTx, rx: cmdRx } = Ring.create<SynthCmd>(alloc, 64);
+  const { tx: telTx, rx: telRx } = Ring.create<SynthTelemetry>(alloc, 128);
+  let st = createInitialSynthState(alloc, cmdRx, telTx);
+
+  // Verify initial state fields
+  t.eq(st.playing, u8(0));
+  t.eq(st.wave, WAVE_SAW);
+  t.eq(st.curStep, u8(0));
+  t.eq(st.samplesPerStep, u32(6000));
+  t.eq(st.cutoff, f32(2400));
+  t.eq(st.attack, f32(0.008));
+  t.eq(st.release, f32(0.22));
+  t.eq(st.gain, f32(0.65));
+  t.eq(st.lpL, f32(0));
+  t.eq(st.lpR, f32(0));
+  t.eq(st.stepSample, u32(0));
+  t.eq(st.telAccum, u32(0));
+  t.eq(st.peakHold, f32(0));
+  t.eq(st.voices.length, NUM_VOICES);
+  t.eq(st.steps.length, NUM_STEPS);
+  t.eq(st.voices[0].active, u8(0));
+  t.eq(st.voices[0].stage, u8(0));
+  t.eq(st.voices[0].note, u8(0));
+  t.eq(st.voices[0].age, u32(0));
+  t.eq(st.voices[0].phase, 0.0);
+  t.eq(st.voices[0].freq, 0.0);
+  t.eq(st.voices[0].env, f32(0));
+  t.eq(st.voices[0].vel, f32(0));
+  t.eq(st.steps[0].note, u8(0));
+  t.eq(st.steps[0].vel, f32(0));
+
+  // Verify 0-frame applyCmd clamps all bounds, ignores note=0 & unknown cmd, and keeps curStep intact
+  const out = Vec.filled<f32>(alloc, 2048, f32(0));
+  st.curStep = 3;
+  cmdTx.push({ kind: CMD_SET_CUTOFF, a: 0, b: 0, f: f32(10) });
+  cmdTx.push({ kind: CMD_SET_ATTACK, a: 0, b: 0, f: f32(0.0001) });
+  cmdTx.push({ kind: CMD_SET_RELEASE, a: 0, b: 0, f: f32(0.001) });
+  cmdTx.push({ kind: CMD_TRIGGER_NOTE, a: 0, b: 0, f: f32(1) });
+  cmdTx.push({ kind: 250, a: 0, b: 0, f: f32(0) });
+  renderAudio(st, out, 0);
+  t.eq(st.cutoff, f32(120));
+  t.eq(st.attack, f32(0.002));
+  t.eq(st.release, f32(0.01));
+  t.eq(st.voices[0].active, u8(0));
+  t.eq(st.curStep, u8(3));
+
+  cmdTx.push({ kind: CMD_SET_CUTOFF, a: 0, b: 0, f: f32(50000) });
+  cmdTx.push({ kind: CMD_SET_ATTACK, a: 0, b: 0, f: f32(5) });
+  cmdTx.push({ kind: CMD_SET_RELEASE, a: 0, b: 0, f: f32(5) });
+  cmdTx.push({ kind: CMD_SET_GAIN, a: 0, b: 0, f: f32(2) });
+  renderAudio(st, out, 0);
+  t.eq(st.cutoff, f32(12000));
+  t.eq(st.attack, f32(1));
+  t.eq(st.release, f32(2));
+  t.eq(st.gain, f32(1));
+
+  // 0-frame trigger sets exact initial age=0, phase=0, env=0; slow attack (1s) tests osc * env
+  cmdTx.push({ kind: CMD_RESET_SEQ, a: 0, b: 0, f: f32(0) });
+  cmdTx.push({ kind: CMD_SET_WAVE, a: WAVE_SQUARE, b: 0, f: f32(0) });
+  cmdTx.push({ kind: CMD_TRIGGER_NOTE, a: 48, b: 0, f: f32(1) });
+  renderAudio(st, out, 0);
+  t.eq(st.curStep, u8(0));
+  t.eq(st.voices[0].age, u32(0));
+  t.eq(st.voices[0].phase, 0.0);
+  t.eq(st.voices[0].env, f32(0));
+  const pkSlowAtk = renderTestChunk(t, st, out, 16);
+  t.ok(pkSlowAtk < f32(0.05));
+
+  // Trigger note=1 boundary check + silent slot age preservation + reset seq
+  cmdTx.push({ kind: CMD_RESET_SEQ, a: 0, b: 0, f: f32(0) });
+  cmdTx.push({ kind: CMD_TRIGGER_NOTE, a: 1, b: 0, f: f32(0.5) });
+  renderAudio(st, out, 8);
+  t.eq(st.voices[0].active, u8(1));
+  t.eq(st.voices[0].note, u8(1));
+  t.eq(st.voices[1].active, u8(0));
+  t.eq(st.voices[1].age, u32(0));
+
+  // Verify step-0 triggers on exact frame 0 (stepSample === 0) and step with note=1 triggers
+  cmdTx.push({ kind: CMD_RESET_SEQ, a: 0, b: 0, f: f32(0) });
+  cmdTx.push({ kind: CMD_SET_STEP, a: 0, b: 1, f: f32(0.8) });
+  cmdTx.push({ kind: CMD_SET_PLAYING, a: 1, b: 0, f: f32(0) });
+  renderAudio(st, out, 1);
+  t.eq(st.voices[0].active, u8(1));
+  t.eq(st.voices[0].note, u8(1));
+
+  // Reset and verify fast attack, stage 2 transition, and zero gain silence
+  cmdTx.push({ kind: CMD_SET_PLAYING, a: 0, b: 0, f: f32(0) });
+  cmdTx.push({ kind: CMD_RESET_SEQ, a: 0, b: 0, f: f32(0) });
+  cmdTx.push({ kind: CMD_SET_WAVE, a: WAVE_SQUARE, b: 0, f: f32(0) });
+  cmdTx.push({ kind: CMD_SET_CUTOFF, a: 0, b: 0, f: f32(8000) });
+  cmdTx.push({ kind: CMD_SET_ATTACK, a: 0, b: 0, f: f32(0.002) });
+  cmdTx.push({ kind: CMD_SET_RELEASE, a: 0, b: 0, f: f32(0.01) });
+  cmdTx.push({ kind: CMD_SET_GAIN, a: 0, b: 0, f: f32(0) });
+  cmdTx.push({ kind: CMD_TRIGGER_NOTE, a: 48, b: 0, f: f32(1) });
+  renderTestChunk(t, st, out, 96);
+  t.eq(st.attack, f32(0.002));
+  t.eq(st.release, f32(0.01));
+  t.eq(st.gain, f32(0));
+  t.eq(st.voices[0].active, u8(1));
+  t.eq(st.voices[0].stage, u8(2));
+  t.eq(st.voices[0].env, f32(1));
+  t.ok(st.voices[0].phase > 0.0 && st.voices[0].phase < 1.0);
+  t.eq(out[0], f32(0));
+
+  // Velocity scaling (vel=0.1 vs vel=1.0 -> linear ratio kills * -> +) and stereo pan polarity
+  cmdTx.push({ kind: CMD_RESET_SEQ, a: 0, b: 0, f: f32(0) });
+  cmdTx.push({ kind: CMD_SET_GAIN, a: 0, b: 0, f: f32(0.8) });
+  cmdTx.push({ kind: CMD_TRIGGER_NOTE, a: 108, b: 0, f: f32(0.1) }); // C8 wraps phase within 32 frames
+  const pkLowVel = renderTestChunk(t, st, out, 32);
+  t.ok(st.voices[0].phase > 0.0 && st.voices[0].phase < 1.0);
+  cmdTx.push({ kind: CMD_RESET_SEQ, a: 0, b: 0, f: f32(0) });
+  cmdTx.push({ kind: CMD_TRIGGER_NOTE, a: 36, b: 0, f: f32(1) });
+  st.telAccum = 0;
+  st.peakHold = f32(0);
+  while (telRx.pop() !== null) {
+    // drain
+  }
+  renderAudio(st, out, 32);
+  const pkHighVel = Math.abs(out[62]);
+  t.ok(out[62] > f32(0) && out[63] > f32(0) && out[62] > out[63]);
+  t.ok(pkHighVel > pkLowVel * f32(2.5));
+
+  // Verify peakHold retains earlier peak over decaying tail and resets to 0 on 1024-sample telemetry boundary
+  const tailPk = renderTestChunk(t, st, out, 991); // 32 + 991 = 1023 frames -> no telemetry yet!
+  t.ok(telRx.pop() === null);
+  t.ok(tailPk > f32(0));
+  renderTestChunk(t, st, out, 1); // 1024th frame fires telemetry & resets telAccum=0
+  const decayTel = telRx.pop();
+  t.ok(decayTel !== null);
+  if (decayTel !== null) {
+    t.ok(decayTel.peak > f32(0.05) && Math.abs(out[0]) < f32(0.001));
+    t.eq(decayTel.activeVoices, u8(0));
+  }
+  t.eq(st.voices[0].active, u8(0));
+  t.eq(st.voices[0].stage, u8(0));
+  t.eq(st.voices[0].env, f32(0));
+
+  // Next 1023 silent frames still emit nothing, then 1024th emits peak=0
+  renderTestChunk(t, st, out, 1023);
+  t.ok(telRx.pop() === null);
+  renderTestChunk(t, st, out, 1);
+  const zeroPeakTel = telRx.pop();
+  t.ok(zeroPeakTel !== null);
+  if (zeroPeakTel !== null) {
+    t.eq(zeroPeakTel.activeVoices, u8(0));
+    t.eq(zeroPeakTel.peak, f32(0));
+  }
+
+  // Trigger 5 voices -> oldest stealing and tie/vel clamp
+  cmdTx.push({ kind: CMD_SET_ATTACK, a: 0, b: 0, f: f32(0.002) });
+  cmdTx.push({ kind: CMD_SET_RELEASE, a: 0, b: 0, f: f32(0.05) });
+  cmdTx.push({ kind: CMD_TRIGGER_NOTE, a: 50, b: 0, f: f32(0.001) });
+  renderAudio(st, out, 32);
+  t.eq(st.voices[0].vel, f32(0.05));
+  cmdTx.push({ kind: CMD_TRIGGER_NOTE, a: 52, b: 0, f: f32(0.9) });
+  cmdTx.push({ kind: CMD_TRIGGER_NOTE, a: 55, b: 0, f: f32(0.9) });
+  cmdTx.push({ kind: CMD_TRIGGER_NOTE, a: 60, b: 0, f: f32(0.9) });
+  renderAudio(st, out, 40);
+  cmdTx.push({ kind: CMD_TRIGGER_NOTE, a: 67, b: 0, f: f32(0.9) });
+  renderAudio(st, out, 10);
+  t.eq(st.voices[0].note, u8(67));
+  t.eq(st.voices[1].note, u8(52));
+  t.eq(st.voices[2].note, u8(55));
+  t.eq(st.voices[3].note, u8(60));
+  cmdTx.push({ kind: CMD_TRIGGER_NOTE, a: 72, b: 0, f: f32(0.9) });
+  renderAudio(st, out, 5);
+  t.eq(st.voices[1].note, u8(72));
+
+  // Test WAVE_SINE exact boundary (cmd.a === 3) vs invalid wave 99
+  cmdTx.push({ kind: CMD_SET_WAVE, a: WAVE_SINE, b: 0, f: f32(0) });
+  renderAudio(st, out, 1);
+  t.eq(st.wave, WAVE_SINE);
+
+  // Verify out-of-range wave, step gating (note=0 vel=0.5, note=62 vel=0), unknown cmd, reset mid-step
+  cmdTx.push({ kind: CMD_SET_WAVE, a: 99, b: 0, f: f32(0) });
+  cmdTx.push({ kind: CMD_SET_STEP, a: 0, b: 60, f: f32(0.8) });
+  cmdTx.push({ kind: CMD_SET_STEP, a: 1, b: 0, f: f32(0.5) });
+  cmdTx.push({ kind: CMD_SET_STEP, a: 2, b: 62, f: f32(0) });
+  cmdTx.push({ kind: CMD_SET_STEP, a: 16, b: 64, f: f32(0.5) });
+  cmdTx.push({ kind: CMD_TRIGGER_NOTE, a: 0, b: 0, f: f32(1) });
+  cmdTx.push({ kind: 250, a: 0, b: 0, f: f32(0) });
+  cmdTx.push({ kind: CMD_SET_BPM, a: 240, b: 0, f: f32(0) });
+  cmdTx.push({ kind: CMD_SET_PLAYING, a: 1, b: 0, f: f32(0) });
+  renderAudio(st, out, 100);
+  t.ok(st.stepSample > u32(0) && st.curStep > u8(0));
+  cmdTx.push({ kind: CMD_RESET_SEQ, a: 0, b: 0, f: f32(0) });
+  cmdTx.push({ kind: CMD_SET_PLAYING, a: 0, b: 0, f: f32(0) });
+  renderAudio(st, out, 4);
+  t.eq(st.wave, WAVE_SAW);
+  t.eq(st.samplesPerStep, u32(3000));
+  t.eq(st.cutoff, f32(8000));
+  t.eq(st.steps[0].note, u8(60));
+  t.eq(st.steps[0].vel, f32(0.8));
+  t.eq(st.steps[1].note, u8(0));
+  t.eq(st.steps[1].vel, f32(0.5));
+  t.eq(st.curStep, u8(0));
+  t.eq(st.stepSample, u32(0));
+  t.eq(st.voices[0].active, u8(0));
+  t.eq(st.voices[0].freq, 0.0);
+
+  // Play exactly 16 steps (16 * 3000 = 48000 samples) -> curStep wraps 0 -> 15 -> 0
+  while (telRx.pop() !== null) {
+    // drain
+  }
+  cmdTx.push({ kind: CMD_SET_PLAYING, a: 1, b: 0, f: f32(0) });
+  for (let b: usize = 0; b < 46; b += 1) {
+    renderTestChunk(t, st, out, 1024);
+  }
+  renderTestChunk(t, st, out, 896); // total = 46*1024 + 896 = 48000 samples exact!
+  t.eq(st.curStep, u8(0));
+  t.eq(st.stepSample, u32(0));
+  t.eq(st.playing, u8(1));
+  let stepSeen0 = false;
+  let stepSeen14 = false;
+  let stepSeen15 = false;
+  let maxTelPeak: f32 = f32(0);
+  let tel = telRx.pop();
+  while (tel !== null) {
+    t.eq(tel.playing, u8(1));
+    if (tel.step === 0) stepSeen0 = true;
+    if (tel.step === 14) stepSeen14 = true;
+    if (tel.step === 15) stepSeen15 = true;
+    if (tel.peak > maxTelPeak) maxTelPeak = tel.peak;
+    tel = telRx.pop();
+  }
+  t.ok(stepSeen0 && stepSeen14 && stepSeen15);
+  t.ok(maxTelPeak > f32(0.05));
+
+  // Step 1 (note=0, vel=0.5) & Step 2 (note=62, vel=0) while voices silent -> must NOT trigger
+  cmdTx.push({ kind: CMD_RESET_SEQ, a: 0, b: 0, f: f32(0) });
+  cmdTx.push({ kind: CMD_SET_STEP, a: 0, b: 0, f: f32(0) });
+  renderTestChunk(t, st, out, 1024); // step 0 triggers nothing, curStep = 1
+  renderTestChunk(t, st, out, 1000);
+  renderTestChunk(t, st, out, 1000); // sample 3024 -> step 1 (note=0, vel=0.5)
+  t.eq(st.voices[0].active, u8(0));
+  renderTestChunk(t, st, out, 1000);
+  renderTestChunk(t, st, out, 1000);
+  renderTestChunk(t, st, out, 1000); // sample 6024 -> step 2 (note=62, vel=0)
+  t.eq(st.voices[0].active, u8(0));
+
+  // Paused telemetry shows curStep=0 & activeVoices=1 accurately
+  cmdTx.push({ kind: CMD_SET_PLAYING, a: 0, b: 0, f: f32(0) });
+  cmdTx.push({ kind: CMD_RESET_SEQ, a: 0, b: 0, f: f32(0) });
+  cmdTx.push({ kind: CMD_SET_WAVE, a: WAVE_SINE, b: 0, f: f32(0) });
+  cmdTx.push({ kind: CMD_TRIGGER_NOTE, a: 69, b: 0, f: f32(0.5) });
+  renderAudio(st, out, 16);
+  st.telAccum = 1023;
+  while (telRx.pop() !== null) {
+    // drain
+  }
+  renderTestChunk(t, st, out, 1);
+  const pausedTel = telRx.pop();
+  t.ok(pausedTel !== null);
+  if (pausedTel !== null) {
+    t.eq(pausedTel.playing, u8(0));
+    t.eq(pausedTel.step, u8(0));
+    t.eq(pausedTel.activeVoices, u8(1));
+  }
+
+  // Voice deactivating on the exact 1024th telemetry frame must NOT count toward activeVoices
+  st.telAccum = 1023;
+  st.release = f32(0.01);
+  st.voices[0] = { active: 1, stage: 2, note: 60, age: 1, phase: 0.0, freq: 440.0, env: f32(0.0001), vel: f32(1) };
+  while (telRx.pop() !== null) {
+    // drain
+  }
+  renderTestChunk(t, st, out, 1);
+  const exactDeactTel = telRx.pop();
+  t.ok(exactDeactTel !== null);
+  if (exactDeactTel !== null) {
+    t.eq(exactDeactTel.activeVoices, u8(0));
+  }
+});
+
+test("cutoff filter attenuates high harmonics and right-odd voice pans right", (t: Test) => {
+  const alloc = TestAlloc.create();
+  const { tx: cmdLo, rx: rxLo } = Ring.create<SynthCmd>(alloc, 16);
+  const { tx: txTelLo } = Ring.create<SynthTelemetry>(alloc, 16);
+  let stLo = createInitialSynthState(alloc, rxLo, txTelLo);
+  cmdLo.push({ kind: CMD_SET_WAVE, a: WAVE_SAW, b: 0, f: f32(0) });
+  cmdLo.push({ kind: CMD_SET_ATTACK, a: 0, b: 0, f: f32(0.002) });
+  cmdLo.push({ kind: CMD_SET_CUTOFF, a: 0, b: 0, f: f32(200) });
+  cmdLo.push({ kind: CMD_SET_GAIN, a: 0, b: 0, f: f32(0.9) });
+  cmdLo.push({ kind: CMD_TRIGGER_NOTE, a: 72, b: 0, f: f32(1) });
+  const outLo = Vec.filled<f32>(alloc, 512, f32(0));
+  const pkLo = renderTestChunk(t, stLo, outLo, 256);
+
+  const { tx: cmdHi, rx: rxHi } = Ring.create<SynthCmd>(alloc, 16);
+  const { tx: txTelHi } = Ring.create<SynthTelemetry>(alloc, 16);
+  let stHi = createInitialSynthState(alloc, rxHi, txTelHi);
+  cmdHi.push({ kind: CMD_SET_WAVE, a: WAVE_SAW, b: 0, f: f32(0) });
+  cmdHi.push({ kind: CMD_SET_ATTACK, a: 0, b: 0, f: f32(0.002) });
+  cmdHi.push({ kind: CMD_SET_CUTOFF, a: 0, b: 0, f: f32(10000) });
+  cmdHi.push({ kind: CMD_SET_GAIN, a: 0, b: 0, f: f32(0.9) });
+  cmdHi.push({ kind: CMD_TRIGGER_NOTE, a: 72, b: 0, f: f32(1) });
+  const outHi = Vec.filled<f32>(alloc, 512, f32(0));
+  const pkHi = renderTestChunk(t, stHi, outHi, 256);
+  t.ok(pkHi > pkLo && pkHi > f32(0.3));
+
+  // Verify filter alpha calculation (* vs +) and 0.99 upper stability clamp at cutoff=12000 Hz
+  const { tx: cmdC4, rx: rxC4 } = Ring.create<SynthCmd>(alloc, 8);
+  const { tx: telC4 } = Ring.create<SynthTelemetry>(alloc, 8);
+  let stC4 = createInitialSynthState(alloc, rxC4, telC4);
+  cmdC4.push({ kind: CMD_SET_WAVE, a: WAVE_SQUARE, b: 0, f: f32(0) });
+  cmdC4.push({ kind: CMD_SET_ATTACK, a: 0, b: 0, f: f32(0.002) });
+  cmdC4.push({ kind: CMD_SET_CUTOFF, a: 0, b: 0, f: f32(12000) });
+  cmdC4.push({ kind: CMD_SET_GAIN, a: 0, b: 0, f: f32(0.9) });
+  cmdC4.push({ kind: CMD_TRIGGER_NOTE, a: 36, b: 0, f: f32(1) });
+  const outC4 = Vec.filled<f32>(alloc, 64, f32(0));
+  renderTestChunk(t, stC4, outC4, 10);
+  // At cutoff=12000, alpha=0.99 tracks ramp at sample 9 (~0.049 vs <0.036 if + were used) and never exceeds 1
+  t.ok(Math.abs(outC4[18]) > f32(0.044) && Math.abs(stC4.lpL) < f32(1));
+  // Trigger Nyquist-adjacent square (note 127) at cutoff=12000: clamping alpha<=0.99 keeps |lpL|<=0.8
+  cmdC4.push({ kind: CMD_RESET_SEQ, a: 0, b: 0, f: f32(0) });
+  cmdC4.push({ kind: CMD_TRIGGER_NOTE, a: 127, b: 0, f: f32(1) });
+  renderTestChunk(t, stC4, outC4, 32);
+  t.ok(Math.abs(stC4.lpL) <= f32(0.8));
+
+  // Odd voice index 1 pans right louder than left
+  cmdHi.push({ kind: CMD_TRIGGER_NOTE, a: 60, b: 0, f: f32(1) });
+  renderAudio(stHi, outHi, 1);
+  stHi.voices[0] = silentVoice();
+  stHi.lpL = f32(0);
+  stHi.lpR = f32(0);
+  renderAudio(stHi, outHi, 256);
+  let maxL: f32 = f32(0);
+  let maxR: f32 = f32(0);
+  for (let i: usize = 0; i < 256; i += 1) {
+    const l = Math.abs(outHi[i * 2]);
+    const r = Math.abs(outHi[i * 2 + 1]);
+    if (l > maxL) maxL = l;
+    if (r > maxR) maxR = r;
+  }
+  t.ok(maxR > maxL && maxL > f32(0.05));
+});
+
+test("forAll validates bounded audio output and timing helpers", (_t: Test) => {
+  forAll((bpm: u32, wave: u8, note: u8) => {
+    const samples = bpmToSamplesPerStep(bpm);
+    if (samples < 3000 || samples > 18000) return false;
+    const f = midiToFreq(note);
+    if (!Number.isFinite(f) || f <= 0) return false;
+    const alloc = TestAlloc.create();
+    const { tx: cmdTx, rx: cmdRx } = Ring.create<SynthCmd>(alloc, 8);
+    const { tx: telTx } = Ring.create<SynthTelemetry>(alloc, 8);
+    let st = createInitialSynthState(alloc, cmdRx, telTx);
+    const wn: u8 = wave % 4;
+    cmdTx.push({ kind: CMD_SET_WAVE, a: wn, b: 0, f: f32(0) });
+    cmdTx.push({ kind: CMD_TRIGGER_NOTE, a: note === 0 ? 60 : note, b: 0, f: f32(0.7) });
+    const out = Vec.filled<f32>(alloc, 256, f32(0));
+    renderAudio(st, out, 128);
+    for (let i: usize = 0; i < 256; i += 1) {
+      if (!Number.isFinite(out[i]) || out[i] < f32(-1) || out[i] > f32(1)) return false;
+    }
+    return true;
+  });
+});

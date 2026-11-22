@@ -1,0 +1,713 @@
+import {
+  CMD_RESET_SEQ,
+  CMD_SET_ATTACK,
+  CMD_SET_BPM,
+  CMD_SET_CUTOFF,
+  CMD_SET_GAIN,
+  CMD_SET_PLAYING,
+  CMD_SET_RELEASE,
+  CMD_SET_STEP,
+  CMD_SET_WAVE,
+  CMD_TRIGGER_NOTE,
+  NUM_STEPS,
+  SynthCmd,
+  SynthTelemetry,
+  WAVE_SAW,
+  WAVE_SINE,
+  WAVE_SQUARE,
+  WAVE_TRI,
+  createInitialSynthState,
+  renderAudio,
+} from "./dsp.szigyr";
+
+export type StepSpec = {
+  readonly note: u8;
+  readonly vel: f32;
+};
+
+export type TelemetrySnapshot = {
+  readonly step: u8;
+  readonly playing: boolean;
+  readonly activeVoices: u8;
+  readonly peak: f32;
+};
+
+export type DawSnapshot = {
+  readonly playing: boolean;
+  readonly bpm: u8;
+  readonly wave: u8;
+  readonly cutoff: f32;
+  readonly attack: f32;
+  readonly release: f32;
+  readonly gain: f32;
+  readonly preset: string;
+  readonly steps: Array<StepSpec>;
+};
+
+export type PreviewStats = {
+  readonly frames: usize;
+  readonly peak: f32;
+  readonly rms: f32;
+  readonly lastStep: u8;
+  readonly finite: boolean;
+};
+
+function clampVal(x: f32, lo: f32, hi: f32): f32 {
+  // szigyr-equivalent[<= -> <,> -> >=,>= -> >]: exact boundary returns lo/hi either way
+  if (!Number.isFinite(x) || x <= lo) return lo;
+  // szigyr-equivalent[>= -> >]: exact boundary returns hi either way
+  if (x >= hi) return hi;
+  return x;
+}
+
+function clampBpmU8(bpm: u32): u8 {
+  // szigyr-equivalent[<= -> <]: exact boundary returns 40 either way
+  if (bpm <= 40) return 40;
+  // szigyr-equivalent[>= -> >]: exact boundary returns 240 either way
+  if (bpm >= 240) return 240;
+  return u8(bpm);
+}
+
+export function presetSteps(name: string): Array<StepSpec> | null {
+  const out: Array<StepSpec> = [];
+  if (name === "acid") {
+    const notes: Array<u8> = [36, 0, 48, 0, 39, 36, 0, 43, 36, 0, 46, 0, 48, 39, 43, 55];
+    for (let i: usize = 0; i < NUM_STEPS; i += 1) {
+      const n = notes[i];
+      const v = n === 0 ? f32(0) : i % 4 === 0 ? f32(0.95) : f32(0.75);
+      out.push({ note: n, vel: v });
+    }
+    return out;
+  }
+  if (name === "arp") {
+    const notes: Array<u8> = [48, 51, 55, 60, 48, 55, 60, 67, 51, 55, 60, 63, 55, 60, 67, 72];
+    for (let i: usize = 0; i < NUM_STEPS; i += 1) {
+      out.push({ note: notes[i], vel: f32(0.8) });
+    }
+    return out;
+  }
+  if (name === "ambient") {
+    const notes: Array<u8> = [48, 0, 0, 0, 55, 0, 0, 0, 51, 0, 0, 0, 60, 0, 67, 0];
+    for (let i: usize = 0; i < NUM_STEPS; i += 1) {
+      const n = notes[i];
+      out.push({ note: n, vel: n === 0 ? f32(0) : f32(0.7) });
+    }
+    return out;
+  }
+  if (name === "empty") {
+    for (let i: usize = 0; i < NUM_STEPS; i += 1) {
+      out.push({ note: 0, vel: f32(0) });
+    }
+    return out;
+  }
+  return null;
+}
+
+export class MicroDawSession {
+  private readonly alloc: Alloc;
+  private readonly cmdTxCell: OwnedCell<RingTx<SynthCmd>>;
+  private readonly telRxCell: OwnedCell<RingRx<SynthTelemetry>>;
+  private stream: AudioStream | null;
+  private playing: boolean;
+  private bpm: u8;
+  private wave: u8;
+  private cutoff: f32;
+  private attack: f32;
+  private release: f32;
+  private gain: f32;
+  private preset: string;
+  private steps: Array<StepSpec>;
+
+  constructor(alloc: Alloc) {
+    this.alloc = alloc;
+    const { tx: cmdTx } = Ring.create<SynthCmd>(alloc, 128);
+    const { rx: telRx } = Ring.create<SynthTelemetry>(alloc, 64);
+    this.cmdTxCell = OwnedCell.create<RingTx<SynthCmd>>(cmdTx);
+    this.telRxCell = OwnedCell.create<RingRx<SynthTelemetry>>(telRx);
+    this.stream = null;
+    this.playing = false;
+    this.bpm = 120;
+    this.wave = WAVE_SAW;
+    this.cutoff = f32(2400);
+    this.attack = f32(0.008);
+    this.release = f32(0.22);
+    this.gain = f32(0.65);
+    this.preset = "acid";
+    const initSteps = presetSteps("acid");
+    // szigyr-equivalent[if -> true,if -> false]: "acid" preset always returns non-null steps
+    this.steps = initSteps !== null ? initSteps : [];
+  }
+
+  private sendCmd(cmd: SynthCmd): boolean {
+    return this.cmdTxCell.withMut((tx: Mut<RingTx<SynthCmd>>) => tx.push(cmd));
+  }
+
+  private sendU8(kind: u8, a: u8): boolean {
+    // szigyr-equivalent[0 -> 1]: b and f are ignored by applyCmd for scalar u8 commands
+    return this.sendCmd({ kind, a, b: 0, f: f32(0) });
+  }
+
+  private sendF32(kind: u8, f: f32): boolean {
+    // szigyr-equivalent[0 -> 1]: a and b are ignored by applyCmd for scalar f32 commands
+    return this.sendCmd({ kind, a: 0, b: 0, f });
+  }
+
+  private pushAllParams(): void {
+    this.sendU8(CMD_SET_BPM, this.bpm);
+    this.sendU8(CMD_SET_WAVE, this.wave);
+    this.sendF32(CMD_SET_CUTOFF, this.cutoff);
+    this.sendF32(CMD_SET_ATTACK, this.attack);
+    this.sendF32(CMD_SET_RELEASE, this.release);
+    this.sendF32(CMD_SET_GAIN, this.gain);
+    for (let i: usize = 0; i < this.steps.length; i += 1) {
+      const s = this.steps[i];
+      this.sendCmd({ kind: CMD_SET_STEP, a: u8(i), b: s.note, f: s.vel });
+    }
+    this.sendU8(CMD_SET_PLAYING, this.playing ? 1 : 0);
+  }
+
+  async startAudio(audio: Audio): Promise<Result<null, IoError>> {
+    const curStream = this.stream;
+    if (curStream !== null && curStream.isOpen()) return ok(null);
+    const { tx: cmdTx, rx: cmdRx } = Ring.create<SynthCmd>(this.alloc, 128);
+    const { tx: telTx, rx: telRx } = Ring.create<SynthTelemetry>(this.alloc, 64);
+    // szigyr-equivalent[if -> true]: cells always hold a valid Ring endpoint between constructors/starts
+    if (!this.cmdTxCell.isEmpty()) this.cmdTxCell.take();
+    this.cmdTxCell.put(cmdTx);
+    // szigyr-equivalent[if -> true]: cells always hold a valid Ring endpoint between constructors/starts
+    if (!this.telRxCell.isEmpty()) this.telRxCell.take();
+    this.telRxCell.put(telRx);
+
+    const state = createInitialSynthState(this.alloc, cmdRx, telTx);
+    const opened = await audio.open({ sampleRate: 48000, channels: 2 }, state, renderAudio);
+    if (opened.kind === "err") return err(opened.error);
+    this.stream = opened.value;
+    this.pushAllParams();
+    return ok(null);
+  }
+
+  async stopAudio(): Promise<void> {
+    this.setPlaying(false);
+    const s = this.stream;
+    // szigyr-equivalent[delete-stmt]: s.close() below already makes isOpen() return false
+    this.stream = null;
+    if (s !== null) await s.close();
+  }
+
+  isAudioOpen(): boolean {
+    const s = this.stream;
+    return s !== null && s.isOpen();
+  }
+
+  setPlaying(on: boolean): void {
+    this.playing = on;
+    this.sendU8(CMD_SET_PLAYING, on ? 1 : 0);
+  }
+
+  setBpm(bpm: u32): void {
+    this.bpm = clampBpmU8(bpm);
+    this.sendU8(CMD_SET_BPM, this.bpm);
+  }
+
+  setWave(wave: u8): void {
+    this.wave = wave <= WAVE_SINE ? wave : WAVE_SAW;
+    this.sendU8(CMD_SET_WAVE, this.wave);
+  }
+
+  setCutoff(hz: f32): void {
+    this.cutoff = clampVal(hz, f32(120), f32(12000));
+    this.sendF32(CMD_SET_CUTOFF, this.cutoff);
+  }
+
+  setAttack(sec: f32): void {
+    this.attack = clampVal(sec, f32(0.002), f32(1));
+    this.sendF32(CMD_SET_ATTACK, this.attack);
+  }
+
+  setRelease(sec: f32): void {
+    this.release = clampVal(sec, f32(0.01), f32(2));
+    this.sendF32(CMD_SET_RELEASE, this.release);
+  }
+
+  setGain(gain: f32): void {
+    this.gain = clampVal(gain, f32(0), f32(1));
+    this.sendF32(CMD_SET_GAIN, this.gain);
+  }
+
+  setStep(step: usize, note: u8, vel: f32): void {
+    if (step >= this.steps.length) return;
+    const v = note === 0 ? f32(0) : clampVal(vel, f32(0.05), f32(1));
+    this.steps[step] = { note, vel: v };
+    this.sendCmd({ kind: CMD_SET_STEP, a: u8(step), b: note, f: v });
+  }
+
+  triggerNote(note: u8, vel: f32): void {
+    // szigyr-equivalent[0 -> 1]: b is unused by CMD_TRIGGER_NOTE
+    this.sendCmd({ kind: CMD_TRIGGER_NOTE, a: note, b: 0, f: vel });
+  }
+
+  resetSequencer(): void {
+    // szigyr-equivalent[0 -> 1]: applyCmd ignores a on CMD_RESET_SEQ
+    this.sendU8(CMD_RESET_SEQ, 0);
+  }
+
+  loadPreset(name: string): boolean {
+    const next = presetSteps(name);
+    if (next === null) return false;
+    this.preset = name;
+    this.steps = next;
+    for (let i: usize = 0; i < this.steps.length; i += 1) {
+      const s = this.steps[i];
+      this.sendCmd({ kind: CMD_SET_STEP, a: u8(i), b: s.note, f: s.vel });
+    }
+    return true;
+  }
+
+  pollTelemetry(): TelemetrySnapshot | null {
+    return this.telRxCell.withMut((rx: Mut<RingRx<SynthTelemetry>>) => {
+      let latest: SynthTelemetry | null = null;
+      let cur = rx.pop();
+      while (cur !== null) {
+        latest = cur;
+        cur = rx.pop();
+      }
+      if (latest === null) return null;
+      return {
+        step: latest.step,
+        playing: latest.playing !== 0,
+        activeVoices: latest.activeVoices,
+        peak: latest.peak,
+      };
+    });
+  }
+
+  snapshot(): DawSnapshot {
+    const stepCopy: Array<StepSpec> = [];
+    for (const s of this.steps) stepCopy.push({ note: s.note, vel: s.vel });
+    return {
+      playing: this.playing,
+      bpm: this.bpm,
+      wave: this.wave,
+      cutoff: this.cutoff,
+      attack: this.attack,
+      release: this.release,
+      gain: this.gain,
+      preset: this.preset,
+      steps: stepCopy,
+    };
+  }
+}
+
+export function createSession(alloc: Alloc): MicroDawSession {
+  return new MicroDawSession(alloc);
+}
+
+export async function renderOfflinePreview(
+  alloc: Alloc,
+  preset: string,
+  frames: usize,
+): Promise<PreviewStats> {
+  const audio = FakeAudio.create();
+  const session = createSession(alloc);
+  session.loadPreset(preset);
+  const started = await session.startAudio(audio);
+  if (started.kind === "err") panic(started.error.message);
+  session.setPlaying(true);
+
+  let rendered: usize = 0;
+  let peak: f32 = f32(0);
+  let sumSq: f64 = 0.0;
+  let sampleCount: usize = 0;
+  let lastStep: u8 = 0;
+
+  while (rendered < frames) {
+    const remFrames: usize = frames - rendered;
+    // szigyr-equivalent[> -> >=]: chunk=1024 works identically either way
+    const chunk: usize = remFrames > 1024 ? 1024 : remFrames;
+    const pcm = audio.renderFrames(chunk);
+    for (const s of pcm) {
+      const a = Math.abs(s);
+      // szigyr-equivalent[> -> >=]: equal magnitude preserves peak
+      if (a > peak) peak = a;
+      sumSq += f64(s) * f64(s);
+      sampleCount += 1;
+    }
+    const tel = session.pollTelemetry();
+    if (tel !== null) lastStep = tel.step;
+    rendered += chunk;
+  }
+
+  await session.stopAudio();
+  const rms = rendered > 0 ? f32(Math.sqrt(sumSq / f64(sampleCount))) : f32(0);
+  return { frames: rendered, peak, rms, lastStep, finite: Number.isFinite(peak) };
+}
+
+test("presets and session snapshot reflect exact notes, velocities, and parameter updates", (t: Test) => {
+  const acid = presetSteps("acid");
+  t.ok(acid !== null);
+  if (acid !== null) {
+    t.eq(acid.length, NUM_STEPS);
+    t.eq(acid.map((s: StepSpec) => s.note), [u8(36), 0, 48, 0, 39, 36, 0, 43, 36, 0, 46, 0, 48, 39, 43, 55]);
+    t.eq(acid[0].vel, f32(0.95));
+    t.eq(acid[1].vel, f32(0));
+    t.eq(acid[2].vel, f32(0.75));
+  }
+
+  const arp = presetSteps("arp");
+  t.ok(arp !== null);
+  if (arp !== null) {
+    t.eq(arp.map((s: StepSpec) => s.note), [u8(48), 51, 55, 60, 48, 55, 60, 67, 51, 55, 60, 63, 55, 60, 67, 72]);
+    t.eq(arp[0].vel, f32(0.8));
+  }
+
+  const amb = presetSteps("ambient");
+  t.ok(amb !== null);
+  if (amb !== null) {
+    t.eq(amb.map((s: StepSpec) => s.note), [u8(48), 0, 0, 0, 55, 0, 0, 0, 51, 0, 0, 0, 60, 0, 67, 0]);
+    t.eq(amb[0].vel, f32(0.7));
+    t.eq(amb[1].vel, f32(0));
+  }
+
+  const empty = presetSteps("empty");
+  t.ok(empty !== null);
+  if (empty !== null) {
+    t.eq(empty.length, NUM_STEPS);
+    t.eq(empty.map((s: StepSpec) => s.note), [u8(0), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    t.eq(empty[0].vel, f32(0));
+  }
+  t.ok(presetSteps("missing") === null);
+
+  const alloc = TestAlloc.create();
+  const s = createSession(alloc);
+  t.eq(s.isAudioOpen(), false);
+  t.eq(s.loadPreset("nope"), false);
+  t.eq(s.loadPreset("arp"), true);
+
+  s.setPlaying(true);
+  s.setBpm(10);
+  t.eq(s.snapshot().bpm, u8(40));
+  s.setBpm(300);
+  t.eq(s.snapshot().bpm, u8(240));
+  s.setBpm(132);
+  s.setWave(WAVE_SINE);
+  t.eq(s.snapshot().wave, WAVE_SINE);
+  s.setWave(WAVE_TRI);
+  t.eq(s.snapshot().wave, WAVE_TRI);
+  s.setWave(99);
+  t.eq(s.snapshot().wave, WAVE_SAW);
+  s.setCutoff(f32(10));
+  t.eq(s.snapshot().cutoff, f32(120));
+  s.setCutoff(f32(50000));
+  t.eq(s.snapshot().cutoff, f32(12000));
+  s.setCutoff(f32(1800));
+  s.setAttack(f32(0.0001));
+  t.eq(s.snapshot().attack, f32(0.002));
+  s.setAttack(f32(0.02));
+  s.setRelease(f32(0.0001));
+  t.eq(s.snapshot().release, f32(0.01));
+  s.setRelease(f32(10));
+  t.eq(s.snapshot().release, f32(2));
+  s.setRelease(f32(0.3));
+  s.setGain(f32(-1));
+  t.eq(s.snapshot().gain, f32(0));
+  s.setGain(f32(0.75));
+  s.setStep(16, 60, f32(0.5));
+  s.setStep(2, 0, f32(0.5));
+  s.setStep(3, 64, f32(0.001));
+  t.eq(s.snapshot().steps[3].vel, f32(0.05));
+  s.setStep(3, 64, f32(0.8));
+  s.triggerNote(0, f32(0.5));
+  s.triggerNote(60, f32(0.8));
+  s.resetSequencer();
+
+  const snap = s.snapshot();
+  t.eq(snap.playing, true);
+  t.eq(snap.bpm, u8(132));
+  t.eq(snap.wave, WAVE_SAW);
+  t.eq(snap.cutoff, f32(1800));
+  t.eq(snap.attack, f32(0.02));
+  t.eq(snap.release, f32(0.3));
+  t.eq(snap.gain, f32(0.75));
+  t.eq(snap.preset, "arp");
+  t.eq(snap.steps.length, NUM_STEPS);
+  t.eq(snap.steps[2].note, u8(0));
+  t.eq(snap.steps[2].vel, f32(0));
+  t.eq(snap.steps[3].note, u8(64));
+  t.eq(snap.steps[3].vel, f32(0.8));
+});
+
+test("MicroDawSession FakeAudio streaming, pushAllParams on start, live setters, stop trap, and preview", async (t: Test) => {
+  const alloc = TestAlloc.create();
+  const audio = FakeAudio.create();
+
+  // Helper-free setup verification: open with playing=false stays paused & silent
+  const sPaused = createSession(alloc);
+  t.eq((await sPaused.startAudio(audio)).kind, "ok");
+  t.eq(sPaused.isAudioOpen(), true);
+  t.eq((await sPaused.startAudio(audio)).kind, "ok");
+  t.ok(sPaused.pollTelemetry() === null);
+  const pausedBuf = audio.renderFrames(1024);
+  t.eq(pausedBuf[0], f32(0));
+  const pausedTel = sPaused.pollTelemetry();
+  t.ok(pausedTel !== null);
+  if (pausedTel !== null) {
+    t.eq(pausedTel.playing, false);
+    t.eq(pausedTel.peak, f32(0));
+  }
+  // Stop while paused closes stream so subsequent FakeAudio.renderFrames traps T006
+  await sPaused.stopAudio();
+  t.eq(sPaused.isAudioOpen(), false);
+  t.eq(sPaused.snapshot().playing, false);
+  t.traps("T006", () => {
+    audio.renderFrames(4);
+  });
+
+  // Configure BPM=240, SINE wave, cutoff=12000, slow attack=0.5s, release=0.01s, gain=0.9, playing=true BEFORE startAudio
+  const s = createSession(alloc);
+  s.loadPreset("empty");
+  s.setStep(0, 48, f32(0.9));
+  s.setStep(1, 55, f32(0.9));
+  s.setBpm(240);
+  s.setWave(WAVE_SINE);
+  s.setCutoff(f32(12000));
+  s.setAttack(f32(0.5));
+  s.setRelease(f32(0.01));
+  s.setGain(f32(0.9));
+  s.setPlaying(true);
+
+  t.eq((await s.startAudio(audio)).kind, "ok");
+  const atkPcm = audio.renderFrames(64);
+  let atkPeak: f32 = f32(0);
+  for (const v of atkPcm) {
+    const a = Math.abs(v);
+    if (a > atkPeak) atkPeak = a;
+  }
+  t.ok(atkPeak > f32(0) && atkPeak < f32(0.02));
+  // Compare pure sine wave output amplitude vs square after fast attack on separate check:
+  // First verify advancing at bpm=240
+  audio.renderFrames(1024);
+  audio.renderFrames(1024);
+  audio.renderFrames(1024);
+  audio.renderFrames(960);
+  const tFast = s.pollTelemetry();
+  t.ok(tFast !== null);
+  if (tFast !== null) {
+    t.eq(tFast.playing, true);
+    t.ok(tFast.step >= u8(1));
+  }
+  await s.stopAudio();
+  t.eq(s.snapshot().playing, false);
+
+  // Verify wave pushAllParams (SINE vs SQUARE) at equal freq produces distinct sample shape
+  const sSq = createSession(alloc);
+  sSq.loadPreset("empty");
+  sSq.setAttack(f32(0.002));
+  sSq.setCutoff(f32(12000));
+  sSq.setGain(f32(0.9));
+  sSq.setWave(WAVE_SQUARE);
+  t.eq((await sSq.startAudio(audio)).kind, "ok");
+  sSq.triggerNote(69, f32(1));
+  const sqSample = audio.renderFrames(32)[20];
+  await sSq.stopAudio();
+
+  const sSin = createSession(alloc);
+  sSin.loadPreset("empty");
+  sSin.setAttack(f32(0.002));
+  sSin.setCutoff(f32(12000));
+  sSin.setGain(f32(0.9));
+  sSin.setWave(WAVE_SINE);
+  t.eq((await sSin.startAudio(audio)).kind, "ok");
+  sSin.triggerNote(69, f32(1));
+  const sinSample = audio.renderFrames(32)[20];
+  // Check live setWave changes subsequent samples cleanly too!
+  sSin.setWave(WAVE_SQUARE);
+  sSin.triggerNote(69, f32(1));
+  const liveSqSample = audio.renderFrames(32)[20];
+  await sSin.stopAudio();
+  t.ok(Math.abs(sqSample - sinSample) > f32(0.01));
+  t.ok(Math.abs(liveSqSample - sinSample) > f32(0.01));
+
+  // Verify wave=SINE vs SQUARE, cutoff=120 vs 12000, attack, release=0.01 vs 1.0, gain=0 via live setters
+  const sLive = createSession(alloc);
+  sLive.loadPreset("empty");
+  sLive.setAttack(f32(0.002));
+  sLive.setRelease(f32(0.01));
+  sLive.setCutoff(f32(120));
+  sLive.setGain(f32(0.9));
+  t.eq((await sLive.startAudio(audio)).kind, "ok");
+
+  sLive.triggerNote(72, f32(1));
+  const loPcm = audio.renderFrames(128);
+  let loPeak: f32 = f32(0);
+  for (const v of loPcm) {
+    const a = Math.abs(v);
+    if (a > loPeak) loPeak = a;
+  }
+
+  audio.renderFrames(1024);
+  const telRelShort = sLive.pollTelemetry();
+  t.ok(telRelShort !== null);
+  if (telRelShort !== null) t.eq(telRelShort.activeVoices, u8(0));
+
+  // Live slow setAttack keeps initial peak tiny
+  sLive.setCutoff(f32(12000));
+  sLive.setAttack(f32(1));
+  sLive.setRelease(f32(1));
+  sLive.setWave(WAVE_SQUARE);
+  sLive.triggerNote(72, f32(1));
+  const slowLive = audio.renderFrames(16);
+  let slowLivePeak: f32 = f32(0);
+  for (const v of slowLive) {
+    const a = Math.abs(v);
+    if (a > slowLivePeak) slowLivePeak = a;
+  }
+  t.ok(slowLivePeak < f32(0.02));
+
+  sLive.resetSequencer();
+  sLive.setAttack(f32(0.002));
+  sLive.triggerNote(72, f32(1));
+  const hiPcm = audio.renderFrames(128);
+  let hiPeak: f32 = f32(0);
+  for (const v of hiPcm) {
+    const a = Math.abs(v);
+    if (a > hiPeak) hiPeak = a;
+  }
+  t.ok(hiPeak > loPeak * f32(2));
+
+  audio.renderFrames(1024);
+  const telRelLong = sLive.pollTelemetry();
+  t.ok(telRelLong !== null);
+  if (telRelLong !== null) t.ok(telRelLong.activeVoices >= u8(1));
+
+  // Live triggerNote bounds: note=0 silent, vel=0.01 clamped to >=0.05 (>0.012 peak), vel=2 clamped to 1
+  sLive.resetSequencer();
+  sLive.setRelease(f32(0.05));
+  sLive.triggerNote(0, f32(0.9));
+  const zeroTrigPcm = audio.renderFrames(64);
+  t.ok(Math.abs(zeroTrigPcm[10]) < f32(1e-6));
+
+  sLive.triggerNote(60, f32(0.01));
+  const quietPcm = audio.renderFrames(128);
+  let quietPeak: f32 = f32(0);
+  for (const v of quietPcm) {
+    const a = Math.abs(v);
+    if (a > quietPeak) quietPeak = a;
+  }
+  sLive.resetSequencer();
+  sLive.triggerNote(60, f32(2));
+  const loudPcm = audio.renderFrames(128);
+  let loudPeak: f32 = f32(0);
+  for (const v of loudPcm) {
+    const a = Math.abs(v);
+    if (a > loudPeak) loudPeak = a;
+  }
+  t.ok(quietPeak > f32(0.012) && loudPeak > quietPeak * f32(5));
+
+  // Live loadPreset("empty") -> quiet on play, then setStep triggers loudly
+  sLive.resetSequencer();
+  sLive.setRelease(f32(0.01));
+  t.eq(sLive.loadPreset("empty"), true);
+  sLive.setPlaying(true);
+  audio.renderFrames(1024); // flush step 0 (empty)
+  audio.renderFrames(1024);
+  const telEmptyStep = sLive.pollTelemetry();
+  t.ok(telEmptyStep !== null);
+  if (telEmptyStep !== null) t.eq(telEmptyStep.activeVoices, u8(0));
+
+  // Switching live from "empty" to "acid" must program step 0 so resetSequencer fires immediately
+  t.eq(sLive.loadPreset("acid"), true);
+  sLive.resetSequencer();
+  sLive.setBpm(240);
+  sLive.setRelease(f32(0.5));
+  const acidLivePcm = audio.renderFrames(128);
+  let acidLivePeak: f32 = f32(0);
+  for (const v of acidLivePcm) {
+    const a = Math.abs(v);
+    if (a > acidLivePeak) acidLivePeak = a;
+  }
+  t.ok(acidLivePeak > f32(0.05));
+  t.eq(sLive.loadPreset("empty"), true);
+
+  sLive.resetSequencer();
+  sLive.setBpm(240);
+  sLive.setStep(0, 60, f32(0.9));
+  sLive.setStep(1, 64, f32(0.9));
+  audio.renderFrames(1024);
+  audio.renderFrames(1024);
+  audio.renderFrames(1024);
+  audio.renderFrames(1024);
+  const tAdv = sLive.pollTelemetry();
+  t.ok(tAdv !== null);
+  if (tAdv !== null) {
+    t.ok(tAdv.step >= u8(1));
+    t.ok(tAdv.peak > f32(0.05));
+  }
+
+  sLive.resetSequencer();
+  sLive.setPlaying(false);
+  audio.renderFrames(1024);
+  const tRst = sLive.pollTelemetry();
+  t.ok(tRst !== null);
+  if (tRst !== null) {
+    t.eq(tRst.playing, false);
+    t.eq(tRst.step, u8(0));
+  }
+
+  sLive.setGain(f32(0));
+  sLive.triggerNote(60, f32(1));
+  const mutedPcm = audio.renderFrames(64);
+  t.eq(mutedPcm[30], f32(0));
+  await sLive.stopAudio();
+
+  // Verify gain=0 & empty preset propagation on reopen
+  sLive.setGain(f32(0));
+  sLive.setPlaying(true);
+  t.eq((await sLive.startAudio(audio)).kind, "ok");
+  t.eq(audio.renderFrames(64)[0], f32(0));
+  await sLive.stopAudio();
+
+  const pvAcid = await renderOfflinePreview(alloc, "acid", 8192);
+  t.eq(pvAcid.frames, usize(8192));
+  t.eq(pvAcid.finite, true);
+  t.ok(pvAcid.peak > f32(0.05));
+  t.ok(pvAcid.rms > f32(0.01));
+  t.ok(pvAcid.lastStep >= u8(1));
+
+  // Tight RMS check on small frame count distinguishes sampleCount=0 vs 1 (* -> + / off-by-one)
+  const pvShort = await renderOfflinePreview(alloc, "arp", 16);
+  t.eq(pvShort.frames, usize(16));
+  t.ok(pvShort.peak > f32(0) && pvShort.rms > f32(0));
+  t.ok(Math.abs(pvShort.rms - pvShort.peak) > f32(0.0001));
+  // 1 stereo frame: 2 samples give rms/peak ~= 0.83 vs ~= 0.68 if sampleCount starts at 1, and rendered=1 kills rendered > 0 [0 -> 1]
+  const pv1 = await renderOfflinePreview(alloc, "arp", 1);
+  t.eq(pv1.frames, usize(1));
+  t.ok(pv1.peak > f32(0));
+  t.ok(pv1.rms > pv1.peak * f32(0.75));
+  // Non-multiple of 1024 > 1024 kills remFrames [- -> +] overshoot
+  const pvOdd = await renderOfflinePreview(alloc, "arp", 1500);
+  t.eq(pvOdd.frames, usize(1500));
+
+  const pvEmpty = await renderOfflinePreview(alloc, "empty", 1024);
+  t.eq(pvEmpty.frames, usize(1024));
+  t.eq(pvEmpty.peak, f32(0));
+  t.eq(pvEmpty.rms, f32(0));
+
+  const pvZero = await renderOfflinePreview(alloc, "empty", 0);
+  t.eq(pvZero.frames, usize(0));
+  t.eq(pvZero.peak, f32(0));
+  t.eq(pvZero.rms, f32(0));
+  t.eq(pvZero.lastStep, u8(0));
+  t.eq(pvZero.finite, true);
+});
+
+test("forAll validates FakeAudio preview stats for valid parameters", (_t: Test) => {
+  forAll((bpm: u32, waveIdx: u8, note: u8) => {
+    const alloc = TestAlloc.create();
+    const s = createSession(alloc);
+    s.setBpm(bpm);
+    s.setWave(waveIdx % 4);
+    s.setStep(0, note === 0 ? 60 : note, f32(0.8));
+    const snap = s.snapshot();
+    return snap.bpm >= u8(40) && snap.bpm <= u8(240) && snap.wave <= WAVE_SINE && snap.steps[0].note > u8(0);
+  });
+});

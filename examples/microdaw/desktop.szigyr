@@ -1,0 +1,263 @@
+import {
+  desktopHelpText,
+  encodeBase64,
+  handleDesktopRequest,
+  parseDesktopArgs,
+} from "./desktop-core.szigyr";
+
+declare module "c:webkit2gtk-4.1:stdlib.h" {
+  function calloc(ffi: Ffi, nmemb: usize, size: usize): Ptr<void>;
+  function free(ffi: Ffi, p: Ptr<void>): void;
+}
+
+declare module "c:webkit2gtk-4.1:webkit2/webkit2.h" {
+  const GTK_WINDOW_TOPLEVEL: u32;
+  function gtk_init_check(
+    ffi: Ffi,
+    argc: Ptr<i32>,
+    argv: Ptr<Ptr<Ptr<CType<"char">>>>,
+  ): i32;
+  function gtk_window_new(ffi: Ffi, kind: u32): Ptr<CType<"GtkWidget">>;
+  function gtk_window_set_title(
+    ffi: Ffi,
+    window: Ptr<CType<"GtkWindow">>,
+    title: ConstPtr<CType<"char">>,
+  ): void;
+  function gtk_window_set_default_size(
+    ffi: Ffi,
+    window: Ptr<CType<"GtkWindow">>,
+    width: i32,
+    height: i32,
+  ): void;
+  function gtk_container_add(
+    ffi: Ffi,
+    container: Ptr<CType<"GtkContainer">>,
+    widget: Ptr<CType<"GtkWidget">>,
+  ): void;
+  function gtk_widget_show_all(ffi: Ffi, widget: Ptr<CType<"GtkWidget">>): void;
+  function gtk_widget_destroy(ffi: Ffi, widget: Ptr<CType<"GtkWidget">>): void;
+  function gtk_widget_get_visible(ffi: Ffi, widget: Ptr<CType<"GtkWidget">>): i32;
+  function gtk_events_pending(ffi: Ffi): i32;
+  function gtk_main_iteration_do(ffi: Ffi, blocking: i32): i32;
+  function g_object_ref(ffi: Ffi, obj: Ptr<void>): Ptr<void>;
+  function g_object_unref(ffi: Ffi, obj: Ptr<void>): void;
+  function webkit_web_view_new(ffi: Ffi): Ptr<CType<"GtkWidget">>;
+  function webkit_web_view_get_settings(
+    ffi: Ffi,
+    webView: Ptr<CType<"WebKitWebView">>,
+  ): Ptr<CType<"WebKitSettings">>;
+  function webkit_settings_set_enable_webaudio(
+    ffi: Ffi,
+    settings: Ptr<CType<"WebKitSettings">>,
+    enabled: i32,
+  ): void;
+  function webkit_settings_set_media_playback_requires_user_gesture(
+    ffi: Ffi,
+    settings: Ptr<CType<"WebKitSettings">>,
+    enabled: i32,
+  ): void;
+  function webkit_web_view_load_uri(
+    ffi: Ffi,
+    webView: Ptr<CType<"WebKitWebView">>,
+    uri: ConstPtr<CType<"char">>,
+  ): void;
+}
+
+import { calloc, free } from "c:webkit2gtk-4.1:stdlib.h";
+import {
+  GTK_WINDOW_TOPLEVEL,
+  g_object_ref,
+  g_object_unref,
+  gtk_container_add,
+  gtk_events_pending,
+  gtk_init_check,
+  gtk_main_iteration_do,
+  gtk_widget_destroy,
+  gtk_widget_get_visible,
+  gtk_widget_show_all,
+  gtk_window_new,
+  gtk_window_set_default_size,
+  gtk_window_set_title,
+  webkit_settings_set_enable_webaudio,
+  webkit_settings_set_media_playback_requires_user_gesture,
+  webkit_web_view_get_settings,
+  webkit_web_view_load_uri,
+  webkit_web_view_new,
+} from "c:webkit2gtk-4.1:webkit2/webkit2.h";
+
+function copyBytes(dst: Mut<Slice<u8>>, src: Ref<Slice<u8>>): void {
+  "use rt";
+  requires(dst.length >= src.length);
+  for (let i: usize = 0; i < src.length; i += 1) {
+    dst[i] = src[i];
+  }
+}
+
+function freeCString(ffi: Ffi, p: Ptr<CType<"char">>): void {
+  "use owned";
+  "use unsafe";
+  if (!p.isNull()) free(ffi, p.cast<void>());
+}
+
+function toCString(ffi: Ffi, src: Ref<Slice<u8>>): Ptr<CType<"char">> {
+  "use owned";
+  "use unsafe";
+  const raw = calloc(ffi, 1, src.length + 1);
+  if (raw.isNull()) return Ptr.null<CType<"char">>();
+  if (src.length > 0) copyBytes(raw.cast<u8>().slice(src.length), src);
+  return raw.cast<CType<"char">>();
+}
+
+function pumpGtkEvents(ffi: Ffi): void {
+  "use owned";
+  "use unsafe";
+  let steps: i32 = 0;
+  while (gtk_events_pending(ffi) !== 0 && steps < 128) {
+    gtk_main_iteration_do(ffi, 0);
+    steps += 1;
+  }
+}
+
+function closeWebView(ffi: Ffi, winHandle: CHandle<CType<"GtkWidget">>): void {
+  "use owned";
+  "use unsafe";
+  const w = winHandle.get();
+  if (!w.isNull()) {
+    if (gtk_widget_get_visible(ffi, w) !== 0) gtk_widget_destroy(ffi, w);
+    pumpGtkEvents(ffi);
+    g_object_unref(ffi, w.cast<void>());
+  }
+}
+
+function openWebView(
+  ffi: Ffi,
+  titleBytes: Ref<Slice<u8>>,
+  urlBytes: Ref<Slice<u8>>,
+  width: i32,
+  height: i32,
+): Result<CHandle<CType<"GtkWidget">>, "no-display" | "oom"> {
+  "use owned";
+  "use unsafe";
+  if (gtk_init_check(ffi, Ptr.null<i32>(), Ptr.null<Ptr<Ptr<CType<"char">>>>()) === 0) {
+    return err("no-display");
+  }
+  using cTitle = Resource.ownWith(toCString(ffi, titleBytes), ffi, freeCString);
+  using cUrl = Resource.ownWith(toCString(ffi, urlBytes), ffi, freeCString);
+  if (cTitle.get().isNull() || cUrl.get().isNull()) return err("oom");
+
+  const winPtr = gtk_window_new(ffi, GTK_WINDOW_TOPLEVEL);
+  if (winPtr.isNull()) return err("oom");
+  g_object_ref(ffi, winPtr.cast<void>());
+
+  const viewPtr = webkit_web_view_new(ffi);
+  if (viewPtr.isNull()) {
+    gtk_widget_destroy(ffi, winPtr);
+    g_object_unref(ffi, winPtr.cast<void>());
+    return err("oom");
+  }
+
+  gtk_window_set_title(ffi, winPtr.cast<CType<"GtkWindow">>(), cTitle.get());
+  gtk_window_set_default_size(ffi, winPtr.cast<CType<"GtkWindow">>(), width, height);
+
+  const settings = webkit_web_view_get_settings(ffi, viewPtr.cast<CType<"WebKitWebView">>());
+  if (!settings.isNull()) {
+    webkit_settings_set_enable_webaudio(ffi, settings, 1);
+    webkit_settings_set_media_playback_requires_user_gesture(ffi, settings, 0);
+  }
+
+  gtk_container_add(ffi, winPtr.cast<CType<"GtkContainer">>(), viewPtr);
+  webkit_web_view_load_uri(ffi, viewPtr.cast<CType<"WebKitWebView">>(), cUrl.get());
+  gtk_widget_show_all(ffi, winPtr);
+  pumpGtkEvents(ffi);
+  return ok(CHandle.create<CType<"GtkWidget">>(winPtr));
+}
+
+function pumpWebView(ffi: Ffi, win: Ref<CHandle<CType<"GtkWidget">>>): boolean {
+  "use owned";
+  "use unsafe";
+  pumpGtkEvents(ffi);
+  const w = win.get();
+  if (w.isNull()) return false;
+  return gtk_widget_get_visible(ffi, w) !== 0;
+}
+
+function tickWebView(ffi: Ffi, win: Ref<CHandle<CType<"GtkWidget">>>): boolean {
+  return pumpWebView(ffi, win);
+}
+
+function encodeStringBytes(alloc: Alloc, s: string): Vec<u8> {
+  const v = Vec.create<u8>(alloc, s.length);
+  String.encodeUtf8(s, v);
+  return v;
+}
+
+export async function main(sys: System): Promise<void> {
+  const action = parseDesktopArgs(sys.proc.args());
+  if (action.kind === "help") {
+    sys.log.info(desktopHelpText());
+    return;
+  }
+  if (action.kind === "error") {
+    sys.log.error(action.message);
+    sys.proc.setExitCode(1);
+    return;
+  }
+
+  const wasmBytes = Vec.create<u8>(sys.alloc, 65536);
+  const wasmPath = action.webDir.endsWith("/")
+    ? `${action.webDir}program.wasm`
+    : `${action.webDir}/program.wasm`;
+  const rd = sys.fs.readBytes(wasmPath, wasmBytes);
+  if (rd.kind === "err") {
+    sys.log.error(`failed to read ${wasmPath}: ${rd.error.code}:${rd.error.message}`);
+    sys.proc.setExitCode(1);
+    return;
+  }
+  const wasmB64 = encodeBase64(wasmBytes);
+
+  let readyBody: string | null = null;
+  const srvRes = await sys.net.serve(
+    { host: "127.0.0.1", port: 0 },
+    async (req: HttpServerRequest) =>
+      handleDesktopRequest(sys.fs, action.webDir, wasmB64, req, (body: string) => {
+        readyBody = body;
+      }),
+  );
+  if (srvRes.kind === "err") {
+    sys.log.error(`http server failed: ${srvRes.error.code}:${srvRes.error.message}`);
+    sys.proc.setExitCode(1);
+    return;
+  }
+  await using srv = srvRes.value;
+
+  const url = `http://127.0.0.1:${srv.port}/?wasm=b64&desktop=1`;
+  const titleVec = encodeStringBytes(sys.alloc, action.title);
+  const urlVec = encodeStringBytes(sys.alloc, url);
+  const opened = openWebView(sys.ffi, titleVec, urlVec, action.width, action.height);
+  if (opened.kind === "err") {
+    sys.log.error(`failed to open WebKitGTK window: ${opened.error}`);
+    sys.proc.setExitCode(1);
+    return;
+  }
+
+  using win = Resource.ownWith(opened.value, sys.ffi, closeWebView);
+  const startMs = sys.clock.nowMs();
+  const limitMs = action.smokeMs;
+  while (tickWebView(sys.ffi, win.borrow())) {
+    const ready = readyBody;
+    if (ready !== null && limitMs !== null) {
+      sys.log.info(`webview_ready=${ready}`);
+      return;
+    }
+    if (limitMs !== null && sys.clock.nowMs() - startMs >= f64(limitMs)) {
+      sys.log.error("webview smoke check timed out before /api/ready");
+      sys.proc.setExitCode(1);
+      return;
+    }
+    await sys.clock.sleep(16);
+  }
+  if (limitMs !== null && readyBody === null) {
+    sys.log.error("webview window closed before /api/ready");
+    sys.proc.setExitCode(1);
+  }
+}
