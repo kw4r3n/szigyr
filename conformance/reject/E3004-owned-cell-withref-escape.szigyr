@@ -1,0 +1,7 @@
+// expect: E3004 @ 5:47
+// stage: 3
+function f(alloc: Alloc): usize {
+  const c = OwnedCell.create<Vec<f32>>(Vec.create<f32>(alloc, 2));
+  const fnVal = c.withRef((v) => (): usize => v.length);
+  return fnVal();
+}

@@ -3,7 +3,7 @@ import { NodeFlags, SyntaxKind as K, isId, isParamProp, type Node, type ts } fro
 import type { LocalSym, Module, Program } from "./modules.ts";
 import { assignTarget, callSigs, ensuresArgs, exprTypes, localOf } from "./expr.ts";
 import { genFx } from "./builtins.ts";
-import { movesLike, ownedDeep, show, tparamHasCap, unref, type Type } from "./types.ts";
+import { isResultBranch, kindOf, movesLike, ownedDeep, show, tparamHasCap, unref, type Type } from "./types.ts";
 
 /** Moved locals (by id) and the expression that moved each; null on a path that cannot be reached. */
 type State = Map<number, Node> | null;
@@ -143,6 +143,15 @@ class Flow {
         const s0 = copy(this.state);
         this.ex(p.initializer, "move");
         this.state = join(s0, this.state);
+      }
+    }
+    if (d.modifiers?.some((m) => m.kind === K.AsyncKeyword)) {
+      for (const p of d.parameters) {
+        if (!p.type && isId(p.name)) {
+          const sym = localOf.get(p.name);
+          const bm = sym && borrowMode(sym.declared);
+          if (bm) this.m.at("E3004", p.name, "an async function cannot take a borrow; it would outlive the call", { kind: "async-borrow", type: bm === "ref" ? "Ref" : "Mut" });
+        }
       }
     }
     if (d.kind === K.Constructor) {
@@ -312,9 +321,22 @@ class Flow {
       case K.Identifier: this.ident(e as ts.Identifier, ctx); return;
       case K.PropertyAccessExpression: {
         const p = e as ts.PropertyAccessExpression;
+        const bt = unref(exprTypes.get(p.expression) ?? { k: "error" });
+        const pt = unref(exprTypes.get(p) ?? { k: "error" });
+        const resultExtract = ctx !== "read" && isResultBranch(bt) && movesLike(pt) &&
+          ((kindOf(bt) === "ok" && p.name.text === "value") || (kindOf(bt) === "err" && p.name.text === "error"));
+        if (resultExtract) {
+          if (this.resBorrowCall(strip(p.expression))) {
+            this.m.at("E3004", p.expression, "cannot move out of a borrowed Resource", { kind: "borrow-escape" });
+            this.place(p.expression);
+          } else {
+            this.ex(p.expression, ctx);
+          }
+          return;
+        }
         if (this.resBorrowCall(strip(p.expression))) this.place(p.expression);
         else this.ex(p.expression, "read");
-        if (ctx !== "read" && movesLike(unref(exprTypes.get(p) ?? { k: "error" }))) this.m.at("E3003", p, `cannot move the field '${p.name.text}' out of its struct; destructure the whole value`, { field: p.name.text });
+        if (ctx !== "read" && movesLike(pt)) this.m.at("E3003", p, `cannot move the field '${p.name.text}' out of its struct; destructure the whole value`, { field: p.name.text });
         return;
       }
       case K.ElementAccessExpression: {
@@ -362,7 +384,7 @@ class Flow {
       case K.TemplateExpression: for (const sp of (e as ts.TemplateExpression).templateSpans) this.ex(sp.expression, "read"); return;
       case K.ObjectLiteralExpression: {
         const t = exprTypes.get(e);
-        const fieldCtx: Ctx = t?.k === "record" && t.struct ? "move" : "store"; // a Struct takes ownership; a managed record cannot (§5.6)
+        const fieldCtx: Ctx = t?.k === "record" && (t.struct || isResultBranch(t)) ? "move" : "store"; // a Struct or Result branch takes ownership; a managed record cannot (§5.6)
         for (const p of (e as ts.ObjectLiteralExpression).properties) {
           if (p.kind === K.PropertyAssignment) this.ex((p as ts.PropertyAssignment).initializer, fieldCtx);
           else if (p.kind === K.ShorthandPropertyAssignment) this.ident((p as ts.ShorthandPropertyAssignment).name as ts.Identifier, fieldCtx);
@@ -679,7 +701,7 @@ class Flow {
         store = g === "Array" || g === "ReadonlyArray" || g === "Map" || g === "Set";
       }
     } else if (isId(callee) && !localOf.has(callee) && !sig) {
-      store = callee.text === "ok" || callee.text === "err"; // a Result is a managed record (§5.6)
+      // builtins (e.g. ok/err) move their owned arguments
     } else this.ex(callee, "read");
     const opt = !!(e.flags & NodeFlags.OptionalChain), optState = opt ? copy(this.state) : undefined; // Q220: ?. short-circuits before args
     args.forEach((a, i) => {

@@ -674,10 +674,13 @@ export function ringUnpack(w: RingWire): RingShared<unknown> {
 export class OwnedCell<T> {
   private value: T | undefined;
   private full: boolean;
+  private readers = 0;
+  private mutBorrowed = false;
   private constructor(value: T | undefined, full: boolean) { this.value = value; this.full = full; }
   static create<T>(v: T): OwnedCell<T> { return new OwnedCell<T>(v, true); }
   take(pos?: Pos): T {
     if (!this.full) trap("T008", "take from empty OwnedCell", pos);
+    if (this.mutBorrowed || this.readers > 0) trap("T008", "take from borrowed OwnedCell", pos);
     const v = this.value as T;
     this.value = undefined;
     this.full = false;
@@ -687,6 +690,18 @@ export class OwnedCell<T> {
     if (this.full) trap("T008", "put into full OwnedCell", pos);
     this.value = v;
     this.full = true;
+  }
+  withRef<R>(f: (v: T) => R, pos?: Pos): R {
+    if (!this.full) trap("T008", "withRef on empty OwnedCell", pos);
+    if (this.mutBorrowed) trap("T008", "withRef on mutably borrowed OwnedCell", pos);
+    this.readers++;
+    try { return f(this.value as T); } finally { this.readers--; }
+  }
+  withMut<R>(f: (v: T) => R, pos?: Pos): R {
+    if (!this.full) trap("T008", "withMut on empty OwnedCell", pos);
+    if (this.mutBorrowed || this.readers > 0) trap("T008", "withMut on borrowed OwnedCell", pos);
+    this.mutBorrowed = true;
+    try { return f(this.value as T); } finally { this.mutBorrowed = false; }
   }
   isEmpty(): boolean { return !this.full; }
 }

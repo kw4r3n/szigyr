@@ -286,7 +286,17 @@ export function genMembers(t: { name: GenName; args: Type[] }): Members {
     case "ArenaBuf": return { length: prop(USIZE) };
     case "RingTx": return { push: m(MUT, [a], BOOL) }; // §15.1: no allocation
     case "RingRx": return { pop: m(MUT, [], nullable(a)) };
-    case "OwnedCell": return { take: m(WR, [], a), put: m(WR, [a], VOID), isEmpty: m(RD, [], BOOL) };
+    case "OwnedCell": {
+      const R = { ...newTParam("R"), noPromise: true }, tR: Type = { k: "tparam", p: R };
+      const R2 = { ...newTParam("R"), noPromise: true }, tR2: Type = { k: "tparam", p: R2 };
+      return {
+        take: m(WR, [], a),
+        put: m(WR, [a], VOID),
+        isEmpty: m(RD, [], BOOL),
+        withRef: m(RD, [fn([gen("Ref", a)], tR)], tR, { tparams: [R] }),
+        withMut: m(WR, [fn([gen("Mut", a)], tR2)], tR2, { tparams: [R2] }),
+      };
+    }
     case "Ptr": { // §14.4: which of these a given T allows is the checker's E2001 table, not this list
       const U = newTParam("U"), tU: Type = { k: "tparam", p: U };
       return {

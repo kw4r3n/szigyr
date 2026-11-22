@@ -1,0 +1,172 @@
+// expect-output: 60:3:2:EINVAL:bad:1|4:8:7:42|8:3:3:3:4:12:13:17:18:16:9:true
+// stage: 3
+
+type BufBox = Struct<{ data: Vec<f32>; n: u32 }>;
+type BoxErr = "oom" | "bad";
+
+function sumSliceRt(s: Ref<Slice<f32>>): f32 {
+  "use rt";
+  let acc: f32 = 0;
+  for (let i: usize = 0; i < s.length; i += 1) {
+    acc += s[i];
+  }
+  return acc;
+}
+
+function buildStrictBox(alloc: Alloc, okFlag: boolean): Result<BufBox, BoxErr> {
+  "use owned";
+  if (!okFlag) return err("oom");
+  const data = Vec.create<f32>(alloc, 4);
+  data.push(1.5);
+  data.push(2.5);
+  return ok({ data, n: 2 });
+}
+
+function passThroughStrict(r: Result<BufBox, BoxErr>): Result<BufBox, BoxErr> {
+  "use owned";
+  if (r.kind === "err") return r;
+  return r;
+}
+
+function bumpBoxMutRt(b: Mut<BufBox>): f32 {
+  "use rt";
+  b.n += 1;
+  b.data[0] = b.data[0] + f32(b.n);
+  return b.data[0] + b.data[1];
+}
+
+function readBoxRefRt(b: Ref<BufBox>): u32 {
+  "use rt";
+  return b.n + u32(b.data.length);
+}
+
+function makeVecResult(alloc: Alloc, okFlag: boolean): Result<Vec<f32>, IoError> {
+  if (!okFlag) return err({ code: "EINVAL", message: "bad" });
+  const v = Vec.create<f32>(alloc, 4);
+  v.push(10);
+  v.push(20);
+  return ok(v);
+}
+
+function makeErrOwned(alloc: Alloc, okFlag: boolean): Result<i32, Vec<f32>> {
+  if (okFlag) return ok(42);
+  return err(Vec.create<f32>(alloc, 2));
+}
+
+function readNonEmptyCellLen(c: OwnedCell<Vec<u8>>): usize {
+  requires(c.withRef((v) => v.length > 0));
+  return c.withRef((v) => v.length);
+}
+
+function takeSum(v: Vec<u8>): u32 {
+  let s: u32 = 0;
+  for (let i: usize = 0; i < v.length; i += 1) {
+    s += u32(v[i]);
+  }
+  return s;
+}
+
+function bumpU8CellRt(v: Mut<Vec<u8>>): void {
+  "use rt";
+  v[0] = v[0] + 1;
+}
+
+export function main(sys: System): void {
+  const r1 = makeVecResult(sys.alloc, true);
+  if (r1.kind === "err") panic("unexpected err");
+  r1.value.push(30);
+  const s1 = sumSliceRt(r1.value);
+  const v1 = r1.value;
+  const len1 = v1.length;
+
+  const r2 = makeVecResult(sys.alloc, true);
+  if (r2.kind === "err") panic("unexpected err");
+  const { value } = r2;
+  const len2 = value.length;
+
+  const r3 = makeVecResult(sys.alloc, false);
+  let errCode = "";
+  switch (r3.kind) {
+    case "ok":
+      panic("expected err");
+      break;
+    case "err":
+      errCode = r3.error.code;
+      break;
+  }
+  const msg3 = r3.kind === "err" ? r3.error.message : "ok";
+
+  const re = makeErrOwned(sys.alloc, false);
+  let errLen: usize = 0;
+  if (re.kind === "err") {
+    re.error.push(7);
+    errLen = re.error.length;
+  }
+
+  const rb0 = passThroughStrict(buildStrictBox(sys.alloc, true));
+  if (rb0.kind === "err") panic("unexpected oom");
+  rb0.value.n += 1;
+  const rtSum = bumpBoxMutRt(rb0.value);
+  const movedBox = rb0.value;
+
+  const rbErr = passThroughStrict(buildStrictBox(sys.alloc, false));
+  const errTag = rbErr.kind === "err" ? (rbErr.error === "oom" ? 7 : 9) : 0;
+
+  const rbOkVal = makeErrOwned(sys.alloc, true);
+  const okVal = rbOkVal.kind === "ok" ? rbOkVal.value : 0;
+
+  const partA = `${s1}:${len1}:${len2}:${errCode}:${msg3}:${errLen}`;
+  const partB = `${movedBox.n}:${rtSum}:${errTag}:${okVal}`;
+
+  const u8v = Vec.create<u8>(sys.alloc, 4);
+  u8v.push(3);
+  u8v.push(5);
+  const cell = OwnedCell.create<Vec<u8>>(u8v);
+  cell.withMut((v) => {
+    v.push(9);
+  });
+  const nestedSum = cell.withRef((a) => u32(a[0]) + cell.withRef((b) => u32(b[1])));
+  const lenReq = readNonEmptyCellLen(cell);
+  const ctxInt: i32 = cell.withRef((v) => i32(v.length));
+  const ctxRes: Result<Vec<u8>, IoError> = cell.withRef((v) => {
+    const copy = Vec.create<u8>(sys.alloc, v.length);
+    for (let i: usize = 0; i < v.length; i += 1) {
+      copy.push(v[i]);
+    }
+    return ok(copy);
+  });
+  if (ctxRes.kind === "err") panic("unexpected copy err");
+  const copiedLen = ctxRes.value.length;
+
+  cell.withMut((v) => {
+    bumpU8CellRt(v);
+  });
+  const afterRtMut = cell.withRef((v) => v[0]);
+
+  const extracted = cell.withMut((v): Vec<u8> => {
+    const out = Vec.create<u8>(sys.alloc, 1);
+    out.push(u8(v.length + 9));
+    return out;
+  });
+  const extVal = extracted[0];
+
+  const boxData = Vec.create<f32>(sys.alloc, 2);
+  boxData.push(1.0);
+  boxData.push(2.0);
+  const boxCell = OwnedCell.create<BufBox>({ data: boxData, n: 10 });
+  const boxMeta = boxCell.withMut((bx) => {
+    const _total = bumpBoxMutRt(bx);
+    return readBoxRefRt(bx);
+  });
+  const twoCells = cell.withMut((v) => {
+    const v1 = u32(v[1]);
+    return v1 + boxCell.withMut((bx) => bx.n);
+  });
+  const boxStillPresent = !boxCell.isEmpty() && boxCell.withRef((bx) => bx.n === 11 && bx.data[0] === 12);
+
+  const cellAfterMovedRes = takeSum(ctxRes.value);
+  const cellSum = cell.withRef((v) => u32(v[0]) + u32(v[1]) + u32(v[2]));
+
+  const partC = `${nestedSum}:${lenReq}:${ctxInt}:${copiedLen}:${afterRtMut}:${extVal}:${boxMeta}:${cellAfterMovedRes}:${cellSum}:${twoCells}:${cell.withRef((v) => v[2])}:${boxStillPresent}`;
+  sys.log.info(`${partA}|${partB}|${partC}`);
+}

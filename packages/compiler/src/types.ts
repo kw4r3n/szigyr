@@ -118,12 +118,17 @@ export function kindOf(t: Type): string | undefined {
   return f?.type.k === "lit" ? f.type.value : undefined;
 }
 export const isTaggedUnion = (t: Type): t is { k: "union"; members: Type[] } => t.k === "union" && t.members.length > 1 && t.members.every((m) => kindOf(m) !== undefined);
+/** A narrowed `Result<T, E>` branch (`{ readonly kind: "ok"; readonly value: T }` or `{ readonly kind: "err"; readonly error: E }`). */
+export function isResultBranch(t: Type): boolean {
+  return t.k === "record" && !t.struct && t.fields.length === 2 && t.fields.every((f) => f.readonly) &&
+    ((kindOf(t) === "ok" && !!field(t, "value")) || (kindOf(t) === "err" && !!field(t, "error")));
+}
 /** Result<T, E> (§8) -> its T and E. */
 export function resultParts(t: Type): { ok: Type; err: Type } | undefined {
   if (t.k !== "union" || t.members.length !== 2) return;
-  const ok = t.members.find((m) => kindOf(m) === "ok"), er = t.members.find((m) => kindOf(m) === "err");
-  const v = ok && field(ok, "value"), e = er && field(er, "error");
-  return v && e ? { ok: v.type, err: e.type } : undefined;
+  const ok = t.members.find((m) => isResultBranch(m) && kindOf(m) === "ok");
+  const er = t.members.find((m) => isResultBranch(m) && kindOf(m) === "err");
+  return ok && er ? { ok: field(ok, "value")!.type, err: field(er, "error")!.type } : undefined;
 }
 export const result = (ok: Type, err: Type): Type => union([
   record([ro("kind", { k: "lit", value: "ok" }), ro("value", ok)]),
@@ -364,6 +369,7 @@ export function ownedDeep(t: Type, seen = new Set<object>()): boolean {
 export function movesLike(t: Type): boolean {
   if (t.k === "tparam") return tparamMayBeOwned(t.p);
   if (t.k === "resource") return true;
+  if (isResultBranch(t)) return movesLike(field(t, kindOf(t) === "ok" ? "value" : "error")!.type);
   return isOwned(t) || (t.k === "union" && t.members.some(movesLike));
 }
 
@@ -377,8 +383,8 @@ export function isNative(t: Type, allowNever = false): boolean {
     case "error": case "num": case "lit": return true;
     case "tparam": return tparamHasCap(t.p, "Native");
     case "prim": return t.name === "boolean" || t.name === "null" || (allowNever && t.name === "never");
-    case "record": return t.struct ? t.fields.every((f) => isNative(f.type)) : isCopyValueRecord(t);
-    case "union": return t.members.every((m) => isCopy(m) && isNative(m));
+    case "record": return (t.struct || isResultBranch(t)) ? t.fields.every((f) => isNative(f.type)) : isCopyValueRecord(t);
+    case "union": return resultParts(t) ? t.members.every((m) => isNative(m)) : t.members.every((m) => isCopy(m) && isNative(m));
     case "gen": return (!ELEMENT_CONTAINERS.has(t.name) || hasLayout(t.args[0]!)) && (
       t.name === "Vec" || t.name === "Slice" || t.name === "Pool" || t.name === "Handle" || t.name === "Arena" ||
       t.name === "ArenaBuf" || t.name === "RingTx" || t.name === "RingRx" || t.name === "Ptr" || t.name === "ConstPtr" ||
@@ -393,8 +399,8 @@ export function layerOk(t: Type): boolean {
     case "error": case "num": case "lit": return true;
     case "tparam": return tparamHasCap(t.p, "Native");
     case "prim": return t.name === "boolean" || t.name === "null" || t.name === "void" || t.name === "never";
-    case "record": return t.struct ? t.fields.every((f) => layerOk(f.type)) : isCopy(t) && t.fields.every((f) => layerOk(f.type)); // Q043
-    case "union": return t.members.every((m) => isCopy(m) && layerOk(m));
+    case "record": return (t.struct || isResultBranch(t)) ? t.fields.every((f) => layerOk(f.type)) : isCopy(t) && t.fields.every((f) => layerOk(f.type)); // Q043
+    case "union": return resultParts(t) ? t.members.every((m) => layerOk(m)) : t.members.every((m) => isCopy(m) && layerOk(m));
     case "gen": return (!ELEMENT_CONTAINERS.has(t.name) || hasLayout(t.args[0]!)) && (t.name === "Vec" || t.name === "Slice" || t.name === "Pool" || t.name === "Handle" || t.name === "Arena" || t.name === "ArenaBuf" || t.name === "RingTx" || t.name === "RingRx" || t.name === "Ptr" || t.name === "ConstPtr" || t.name === "CType" || t.name === "CHandle" || ((t.name === "Ref" || t.name === "Mut") && layerOk(t.args[0]!))); // Q229, §14: pointer types are layer-legal; their positions are E4007 / E4008
     case "opaque": return isAuthority(t);
     case "resource": return layerOk(t.inner);
@@ -697,4 +703,4 @@ export function boxable(t: Type): boolean {
 }
 /** SPEC-v1 §3.4 (`Native & Send`): types `audio.open` moves to the real-time audio callback. */
 export const audioStateOk = (t: Type): boolean =>
-  t.k === "error" || (isNative(t) && sendable(t) && !hasPtr(t) && !hasArenaBuf(t));
+  t.k === "error" || (isNative(t) && sendable(t) && !hasPtr(t) && !hasArenaBuf(t) && (!movesLike(t) || isOwnedCap(t)));

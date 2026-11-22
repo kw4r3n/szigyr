@@ -439,6 +439,7 @@ reject/E3001-move-inside-index.szigyr
 reject/E3001-optional-chain-panic-arg.szigyr
 reject/E3001-optional-chain-reassign-after-move.szigyr
 reject/E3001-reassigned-on-one-branch-only.szigyr
+reject/E3001-result-owned-use-after-value-move.szigyr
 reject/E3001-use-after-branch-move.szigyr
 reject/E3001-use-after-destructure.szigyr
 reject/E3001-use-after-move-in-and-operand.szigyr
@@ -453,12 +454,14 @@ reject/E3002-move-in-inner-loop.szigyr
 reject/E3002-move-in-while-body.szigyr
 reject/E3002-move-into-struct-in-loop.szigyr
 reject/E3002-reassigned-on-one-path-only-in-loop.szigyr
+reject/E3002-result-owned-loop-move.szigyr
 reject/E3003-field-assignment-used-as-value.szigyr
 reject/E3003-partial-move-as-argument.szigyr
 reject/E3003-partial-move-by-return.szigyr
 reject/E3003-partial-move-into-struct-literal.szigyr
 reject/E3003-partial-move-nested-struct.szigyr
 reject/E3003-partial-move-to-local.szigyr
+reject/E3003-result-owned-struct-partial-move.szigyr
 reject/E3004-arena-view-index-write.szigyr
 reject/E3004-arena-view-statement.szigyr
 reject/E3004-arena-view-stored.szigyr
@@ -478,6 +481,8 @@ reject/E3004-borrow-type-as-return-type.szigyr
 reject/E3004-borrow-type-as-type-argument.szigyr
 reject/E3004-constptr-slice-index-write.szigyr
 reject/E3004-mut-borrow-saved-in-local.szigyr
+reject/E3004-owned-cell-withref-async.szigyr
+reject/E3004-owned-cell-withref-escape.szigyr
 reject/E3004-port-send-mut-borrow.szigyr
 reject/E3004-port-send-ref-borrow.szigyr
 reject/E3004-ptr-borrow-field-write.szigyr
@@ -528,6 +533,7 @@ reject/E3006-constptr-chained-slice-to-mut.szigyr
 reject/E3006-fill-through-ref-slice.szigyr
 reject/E3006-fs-readbytes-ref.szigyr
 reject/E3006-inc-through-ref.szigyr
+reject/E3006-owned-cell-withref-mutate.szigyr
 reject/E3006-pool-insert-through-ref.szigyr
 reject/E3006-push-through-ref-receiver.szigyr
 reject/E3006-push-through-ref-struct-field.szigyr
@@ -563,12 +569,14 @@ reject/E3007-owned-in-class-field.szigyr
 reject/E3007-owned-in-managed-array.szigyr
 reject/E3007-owned-in-map.szigyr
 reject/E3007-owned-in-record-field.szigyr
-reject/E3007-owned-in-result.szigyr
 reject/E3007-owned-in-tuple.szigyr
 reject/E3007-owned-param-prop.szigyr
 reject/E3007-owned-pushed-from-local.szigyr
 reject/E3007-pool-in-array.szigyr
 reject/E3007-recv-not-awaited.szigyr
+reject/E3007-result-owned-in-array.szigyr
+reject/E3007-result-owned-in-closure.szigyr
+reject/E3007-result-owned-in-promise.szigyr
 reject/E3008-call-result-as-mut-arg.szigyr
 reject/E3008-call-result-as-ref-arg.szigyr
 reject/E3008-call-result-as-slice-arg.szigyr
@@ -709,6 +717,7 @@ reject/E6002-contract-bit-compound.szigyr
 reject/E6002-contract-compound-assignment.szigyr
 reject/E6002-contract-element-assignment.szigyr
 reject/E6002-contract-mutating-method.szigyr
+reject/E6002-contract-ownedcell-withmut.szigyr
 reject/E6002-ensures-assigns.szigyr
 reject/E6002-ensures-consumes-result.szigyr
 reject/E6002-ensures-owned-arg.szigyr
@@ -929,6 +938,7 @@ run/265-wave1a-ts-relaxations
 run/266-wave1b-operators-and-callbacks.szigyr
 run/267-wave1c-interfaces-defaults-param-props.szigyr
 run/268-wave2-tuples-entries-regexp.szigyr
+run/269-phase3-result-owned-and-cell-borrow.szigyr
 run/27-trap-ownedcell-empty.szigyr
 run/28-trap-shift-range.szigyr
 run/29-trap-invariant.szigyr

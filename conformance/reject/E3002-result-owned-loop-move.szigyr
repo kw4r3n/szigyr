@@ -1,0 +1,14 @@
+// expect: E3002 @ 11:43
+// stage: 3
+function takeLen(v: Vec<f32>): usize {
+  "use owned";
+  return v.length;
+}
+function f(alloc: Alloc): usize {
+  const r: Result<Vec<f32>, string> = ok(Vec.create<f32>(alloc, 2));
+  let total: usize = 0;
+  for (let i: i32 = 0; i < 2; i += 1) {
+    if (r.kind === "ok") total += takeLen(r.value);
+  }
+  return total;
+}

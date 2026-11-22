@@ -1,0 +1,6 @@
+// expect: E3007 @ 4:19
+// stage: 3
+function f(): usize {
+  const xs: Array<Result<Vec<f32>, string>> = [];
+  return xs.length;
+}

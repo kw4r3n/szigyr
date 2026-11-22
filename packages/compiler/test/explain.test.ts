@@ -39,7 +39,8 @@ it("keeps explain entries free of hallucinated capabilities, stale filenames, an
   }
 
   expect(explainCode("E2011")!.description).toContain("managed");
-  expect(explainCode("E3007")!.remediation).not.toContain("Result");
+  expect(explainCode("E3007")!.description).not.toContain("Result");
+  expect(explainCode("E3007")!.remediation).toContain("Result");
   expect(explainCode("E4004")!.description).not.toContain("using");
   expect(explainCode("W8001")).toMatchObject({ phase: "P3" });
   expect(explainCode("W8001")!.description).toContain("managed loop");

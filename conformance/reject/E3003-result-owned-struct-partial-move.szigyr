@@ -1,0 +1,8 @@
+// expect: E3003 @ 7:10
+// stage: 3
+type Box = Struct<{ data: Vec<f32>; n: u32 }>;
+function f(alloc: Alloc): Vec<f32> {
+  const r: Result<Box, i32> = ok({ data: Vec.create<f32>(alloc, 1), n: 1 });
+  if (r.kind === "err") return Vec.create<f32>(alloc, 0);
+  return r.value.data;
+}

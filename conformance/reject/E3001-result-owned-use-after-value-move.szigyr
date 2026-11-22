@@ -1,0 +1,11 @@
+// expect: E3001 @ 10:10
+// stage: 3
+function mk(alloc: Alloc): Result<Vec<f32>, string> {
+  return ok(Vec.create<f32>(alloc, 1));
+}
+function f(alloc: Alloc): Vec<f32> {
+  const r = mk(alloc);
+  if (r.kind === "err") return Vec.create<f32>(alloc, 0);
+  const a = r.value;
+  return r.value;
+}

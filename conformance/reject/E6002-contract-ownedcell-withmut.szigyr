@@ -1,0 +1,6 @@
+// expect: E6002 @ 4:14
+// stage: 3
+function f(c: OwnedCell<Vec<f32>>): usize {
+  requires(c.withMut((v): boolean => true));
+  return c.withRef((v) => v.length);
+}

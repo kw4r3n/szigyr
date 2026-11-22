@@ -1251,10 +1251,10 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
         const p = e as ts.PropertyAccessExpression;
         const pt = this.typeOf(p.expression);
         if (isStruct(pt)) {
-          const c = `${this.place(p.expression, read)}.f_${p.name.text}`, ft = pt.fields.find((f) => f.name === p.name.text)?.type;
+          const c = `${this.place(p.expression, true)}.f_${p.name.text}`, ft = pt.fields.find((f) => f.name === p.name.text)?.type;
           return read && ft ? this.narrow(c, ft, this.typeOf(e)) : c; // a `T | null` field the checker narrowed (`h.p !== null`)
         }
-        if (pt.k === "cstruct") return `${this.place(p.expression, read)}.${p.name.text}`;
+        if (pt.k === "cstruct") return `${this.place(p.expression, true)}.${p.name.text}`;
       }
       if (e.kind === K.CallExpression && (e as ts.CallExpression).expression.kind === K.PropertyAccessExpression) {
         const cp = (e as ts.CallExpression).expression as ts.PropertyAccessExpression;
@@ -1773,7 +1773,7 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
           const cp = (a as ts.CallExpression).expression as ts.PropertyAccessExpression;
           if ((cp.name.text === "borrow" || cp.name.text === "slice") && (isGen(this.typeOf(cp.expression), "Ptr") || isGen(this.typeOf(cp.expression), "ConstPtr"))) return this.ex(a); // §14.4
         }
-        if (mode && isStruct(inner)) return `&${this.place(a)}`;
+        if (mode && isStruct(inner)) return `&${this.place(a, true)}`;
         if (isGen(inner, "Slice")) {
           const at = this.typeOf(a);
           const v = this.ex(a);

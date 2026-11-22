@@ -1,0 +1,6 @@
+// expect: E3004 @ 5:17
+// stage: 3
+function accept(cb: (v: Ref<Vec<f32>>) => Promise<void>): void {}
+function f(): void {
+  accept(async (v): Promise<void> => {});
+}

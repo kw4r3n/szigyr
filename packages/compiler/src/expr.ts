@@ -1460,6 +1460,14 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
       });
     }
   }
+  if (want && sig.ret.k === "tparam" && ids.has(sig.ret.p.id) && !m.has(sig.ret.p.id)) {
+    const retId = new Set([sig.ret.p.id]);
+    const inFnParam = sig.params.some((sp) => {
+      const u = unref(sp);
+      return u.k === "fn" && u.params.some((pt) => hasTParam(pt, retId));
+    });
+    if (!inFnParam) unify(sig.ret, want, m, ids);
+  }
   args.forEach((a, i) => { // 2: function expressions
     if (done[i] || later[i] || !isFnExpr(a)) return;
     const p = unref(subst(sig.params[i]!, m));

@@ -1,0 +1,5 @@
+// expect: E3007 @ 3:41
+// stage: 3
+async function f(alloc: Alloc): Promise<Result<Vec<f32>, string>> {
+  return ok(Vec.create<f32>(alloc, 1));
+}

@@ -136,6 +136,37 @@ describe("OwnedCell", () => {
     expect(c.isEmpty()).toBe(false);
     expect(c.take()).toBeNull();
   });
+  it("withRef / withMut enforce borrow rules with T008 and release on throw", () => {
+    const c = OwnedCell.create({ x: 10 });
+    // Nested shared reads are allowed
+    expect(c.withRef((a) => c.withRef((b) => a.x + b.x, pos), pos)).toBe(20);
+    // Mutation updates underlying value
+    expect(c.withMut((a) => { a.x = 42; return a.x; }, pos)).toBe(42);
+    expect(c.withRef((a) => a.x, pos)).toBe(42);
+
+    // Conflicts inside withRef
+    c.withRef(() => {
+      expect(code(() => c.take(pos))).toBe("T008");
+      expect(code(() => c.withMut(() => 0, pos))).toBe("T008");
+    }, pos);
+
+    // Conflicts inside withMut
+    c.withMut(() => {
+      expect(code(() => c.take(pos))).toBe("T008");
+      expect(code(() => c.withRef(() => 0, pos))).toBe("T008");
+      expect(code(() => c.withMut(() => 0, pos))).toBe("T008");
+    }, pos);
+
+    // Trap / error thrown inside withRef / withMut releases lock via finally
+    expect(() => c.withRef(() => { throw new Error("boom"); }, pos)).toThrow("boom");
+    expect(() => c.withMut(() => { throw new Error("boom2"); }, pos)).toThrow("boom2");
+    expect(c.withRef((a) => a.x, pos)).toBe(42);
+
+    // Empty cell traps T008 on withRef / withMut
+    expect(c.take(pos)).toEqual({ x: 42 });
+    expect(code(() => c.withRef(() => 0, pos))).toBe("T008");
+    expect(code(() => c.withMut(() => 0, pos))).toBe("T008");
+  });
 });
 
 describe("normalization", () => {
