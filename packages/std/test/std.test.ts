@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { Arena, Trap, Vec, panic, requires, setForeignTrapCheck, stopFakeIsolates, takeIsolateTrap, type Pos } from "../../runtime-js/src/index.ts";
-import { ALLOC, FakeAudio, FakeClock, FakeFs, FakeNet, FakeProc, FakeSpawn, MemoryLog, SeededRandom, TestAlloc, createSystem, nodeFs, nodeJs, runMain } from "../src/index.ts";
+import { ALLOC, FakeAudio, FakeClock, FakeFs, FakeNet, FakeProc, FakeSpawn, MemoryLog, SeededRandom, TestAlloc, createSystem, nodeFs, nodeJs, nodeNet, runMain } from "../src/index.ts";
 import { mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -284,6 +284,19 @@ describe("fakes", () => {
       await stopTarget.waitClosed();
       expect(stopTarget.isOpen()).toBe(false);
     }
+
+    const rawRes = await n.serveRaw({ host: "127.0.0.1", port: 0 }, async (req) =>
+      req.path === "/bin"
+        ? { status: 200, headers: [{ name: "content-type", value: "application/octet-stream" }], body: { kind: "bytes", value: [79, 75] } }
+        : { status: 200, headers: [{ name: "content-type", value: "text/plain" }], body: { kind: "text", value: "txt" } });
+    expect(rawRes.kind).toBe("ok");
+    if (rawRes.kind === "ok") {
+      const rBin = await n.fetch(`http://127.0.0.1:${rawRes.value.port}/bin`);
+      const rTxt = await n.fetch(`http://127.0.0.1:${rawRes.value.port}/txt`);
+      expect(rBin).toEqual({ kind: "ok", value: { status: 200, headers: [{ name: "content-type", value: "application/octet-stream" }], body: "OK" } });
+      expect(rTxt).toEqual({ kind: "ok", value: { status: 200, headers: [{ name: "content-type", value: "text/plain" }], body: "txt" } });
+      await rawRes.value.close();
+    }
   });
   it("TestAlloc", () => { expect(TestAlloc.create()).toBeDefined(); });
 });
@@ -418,6 +431,27 @@ describe("node authorities", () => {
     const r = sys.random.nextF64();
     expect(r >= 0 && r < 1).toBe(true);
     expect(Math.abs(sys.clock.nowMs() - Date.now())).toBeLessThan(1000);
+  });
+  it("nodeNet.serveRaw serves binary Uint8Array and UTF-8 text responses cleanly", async () => {
+    const sRes = await nodeNet.serveRaw({ host: "127.0.0.1", port: 0 }, async (req) =>
+      req.path === "/program.wasm"
+        ? { status: 200, headers: [{ name: "content-type", value: "application/wasm" }], body: { kind: "bytes", value: [0x00, 0x61, 0x73, 0x6d, 0xff] } }
+        : { status: 200, headers: [{ name: "content-type", value: "text/plain; charset=utf-8" }], body: { kind: "text", value: "hello" } });
+    expect(sRes.kind).toBe("ok");
+    if (sRes.kind !== "ok") return;
+    const srv = sRes.value;
+    try {
+      const rBin = await fetch(`http://127.0.0.1:${srv.port}/program.wasm`);
+      expect(rBin.status).toBe(200);
+      expect(rBin.headers.get("content-type")).toBe("application/wasm");
+      expect(Array.from(new Uint8Array(await rBin.arrayBuffer()))).toEqual([0x00, 0x61, 0x73, 0x6d, 0xff]);
+
+      const rTxt = await fetch(`http://127.0.0.1:${srv.port}/txt`);
+      expect(rTxt.status).toBe(200);
+      expect(await rTxt.text()).toBe("hello");
+    } finally {
+      await srv.close();
+    }
   });
 });
 

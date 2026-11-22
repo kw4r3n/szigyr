@@ -17,6 +17,10 @@ export interface HttpResponse { readonly status: number; readonly headers: HttpH
 export interface HttpServerConfig { readonly host: string; readonly port: number }
 export interface HttpServerRequest { readonly method: string; readonly path: string; readonly query: string; readonly headers: HttpHeader[]; readonly body: string }
 export interface HttpServerResponse { readonly status: number; readonly headers: readonly HttpHeader[]; readonly body: string }
+export type HttpBody =
+  | { readonly kind: "text"; readonly value: string }
+  | { readonly kind: "bytes"; readonly value: readonly number[] };
+export interface HttpServerRawResponse { readonly status: number; readonly headers: readonly HttpHeader[]; readonly body: HttpBody }
 export interface HttpClientRequest { readonly method: string; readonly url: string; readonly headers: HttpHeader[]; readonly body: string | null }
 export interface QueryParam { readonly name: string; readonly value: string }
 export interface HttpServer {
@@ -56,6 +60,7 @@ export interface Proc {
 export interface Net {
   fetch(url: string, init?: HttpRequestInit): Promise<Result<HttpResponse, IoError>>;
   serve(config: HttpServerConfig, handler: (req: HttpServerRequest) => Promise<HttpServerResponse>): Promise<Result<HttpServer, IoError>>;
+  serveRaw(config: HttpServerConfig, handler: (req: HttpServerRequest) => Promise<HttpServerRawResponse>): Promise<Result<HttpServer, IoError>>;
 }
 export interface Spawn {
   isolate(path: string, name: string, fn: (port: Port, alloc: Alloc) => unknown): Port;

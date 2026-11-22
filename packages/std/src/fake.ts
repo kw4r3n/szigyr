@@ -5,7 +5,7 @@ import {
 import {
   ALLOC, type Alloc, type Audio, type AudioCallbackSpec, type AudioConfig, type AudioStream, type Clock, type DirEntry,
   type FileStat, type Fs, type FsEntryKind, type HttpClientRequest, type HttpHeader, type HttpRequestInit, type HttpResponse,
-  type HttpServer, type HttpServerConfig, type HttpServerRequest, type HttpServerResponse, type IoError, type Log, type Net,
+  type HttpServer, type HttpServerConfig, type HttpServerRawResponse, type HttpServerRequest, type HttpServerResponse, type IoError, type Log, type Net,
   type Proc, type ProcOptions, type ProcOutput, type ProcRequest, type Random, type Spawn,
 } from "./types.ts";
 
@@ -603,7 +603,7 @@ export async function webFetch(url: string, init?: HttpRequestInit): Promise<Res
 }
 
 export class FakeNet implements Net {
-  private readonly servers = new Map<string, (req: HttpServerRequest) => Promise<HttpServerResponse>>();
+  private readonly servers = new Map<string, (req: HttpServerRequest) => Promise<HttpServerRawResponse>>();
   private fetchHandler: ((req: HttpClientRequest) => Result<HttpResponse, IoError>) | undefined;
   private readonly sent: HttpClientRequest[] = [];
   private nextPort = 18000;
@@ -622,6 +622,13 @@ export class FakeNet implements Net {
   }
 
   async serve(config: HttpServerConfig, handler: (req: HttpServerRequest) => Promise<HttpServerResponse>): Promise<Result<HttpServer, IoError>> {
+    return this.serveRaw(config, async (req) => {
+      const r = await handler(req);
+      return { status: r.status, headers: r.headers, body: { kind: "text", value: r.body } };
+    });
+  }
+
+  async serveRaw(config: HttpServerConfig, handler: (req: HttpServerRequest) => Promise<HttpServerRawResponse>): Promise<Result<HttpServer, IoError>> {
     if (!config.host || /\s/.test(config.host)) return err({ code: "EINVAL", message: `Net.serve: invalid host '${config.host}'` });
     if (!Number.isInteger(config.port) || config.port < 0 || config.port > 65535) {
       return err({ code: "EINVAL", message: `Net.serve: invalid port ${config.port}` });
@@ -692,7 +699,7 @@ export class FakeNet implements Net {
         return ok({
           status: resp.status,
           headers: resp.headers.map((h) => ({ name: h.name.toLowerCase(), value: h.value })),
-          body: resp.body,
+          body: resp.body.kind === "text" ? resp.body.value : new TextDecoder().decode(Uint8Array.from(resp.body.value)),
         });
       } catch (e) {
         const t = asTrap(e);

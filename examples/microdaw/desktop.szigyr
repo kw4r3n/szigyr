@@ -1,6 +1,5 @@
 import {
   desktopHelpText,
-  encodeBase64,
   handleDesktopRequest,
   parseDesktopArgs,
 } from "./desktop-core.szigyr";
@@ -203,23 +202,11 @@ export async function main(sys: System): Promise<void> {
     return;
   }
 
-  const wasmBytes = Vec.create<u8>(sys.alloc, 65536);
-  const wasmPath = action.webDir.endsWith("/")
-    ? `${action.webDir}program.wasm`
-    : `${action.webDir}/program.wasm`;
-  const rd = sys.fs.readBytes(wasmPath, wasmBytes);
-  if (rd.kind === "err") {
-    sys.log.error(`failed to read ${wasmPath}: ${rd.error.code}:${rd.error.message}`);
-    sys.proc.setExitCode(1);
-    return;
-  }
-  const wasmB64 = encodeBase64(wasmBytes);
-
   let readyBody: string | null = null;
-  const srvRes = await sys.net.serve(
+  const srvRes = await sys.net.serveRaw(
     { host: "127.0.0.1", port: 0 },
     async (req: HttpServerRequest) =>
-      handleDesktopRequest(sys.fs, action.webDir, wasmB64, req, (body: string) => {
+      handleDesktopRequest(sys.fs, sys.alloc, action.webDir, req, (body: string) => {
         readyBody = body;
       }),
   );
@@ -230,7 +217,7 @@ export async function main(sys: System): Promise<void> {
   }
   await using srv = srvRes.value;
 
-  const url = `http://127.0.0.1:${srv.port}/?wasm=b64&desktop=1`;
+  const url = `http://127.0.0.1:${srv.port}/?desktop=1`;
   const titleVec = encodeStringBytes(sys.alloc, action.title);
   const urlVec = encodeStringBytes(sys.alloc, url);
   const opened = openWebView(sys.ffi, titleVec, urlVec, action.width, action.height);

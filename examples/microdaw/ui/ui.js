@@ -34,16 +34,7 @@ function mapStepToRowNote(note) {
 }
 
 const params = new URLSearchParams(location.search);
-let customWasmUrl = null;
-if (params.get("wasm") === "b64") {
-  const b64 = await (await fetch("./program.wasm.b64")).text();
-  const bin = atob(b64.trim());
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  customWasmUrl = URL.createObjectURL(new Blob([bytes], { type: "application/wasm" }));
-}
-
-const loaded = await load(customWasmUrl ? { wasmUrl: customWasmUrl } : {});
+const loaded = await load();
 let analyser = null;
 const scopeData = new Uint8Array(512);
 

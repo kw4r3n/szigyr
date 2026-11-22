@@ -149,6 +149,15 @@ export const HTTP_RESPONSE_RECORD = record([ro("status", num("u16")), ro("header
 export const HTTP_SERVER_CONFIG_RECORD = record([ro("host", STR), ro("port", num("u16"))]);
 export const HTTP_SERVER_REQUEST_RECORD = record([ro("method", STR), ro("path", STR), ro("query", STR), ro("headers", gen("Array", HTTP_HEADER_RECORD)), ro("body", STR)]);
 export const HTTP_SERVER_RESPONSE_RECORD = record([ro("status", num("u16")), ro("headers", gen("ReadonlyArray", HTTP_HEADER_RECORD)), ro("body", STR)]);
+export const HTTP_BODY_UNION = union([
+  record([ro("kind", { k: "lit", value: "text" }), ro("value", STR)]),
+  record([ro("kind", { k: "lit", value: "bytes" }), ro("value", gen("ReadonlyArray", num("u8")))]),
+]);
+export const HTTP_SERVER_RAW_RESPONSE_RECORD = record([
+  ro("status", num("u16")),
+  ro("headers", gen("ReadonlyArray", HTTP_HEADER_RECORD)),
+  ro("body", HTTP_BODY_UNION),
+]);
 export const HTTP_CLIENT_REQUEST_RECORD = record([ro("method", STR), ro("url", STR), ro("headers", gen("Array", HTTP_HEADER_RECORD)), ro("body", nullable(STR))]);
 export const QUERY_PARAM_RECORD = record([ro("name", STR), ro("value", STR)]);
 export const REGEXP_MATCH_RECORD = record([ro("text", STR), ro("index", USIZE), ro("groups", gen("Array", nullable(STR)))]);
@@ -179,9 +188,10 @@ export function same(a: Type, b: Type): boolean {
     case "tuple": return b.k === "tuple" && sameArgs(a.elems, b.elems);
   }
 }
-const sameArgs = (a: Type[], b: Type[]): boolean => a.length === b.length && a.every((x, i) => same(x, b[i]!));
-const sameFields = (a: Field[], b: Field[]): boolean =>
-  a.length === b.length && a.every((f, i) => { const g = b[i]!; return f.name === g.name && f.readonly === g.readonly && same(f.type, g.type); });
+function sameArgs(a: Type[], b: Type[]): boolean { return a.length === b.length && a.every((x, i) => same(x, b[i]!)); }
+function sameFields(a: Field[], b: Field[]): boolean {
+  return a.length === b.length && a.every((f, i) => { const g = b[i]!; return f.name === g.name && f.readonly === g.readonly && same(f.type, g.type); });
+}
 
 /** Fakes assignable to their authority (Q020-10, Q038). */
 const FAKE_OF: Record<string, string> = { FakeClock: "Clock", SeededRandom: "Random", MemoryLog: "Log", FakeFs: "Fs", FakeSpawn: "Spawn", FakeAudio: "Audio", FakeNet: "Net", FakeProc: "Proc" };

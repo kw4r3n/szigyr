@@ -55,7 +55,7 @@ it("documents every builtin global name in SPEC and keeps BUILTIN_NAMES complete
     "boolean", "string", "number", "null", "void", "unknown", "never",
     "Result", "Struct", "RingPair", "JsError", "CastError", "IoError", "AudioConfig",
     "DirEntry", "FileStat", "EnvVar", "ProcOptions", "ProcOutput", "ProcRequest",
-    "HttpHeader", "HttpRequestInit", "HttpResponse", "HttpServerConfig", "HttpServerRequest", "HttpServerResponse", "HttpClientRequest", "QueryParam",
+    "HttpHeader", "HttpRequestInit", "HttpResponse", "HttpServerConfig", "HttpServerRequest", "HttpServerResponse", "HttpBody", "HttpServerRawResponse", "HttpClientRequest", "QueryParam",
     "RegExpMatch", "Resource", "Disposable", "AsyncDisposable", "CStruct",
     ...Object.keys(GEN_ARITY), ...OPAQUE_NAMES, ...NAMESPACES, ...BUILTIN_FUNCTIONS,
   ]);

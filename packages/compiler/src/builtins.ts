@@ -1,8 +1,8 @@
 // §12 allowlist for P2 (D010): builtin type names, global values, namespace and member tables (signatures from Q032, Q033, Q038).
 import {
   AUDIO_CONFIG_RECORD, ASYNC_DISPOSABLE, BOOL, DIR_ENTRY_RECORD, DISPOSABLE, ENV_VAR_RECORD, ERROR_RECORD, F64, FILE_STAT_RECORD,
-  HTTP_CLIENT_REQUEST_RECORD, HTTP_HEADER_RECORD, HTTP_REQUEST_INIT_RECORD, HTTP_RESPONSE_RECORD, HTTP_SERVER_CONFIG_RECORD,
-  HTTP_SERVER_REQUEST_RECORD, HTTP_SERVER_RESPONSE_RECORD, NULL, PROC_OPTIONS_RECORD, PROC_OUTPUT_RECORD, PROC_REQUEST_RECORD,
+  HTTP_BODY_UNION, HTTP_CLIENT_REQUEST_RECORD, HTTP_HEADER_RECORD, HTTP_REQUEST_INIT_RECORD, HTTP_RESPONSE_RECORD, HTTP_SERVER_CONFIG_RECORD,
+  HTTP_SERVER_RAW_RESPONSE_RECORD, HTTP_SERVER_REQUEST_RECORD, HTTP_SERVER_RESPONSE_RECORD, NULL, PROC_OPTIONS_RECORD, PROC_OUTPUT_RECORD, PROC_REQUEST_RECORD,
   QUERY_PARAM_RECORD, REGEXP_MATCH_RECORD, STR, UNKNOWN, USIZE, VOID, fn, gen, newTParam, nullable, num, opaque, result, record, ro, tuple, unref,
   type FnType, type GenName, type NumName, type Type, AUTHORITIES, NUM_NAMES, GEN_ARITY, OPAQUE_NAMES,
 } from "./types.ts";
@@ -31,7 +31,7 @@ export const BUILTIN_NAMES = new Set<string>([
   ...SPEC_RESERVED,
   "boolean", "string", "number", "null", "void", "unknown", "never", "Result", "Struct", "RingPair", "JsError", "CastError", "IoError", "AudioConfig",
   "DirEntry", "FileStat", "EnvVar", "ProcOptions", "ProcOutput", "ProcRequest",
-  "HttpHeader", "HttpRequestInit", "HttpResponse", "HttpServerConfig", "HttpServerRequest", "HttpServerResponse", "HttpClientRequest", "QueryParam",
+  "HttpHeader", "HttpRequestInit", "HttpResponse", "HttpServerConfig", "HttpServerRequest", "HttpServerResponse", "HttpBody", "HttpServerRawResponse", "HttpClientRequest", "QueryParam",
   "RegExpMatch", "Resource", "Disposable", "AsyncDisposable", "CStruct",
   ...Object.keys(GEN_ARITY), ...OPAQUE_NAMES, ...NAMESPACES, ...BUILTIN_FUNCTIONS,
 ]);
@@ -70,6 +70,8 @@ export function builtinType(name: string): Type | undefined {
     case "HttpServerConfig": return HTTP_SERVER_CONFIG_RECORD;
     case "HttpServerRequest": return HTTP_SERVER_REQUEST_RECORD;
     case "HttpServerResponse": return HTTP_SERVER_RESPONSE_RECORD;
+    case "HttpBody": return HTTP_BODY_UNION;
+    case "HttpServerRawResponse": return HTTP_SERVER_RAW_RESPONSE_RECORD;
     case "HttpClientRequest": return HTTP_CLIENT_REQUEST_RECORD;
     case "QueryParam": return QUERY_PARAM_RECORD;
     case "RegExpMatch": return REGEXP_MATCH_RECORD;
@@ -137,6 +139,7 @@ const PROC: Members = {
 const NET: Members = {
   fetch: mo(m(PORT_FX, [STR, HTTP_REQUEST_INIT_RECORD], gen("Promise", ioResult(HTTP_RESPONSE_RECORD)), { min: 1 })),
   serve: mo(m(PORT_FX, [HTTP_SERVER_CONFIG_RECORD, fn([HTTP_SERVER_REQUEST_RECORD], gen("Promise", HTTP_SERVER_RESPONSE_RECORD))], gen("Promise", ioResult(opaque("HttpServer"))))),
+  serveRaw: mo(m(PORT_FX, [HTTP_SERVER_CONFIG_RECORD, fn([HTTP_SERVER_REQUEST_RECORD], gen("Promise", HTTP_SERVER_RAW_RESPONSE_RECORD))], gen("Promise", ioResult(opaque("HttpServer"))))),
 };
 const SPAWN: Members = { isolate: m(PORT_FX, [UNKNOWN], VOID) };
 const AUDIO: Members = { open: mo(m(PORT_FX, [AUDIO_CONFIG_RECORD, UNKNOWN, UNKNOWN], gen("Promise", ioResult(opaque("AudioStream"))))) };

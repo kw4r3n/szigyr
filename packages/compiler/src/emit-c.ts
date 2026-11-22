@@ -8,6 +8,7 @@ import type { CFnSym, ConstSym, FnSym, Module, Program } from "./modules.ts";
 import { layout, elemDesc, type Lay } from "./layout.ts";
 import { DETMATH_PATH } from "./detmath.ts";
 import { cPointeeOf, cTypeOf, parseCSpec } from "./cdecl.ts";
+import { caseConstLits, type CaseLit } from "./checker.ts";
 import type { ProvedChecks } from "./prove.ts";
 import { AUTHORITIES, I64_MIN, isCopy, isCopyValueRecord, isInt, isInt64, isOwned, isTaggedUnion, kindOf, nonNull, isNull, isBool, parseExactInt, unref, show, subst, type Field, type NumName, type Type } from "./types.ts";
 
@@ -845,8 +846,9 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
           const labels = sw.caseBlock.clauses.map((cl) => {
             if (cl.kind === K.DefaultClause) return undefined;
             const e = (cl as ts.CaseClause).expression;
-            if (e.kind !== K.StringLiteral && e.kind !== K.TrueKeyword && e.kind !== K.FalseKeyword && e.kind !== K.NumericLiteral && !(e.kind === K.PrefixUnaryExpression && (e as ts.PrefixUnaryExpression).operand.kind === K.NumericLiteral)) throw this.no(e, "a non-literal case label");
-            return this.ex(e);
+            const clLit = caseConstLits.get(e);
+            if (!clLit) throw this.no(e, "a non-literal case label");
+            return this.caseLitC(clLit, dt);
           });
           const dmSw = this.hasUsing ? `sz_dm_${this.tmp++}` : undefined;
           if (dmSw) this.emit(`sz_defer *${dmSw} = sz_defer_head;`);
@@ -996,17 +998,32 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
       throw this.no(e, `the expression kind ${K[e.kind]}`);
     }
 
+    private fmtIntLitC(v: bigint, t: Type): string {
+      if (t.k === "num" && t.name === "i64" && v === I64_MIN) return "((int64_t)(-9223372036854775807LL - 1LL))";
+      if (t.k === "num" && t.name === "u64") return `((uint64_t)${v}ULL)`;
+      if (t.k === "num") return `((${CNUM[t.name]})${v}LL)`;
+      return `${v}LL`;
+    }
+
+    private fmtFloatLitC(x: number, t: Type): string {
+      const s = !Number.isFinite(x) ? (x > 0 ? "INFINITY" : "(-INFINITY)") : Object.is(x, -0) ? "-0.0" : /[.e]/.test(`${x}`) ? `${x}` : `${x}.0`; // 1e999 is Infinity in JS
+      return t.k === "num" && t.name === "f32" ? `((float)${s})` : s;
+    }
+
+    caseLitC(lit: CaseLit, dt: Type): string {
+      switch (lit.kind) {
+        case "bool": return lit.value ? "true" : "false";
+        case "str": return `((int32_t)${litId(lit.value)})`;
+        case "int": return this.fmtIntLitC(lit.value, dt);
+        case "float": return this.fmtFloatLitC(lit.value, dt);
+      }
+    }
+
     lit(n: ts.NumericLiteral, neg: boolean, t: Type): string {
       if (t.k !== "num") throw new CUnsupported(this.where, `a literal of type ${show(t)}`);
-      if (isInt(t)) {
-        const v = parseExactInt(n.getText(this.sf), neg)!;
-        if (t.name === "i64" && v === I64_MIN) return "((int64_t)(-9223372036854775807LL - 1LL))";
-        if (t.name === "u64") return `((uint64_t)${v}ULL)`;
-        return `((${CNUM[t.name]})${v}LL)`;
-      }
-      const x0 = numText(n), x = neg ? -x0 : x0;
-      const s = !Number.isFinite(x) ? (x > 0 ? "INFINITY" : "(-INFINITY)") : Object.is(x, -0) ? "-0.0" : /[.e]/.test(`${x}`) ? `${x}` : `${x}.0`; // 1e999 is Infinity in JS
-      return t.name === "f32" ? `((float)${s})` : s;
+      if (isInt(t)) return this.fmtIntLitC(parseExactInt(n.getText(this.sf), neg)!, t);
+      const x0 = numText(n);
+      return this.fmtFloatLitC(neg ? -x0 : x0, t);
     }
 
     emitConst(sym: ConstSym, anchor: Node, label: string): string {

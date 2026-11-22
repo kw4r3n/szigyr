@@ -6,6 +6,7 @@ import type { Diagnostic, Range } from "./diagnostics.ts";
 import { DETMATH_PATH } from "./detmath.ts";
 import { analyze, type Analysis } from "./index.ts";
 import { callFns, exprTypes, localOf } from "./expr.ts";
+import { caseConstLits } from "./checker.ts";
 import { canonPath, directiveOf, displayPath, type ConstSym, type FnSym, type LocalSym, type Module, type Program as Decls } from "./modules.ts";
 import { CACHE_DIR } from "./names.ts";
 import { NodeFlags, SyntaxKind as K, isId, type Node, type Parser, type ts } from "./parse.ts";
@@ -2088,7 +2089,11 @@ class FnProver {
         for (const cl of sw.caseBlock.clauses) {
           const clSt = cloneState(remCond);
           if (cl.kind === K.CaseClause) {
-            const cVal = await this.checkExpr(cl.expression, remCond);
+            const clLit = caseConstLits.get(cl.expression);
+            const cVal = clLit?.kind === "int" ? { smt: smtInt(clLit.value), exact: true, constVal: clLit.value }
+              : clLit?.kind === "bool" ? { smt: clLit.value ? "true" : "false", exact: true }
+              : clLit?.kind === "str" ? { smt: smtInt(this.tagId(clLit.value)), exact: true }
+              : await this.checkExpr(cl.expression, remCond);
             const matchTag = isStrLitLike(discT) && disc.exact && cVal.exact;
             const eq = isInt(discT) || isBool(discT) || matchTag ? `(= ${disc.smt} ${cVal.smt})` : this.fresh("Bool", "case_eq");
             clSt.assumptions.push(eq);

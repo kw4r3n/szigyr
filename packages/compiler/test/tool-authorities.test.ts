@@ -566,4 +566,71 @@ function badCmpMixed(s: string, n: i32, opt: string | null): boolean {
     expect(ds).toContain("19:E2008");
     expect(ds.filter((x) => x.startsWith("22:"))).toEqual(["22:E2002", "22:E2002"]);
   });
+
+  it("supports Net.serveRaw / FakeNet.serveRaw binary and text HTTP responses across js, c, and wasm", async () => {
+    const dir = makeTmp("net-serve-raw");
+    const appFile = join(dir, "app.szigyr");
+    writeFileSync(appFile, `
+function sumBytes(xs: Ref<Slice<u8>>): u32 {
+  "use rt";
+  let acc: u32 = 0;
+  for (let i: usize = 0; i < xs.length; i += 1) {
+    acc = wrapAdd(acc, u32(xs[i]));
+  }
+  return acc;
+}
+
+export async function main(sys: System): Promise<void> {
+  const fn = FakeNet.create();
+  const fsRes = await fn.serveRaw({ host: "127.0.0.1", port: 0 }, async (req: HttpServerRequest): Promise<HttpServerRawResponse> => {
+    if (req.path === "/bin") {
+      const bytes: Array<u8> = [u8(79), u8(75)];
+      return { status: 200, headers: [{ name: "content-type", value: "application/octet-stream" }], body: { kind: "bytes", value: bytes } };
+    }
+    return { status: 200, headers: [], body: { kind: "text", value: "hi" } };
+  });
+  let fakeOut = "err";
+  if (fsRes.kind === "ok") {
+    await using fsrv = fsRes.value;
+    const f1 = await fn.fetch(\`http://127.0.0.1:\${fsrv.port}/bin\`);
+    const f2 = await fn.fetch(\`http://127.0.0.1:\${fsrv.port}/txt\`);
+    if (f1.kind === "ok" && f2.kind === "ok") fakeOut = \`\${f1.value.body}:\${f2.value.body}\`;
+  }
+
+  const sRes = await sys.net.serveRaw({ host: "127.0.0.1", port: 0 }, async (req: HttpServerRequest): Promise<HttpServerRawResponse> => {
+    if (req.path === "/bin") {
+      const body: HttpBody = { kind: "bytes", value: [u8(0), u8(97), u8(115), u8(109), u8(255)] };
+      return { status: 200, headers: [{ name: "content-type", value: "application/octet-stream" }], body };
+    }
+    return { status: 200, headers: [], body: { kind: "text", value: "ok-text" } };
+  });
+  if (sRes.kind !== "ok") return;
+  await using srv = sRes.value;
+  const rTxt = await sys.net.fetch(\`http://127.0.0.1:\${srv.port}/\`);
+  const txtOut = rTxt.kind === "ok" ? rTxt.value.body : "err";
+  const seed = Vec.create<u8>(sys.alloc, 3);
+  seed.push(1); seed.push(2); seed.push(3);
+  sys.log.info(\`fake=\${fakeOut};txt=\${txtOut};port=\${srv.port > 0};sum=\${sumBytes(seed)}\`);
+}
+`);
+    for (const backend of ["js", "c", "wasm"] as const) {
+      const r = await run(appFile, { backend });
+      expect(r.diagnostics, `${backend} diagnostics`).toEqual([]);
+      expect(r.trap, `${backend} trap`).toBeNull();
+      expect(r.stdout.trim()).toBe("fake=OK:hi;txt=ok-text;port=true;sum=6");
+    }
+
+    const rtErrFile = join(dir, "rt-err.szigyr");
+    writeFileSync(rtErrFile, `
+export async function bad(net: Net): Promise<Result<HttpServer, IoError>> {
+  "use rt";
+  return net.serveRaw({ host: "127.0.0.1", port: 0 }, async (_r: HttpServerRequest): Promise<HttpServerRawResponse> => ({
+    status: 200,
+    headers: [],
+    body: { kind: "text", value: "no" },
+  }));
+}
+`);
+    expect(check(rtErrFile).some((d) => d.code === "E4001")).toBe(true);
+  });
 });

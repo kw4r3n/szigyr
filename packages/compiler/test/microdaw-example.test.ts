@@ -182,7 +182,7 @@ describe("examples/microdaw compiler, proof, parity, and mutation verification",
 
     const qDc = queryFile(DESKTOP_CORE_SZIGYR);
     expect(qDc.diagnostics).toEqual([]);
-    for (const fn of ["encodeBase64", "sanitizeAssetPath", "parseDesktopArgs"]) {
+    for (const fn of ["mimeTypeForPath", "sanitizeAssetPath", "parseDesktopArgs"]) {
       expect(qDc.symbols.find((s) => s.name === fn)).toMatchObject({
         kind: "function",
         layer: "managed",
@@ -231,13 +231,13 @@ describe("examples/microdaw compiler, proof, parity, and mutation verification",
     expect(mutEngine.diagnostics).toEqual([]);
     expect(mutEngine.baselineFailure).toBeNull();
     expect(mutEngine.summary.targets).toBeGreaterThanOrEqual(30);
-    expect(mutEngine.summary.killed).toBeGreaterThan(450);
+    expect(mutEngine.summary.killed).toBeGreaterThan(400);
     expect(mutEngine.summary.survived).toBe(0);
 
     const mutDc = await mutateFile(DESKTOP_CORE_SZIGYR, { cache: false });
     expect(mutDc.diagnostics).toEqual([]);
     expect(mutDc.baselineFailure).toBeNull();
-    expect(mutDc.summary.killed).toBeGreaterThan(150);
+    expect(mutDc.summary.killed).toBeGreaterThan(80);
     expect(mutDc.summary.survived).toBe(0);
   }, 180_000);
 });

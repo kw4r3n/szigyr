@@ -63,6 +63,7 @@ export const browserProc: Proc = createBrowserProc();
 export const browserNet: Net = {
   fetch: webFetch,
   serve: async () => err({ code: "ENOSYS", message: "Net.serve is not available in browser" }),
+  serveRaw: async () => err({ code: "ENOSYS", message: "Net.serveRaw is not available in browser" }),
 };
 
 export const browserSpawn: Spawn = {

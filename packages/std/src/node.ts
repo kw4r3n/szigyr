@@ -7,7 +7,7 @@ import { asTrap, cast, err, isTrap, noteIsolateTrap, ok, readU8Slice, replaceU8V
 import { webFetch } from "./fake.ts";
 import {
   ALLOC, type Alloc, type Audio, type AudioCallbackSpec, type AudioConfig, type AudioStream, type Clock, type DirEntry,
-  type FileStat, type Fs, type FsEntryKind, type HttpHeader, type HttpServer, type HttpServerConfig, type HttpServerRequest,
+  type FileStat, type Fs, type FsEntryKind, type HttpHeader, type HttpServer, type HttpServerConfig, type HttpServerRawResponse, type HttpServerRequest,
   type HttpServerResponse, type IoError, type Js, type JsError, type JsRef, type Log, type Net, type Proc, type ProcOptions,
   type ProcOutput, type Random, type Spawn, type System,
 } from "./types.ts";
@@ -185,100 +185,107 @@ export async function stopNodeNetServers(): Promise<void> {
   for (const close of [...activeNetServers]) await close();
 }
 
+function serveHttp(config: HttpServerConfig, handler: (req: HttpServerRequest) => Promise<HttpServerRawResponse>): Promise<Result<HttpServer, IoError>> {
+  if (!config.host) return Promise.resolve(err({ code: "EINVAL", message: "Net.serve: empty host" }));
+  if (!Number.isInteger(config.port) || config.port < 0 || config.port > 65535) {
+    return Promise.resolve(err({ code: "EINVAL", message: `Net.serve: invalid port ${config.port}` }));
+  }
+  return new Promise((resolve) => {
+    let inFlight = 0;
+    let closing = false;
+    let closed = false;
+    let resolveClosed!: () => void;
+    const closedP = new Promise<void>((r) => { resolveClosed = r; });
+
+    const server = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", () => {
+        void (async () => {
+          inFlight++;
+          const kick = (): void => { if (closing && inFlight === 0) server.closeIdleConnections?.(); };
+          res.once("finish", kick);
+          res.once("close", kick);
+          const u = new URL(req.url ?? "/", "http://127.0.0.1");
+          const headers: HttpHeader[] = [];
+          for (let i = 0; i + 1 < req.rawHeaders.length; i += 2) {
+            headers.push({ name: req.rawHeaders[i]!.toLowerCase(), value: req.rawHeaders[i + 1]! });
+          }
+          const httpReq: HttpServerRequest = {
+            method: req.method ?? "GET",
+            path: u.pathname,
+            query: u.search.startsWith("?") ? u.search.slice(1) : "",
+            headers,
+            body: Buffer.concat(chunks).toString("utf8"),
+          };
+          try {
+            const resp = await handler(httpReq);
+            res.statusCode = resp.status;
+            for (const h of resp.headers) res.appendHeader(h.name, h.value);
+            if (closing && !res.headersSent) res.setHeader("connection", "close");
+            res.end(resp.body.kind === "text" ? resp.body.value : Uint8Array.from(resp.body.value));
+          } catch (e) {
+            const t = asTrap(e);
+            const ft: ForeignTrap = t
+              ? { code: t.code, ...(t.pos ? { file: t.pos.file, line: t.pos.line, col: t.pos.col } : {}), message: t.message }
+              : { code: "T006", message: String(e) };
+            noteIsolateTrap(ft);
+            if (closing && !res.headersSent) res.setHeader("connection", "close");
+            if (!res.headersSent) { res.statusCode = 500; res.end("internal error"); }
+            else if (!res.writableEnded) { res.end(); }
+          } finally {
+            inFlight--;
+            if (closing && inFlight === 0 && res.writableEnded) server.closeIdleConnections?.();
+          }
+        })();
+      });
+    });
+    const onListenErr = (e: Error): void => {
+      server.removeListener("listening", onListening);
+      resolve(err(ioError(e)));
+    };
+    let forceClose!: () => Promise<void>;
+    const stop = (): void => {
+      if (closing) return;
+      closing = true;
+      activeNetServers.delete(forceClose);
+      server.close(() => { closed = true; resolveClosed(); });
+      server.closeIdleConnections?.();
+    };
+    forceClose = async (): Promise<void> => {
+      stop();
+      if (!closed && inFlight === 0) server.closeAllConnections?.();
+      await closedP;
+    };
+    const onListening = (): void => {
+      server.removeListener("error", onListenErr);
+      const addr = server.address();
+      const port = typeof addr === "object" && addr ? addr.port : config.port;
+      activeNetServers.add(forceClose);
+      resolve(ok({
+        host: config.host,
+        port,
+        stop,
+        waitClosed: () => closedP,
+        close: forceClose,
+        disposeAsync: forceClose,
+        isOpen: () => !closing && !closed,
+      }));
+    };
+    server.once("error", onListenErr);
+    server.once("listening", onListening);
+    server.listen(config.port, config.host);
+  });
+}
+
 export const nodeNet: Net = {
   fetch: webFetch,
-  serve(config: HttpServerConfig, handler: (req: HttpServerRequest) => Promise<HttpServerResponse>): Promise<Result<HttpServer, IoError>> {
-    if (!config.host) return Promise.resolve(err({ code: "EINVAL", message: "Net.serve: empty host" }));
-    if (!Number.isInteger(config.port) || config.port < 0 || config.port > 65535) {
-      return Promise.resolve(err({ code: "EINVAL", message: `Net.serve: invalid port ${config.port}` }));
-    }
-    return new Promise((resolve) => {
-      let inFlight = 0;
-      let closing = false;
-      let closed = false;
-      let resolveClosed!: () => void;
-      const closedP = new Promise<void>((r) => { resolveClosed = r; });
-
-      const server = http.createServer((req, res) => {
-        const chunks: Buffer[] = [];
-        req.on("data", (c: Buffer) => chunks.push(c));
-        req.on("end", () => {
-          void (async () => {
-            inFlight++;
-            const kick = (): void => { if (closing && inFlight === 0) server.closeIdleConnections?.(); };
-            res.once("finish", kick);
-            res.once("close", kick);
-            const u = new URL(req.url ?? "/", "http://127.0.0.1");
-            const headers: HttpHeader[] = [];
-            for (let i = 0; i + 1 < req.rawHeaders.length; i += 2) {
-              headers.push({ name: req.rawHeaders[i]!.toLowerCase(), value: req.rawHeaders[i + 1]! });
-            }
-            const httpReq: HttpServerRequest = {
-              method: req.method ?? "GET",
-              path: u.pathname,
-              query: u.search.startsWith("?") ? u.search.slice(1) : "",
-              headers,
-              body: Buffer.concat(chunks).toString("utf8"),
-            };
-            try {
-              const resp = await handler(httpReq);
-              res.statusCode = resp.status;
-              for (const h of resp.headers) res.appendHeader(h.name, h.value);
-              if (closing && !res.headersSent) res.setHeader("connection", "close");
-              res.end(resp.body);
-            } catch (e) {
-              const t = asTrap(e);
-              const ft: ForeignTrap = t
-                ? { code: t.code, ...(t.pos ? { file: t.pos.file, line: t.pos.line, col: t.pos.col } : {}), message: t.message }
-                : { code: "T006", message: String(e) };
-              noteIsolateTrap(ft);
-              if (closing && !res.headersSent) res.setHeader("connection", "close");
-              if (!res.headersSent) { res.statusCode = 500; res.end("internal error"); }
-              else if (!res.writableEnded) { res.end(); }
-            } finally {
-              inFlight--;
-              if (closing && inFlight === 0 && res.writableEnded) server.closeIdleConnections?.();
-            }
-          })();
-        });
-      });
-      const onListenErr = (e: Error): void => {
-        server.removeListener("listening", onListening);
-        resolve(err(ioError(e)));
-      };
-      let forceClose!: () => Promise<void>;
-      const stop = (): void => {
-        if (closing) return;
-        closing = true;
-        activeNetServers.delete(forceClose);
-        server.close(() => { closed = true; resolveClosed(); });
-        server.closeIdleConnections?.();
-      };
-      forceClose = async (): Promise<void> => {
-        stop();
-        if (!closed && inFlight === 0) server.closeAllConnections?.();
-        await closedP;
-      };
-      const onListening = (): void => {
-        server.removeListener("error", onListenErr);
-        const addr = server.address();
-        const port = typeof addr === "object" && addr ? addr.port : config.port;
-        activeNetServers.add(forceClose);
-        resolve(ok({
-          host: config.host,
-          port,
-          stop,
-          waitClosed: () => closedP,
-          close: forceClose,
-          disposeAsync: forceClose,
-          isOpen: () => !closing && !closed,
-        }));
-      };
-      server.once("error", onListenErr);
-      server.once("listening", onListening);
-      server.listen(config.port, config.host);
-    });
-  },
+  serve: (config, handler) =>
+    serveHttp(config, async (req) => {
+      const r = await handler(req);
+      return { status: r.status, headers: r.headers, body: { kind: "text", value: r.body } };
+    }),
+  serveRaw: serveHttp,
 };
 
 export const nodeSpawn: Spawn = {

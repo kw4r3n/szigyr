@@ -108,11 +108,17 @@ export function clampF32(x: f32, lo: f32, hi: f32): f32 {
 
 export function oscSample(wave: u8, phase: f64): f32 {
   "use rt";
-  if (wave === WAVE_SAW) return f32(2.0 * phase - 1.0);
-  if (wave === WAVE_SQUARE) return phase < 0.5 ? f32(0.8) : f32(-0.8);
-  // szigyr-equivalent[< -> <=]: 4*0.5-1 and 3-4*0.5 both equal 1 at phase=0.5
-  if (wave === WAVE_TRI) return phase < 0.5 ? f32(4.0 * phase - 1.0) : f32(3.0 - 4.0 * phase);
-  return f32(DetMath.sin(6.283185307179586 * phase));
+  switch (wave) {
+    case WAVE_SAW:
+      return f32(2.0 * phase - 1.0);
+    case WAVE_SQUARE:
+      return phase < 0.5 ? f32(0.8) : f32(-0.8);
+    case WAVE_TRI:
+      // szigyr-equivalent[< -> <=]: 4*0.5-1 and 3-4*0.5 both equal 1 at phase=0.5
+      return phase < 0.5 ? f32(4.0 * phase - 1.0) : f32(3.0 - 4.0 * phase);
+    default:
+      return f32(DetMath.sin(6.283185307179586 * phase));
+  }
 }
 
 function triggerVoice(st: Mut<SynthState>, note: u8, vel: f32): void {
@@ -150,33 +156,47 @@ function triggerVoice(st: Mut<SynthState>, note: u8, vel: f32): void {
 
 function applyCmd(st: Mut<SynthState>, cmd: SynthCmd): void {
   "use rt";
-  if (cmd.kind === CMD_SET_PLAYING) {
-    st.playing = cmd.a !== 0 ? 1 : 0;
-  } else if (cmd.kind === CMD_SET_BPM) {
-    st.samplesPerStep = bpmToSamplesPerStep(u32(cmd.a));
-  } else if (cmd.kind === CMD_SET_WAVE) {
-    st.wave = cmd.a <= WAVE_SINE ? cmd.a : WAVE_SAW;
-  } else if (cmd.kind === CMD_SET_CUTOFF) {
-    st.cutoff = clampF32(cmd.f, f32(120), f32(12000));
-  } else if (cmd.kind === CMD_SET_ATTACK) {
-    st.attack = clampF32(cmd.f, f32(0.002), f32(1));
-  } else if (cmd.kind === CMD_SET_RELEASE) {
-    st.release = clampF32(cmd.f, f32(0.01), f32(2));
-  } else if (cmd.kind === CMD_SET_GAIN) {
-    st.gain = clampF32(cmd.f, f32(0), f32(1));
-  } else if (cmd.kind === CMD_SET_STEP) {
-    const idx = usize(cmd.a);
-    if (idx < st.steps.length) {
-      st.steps[idx] = { note: cmd.b, vel: clampF32(cmd.f, f32(0), f32(1)) };
+  switch (cmd.kind) {
+    case CMD_SET_PLAYING:
+      st.playing = cmd.a !== 0 ? 1 : 0;
+      break;
+    case CMD_SET_BPM:
+      st.samplesPerStep = bpmToSamplesPerStep(u32(cmd.a));
+      break;
+    case CMD_SET_WAVE:
+      st.wave = cmd.a <= WAVE_SINE ? cmd.a : WAVE_SAW;
+      break;
+    case CMD_SET_CUTOFF:
+      st.cutoff = clampF32(cmd.f, f32(120), f32(12000));
+      break;
+    case CMD_SET_ATTACK:
+      st.attack = clampF32(cmd.f, f32(0.002), f32(1));
+      break;
+    case CMD_SET_RELEASE:
+      st.release = clampF32(cmd.f, f32(0.01), f32(2));
+      break;
+    case CMD_SET_GAIN:
+      st.gain = clampF32(cmd.f, f32(0), f32(1));
+      break;
+    case CMD_SET_STEP: {
+      const idx = usize(cmd.a);
+      if (idx < st.steps.length) {
+        st.steps[idx] = { note: cmd.b, vel: clampF32(cmd.f, f32(0), f32(1)) };
+      }
+      break;
     }
-  } else if (cmd.kind === CMD_TRIGGER_NOTE) {
-    if (cmd.a > 0) triggerVoice(st, cmd.a, cmd.f);
-  } else if (cmd.kind === CMD_RESET_SEQ) {
-    st.curStep = 0;
-    st.stepSample = 0;
-    for (let i: usize = 0; i < st.voices.length; i += 1) {
-      st.voices[i] = silentVoice();
-    }
+    case CMD_TRIGGER_NOTE:
+      if (cmd.a > 0) triggerVoice(st, cmd.a, cmd.f);
+      break;
+    case CMD_RESET_SEQ:
+      st.curStep = 0;
+      st.stepSample = 0;
+      for (let i: usize = 0; i < st.voices.length; i += 1) {
+        st.voices[i] = silentVoice();
+      }
+      break;
+    default:
+      break;
   }
 }
 

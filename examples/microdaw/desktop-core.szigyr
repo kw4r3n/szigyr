@@ -1,5 +1,3 @@
-const B64_ALPHA: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
 export type DesktopAction =
   | { readonly kind: "help" }
   | {
@@ -12,37 +10,13 @@ export type DesktopAction =
     }
   | { readonly kind: "error"; readonly message: string };
 
-export function encodeBase64(data: Ref<Slice<u8>>): string {
-  let out = "";
-  const n = data.length;
-  let i: usize = 0;
-  while (i < n) {
-    const b0 = u32(data[i]);
-    const has1 = i + 1 < n;
-    const has2 = i + 2 < n;
-    // szigyr-equivalent[0 -> 1]: only high 4/2 bits of zero-pad b1/b2 enter encoded sextets
-    const b1 = has1 ? u32(data[i + 1]) : u32(0);
-    // szigyr-equivalent[0 -> 1]: has2=false emits '=' instead of reading low bits of b2
-    const b2 = has2 ? u32(data[i + 2]) : u32(0);
-    const triple = (b0 << 16) | (b1 << 8) | b2;
-    const i0 = usize((triple >>> 18) & 63);
-    const i1 = usize((triple >>> 12) & 63);
-    const i2 = usize((triple >>> 6) & 63);
-    const i3 = usize(triple & 63);
-    out += B64_ALPHA.slice(i0, i0 + 1) + B64_ALPHA.slice(i1, i1 + 1);
-    out += has1 ? B64_ALPHA.slice(i2, i2 + 1) : "=";
-    out += has2 ? B64_ALPHA.slice(i3, i3 + 1) : "=";
-    i += 3;
-  }
-  return out;
-}
-
 export function mimeTypeForPath(relPath: string): string {
   if (relPath.endsWith(".html")) return "text/html; charset=utf-8";
   if (relPath.endsWith(".css")) return "text/css; charset=utf-8";
   if (relPath.endsWith(".js") || relPath.endsWith(".mjs")) return "application/javascript; charset=utf-8";
   if (relPath.endsWith(".json")) return "application/json; charset=utf-8";
   if (relPath.endsWith(".svg")) return "image/svg+xml";
+  if (relPath.endsWith(".wasm")) return "application/wasm";
   return "application/octet-stream";
 }
 
@@ -136,70 +110,45 @@ export function joinAssetPath(baseDir: string, rel: string): string {
   return `${baseDir}/${rel}`;
 }
 
+function textResp(status: u16, contentType: string, value: string): HttpServerRawResponse {
+  return { status, headers: coiHeaders(contentType), body: { kind: "text", value } };
+}
+
 export function handleDesktopRequest(
   fs: Fs,
+  alloc: Alloc,
   webDir: string,
-  wasmB64: string,
   req: HttpServerRequest,
   onReady: (body: string) => void,
-): HttpServerResponse {
+): HttpServerRawResponse {
   if (req.method === "GET" && req.path === "/api/health") {
-    return { status: 200, headers: coiHeaders("application/json; charset=utf-8"), body: "{\"ok\":true}" };
+    return textResp(200, "application/json; charset=utf-8", "{\"ok\":true}");
   }
   if (req.method === "POST" && req.path === "/api/ready") {
     onReady(req.body);
-    return { status: 200, headers: coiHeaders("application/json; charset=utf-8"), body: "{\"ok\":true}" };
-  }
-  if (req.method === "GET" && req.path === "/program.wasm.b64") {
-    return { status: 200, headers: coiHeaders("text/plain; charset=ascii"), body: wasmB64 };
+    return textResp(200, "application/json; charset=utf-8", "{\"ok\":true}");
   }
   const rel = sanitizeAssetPath(req.path);
   if (rel === null) {
-    return { status: 400, headers: coiHeaders("text/plain; charset=utf-8"), body: "bad path" };
+    return textResp(400, "text/plain; charset=utf-8", "bad path");
   }
-  const rd = fs.readText(joinAssetPath(webDir, rel));
+  const full = joinAssetPath(webDir, rel);
+  if (rel.endsWith(".wasm")) {
+    const buf = Vec.create<u8>(alloc, 0);
+    const rd = fs.readBytes(full, buf);
+    if (rd.kind === "err") {
+      return textResp(404, "text/plain; charset=utf-8", "not found");
+    }
+    const bytes: Array<u8> = [];
+    for (let i: usize = 0; i < buf.length; i += 1) bytes.push(buf[i]);
+    return { status: 200, headers: coiHeaders(mimeTypeForPath(rel)), body: { kind: "bytes", value: bytes } };
+  }
+  const rd = fs.readText(full);
   if (rd.kind === "err") {
-    return { status: 404, headers: coiHeaders("text/plain; charset=utf-8"), body: "not found" };
+    return textResp(404, "text/plain; charset=utf-8", "not found");
   }
-  return { status: 200, headers: coiHeaders(mimeTypeForPath(rel)), body: rd.value };
+  return textResp(200, mimeTypeForPath(rel), rd.value);
 }
-
-test("encodeBase64 matches RFC 4648 vectors and binary high bytes", (t: Test) => {
-  const alloc = TestAlloc.create();
-  const empty = Vec.create<u8>(alloc, 0);
-  t.eq(encodeBase64(empty), "");
-
-  const vecs: Array<{ readonly text: string; readonly b64: string }> = [
-    { text: "f", b64: "Zg==" },
-    { text: "fo", b64: "Zm8=" },
-    { text: "foo", b64: "Zm9v" },
-    { text: "foob", b64: "Zm9vYg==" },
-    { text: "fooba", b64: "Zm9vYmE=" },
-    { text: "foobar", b64: "Zm9vYmFy" },
-  ];
-  for (const v of vecs) {
-    const buf = Vec.create<u8>(alloc, v.text.length);
-    String.encodeUtf8(v.text, buf);
-    t.eq(encodeBase64(buf), v.b64);
-  }
-
-  const bin = Vec.create<u8>(alloc, 4);
-  bin.push(0x00);
-  bin.push(0xff);
-  bin.push(0xab);
-  bin.push(0xcd);
-  t.eq(encodeBase64(bin), "AP+rzQ==");
-
-  forAll((bytes: Array<u8>) => {
-    const v = Vec.create<u8>(alloc, bytes.length);
-    for (const b of bytes) v.push(b);
-    const enc = encodeBase64(v);
-    if (bytes.length === 0) return enc === "";
-    if (enc.length % 4 !== 0) return false;
-    const expectedLen: usize = divTrunc(bytes.length + 2, 3) * 4;
-    return enc.length === expectedLen;
-  });
-});
 
 test("mimeTypeForPath, sanitizeAssetPath, parseDesktopArgs, and handleDesktopRequest", (t: Test) => {
   t.eq(mimeTypeForPath("index.html"), "text/html; charset=utf-8");
@@ -208,7 +157,8 @@ test("mimeTypeForPath, sanitizeAssetPath, parseDesktopArgs, and handleDesktopReq
   t.eq(mimeTypeForPath("mod.mjs"), "application/javascript; charset=utf-8");
   t.eq(mimeTypeForPath("data.json"), "application/json; charset=utf-8");
   t.eq(mimeTypeForPath("icon.svg"), "image/svg+xml");
-  t.eq(mimeTypeForPath("prog.wasm"), "application/octet-stream");
+  t.eq(mimeTypeForPath("prog.wasm"), "application/wasm");
+  t.eq(mimeTypeForPath("blob.bin"), "application/octet-stream");
 
   t.eq(sanitizeAssetPath("/"), "index.html");
   t.eq(sanitizeAssetPath("/ui.js"), "ui.js");
@@ -261,51 +211,63 @@ test("mimeTypeForPath, sanitizeAssetPath, parseDesktopArgs, and handleDesktopReq
   t.eq(parseDesktopArgs(["--smoke-ms", "0"]).kind, "error");
   t.eq(parseDesktopArgs(["--smoke-ms", "300001"]).kind, "error");
 
+  const alloc = TestAlloc.create();
   const fs = FakeFs.create();
   fs.mkdir("/web/rt");
   fs.writeText("/web/index.html", "<h1>ok</h1>");
   fs.writeText("/web/rt/browser.js", "export const x = 1;");
+  const wasmBytes: Array<u8> = [u8(0x00), 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+  const wasmHdr = Vec.create<u8>(alloc, 8);
+  for (const b of wasmBytes) wasmHdr.push(b);
+  fs.writeBytes("/web/program.wasm", wasmHdr);
 
   let capturedReady = "";
   const onReady = (b: string): void => {
     capturedReady = b;
   };
 
-  const health = handleDesktopRequest(fs, "/web", "AQID", { method: "GET", path: "/api/health", query: "", headers: [], body: "" }, onReady);
+  const health = handleDesktopRequest(fs, alloc, "/web", { method: "GET", path: "/api/health", query: "", headers: [], body: "" }, onReady);
   t.eq(health.status, u16(200));
-  t.eq(health.body, "{\"ok\":true}");
+  t.eq(health.body, { kind: "text", value: "{\"ok\":true}" });
+  t.eq(health.headers[0].value, "application/json; charset=utf-8");
   t.eq(health.headers[1], { name: "cross-origin-opener-policy", value: "same-origin" });
   t.eq(health.headers[2], { name: "cross-origin-embedder-policy", value: "require-corp" });
 
-  const postHealth = handleDesktopRequest(fs, "/web", "AQID", { method: "POST", path: "/api/health", query: "", headers: [], body: "" }, onReady);
+  const postHealth = handleDesktopRequest(fs, alloc, "/web", { method: "POST", path: "/api/health", query: "", headers: [], body: "" }, onReady);
   t.eq(postHealth.status, u16(404));
 
-  const ready = handleDesktopRequest(fs, "/web", "AQID", { method: "POST", path: "/api/ready", query: "", headers: [], body: "{\"ok\":true}" }, onReady);
+  const ready = handleDesktopRequest(fs, alloc, "/web", { method: "POST", path: "/api/ready", query: "", headers: [], body: "{\"ok\":true}" }, onReady);
   t.eq(ready.status, u16(200));
+  t.eq(ready.body, { kind: "text", value: "{\"ok\":true}" });
   t.eq(capturedReady, "{\"ok\":true}");
 
-  const getReady = handleDesktopRequest(fs, "/web", "AQID", { method: "GET", path: "/api/ready", query: "", headers: [], body: "" }, onReady);
+  const getReady = handleDesktopRequest(fs, alloc, "/web", { method: "GET", path: "/api/ready", query: "", headers: [], body: "" }, onReady);
   t.eq(getReady.status, u16(404));
 
-  const b64 = handleDesktopRequest(fs, "/web", "AQID", { method: "GET", path: "/program.wasm.b64", query: "", headers: [], body: "" }, onReady);
-  t.eq(b64.status, u16(200));
-  t.eq(b64.body, "AQID");
+  const wasmRes = handleDesktopRequest(fs, alloc, "/web", { method: "GET", path: "/program.wasm", query: "", headers: [], body: "" }, onReady);
+  t.eq(wasmRes.status, u16(200));
+  t.eq(wasmRes.headers[0].value, "application/wasm");
+  t.eq(wasmRes.body, { kind: "bytes", value: wasmBytes });
 
-  const postB64 = handleDesktopRequest(fs, "/web", "AQID", { method: "POST", path: "/program.wasm.b64", query: "", headers: [], body: "" }, onReady);
-  t.eq(postB64.status, u16(404));
+  const missWasm = handleDesktopRequest(fs, alloc, "/web", { method: "GET", path: "/missing.wasm", query: "", headers: [], body: "" }, onReady);
+  t.eq(missWasm.status, u16(404));
+  t.eq(missWasm.body, { kind: "text", value: "not found" });
 
-  const idx = handleDesktopRequest(fs, "/web/", "AQID", { method: "GET", path: "/", query: "", headers: [], body: "" }, onReady);
+  const idx = handleDesktopRequest(fs, alloc, "/web/", { method: "GET", path: "/", query: "", headers: [], body: "" }, onReady);
   t.eq(idx.status, u16(200));
   t.eq(idx.headers[0].value, "text/html; charset=utf-8");
-  t.eq(idx.body, "<h1>ok</h1>");
+  t.eq(idx.body, { kind: "text", value: "<h1>ok</h1>" });
 
-  const jsFile = handleDesktopRequest(fs, "/web", "AQID", { method: "GET", path: "/rt/browser.js", query: "", headers: [], body: "" }, onReady);
+  const jsFile = handleDesktopRequest(fs, alloc, "/web", { method: "GET", path: "/rt/browser.js", query: "", headers: [], body: "" }, onReady);
   t.eq(jsFile.status, u16(200));
   t.eq(jsFile.headers[0].value, "application/javascript; charset=utf-8");
 
-  const bad = handleDesktopRequest(fs, "/web", "AQID", { method: "GET", path: "/../x", query: "", headers: [], body: "" }, onReady);
+  const bad = handleDesktopRequest(fs, alloc, "/web", { method: "GET", path: "/../x", query: "", headers: [], body: "" }, onReady);
   t.eq(bad.status, u16(400));
+  t.eq(bad.headers[0].value, "text/plain; charset=utf-8");
+  t.eq(bad.body, { kind: "text", value: "bad path" });
 
-  const miss = handleDesktopRequest(fs, "/web", "AQID", { method: "GET", path: "/missing.js", query: "", headers: [], body: "" }, onReady);
+  const miss = handleDesktopRequest(fs, alloc, "/web", { method: "GET", path: "/missing.js", query: "", headers: [], body: "" }, onReady);
   t.eq(miss.status, u16(404));
+  t.eq(miss.body, { kind: "text", value: "not found" });
 });

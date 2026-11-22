@@ -3,10 +3,27 @@ import { NodeFlags, SyntaxKind as K, hasMod, isId, isParamProp, type Node, type 
 import { Program, declBindings, legalUnion, type CStructSym, type ClassValueSym, type FnSym, type Layer, type LocalSym, type Module, type ValueSym } from "./modules.ts";
 import { PROMISE_CONTAINERS, assignTarget, checkTo, exprTypes, hasPromise, cond, expr, isLitOnly, localOf, promiseOk, usingInitExprs, type FnArgRef } from "./expr.ts";
 import {
-  ASYNC_DISPOSABLE, AUTHORITIES, DISPOSABLE, ERROR, NEVER, NULL, STR, VOID, assignable, hasAuthority, hasTParam, hasPtr, layerOk, crossOk, ptrTargetOk, field, isBool, isErr, isNull, isTaggedUnion, kindOf, nonNull, same, show, subst, bindTParams, unref, union, subUnion,
+  ASYNC_DISPOSABLE, AUTHORITIES, DISPOSABLE, ERROR, NEVER, NULL, STR, VOID, assignable, hasAuthority, hasTParam, hasPtr, layerOk, crossOk, ptrTargetOk, field, isBool, isErr, isInt, isNull, isTaggedUnion, kindOf, nonNull, parseExactInt, same, show, subst, bindTParams, unref, union, subUnion,
   type Capability, type ClassSym, type FnType, type TParam, type Type,
   hasLoneSurrogate,
 } from "./types.ts";
+
+export type CaseLit =
+  | { kind: "str"; value: string }
+  | { kind: "bool"; value: boolean }
+  | { kind: "int"; value: bigint }
+  | { kind: "float"; value: number };
+/** Resolved literal values for switch `case` expressions (bare literals or literal-initialized `const`s). */
+export const caseConstLits = new WeakMap<ts.Expression, CaseLit>();
+
+const caseKey = (lit: CaseLit): string => {
+  switch (lit.kind) {
+    case "str": return `s:${lit.value}`;
+    case "bool": return `b:${lit.value}`;
+    case "int": return `i:${lit.value}`;
+    case "float": return `f:${lit.value === 0 ? 0 : lit.value}`;
+  }
+};
 
 interface FnCtx {
   mod: Module;
@@ -46,6 +63,8 @@ export class Checker {
   scope = new Scope();
   /** Untyped `let x = <numeric literal>` locals by id, for the E2003 fix (SPEC §11). */
   litLets = new Map<number, ts.Identifier>();
+  /** Literal values bound to local `const` declarations by local sym id, for switch `case` resolution. */
+  localConstLits = new Map<number, CaseLit>();
   narrow = new Map<string, Type>();
   /** Q122: every local id whose narrowings were dropped, in order. A mark is an index into it. */
   kills: string[] = [];
@@ -728,6 +747,66 @@ export class Checker {
     checkTo(this, r.expression, unref(want)); // a `Ref` / `Mut` return type is P3's E3004 (§5.5)
   }
 
+  private resolveCaseLit(
+    e0: ts.Expression,
+    mod: Module,
+    wantType: Type,
+    localLookup: (name: string) => LocalSym | undefined,
+    visited = new Set<ts.Node>(),
+  ): CaseLit | undefined {
+    let e = e0;
+    while (e.kind === K.ParenthesizedExpression) e = (e as ts.ParenthesizedExpression).expression;
+    if (e.kind === K.StringLiteral) return { kind: "str", value: (e as ts.StringLiteral).text };
+    if (e.kind === K.TrueKeyword || e.kind === K.FalseKeyword) return { kind: "bool", value: e.kind === K.TrueKeyword };
+    let neg = false;
+    let nl: ts.NumericLiteral | undefined;
+    if (e.kind === K.NumericLiteral) {
+      nl = e as ts.NumericLiteral;
+    } else if (e.kind === K.PrefixUnaryExpression && (e as ts.PrefixUnaryExpression).operator === K.MinusToken) {
+      let op = (e as ts.PrefixUnaryExpression).operand;
+      while (op.kind === K.ParenthesizedExpression) op = (op as ts.ParenthesizedExpression).expression;
+      if (op.kind === K.NumericLiteral) {
+        neg = true;
+        nl = op as ts.NumericLiteral;
+      }
+    }
+    if (nl) {
+      const numT = wantType.k === "num" ? wantType : exprTypes.get(e);
+      if (numT?.k === "num" && isInt(numT)) {
+        const v = parseExactInt(nl.getText(mod.sf), neg);
+        return v === null ? undefined : { kind: "int", value: v };
+      }
+      const x0 = Number(nl.text.replace(/_/g, ""));
+      const x = neg ? -x0 : x0;
+      return { kind: "float", value: x === 0 ? 0 : x };
+    }
+    if (e.kind === K.Identifier) {
+      const id = e as ts.Identifier;
+      const loc = localLookup(id.text);
+      if (loc) return this.localConstLits.get(loc.id);
+      const sym = this.prog.lookupValue(mod, id.text);
+      if (sym?.k === "const" && !sym.bind && sym.decl.initializer && !visited.has(sym.decl)) {
+        visited.add(sym.decl);
+        return this.resolveCaseLit(sym.decl.initializer, sym.mod, sym.type, () => undefined, visited);
+      }
+      return undefined;
+    }
+    if (e.kind === K.PropertyAccessExpression) {
+      const p = e as ts.PropertyAccessExpression;
+      if (isId(p.expression) && !localLookup(p.expression.text)) {
+        const ns = mod.nsImports.get(p.expression.text);
+        if (ns && !ns.typeOnly) {
+          const sym = this.prog.lookupExportedValue(ns.mod, p.name.text);
+          if (sym?.k === "const" && !sym.bind && sym.decl.initializer && !visited.has(sym.decl)) {
+            visited.add(sym.decl);
+            return this.resolveCaseLit(sym.decl.initializer, sym.mod, sym.type, () => undefined, visited);
+          }
+        }
+      }
+    }
+    return undefined;
+  }
+
   private switchStmt(x: ts.SwitchStatement): boolean {
     const d = x.expression;
     const t = expr(this, d);
@@ -746,7 +825,12 @@ export class Checker {
     let reachEnd = false;
     const clauses = x.caseBlock.clauses;
     let fall: string[] = [];
-    const caseLits = new Set(clauses.flatMap((c) => (c.kind === K.CaseClause && (c as ts.CaseClause).expression.kind === K.StringLiteral ? [((c as ts.CaseClause).expression as ts.StringLiteral).text] : [])));
+    const caseLits = new Set<string>();
+    for (const c of clauses) {
+      if (c.kind !== K.CaseClause) continue;
+      const cl = this.resolveCaseLit((c as ts.CaseClause).expression, this.mod, t, (n) => this.scope.lookup(n));
+      if (cl?.kind === "str") caseLits.add(cl.value);
+    }
     const saved = this.narrow, m0 = this.mark();
     clauses.forEach((c, i) => {
       if (c.kind === K.DefaultClause) {
@@ -756,12 +840,16 @@ export class Checker {
       else {
         const e = (c as ts.CaseClause).expression;
         const lt = expr(this, e, t.k === "error" ? undefined : t);
-        const lit = e.kind === K.StringLiteral ? (e as ts.StringLiteral).text : isLitOnly(e) || e.kind === K.TrueKeyword || e.kind === K.FalseKeyword ? e.getText(this.mod.sf) : undefined;
+        const lit = this.resolveCaseLit(e, this.mod, t.k === "error" ? lt : t, (n) => this.scope.lookup(n));
         if (t.k !== "error" && lt.k !== "error") {
-          if (lit === undefined || !assignable(lt, t)) this.at("E2002", e, "case label must be a literal of the discriminant type");
-          else if (seen.has(lit)) this.at("E2002", e, "duplicate case label");
+          if (lit === undefined || !assignable(lt, t)) this.at("E2002", e, "case label must be a literal or literal constant of the discriminant type");
+          else if (seen.has(caseKey(lit))) this.at("E2002", e, "duplicate case label");
         }
-        if (lit !== undefined) { seen.add(lit); fall.push(lit); }
+        if (lit !== undefined) {
+          caseConstLits.set(e, lit);
+          seen.add(caseKey(lit));
+          if (lit.kind === "str") fall.push(lit.value);
+        }
       }
       this.restore(saved, m0); // Q122: a previous case may fall through after an assignment
       this.narrow = new Map(this.narrow);
@@ -793,11 +881,11 @@ export class Checker {
       if (i === clauses.length - 1) reachEnd = r;
     });
     this.restore(saved, m0);
-    const exhaustive = hasDefault || (!!labels && labels.every((l) => l.k === "lit" && seen.has(l.value))) || (isBool(t) && seen.has("true") && seen.has("false")); // Q254
+    const exhaustive = hasDefault || (!!labels && labels.every((l) => l.k === "lit" && seen.has(`s:${l.value}`))) || (isBool(t) && seen.has("b:true") && seen.has("b:false")); // Q254
     if (!exhaustive && t.k !== "error") {
       const missing = labels
-        ? labels.flatMap((l) => (l.k === "lit" && !seen.has(l.value) ? [l.value] : []))
-        : isBool(t) ? ["true", "false"].filter((v) => !seen.has(v)) : undefined;
+        ? labels.flatMap((l) => (l.k === "lit" && !seen.has(`s:${l.value}`) ? [l.value] : []))
+        : isBool(t) ? ["true", "false"].filter((v) => !seen.has(`b:${v}`)) : undefined;
       this.report("E2005", kw, kw + "switch".length, "switch is not exhaustive", missing?.length ? { missing } : undefined);
       if (missing?.length) {
         const d = this.prog.rep.out.at(-1);
@@ -866,8 +954,10 @@ export class Checker {
       }
       exprTypes.set(d.name, t); // the declared type, for the C backend (D102)
       if (isId(d.name)) {
+        const cl = !mutableDecl && !isUsing && init ? this.resolveCaseLit(init, this.mod, t, (n) => this.scope.lookup(n)) : undefined;
         const sym = this.declare(d.name, t, { mutable: mutableDecl });
         if (init && !d.type && t.k === "num" && isLitOnly(init)) this.litLets.set(sym.id, d.name);
+        if (cl) this.localConstLits.set(sym.id, cl);
       } else if (d.name.kind === K.ObjectBindingPattern) this.destructure(d.name as ts.ObjectBindingPattern, t);
       else if (d.name.kind === K.ArrayBindingPattern) this.destructureTuple(d.name as ts.ArrayBindingPattern, t, mutableDecl);
     }
