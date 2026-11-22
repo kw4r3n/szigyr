@@ -139,14 +139,40 @@ function runExternal(solver: SmtSolverInfo, script: string, timeoutMs: number): 
   });
 }
 
+const utf8 = new TextEncoder();
+
+async function evalWasmSmtLib2(wasm: Z3WasmModule, ctx: unknown, script: string): Promise<string> {
+  // z3-solver@5.4.1's eval_smtlib2_string passes str via ccall (stringToUTF8OnStack), which restores the Emscripten C stack before the async pthread reads it.
+  const em = wasm.em as {
+    _malloc?: (n: number) => number;
+    _free?: (p: number) => void;
+    HEAPU8?: Uint8Array;
+    async_call?: <T>(fn: () => void) => Promise<T>;
+    _async_Z3_eval_smtlib2_string?: (ctx: number, ptr: number) => void;
+  };
+  if (em._malloc && em._free && em.HEAPU8 && em.async_call && em._async_Z3_eval_smtlib2_string) {
+    const bytes = utf8.encode(`${script}\0`);
+    const ptr = em._malloc(bytes.length);
+    if (!ptr) throw new Error("z3-wasm: malloc failed");
+    em.HEAPU8.set(bytes, ptr);
+    try {
+      return await em.async_call<string>(() => em._async_Z3_eval_smtlib2_string!(ctx as number, ptr));
+    } finally {
+      em._free(ptr);
+    }
+  }
+  return await wasm.Z3.eval_smtlib2_string(ctx as Parameters<Z3WasmModule["Z3"]["eval_smtlib2_string"]>[0], script);
+}
+
 function runWasm(script: string): Promise<{ stdout: string; stderr: string; timedOut: boolean }> {
   const task = wasmQueue.then(async () => {
-    const { Z3 } = await getWasm();
+    const wasm = await getWasm();
+    const { Z3 } = wasm;
     const cfg = Z3.mk_config();
     const ctx = Z3.mk_context(cfg);
     Z3.del_config(cfg);
     try {
-      const stdout = await Z3.eval_smtlib2_string(ctx, script);
+      const stdout = await evalWasmSmtLib2(wasm, ctx, script);
       return { stdout, stderr: "", timedOut: false };
     } finally {
       Z3.del_context(ctx);
@@ -262,6 +288,10 @@ function parseBatchStatuses(stdout: string, count: number): { statuses: SmtStatu
     if (!line) continue;
     if (line === "unsat" || line === "sat" || line === "unknown") {
       statuses.push(line);
+    } else if (line.startsWith("(:reason-unknown")) {
+      if (statuses.at(-1) === "unknown" && /timeout|canceled/i.test(line)) {
+        statuses[statuses.length - 1] = "timeout";
+      }
     } else if (line.startsWith("(error")) {
       errors.push(line);
       statuses.push(/timeout|canceled/i.test(line) ? "timeout" : "error");
@@ -281,12 +311,13 @@ export async function runSmtBatch(
   const solver = detectSolver();
   const timeoutMs = opts.timeoutMs ?? 2000;
   const logic = opts.logic ?? "QF_LIA";
+  const isZ3 = solver.kind === "z3" || solver.kind === "z3-wasm";
   const run = (script: string) => (solver.kind === "z3-wasm" ? runWasm(script) : runExternal(solver, script, timeoutMs));
 
   const phase1 = [
     ...buildHeader(solver, logic, timeoutMs, false),
     preamble,
-    ...queries.map((q) => `(push 1)\n(assert ${q.assertion})\n(check-sat)\n(pop 1)`),
+    ...queries.map((q) => `(push 1)\n(assert ${q.assertion})\n(check-sat)${isZ3 ? "\n(get-info :reason-unknown)" : ""}\n(pop 1)`),
     "",
   ].join("\n");
 

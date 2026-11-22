@@ -822,4 +822,28 @@ export function runTool(tool: Tool): usize {
       expect(cFnBody(audio.relC.c, "fill")).toContain("sz_trap(4,");
     }
   }, 60_000);
+
+  it("classifies Z3 reason-unknown timeouts cleanly and avoids Wasm stack corruption across repeated queries", async () => {
+    const solver = detectSolver();
+    const tRes = await runSmtBatch(
+      "(declare-const x Int)\n(declare-const y Int)\n(declare-const z Int)",
+      [{ assertion: "(= (* x x x) (+ (* y y y) (* z z z) 42))" }],
+      { logic: "QF_NIA", timeoutMs: 1 },
+    );
+    if (solver.kind === "z3" || solver.kind === "z3-wasm") {
+      expect(tRes[0]!.status).toBe("timeout");
+    } else {
+      expect(["timeout", "unknown"]).toContain(tRes[0]!.status);
+    }
+
+    for (let i = 0; i < 20; i++) {
+      const pad = `; pad ${"x".repeat(i * 97)}`;
+      const res = await runSmtBatch(
+        `(declare-const x Int)\n${pad}`,
+        [{ assertion: "(and (> x -2147483648) (<= x 2147483647) (not (and (>= (- x) -2147483648) (<= (- x) 2147483647))))" }],
+        { logic: "QF_LIA", timeoutMs: 2000 },
+      );
+      expect(res[0]!.status).toBe("unsat");
+    }
+  });
 });

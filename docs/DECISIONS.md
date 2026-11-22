@@ -947,3 +947,19 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - **確かめ方**:
   - `std.test.ts`（`FakeFs` 親欠落 `ENOENT` / `addSymlink` 全操作、`FakeNet.stop`/`waitClosed`）・`tool-authorities.test.ts`（実 `nodeNet` 自己停止、`Url` Node/Browser E2E・`E4001`・`E6002`）・`workspace-tool-example.test.ts`（JS/C/Wasm 一致、`prove` 失敗/不明 0、`mutate` 生存 0、CLI `--`、`build --target=node --backend=c --release` 再配置・UTF-8 HTTP・Playwright Chromium UI・`/api/shutdown` 終了コード 0）がすべて通過。
   - 新規適合テスト `conformance/run/263-url-httpserver-stop-fakefs.szigyr`・`conformance/reject/E6002-fakefs-addsymlink-in-contract.szigyr` を追加し、`conformance/PASSING.txt` は 943 件（`accept=84 reject=643 run=216`）。
+
+## D179: `z3-wasm` 並列フレーク修正と外部プロジェクト向け導入整備（2026-11-22）
+
+- **前提**: D178 コミット（`45003af`）の検証中に、`pnpm test` 並列実行下で `prove.test.ts` の単純クエリ（`negSafe`）がまれに `unknown: 1` となる不安定性を観測した。また、別リポジトリの既存アプリを Szigyr で書き換える試験に向けて、外部ディレクトリからの CLI/MCP 実行導線と `README.md` を整える必要があった。
+- **`z3-wasm` 並列フレークの根本原因と修正（[smt.ts](../packages/compiler/src/smt.ts)）**:
+  - **原因 1（Emscripten C スタック解放後の読み取り）**: `z3-solver@5.4.1` の `Z3.eval_smtlib2_string(ctx, str)` は内部で `Mod.async_call(() => Mod.ccall("async_Z3_eval_smtlib2_string", "void", ["number", "string"], [c, str]))` を呼ぶ。`ccall` は入力文字列 `str` を C スタック（`stringToUTF8OnStack`）へ書き、async pthread を起動した直後に同期で `stackRestore` するため、並列 CPU 負荷下で pthread の SMT-LIB2 パース完了前にスタック上の文字列が上書きされ `(error "... unexpected character")` → `"unknown"` になることがあった。
+  - **原因 2（`:reason-unknown` 未分類）**: Z3 は `(set-option :timeout N)` に達すると `unknown` を返し理由を `(get-info :reason-unknown)` で出力するため、従来の行パーサでは時間切れも `"unknown"` に分類されていた。
+  - **対策**: `evalWasmSmtLib2` を追加し、Emscripten ヒープ（`_malloc` 後に最新の `HEAPU8` へ UTF-8+NUL をコピーし、`_async_Z3_eval_smtlib2_string` 完了後の `finally` で `_free`）を使う経路へ切り替え、Z3（`z3` / `z3-wasm`、非 `cvc5`）の各クエリ直後に `(get-info :reason-unknown)` を発行して `"timeout"` / `"canceled"` を `"timeout"` へ分類するよう修正した。
+- **外部プロジェクト導入の最小整備**:
+  - ルートの [`README.md`](../README.md) を新設し、前提環境・シンボリックリンクによる別プロジェクトからの実行手順・主要 CLI コマンド・`szigyr mcp` 設定例・`szigyr://spec` / `szigyr://builtins` 参照指針・実例を簡潔にまとめた。
+  - 既存の `packages/compiler/src/cli.ts`（`realpathSync` 対応シバン、`0755`）・`mcp.ts`（`import.meta.url` 相対仕様読込）・`bundle-npm.ts`（呼出元ファイル基準 `node_modules` 解決）が外部 `tsconfig.json` / `package.json` 共存下でもそのまま動作することを [`packages/compiler/test/external-project.test.ts`](../packages/compiler/test/external-project.test.ts) で E2E 固定した。
+- **確かめ方**:
+  - 過負荷ストレス試験（32 並列ワーカー × 5 回＋CPU バーナー 24 本での `prove()`）で異常 0 件（修正前は同条件・`eval_smtlib2_string` 直接負荷でスタック破壊エラー再現）。
+  - [`prove.test.ts`](../packages/compiler/test/prove.test.ts)（1 ms `QF_NIA` タイムアウト分類と直後 20 連続可変長 `QF_LIA` 検査を含む）10/10 通過、[`external-project.test.ts`](../packages/compiler/test/external-project.test.ts)（外部ディレクトリからの `check` / `query` / `test --backend=all` / `run --backend=all --` / `prove --all --strict` / `mutate --all --fail-on-survived` / `.szigyr-cache/{prove,mutate}.json` / `build --target=node --backend=c --release` 再配置実行 / `build --target=browser --release` / `mcp`）通過。
+  - `pnpm typecheck`、`pnpm verify:conformance`、`rtk bypass pnpm test`、`rtk bypass pnpm conformance`、`rtk bypass pnpm bench` すべて通過。
+
