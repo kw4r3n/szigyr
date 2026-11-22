@@ -652,3 +652,20 @@ it("supports --help / -h with exit 0 while forwarding -- --help to run args", ()
   const rRun = szigyr("run", f, "--", "--help", "-h");
   expect(rRun).toEqual({ code: 0, out: "--help,-h\n", err: "" });
 });
+
+it("forwards sys.log.warn and sys.log.error to stderr across run --backend=all", () => {
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-stderr-`));
+  const f = join(dir, "errlog.szigyr");
+  writeFileSync(f, `export function main(sys: System): void {
+  sys.log.info("ok-line");
+  sys.log.warn("warn-line");
+  sys.log.error("err-line");
+  sys.proc.setExitCode(2);
+}
+`);
+  const r = szigyr("run", "--backend=all", f);
+  expect(r).toEqual({ code: 2, out: "ok-line\n", err: "warn-line\nerr-line\n" });
+
+  const rJson = szigyr("run", "--json", "--backend=js", f);
+  expect(rJson).toEqual({ code: 2, out: "ok-line\n", err: "warn-line\nerr-line\n" });
+});

@@ -223,10 +223,13 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
     if (cmd === "prove") {
       let solver = "";
       let fnCount = 0, proved = 0, failed = 0, unknown = 0, timeout = 0, cached = 0;
+      const seen = new Set<string>();
       for (const f of files) {
-        const r = await prove(f, { cache: !noCache, all, parser, ...(timeoutMs !== undefined ? { timeoutMs } : {}) });
+        const analysis = all ? analyze(f, parser) : undefined;
+        const r = await prove(f, { cache: !noCache, all, parser, ...(analysis ? { analysis, skipFiles: seen } : {}), ...(timeoutMs !== undefined ? { timeoutMs } : {}) });
         if (r.diagnostics.length) { out(diags(r.diagnostics)); return 1; }
-        solver = r.solver;
+        if (analysis) for (const pf of analysis.files) seen.add(pf.path);
+        if (r.solver) solver = r.solver;
         fnCount += r.summary.functions;
         proved += r.summary.proved;
         failed += r.summary.failed;
@@ -302,8 +305,10 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
     if (cmd === "mutate") {
       let targets = 0, killed = 0, survived = 0, timeout = 0, cached = 0;
       const skipped: { fn: string; reason: string }[] = [];
+      const seen = new Set<string>();
       for (const f of files) {
-        const r = await mutate(f, { cache: !noCache, all, parser });
+        const analysis = all ? analyze(f, parser) : undefined;
+        const r = await mutate(f, { cache: !noCache, all, parser, ...(analysis ? { analysis, skipFiles: seen } : {}) });
         if (r.diagnostics.length) { out(diags(r.diagnostics)); return 1; }
         if (r.baselineFailure) {
           const bf = r.baselineFailure;
@@ -312,6 +317,7 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
             : `FAIL baseline ${bf.name}: ${bf.failure}${bf.pos ? ` (${bf.pos.file}:${bf.pos.line}:${bf.pos.col})` : ""}\n`);
           return 1;
         }
+        if (analysis) for (const pf of analysis.files) seen.add(pf.path);
         targets += r.summary.targets;
         killed += r.summary.killed;
         survived += r.summary.survived;
@@ -351,12 +357,13 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
         rs.push(cur);
       }
       const r = rs[0]!;
-      if (rs.length >= 2 && rs.some((cur) => JSON.stringify([cur.stdout, cur.trap, cur.exitCode ?? 0]) !== JSON.stringify([r.stdout, r.trap, r.exitCode ?? 0]))) { // D101: --backend=both / --backend=all
+      const runKey = (x: RunResult) => JSON.stringify([x.stdout, x.stderr ?? "", x.trap, x.exitCode ?? 0]);
+      if (rs.length >= 2 && rs.some((cur) => runKey(cur) !== runKey(r))) { // D101: --backend=both / --backend=all
         if (json) {
-          const byBackend = Object.fromEntries(backends.map((b, k) => [b, { stdout: rs[k]!.stdout, trap: rs[k]!.trap, exitCode: rs[k]!.exitCode ?? 0 }]));
+          const byBackend = Object.fromEntries(backends.map((b, k) => [b, { stdout: rs[k]!.stdout, stderr: rs[k]!.stderr ?? "", trap: rs[k]!.trap, exitCode: rs[k]!.exitCode ?? 0 }]));
           err(line({ kind: "mismatch", ...byBackend }));
         } else {
-          const fmt = (x: RunResult) => `stdout=${JSON.stringify(x.stdout)} exitCode=${x.exitCode ?? 0} trap=${x.trap ? `${x.trap.code}@${x.trap.file}:${x.trap.line}:${x.trap.col}` : "none"}`;
+          const fmt = (x: RunResult) => `stdout=${JSON.stringify(x.stdout)} stderr=${JSON.stringify(x.stderr ?? "")} exitCode=${x.exitCode ?? 0} trap=${x.trap ? `${x.trap.code}@${x.trap.file}:${x.trap.line}:${x.trap.col}` : "none"}`;
           const label = backends.length === 2 ? "js and c" : "js, c, and wasm";
           const pad = Math.max(...backends.map((b) => b.length)) + 1;
           err(`mismatch between ${label} backends:\n${backends.map((b, k) => `  ${(`${b}:`).padEnd(pad)} ${fmt(rs[k]!)}`).join("\n")}\n`);
@@ -364,6 +371,7 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
         return 1;
       }
       out(r.stdout);
+      if (r.stderr) err(r.stderr);
       if (!r.trap) return r.exitCode ?? 0;
       const { code, file, line: l, col, message } = r.trap;
       err(json ? line({ kind: "trap", code, file, range: { start: { line: l, col }, end: { line: l, col } }, ...(message ? { message } : {}) }) : `trap ${code} at ${file}:${l}:${col}\n${message ? `${message}\n` : ""}`);

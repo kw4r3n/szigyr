@@ -418,3 +418,17 @@ it("enforces explicit capability bounds and intersection constraints (SPEC-v1 §
     ].join("\n"),
   })).toEqual([]);
 });
+
+it("E2002 suggests >>> for unsigned >> and >> for signed >>>", () => {
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-shift-`));
+  const f = join(dir, "main.szigyr");
+  writeFileSync(f, `function badShifts(a: u32, b: i32): i32 {
+  const x = a >> 1;
+  return b >>> 1;
+}
+`);
+  const ds = check(f);
+  expect(ds).toHaveLength(2);
+  expect(ds[0]).toMatchObject({ code: "E2002", message: expect.stringContaining(">>>") });
+  expect(ds[1]).toMatchObject({ code: "E2002", message: expect.stringContaining(">>") });
+});

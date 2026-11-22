@@ -49,6 +49,8 @@ export interface ProveOptions {
   readonly timeoutMs?: number;
   readonly analysis?: Analysis;
   readonly parser?: Parser;
+  /** Canonical paths already proved in an earlier CLI entry file under `--all`. */
+  readonly skipFiles?: ReadonlySet<string>;
 }
 
 export interface ProveResult {
@@ -2503,13 +2505,14 @@ export async function proveFile(entryFile: string, opts: ProveOptions = {}): Pro
   for (const f of decls.fns) contracts.set(f, extractContracts(f));
 
   const fnParamCount = (f: FnSym): number => f.sig.params.filter((p) => unref(p).k === "fn").length;
-  const targets = decls.fns.filter((f) => {
+  const allTargets = decls.fns.filter((f) => {
     if (f.mod.pf.path === DETMATH_PATH) return false;
     if (!opts.all && canonPath(f.mod.pf.path) !== entryPath) return false;
     if (f.unsafe || f.sig.tparams.length > 0 || fnParamCount(f) > 0) return false;
     return f.layer !== "managed" || hasContractOrLoop(f);
   });
-  const exposed = findExposedCallees(decls, new Set(targets));
+  const targets = opts.skipFiles ? allTargets.filter((f) => !opts.skipFiles!.has(f.mod.pf.path)) : allTargets;
+  const exposed = findExposedCallees(decls, new Set(allTargets));
 
   const rtSiteCache = new Map<Module, Record<string, TrapSite[]>>();
   const getRtSites = (mod: Module, fnName: string): TrapSite[] => {

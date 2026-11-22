@@ -981,4 +981,37 @@ export function badBitNarrow(x: u32): u8 {
     expect(badProve.summary.failed).toBe(0);
     expect(badProve.summary.unknown).toBe(1);
   });
+
+  it("proves in-range integer literal casts (u32(1), u8(0xff), i32(-4), usize(2)) and deduplicates prove --all across CLI files", async () => {
+    const { dir } = makeTmp("szigyr-intlit-");
+    const lib = writeTmpFile(dir, "lib.szigyr", `"use owned";
+export function maskBit(bit: u8): u8 {
+  requires(bit < 8);
+  ensures((r: u8) => r <= 255);
+  return u8((u32(1) << u32(bit)) & u32(0xff)) ^ u8(0xff);
+}
+export function offsetNeg(): i32 {
+  "use rt";
+  ensures((r: i32) => r === -2);
+  return i32(-4) + i32(usize(2));
+}
+`);
+    const app = writeTmpFile(dir, "main.szigyr", `import { maskBit, offsetNeg } from "./lib.szigyr";
+export function entryFn(b: u8): i32 {
+  requires(b < 8);
+  return i32(maskBit(b)) + offsetNeg();
+}
+`);
+
+    const pBoth = await runCli(["prove", "--all", "--strict", "--no-cache", "--json", lib, app]);
+    expect(pBoth.code, pBoth.out + pBoth.err).toBe(0);
+    const linesBoth = jsonLines(pBoth.out);
+    const fnsBoth = linesBoth.filter((l) => l.kind === "prove-fn").map((l) => l.fn).sort();
+    expect(fnsBoth).toEqual(["entryFn", "maskBit", "offsetNeg"]);
+    expect(linesBoth.find((l) => l.kind === "prove-summary")).toMatchObject({ functions: 3, failed: 0, unknown: 0, timeout: 0 });
+
+    const pRev = await runCli(["prove", "--all", "--strict", "--no-cache", "--json", app, lib]);
+    expect(pRev.code, pRev.out + pRev.err).toBe(0);
+    expect(jsonLines(pRev.out).find((l) => l.kind === "prove-summary")).toMatchObject({ functions: 3, failed: 0, unknown: 0, timeout: 0 });
+  });
 });

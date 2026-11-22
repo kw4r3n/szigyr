@@ -349,9 +349,9 @@ export function checkMain(decls: Decls, entryFile: string): void {
 export const run = (entryFile: string, opts: RunOptions = {}): Promise<RunResult> => exclusive(() => runNow(entryFile, opts.backend, opts.analysis, opts.args, opts.parser));
 async function runNow(entryFile: string, backend?: Backend, analysis?: Analysis, args?: readonly string[], parser?: Parser): Promise<RunResult> {
   const a = analysis ?? analyze(entryFile, parser);
-  if (a.diagnostics.length) return { diagnostics: a.diagnostics, stdout: "", trap: null };
+  if (a.diagnostics.length) return { diagnostics: a.diagnostics, stdout: "", stderr: "", trap: null };
   const e4009 = backend !== "c" ? cOnlyDiagnostic(a.files, a.unsafeOps ?? []) : undefined; // §14.7
-  if (e4009) return { diagnostics: [e4009], stdout: "", trap: null };
+  if (e4009) return { diagnostics: [e4009], stdout: "", stderr: "", trap: null };
   checkMain(a.decls!, entryFile);
   const { ex, native } = await loadChecked(a.files, entryFile, false, a.decls, backend);
   const main = ex.main;
@@ -379,7 +379,7 @@ async function runNow(entryFile: string, backend?: Backend, analysis?: Analysis,
   // Only stack exhaustion outside any source call (Q035) has no position.
   const own = r.trap ? { code: r.trap.code, file: r.trap.pos?.file ?? "", line: r.trap.pos?.line ?? 0, col: r.trap.pos?.col ?? 0, ...(isolateCause && r.trap.message === `${r.trap.code}: ${isolateCause}` ? { message: isolateCause } : {}) } : null;
   const trap = own ? (c ?? own) : (iso ?? c);
-  return { diagnostics: [], stdout: r.stdout, trap, exitCode: trap ? 3 : (r.exitCode ?? 0) };
+  return { diagnostics: [], stdout: r.stdout, stderr: r.stderr, trap, exitCode: trap ? 3 : (r.exitCode ?? 0) };
 }
 
 /** `szigyr test`: checks, emits `test(...)` calls (entry file or `--all` imported files) and runs them in order (§9.2, D022). */

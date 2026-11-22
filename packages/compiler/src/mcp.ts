@@ -240,20 +240,20 @@ async function handleWorker(req: WorkerReq, parser: Parser): Promise<[unknown, b
       for (const b of backends) {
         const r = await run(req.file, { backend: b, analysis });
         if (r.diagnostics.length) {
-          return [{ ok: false, file: req.file, backend: req.backend, diagnostics: r.diagnostics, stdout: "", durationMs: ms() }];
+          return [{ ok: false, file: req.file, backend: req.backend, diagnostics: r.diagnostics, stdout: "", stderr: "", durationMs: ms() }];
         }
         rs.push(r);
       }
       const r0 = rs[0]!;
       let mismatch: unknown;
       if (rs.length >= 2) {
-        const key0 = JSON.stringify([r0.stdout, r0.trap, r0.exitCode ?? 0]);
-        if (rs.slice(1).some((rk) => JSON.stringify([rk.stdout, rk.trap, rk.exitCode ?? 0]) !== key0)) {
-          mismatch = Object.fromEntries(backends.map((b, i) => [b, { stdout: rs[i]!.stdout, trap: rs[i]!.trap, exitCode: rs[i]!.exitCode ?? 0 }]));
+        const key0 = JSON.stringify([r0.stdout, r0.stderr ?? "", r0.trap, r0.exitCode ?? 0]);
+        if (rs.slice(1).some((rk) => JSON.stringify([rk.stdout, rk.stderr ?? "", rk.trap, rk.exitCode ?? 0]) !== key0)) {
+          mismatch = Object.fromEntries(backends.map((b, i) => [b, { stdout: rs[i]!.stdout, stderr: rs[i]!.stderr ?? "", trap: rs[i]!.trap, exitCode: rs[i]!.exitCode ?? 0 }]));
         }
       }
       const ok = !mismatch && !r0.trap;
-      return [{ ok, file: req.file, backend: req.backend, diagnostics: [], stdout: r0.stdout, exitCode: r0.exitCode ?? 0, ...(r0.trap ? { trap: r0.trap } : {}), ...(mismatch ? { mismatch } : {}), durationMs: ms() }];
+      return [{ ok, file: req.file, backend: req.backend, diagnostics: [], stdout: r0.stdout, stderr: r0.stderr ?? "", exitCode: r0.exitCode ?? 0, ...(r0.trap ? { trap: r0.trap } : {}), ...(mismatch ? { mismatch } : {}), durationMs: ms() }];
     }
     if (req.op === "prove") {
       const useCache = !req.noCache && req.content === undefined && req.overlays === undefined;

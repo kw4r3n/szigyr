@@ -1109,4 +1109,33 @@ test("clamps", (t: Test) => {
     const varElseIfOps = r.mutants.filter((m) => m.fn === "varElseIfClamp").map((m) => m.op);
     expect(varElseIfOps).toContain("< -> <=");
   });
+
+  it("deduplicates imported modules under mutate --all across multiple CLI file arguments", () => {
+    const { dir, file: lib } = tmpFile("lib.szigyr", `export function inc(x: i32): i32 {
+  return x + 1;
+}
+test("inc", (t: Test) => {
+  t.eq(inc(2), 3);
+});
+`);
+    const app = join(dir, "main.szigyr");
+    writeFileSync(app, `import { inc } from "./lib.szigyr";
+export function dec(x: i32): i32 {
+  return inc(x) - 2;
+}
+test("dec", (t: Test) => {
+  t.eq(dec(5), 4);
+});
+`);
+    const one = szigyr(dir, "mutate", "--all", "--no-cache", "--fail-on-survived", "--json", app);
+    const two = szigyr(dir, "mutate", "--all", "--no-cache", "--fail-on-survived", "--json", lib, app);
+    const rev = szigyr(dir, "mutate", "--all", "--no-cache", "--fail-on-survived", "--json", app, lib);
+    for (const res of [one, two, rev]) {
+      expect(res.code, res.out + res.err).toBe(0);
+    }
+    const sum = (r: { out: string }) => jsonLines(r.out).find((l) => l.kind === "summary");
+    expect(sum(two)).toEqual(sum(one));
+    expect(sum(rev)).toEqual(sum(one));
+    expect(sum(two)).toMatchObject({ targets: 2, survived: 0 });
+  });
 });

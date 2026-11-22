@@ -79,6 +79,8 @@ export interface MutateOptions {
   parser?: Parser;
   /** Pre-computed analysis. */
   analysis?: Analysis;
+  /** Canonical paths already mutated in an earlier CLI entry file under `--all`. */
+  skipFiles?: ReadonlySet<string>;
 }
 
 /** Thrown by `c:` import stubs and `"use unsafe"` stubs during JS-only mutation execution (Q275). */
@@ -125,7 +127,9 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
   const entryPath = canonPath(entryFile);
   const entryMod = decls.mods.find((m) => m.pf.path === entryPath)!;
   const entryDisplay = displayPath(entryPath);
-  const targetMods = opts.all ? decls.mods.filter((m) => m.pf.path !== DETMATH_PATH) : [entryMod];
+  const allMods = opts.all ? decls.mods.filter((m) => m.pf.path !== DETMATH_PATH) : [entryMod];
+  const targetMods = opts.skipFiles ? allMods.filter((m) => !opts.skipFiles!.has(m.pf.path)) : allMods;
+  if (opts.all && targetMods.length === 0) return { diagnostics: [], baselineFailure: null, mutants: [], summary: emptySummary };
   const targetModSet = new Set(targetMods);
 
   // SPEC-v1 §7: target functions and class methods are safe, do not take Test, and pass isMutatable.
@@ -291,7 +295,7 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
   };
   const loadRejected = await rt.capturing(async () => {
     instantiate(entryPath);
-    for (const m of targetMods) instantiate(m.pf.path);
+    for (const m of allMods) instantiate(m.pf.path);
   });
   if (loadRejected.length) throw loadRejected[0];
 
@@ -303,7 +307,7 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
 
   // Map top-level `test(...)` statements in included modules to AST nodes and source text (1-to-1 with registeredTests, §1 / §9.2).
   const testAstsByFile = new Map<string, { source: string; node: Node; mod: Module }[]>();
-  for (const mod of opts.all ? targetMods : [entryMod]) {
+  for (const mod of allMods) {
     const list: { source: string; node: Node; mod: Module }[] = [];
     for (const s of mod.sf.statements) {
       if (s.kind === K.ExpressionStatement) {

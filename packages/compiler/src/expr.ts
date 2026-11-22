@@ -749,7 +749,11 @@ function bitOp(c: Checker, op: Node, kind: K, lt: Type, rt: Type): Type {
     ? ["i32", "u32", "i64", "u64"]
     : ["u8", "u16", "i32", "u32", "i64", "u64"];
   if (!isNum(lt) || !isNum(rt) || !okTypes.includes(lt.name)) {
-    c.at("E2002", op, `bit operator cannot be applied to '${show(lt)}' and '${show(rt)}'`);
+    const hint = !isNum(lt) || !isNum(rt) ? ""
+      : kind === K.GreaterThanGreaterThanToken && ["u32", "u64"].includes(lt.name) ? "; use '>>>' for unsigned right shift"
+      : kind === K.GreaterThanGreaterThanGreaterThanToken && ["i32", "i64"].includes(lt.name) ? "; use '>>' for signed right shift"
+      : "";
+    c.at("E2002", op, `bit operator cannot be applied to '${show(lt)}' and '${show(rt)}'${hint}`);
     return ERROR;
   }
   return lt;
@@ -1653,7 +1657,7 @@ function fnArgRef(c: Checker, a: ts.Expression, target: Layer): { ref: FnArgRef;
   return undefined;
 }
 
-function exactInt64Lit(c: Checker, e: ts.Expression, target: "i64" | "u64"): boolean {
+function exactIntLit(c: Checker, e: ts.Expression, target: NumName): boolean {
   let cur = e;
   while (cur.kind === K.ParenthesizedExpression) cur = (cur as ts.ParenthesizedExpression).expression;
   let neg = false;
@@ -1678,7 +1682,7 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
   if ((NUM_NAMES as readonly string[]).includes(name)) { // conversions (§3.1, Q034)
     if (!arity(1)) return ERROR;
     const target = name as NumName;
-    const wantArg = isInt64(target) && exactInt64Lit(c, args[0]!, target) ? num(target) : undefined;
+    const wantArg = isInt(num(target)) && exactIntLit(c, args[0]!, target) ? num(target) : undefined;
     const t = expr(c, args[0]!, wantArg);
     if (!isErr(t) && !isNum(t)) c.at("E2002", args[0]!, `cannot convert '${show(t)}'`);
     return num(target);

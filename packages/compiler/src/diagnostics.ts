@@ -12,4 +12,4 @@ export interface Diagnostic {
   fixes?: Fix[];
 }
 export interface Trap { code: string; file: string; line: number; col: number; message?: string }
-export interface RunResult { diagnostics: Diagnostic[]; stdout: string; trap: Trap | null; exitCode?: number }
+export interface RunResult { diagnostics: Diagnostic[]; stdout: string; stderr?: string; trap: Trap | null; exitCode?: number }
