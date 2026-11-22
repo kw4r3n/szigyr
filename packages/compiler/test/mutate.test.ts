@@ -1047,4 +1047,66 @@ test("ops", (t: Test) => {
     const badMutants = r.mutants.filter((m) => m.fn === "emptyOrMismatch");
     expect(badMutants.some((m) => m.op === ">= -> >" && m.status === "survived")).toBe(true);
   });
+
+  it("auto-skips < -> <= and > -> >= on element-access standalone clamps and literal-bound else-if clamps", async () => {
+    const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-clamp-elem-`));
+    const f = join(dir, "main.szigyr");
+    writeFileSync(f, `function standaloneClamp(data: Mut<Slice<u8>>, lo: u8, hi: u8): void {
+  "use rt";
+  for (let i: usize = 0; i < data.length; i += 1) {
+    if (data[i] < lo) data[i] = lo;
+    if (data[i] > hi) data[i] = hi;
+  }
+}
+function litElseIfClamp(data: Mut<Slice<u8>>): void {
+  "use rt";
+  for (let i: usize = 0; i < data.length; i += 1) {
+    if (data[i] < 10) {
+      data[i] = 10;
+    } else if (data[i] > 200) {
+      data[i] = 200;
+    }
+  }
+}
+function varElseIfClamp(x: i32, lo: i32, hi: i32): i32 {
+  "use rt";
+  if (x < lo) {
+    x = lo;
+  } else if (x > hi) {
+    x = hi;
+  }
+  return x;
+}
+test("clamps", (t: Test) => {
+  const a = TestAlloc.create();
+  const v = Vec.create<u8>(a, 3);
+  v.push(5); v.push(50); v.push(250);
+  standaloneClamp(v, 10, 200);
+  litElseIfClamp(v);
+  t.eq(v[0], 10);
+  t.eq(v[1], 50);
+  t.eq(v[2], 200);
+  t.eq(varElseIfClamp(0, 10, 200), 10);
+  t.eq(varElseIfClamp(300, 10, 200), 200);
+  t.eq(varElseIfClamp(50, 10, 200), 50);
+});
+`);
+    const r = await mutate(f, { cache: false });
+    expect(r.diagnostics).toEqual([]);
+    expect(r.baselineFailure).toBeNull();
+    const standaloneClampOps = r.mutants
+      .filter((m) => m.fn === "standaloneClamp" && (m.range.start.line === 4 || m.range.start.line === 5))
+      .map((m) => m.op);
+    expect(standaloneClampOps).not.toContain("< -> <=");
+    expect(standaloneClampOps).not.toContain("> -> >=");
+
+    const litElseIfOps = r.mutants
+      .filter((m) => m.fn === "litElseIfClamp" && (m.range.start.line === 11 || m.range.start.line === 13))
+      .map((m) => m.op);
+    expect(litElseIfOps).not.toContain("< -> <=");
+    expect(litElseIfOps).not.toContain("> -> >=");
+
+    const varElseIfOps = r.mutants.filter((m) => m.fn === "varElseIfClamp").map((m) => m.op);
+    expect(varElseIfOps).toContain("< -> <=");
+  });
 });

@@ -507,6 +507,7 @@ reject/E3005-mut-and-ref-same-variable.szigyr
 reject/E3005-mut-borrow-inside-argument.szigyr
 reject/E3005-mut-borrow-inside-index-of-assignment.szigyr
 reject/E3005-mut-borrow-inside-slice-bound.szigyr
+reject/E3005-owned-cell-callback-outer-conflict.szigyr
 reject/E3005-pool-get-and-mut-inside-argument.szigyr
 reject/E3005-pool-has-and-mut-inside-argument.szigyr
 reject/E3005-pool-mut-and-ref.szigyr
@@ -943,6 +944,7 @@ run/269-phase3-result-owned-and-cell-borrow.szigyr
 run/27-trap-ownedcell-empty.szigyr
 run/270-vec-filled-string-repeat-forall.szigyr
 run/271-vec-filled-oom-trap.szigyr
+run/272-u8-u16-bitwise-and-nested-cell-borrow.szigyr
 run/28-trap-shift-range.szigyr
 run/29-trap-invariant.szigyr
 run/30-int-no-negative-zero.szigyr

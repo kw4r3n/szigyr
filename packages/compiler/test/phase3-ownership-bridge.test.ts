@@ -243,4 +243,77 @@ describe("Phase 3: Result<Owned, E> and OwnedCell.withRef / withMut", () => {
       { name: "Port carrying Result<Owned, string>", ok: true },
     ]);
   });
+
+  it("permits Ref/Mut capture inside sync OwnedCell withRef/withMut callbacks while enforcing E3005, E3006, and escaping E3004", async () => {
+    const dir = makeTmp();
+    const okFile = writeTmp(
+      dir,
+      "nested-cell.szigyr",
+      [
+        `type BufBox = Struct<{ data: Vec<u8>; tag: u32 }>;`,
+        ``,
+        `function sumPair(a: Ref<BufBox>, b: Ref<BufBox>): u32 {`,
+        `  "use rt";`,
+        `  return a.tag + b.tag + u32(a.data.length + b.data.length);`,
+        `}`,
+        ``,
+        `function copyInto(src: Ref<BufBox>, dst: Mut<BufBox>): void {`,
+        `  "use rt";`,
+        `  dst.tag = src.tag;`,
+        `  for (let i: usize = 0; i < src.data.length && i < dst.data.length; i += 1) {`,
+        `    dst.data[i] = src.data[i];`,
+        `  }`,
+        `}`,
+        ``,
+        `export function main(sys: System): void {`,
+        `  const va = Vec.filled<u8>(sys.alloc, 3, 7);`,
+        `  const vb = Vec.filled<u8>(sys.alloc, 2, 1);`,
+        `  const cellA = OwnedCell.create<BufBox>({ data: va, tag: 10 });`,
+        `  const cellB = OwnedCell.create<BufBox>({ data: vb, tag: 20 });`,
+        `  const total = cellA.withRef((a: Ref<BufBox>): u32 =>`,
+        `    cellB.withRef((b: Ref<BufBox>): u32 => sumPair(a, b)),`,
+        `  );`,
+        `  cellB.withMut((dst: Mut<BufBox>): void => {`,
+        `    cellA.withRef((src: Ref<BufBox>): void => { copyInto(src, dst); });`,
+        `  });`,
+        `  const checkTag = cellB.withRef((b: Ref<BufBox>): u8 => u8(b.tag) + b.data[0]);`,
+        `  sys.log.info(\`\${total}:\${checkTag}\`);`,
+        `}`,
+      ].join("\n"),
+    );
+
+    expect(check(okFile)).toEqual([]);
+    for (const backend of ["js", "c", "wasm"] as const) {
+      const r = await run(okFile, { backend });
+      expect(r.diagnostics).toEqual([]);
+      expect(r.trap).toBeNull();
+      expect(r.stdout.trim()).toBe("35:17");
+    }
+
+    const conflictFile = writeTmp(
+      dir,
+      "nested-conflict.szigyr",
+      [
+        `type NumBox = Struct<{ a: i32; b: i32 }>;`,
+        `function takeTwo(s: Ref<Slice<i32>>, x: usize): usize { return s.length + x; }`,
+        `function badSliceCall(m: Mut<Vec<i32>>, cell: OwnedCell<Vec<i32>>): usize {`,
+        `  return takeTwo(m.slice(0, 2), cell.withRef((_r): usize => { m.push(1); return 0; }));`,
+        `}`,
+        `function badAssignRhs(s: Mut<NumBox>, cell: OwnedCell<Vec<i32>>): void {`,
+        `  s.a = cell.withRef((_r): i32 => { s.a = 2; return 1; });`,
+        `}`,
+        `function badMutRef(r: Ref<Vec<i32>>, cell: OwnedCell<Vec<i32>>): usize {`,
+        `  return cell.withRef((_c): usize => { r.push(1); return 0; });`,
+        `}`,
+        `function badEscape(r: Ref<Vec<i32>>, cell: OwnedCell<Vec<i32>>): () => usize {`,
+        `  return cell.withRef((_c) => (): usize => r.length);`,
+        `}`,
+      ].join("\n"),
+    );
+    const diags = check(conflictFile).map((d) => `${d.range.start.line}:${d.code}`);
+    expect(diags).toContain("4:E3005");
+    expect(diags).toContain("7:E3005");
+    expect(diags).toContain("10:E3006");
+    expect(diags).toContain("13:E3004");
+  });
 });

@@ -934,4 +934,51 @@ export function directFilledLen(alloc: Alloc, n: usize): usize {
     const emitted = emitC(analysis.decls!, "native", { proved: pRes.proved })!;
     expect(cFnBody(emitted.c, "rampFilled")).not.toContain("sz_chk(");
   });
+
+  it("proves unsigned u8/u16/u32 bitwise ops and narrowing while keeping unbounded u32 xor unknown", async () => {
+    const { dir, cacheFile } = makeTmp();
+    const okSrc = `
+export function xorU8Slice(data: Mut<Slice<u8>>, mask: u8): void {
+  "use rt";
+  for (let i: usize = 0; i < data.length; i += 1) {
+    data[i] ^= mask;
+  }
+}
+
+export function xorWidenedU8(a: u8, b: u8): u8 {
+  "use rt";
+  return u8(u32(a) ^ u32(b));
+}
+
+export function orWidenedU16(a: u16, b: u16): u16 {
+  "use rt";
+  return u16(u32(a) | u32(b));
+}
+
+export function maskedByte(x: u32): u8 {
+  "use rt";
+  return u8(x & 255);
+}
+`;
+    const okFile = writeTmpFile(dir, "unsigned-bit.szigyr", okSrc);
+    const analysis = analyze(okFile, parser);
+    expect(analysis.diagnostics).toEqual([]);
+    const pRes = await prove(okFile, { analysis, cacheFile, parser });
+    expect(pRes.diagnostics).toEqual([]);
+    expect(pRes.summary.failed).toBe(0);
+    expect(pRes.summary.unknown).toBe(0);
+    expect(pRes.summary.proved).toBeGreaterThan(0);
+
+    const badFile = writeTmpFile(dir, "unbounded-xor.szigyr", `
+export function badBitNarrow(x: u32): u8 {
+  "use rt";
+  return u8(x ^ 1);
+}
+`);
+    const badAnalysis = analyze(badFile, parser);
+    expect(badAnalysis.diagnostics).toEqual([]);
+    const badProve = await prove(badFile, { analysis: badAnalysis, cache: false, parser });
+    expect(badProve.summary.failed).toBe(0);
+    expect(badProve.summary.unknown).toBe(1);
+  });
 });

@@ -90,6 +90,7 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
   const parseOpts = (raw: string[]) => parseArgs({
     args: raw, allowPositionals: true,
     options: {
+      help: { type: "boolean", short: "h" },
       json: { type: "boolean" },
       watch: { type: "boolean", short: "w" },
       fix: { type: "boolean" },
@@ -113,6 +114,10 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
   } catch (e) {
     err(rawJson ? `${JSON.stringify({ kind: "error", code: "CLI_USAGE", message: (e as Error).message, usage: USAGE })}\n` : `${(e as Error).message}\n${USAGE}\n`);
     return 2;
+  }
+  if (args.values.help) {
+    out(`${USAGE}\n`);
+    return 0;
   }
   const [cmd, ...files] = args.positionals;
   const progArgs = dashIdx >= 0 && cmd === "run" ? argv.slice(dashIdx + 1) : [];

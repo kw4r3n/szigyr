@@ -635,3 +635,20 @@ export function main(sys: System): void {
   expect(rTrap.code).toBe(3);
   expect(rTrap.err).toContain("T006");
 });
+
+it("supports --help / -h with exit 0 while forwarding -- --help to run args", () => {
+  const hLong = szigyr("--help");
+  expect(hLong.code).toBe(0);
+  expect(hLong.out).toContain("usage:");
+  expect(hLong.err).toBe("");
+
+  const hShort = szigyr("check", "-h");
+  expect(hShort.code).toBe(0);
+  expect(hShort.out).toContain("usage:");
+
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-help-`));
+  const f = join(dir, "args.szigyr");
+  writeFileSync(f, `export function main(sys: System): void {\n  sys.log.info(sys.proc.args().join(","));\n}\n`);
+  const rRun = szigyr("run", f, "--", "--help", "-h");
+  expect(rRun).toEqual({ code: 0, out: "--help,-h\n", err: "" });
+});

@@ -175,6 +175,10 @@ export function emitFile(
     if (e.kind === K.Identifier || e.kind === K.NumericLiteral || e.kind === K.ThisKeyword) return true;
     if (isNegNumLit(e)) return true;
     if (e.kind === K.PropertyAccessExpression) return isSimplePureExpr((e as ts.PropertyAccessExpression).expression);
+    if (e.kind === K.ElementAccessExpression) {
+      const ea = e as ts.ElementAccessExpression;
+      return isSimplePureExpr(ea.expression) && isSimplePureExpr(ea.argumentExpression);
+    }
     if (e.kind === K.CallExpression) {
       const ce = e as ts.CallExpression;
       return isId(ce.expression) && NUM_SET.has(ce.expression.text) && ce.arguments.length === 1 && isNegNumLit(unwrapParens(ce.arguments[0]!));
@@ -212,40 +216,60 @@ export function emitFile(
       if (lInt && isZeroLit(R) && ((samePureExpr(T, L) && isNegOf(F, L)) || (samePureExpr(F, L) && isNegOf(T, L)))) return true;
       return false;
     }
-    if (parent.kind === K.IfStatement && !(parent as ts.IfStatement).elseStatement && unwrapParens((parent as ts.IfStatement).expression) === cur) {
+    if (parent.kind === K.IfStatement && unwrapParens((parent as ts.IfStatement).expression) === cur) {
       const ifs = parent as ts.IfStatement, ts1 = singleStmt(ifs.thenStatement);
       if (!ts1) return false;
-      if (ts1.kind === K.ExpressionStatement) {
-        const ex = unwrapParens((ts1 as ts.ExpressionStatement).expression);
-        if (ex.kind === K.BinaryExpression && (ex as ts.BinaryExpression).operatorToken.kind === K.EqualsToken) {
-          const ae = ex as ts.BinaryExpression, tgt = assignTarget(ae.left), val = unwrapParens(ae.right);
-          return (samePureExpr(tgt, L) && samePureExpr(val, R)) || (samePureExpr(tgt, R) && samePureExpr(val, L));
+      if (!ifs.elseStatement) {
+        if (ts1.kind === K.ExpressionStatement) {
+          const ex = unwrapParens((ts1 as ts.ExpressionStatement).expression);
+          if (ex.kind === K.BinaryExpression && (ex as ts.BinaryExpression).operatorToken.kind === K.EqualsToken) {
+            const ae = ex as ts.BinaryExpression, tgt = assignTarget(ae.left), val = unwrapParens(ae.right);
+            return (samePureExpr(tgt, L) && samePureExpr(val, R)) || (samePureExpr(tgt, R) && samePureExpr(val, L));
+          }
+          return false;
         }
-        return false;
-      }
-      if (ts1.kind === K.ReturnStatement && (ts1 as ts.ReturnStatement).expression && ifs.parent?.kind === K.Block) {
-        const retExpr = unwrapParens((ts1 as ts.ReturnStatement).expression!);
-        const ss = (ifs.parent as ts.Block).statements, idx = ss.indexOf(ifs);
-        if (idx < 0) return false;
-        const sNext = ss[idx + 1];
-        if (sNext?.kind === K.ReturnStatement && (sNext as ts.ReturnStatement).expression) {
-          const nextExpr = unwrapParens((sNext as ts.ReturnStatement).expression!);
-          if ((samePureExpr(retExpr, R) && samePureExpr(nextExpr, L)) || (samePureExpr(retExpr, L) && samePureExpr(nextExpr, R))) return true;
-          if (lInt && isZeroLit(R) && ((samePureExpr(retExpr, L) && isNegOf(nextExpr, L)) || (isNegOf(retExpr, L) && samePureExpr(nextExpr, L)))) return true;
-        }
-        if (sNext?.kind === K.IfStatement && !(sNext as ts.IfStatement).elseStatement && samePureExpr(retExpr, R)) {
-          const ifs2 = sNext as ts.IfStatement, ts2 = singleStmt(ifs2.thenStatement);
-          const s3 = ss[idx + 2], c2 = unwrapParens(ifs2.expression);
-          if (ts2?.kind === K.ReturnStatement && (ts2 as ts.ReturnStatement).expression && c2.kind === K.BinaryExpression &&
-              s3?.kind === K.ReturnStatement && (s3 as ts.ReturnStatement).expression && samePureExpr((s3 as ts.ReturnStatement).expression!, L)) {
-            const b2 = c2 as ts.BinaryExpression, o2 = b2.operatorToken.kind;
-            const L2 = unwrapParens(b2.left), R2 = unwrapParens(b2.right);
-            if (samePureExpr(L2, L) && samePureExpr((ts2 as ts.ReturnStatement).expression!, R2)) {
-              const v1 = litNumVal(R), v2 = litNumVal(R2);
-              const isLt = (k: K) => k === K.LessThanToken || k === K.LessThanEqualsToken;
-              const isGt = (k: K) => k === K.GreaterThanToken || k === K.GreaterThanEqualsToken;
-              if (v1 !== undefined && v2 !== undefined && ((isLt(ok) && isGt(o2) && v1 < v2) || (isGt(ok) && isLt(o2) && v1 > v2))) return true;
+        if (ts1.kind === K.ReturnStatement && (ts1 as ts.ReturnStatement).expression && ifs.parent?.kind === K.Block) {
+          const retExpr = unwrapParens((ts1 as ts.ReturnStatement).expression!);
+          const ss = (ifs.parent as ts.Block).statements, idx = ss.indexOf(ifs);
+          if (idx < 0) return false;
+          const sNext = ss[idx + 1];
+          if (sNext?.kind === K.ReturnStatement && (sNext as ts.ReturnStatement).expression) {
+            const nextExpr = unwrapParens((sNext as ts.ReturnStatement).expression!);
+            if ((samePureExpr(retExpr, R) && samePureExpr(nextExpr, L)) || (samePureExpr(retExpr, L) && samePureExpr(nextExpr, R))) return true;
+            if (lInt && isZeroLit(R) && ((samePureExpr(retExpr, L) && isNegOf(nextExpr, L)) || (isNegOf(retExpr, L) && samePureExpr(nextExpr, L)))) return true;
+          }
+          if (sNext?.kind === K.IfStatement && !(sNext as ts.IfStatement).elseStatement && samePureExpr(retExpr, R)) {
+            const ifs2 = sNext as ts.IfStatement, ts2 = singleStmt(ifs2.thenStatement);
+            const s3 = ss[idx + 2], c2 = unwrapParens(ifs2.expression);
+            if (ts2?.kind === K.ReturnStatement && (ts2 as ts.ReturnStatement).expression && c2.kind === K.BinaryExpression &&
+                s3?.kind === K.ReturnStatement && (s3 as ts.ReturnStatement).expression && samePureExpr((s3 as ts.ReturnStatement).expression!, L)) {
+              const b2 = c2 as ts.BinaryExpression, o2 = b2.operatorToken.kind;
+              const L2 = unwrapParens(b2.left), R2 = unwrapParens(b2.right);
+              if (samePureExpr(L2, L) && samePureExpr((ts2 as ts.ReturnStatement).expression!, R2)) {
+                const v1 = litNumVal(R), v2 = litNumVal(R2);
+                const isLt = (k: K) => k === K.LessThanToken || k === K.LessThanEqualsToken;
+                const isGt = (k: K) => k === K.GreaterThanToken || k === K.GreaterThanEqualsToken;
+                if (v1 !== undefined && v2 !== undefined && ((isLt(ok) && isGt(o2) && v1 < v2) || (isGt(ok) && isLt(o2) && v1 > v2))) return true;
+              }
             }
+          }
+        }
+      } else if (ifs.elseStatement.kind === K.IfStatement && !(ifs.elseStatement as ts.IfStatement).elseStatement && ts1.kind === K.ExpressionStatement) {
+        const ex1 = unwrapParens((ts1 as ts.ExpressionStatement).expression);
+        const ifs2 = ifs.elseStatement as ts.IfStatement, ts2 = singleStmt(ifs2.thenStatement), c2 = unwrapParens(ifs2.expression);
+        if (ts2?.kind === K.ExpressionStatement && c2.kind === K.BinaryExpression &&
+            ex1.kind === K.BinaryExpression && (ex1 as ts.BinaryExpression).operatorToken.kind === K.EqualsToken) {
+          const ae1 = ex1 as ts.BinaryExpression, ex2 = unwrapParens((ts2 as ts.ExpressionStatement).expression);
+          const b2 = c2 as ts.BinaryExpression, o2 = b2.operatorToken.kind;
+          if (ex2.kind === K.BinaryExpression && (ex2 as ts.BinaryExpression).operatorToken.kind === K.EqualsToken &&
+              samePureExpr(assignTarget(ae1.left), L) && samePureExpr(unwrapParens(ae1.right), R) &&
+              samePureExpr(unwrapParens(b2.left), L) &&
+              samePureExpr(assignTarget((ex2 as ts.BinaryExpression).left), L) &&
+              samePureExpr(unwrapParens((ex2 as ts.BinaryExpression).right), unwrapParens(b2.right))) {
+            const v1 = litNumVal(R), v2 = litNumVal(unwrapParens(b2.right));
+            const isLt = (k: K) => k === K.LessThanToken || k === K.LessThanEqualsToken;
+            const isGt = (k: K) => k === K.GreaterThanToken || k === K.GreaterThanEqualsToken;
+            if (v1 !== undefined && v2 !== undefined && ((isLt(ok) && isGt(o2) && v1 <= v2) || (isGt(ok) && isLt(o2) && v1 >= v2))) return true;
           }
         }
       }

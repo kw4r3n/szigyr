@@ -1,0 +1,52 @@
+// expect-output: 34:0:11:61442:223|31:255
+// stage: 3
+
+type Box = Struct<{ data: Vec<u8>; tag: u32 }>;
+
+function bitU8Rt(s: Mut<Slice<u8>>, mask: u8): u32 {
+  "use rt";
+  let acc: u32 = 0;
+  for (let i: usize = 0; i < s.length; i += 1) {
+    s[i] ^= mask;
+    acc = wrapAdd(acc, u32(s[i]));
+  }
+  return acc;
+}
+
+function bitU16Rt(a: u16, b: u16): u16 {
+  "use rt";
+  let x: u16 = a | b;
+  x &= 0xf0ff;
+  return x ^ 0x0003;
+}
+
+function xorDstFromSrc(src: Ref<Box>, dst: Mut<Box>): void {
+  "use rt";
+  for (let i: usize = 0; i < src.data.length && i < dst.data.length; i += 1) {
+    dst.data[i] = src.data[i] ^ u8(dst.tag);
+  }
+}
+
+export function main(sys: System): void {
+  const v = Vec.filled<u8>(sys.alloc, 4, 5);
+  v[1] = v[1] | 0x0a;
+  v[2] = v[2] & 0x03;
+  const sum = bitU8Rt(v, 0x0f);
+  const w = bitU16Rt(0xf001, 0x0100);
+  const b8: u8 = 0xff;
+  let c8: u8 = b8 & 0x0f;
+  c8 |= 0xd0;
+
+  const va = Vec.filled<u8>(sys.alloc, 2, 0xaa);
+  const vb = Vec.filled<u8>(sys.alloc, 2, 0x00);
+  const cellA = OwnedCell.create<Box>({ data: va, tag: 11 });
+  const cellB = OwnedCell.create<Box>({ data: vb, tag: 0x55 });
+  const outerRead = cellA.withRef((a: Ref<Box>): u32 =>
+    cellB.withRef((b: Ref<Box>): u32 => a.tag + b.tag + u32(b.data.length)),
+  );
+  cellB.withMut((dst: Mut<Box>): void => {
+    cellA.withRef((src: Ref<Box>): void => { xorDstFromSrc(src, dst); });
+  });
+  const afterXor = cellB.withRef((b: Ref<Box>): u8 => b.data[0]);
+  sys.log.info(`${sum}:${v[1]}:${w === 0xf002 ? 11 : 0}:${w}:${c8}|${outerRead - 67}:${afterXor}`);
+}

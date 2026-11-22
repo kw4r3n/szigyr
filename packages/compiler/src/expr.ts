@@ -741,7 +741,13 @@ function bitOp(c: Checker, op: Node, kind: K, lt: Type, rt: Type): Type {
     c.at("E2003", op, `cannot mix '${lt.name}' and '${rt.name}'`, { left: lt.name, right: rt.name });
     return ERROR;
   }
-  const okTypes = kind === K.GreaterThanGreaterThanToken ? ["i32", "i64"] : kind === K.GreaterThanGreaterThanGreaterThanToken ? ["u32", "u64"] : ["i32", "u32", "i64", "u64"];
+  const okTypes = kind === K.GreaterThanGreaterThanToken
+    ? ["i32", "i64"]
+    : kind === K.GreaterThanGreaterThanGreaterThanToken
+    ? ["u32", "u64"]
+    : kind === K.LessThanLessThanToken
+    ? ["i32", "u32", "i64", "u64"]
+    : ["u8", "u16", "i32", "u32", "i64", "u64"];
   if (!isNum(lt) || !isNum(rt) || !okTypes.includes(lt.name)) {
     c.at("E2002", op, `bit operator cannot be applied to '${show(lt)}' and '${show(rt)}'`);
     return ERROR;

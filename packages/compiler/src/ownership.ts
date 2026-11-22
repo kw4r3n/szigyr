@@ -1,5 +1,5 @@
 // P3 (D070): ownership and borrowing (§5), run only when P1 and P2 report nothing (Q003). Reads P2's types and symbols.
-import { NodeFlags, SyntaxKind as K, isId, isParamProp, type Node, type ts } from "./parse.ts";
+import { NodeFlags, SyntaxKind as K, hasMod, isId, isParamProp, type Node, type ts } from "./parse.ts";
 import type { LocalSym, Module, Program } from "./modules.ts";
 import { assignTarget, callSigs, ensuresArgs, exprTypes, localOf } from "./expr.ts";
 import { genFx } from "./builtins.ts";
@@ -13,6 +13,7 @@ const copy = (s: State): State => s && new Map(s);
 /** read: used only. move: §5.2 (initializers, right sides, by-value arguments, return, Struct fields, spread / destructuring sources). store: a managed container (E3007). */
 type Ctx = "read" | "move" | "store";
 type Mode = "ref" | "mut" | "move";
+type ActiveBorrow = { sym: LocalSym; mode: "ref" | "mut"; node: Node; base: boolean; path: string[]; slice: boolean; ptrSlice?: boolean };
 interface Use { sym: LocalSym; mode: Mode; node: Node; path: string[]; slice: boolean; arg: number; sliceName?: Node; ptrSlice?: boolean }
 /** A place (§5.5): its root local, the field path from the root, and whether it is a `v.slice(a, b)` of that path (Q190). */
 interface Place { sym: LocalSym; id: ts.Identifier; path: string[]; slice: boolean; sliceName?: ts.Identifier; ptrSlice?: boolean }
@@ -114,9 +115,9 @@ class Flow {
    * root of an element access (`ref`) or of an assignment target (`mut`, a `base`). A move of the variable meanwhile is
    * E3005 (E3001 for a base); an inner `Mut` borrow of it is E3005. Reads and inner `Ref` borrows stay allowed (Q065, Q067).
    */
-  readonly active: { sym: LocalSym; mode: "ref" | "mut"; node: Node; base: boolean; path: string[]; slice: boolean; ptrSlice?: boolean }[] = [];
+  readonly active: ActiveBorrow[];
   /** Roots `unbox`ed by an earlier argument of the call being walked (§14.4): a later borrow of one is E3005. */
-  readonly pendingMut: { sym: LocalSym; node: Node }[] = [];
+  readonly pendingMut: { sym: LocalSym; node: Node }[];
   readonly e3005 = new Set<Node>();
   /** Where the current call's own entries start in `active`. */
   callMark = 0;
@@ -133,7 +134,23 @@ class Flow {
   /** Function nesting depth, as P2 counts it in `LocalSym.fnDepth`. */
   readonly depth: number;
   readonly ensuresFn: boolean;
-  constructor(m: ModuleCheck, depth: number, ensuresFn = false) { this.m = m; this.depth = depth; this.ensuresFn = ensuresFn; }
+  /** Lowest `fnDepth` from which borrows may still be read inside a synchronous non-escaping `OwnedCell` callback. */
+  readonly syncBorrowMinDepth: number;
+  constructor(
+    m: ModuleCheck,
+    depth: number,
+    ensuresFn = false,
+    syncBorrowMinDepth = depth,
+    active: ActiveBorrow[] = [],
+    pendingMut: { sym: LocalSym; node: Node }[] = [],
+  ) {
+    this.m = m;
+    this.depth = depth;
+    this.ensuresFn = ensuresFn;
+    this.syncBorrowMinDepth = syncBorrowMinDepth;
+    this.active = active;
+    this.pendingMut = pendingMut;
+  }
 
   get loopDepth(): number { return this.frames.filter((f) => f.loop).length; }
 
@@ -409,9 +426,14 @@ class Flow {
     const borrow = borrowMode(sym.declared) !== undefined;
     const isResource = sym.type.k === "resource";
     if (sym.fnDepth < this.depth && !this.captured.has(sym.id)) { // captured by this nested function (§5.5, §5.6, Q012)
-      if (borrow && !(this.ensuresFn && sym.fnDepth === this.depth - 1)) { this.captured.add(sym.id); this.m.at("E3004", id, `the borrow '${sym.name}' cannot be captured by a closure`, { variable: sym.name, kind: "closure-capture" }); return; }
-      if (isResource) { this.captured.add(sym.id); this.m.at("E3004", id, `the resource '${sym.name}' cannot be captured by a closure`, { variable: sym.name, kind: "resource-escape" }); return; }
-      if (movesLike(sym.type)) { this.captured.add(sym.id); this.m.at("E3007", id, `the owned value '${sym.name}' cannot be captured by a closure`, { variable: sym.name, kind: "closure-capture" }); return; }
+      if (borrow) {
+        if (!(this.ensuresFn && sym.fnDepth === this.depth - 1) && !(sym.fnDepth >= this.syncBorrowMinDepth)) {
+          this.captured.add(sym.id);
+          this.m.at("E3004", id, `the borrow '${sym.name}' cannot be captured by a closure`, { variable: sym.name, kind: "closure-capture" });
+          return;
+        }
+      } else if (isResource) { this.captured.add(sym.id); this.m.at("E3004", id, `the resource '${sym.name}' cannot be captured by a closure`, { variable: sym.name, kind: "resource-escape" }); return; }
+      else if (movesLike(sym.type)) { this.captured.add(sym.id); this.m.at("E3007", id, `the owned value '${sym.name}' cannot be captured by a closure`, { variable: sym.name, kind: "closure-capture" }); return; }
     }
     this.useCheck(id, sym);
     if (isResource) {
@@ -704,11 +726,20 @@ class Flow {
       // builtins (e.g. ok/err) move their owned arguments
     } else this.ex(callee, "read");
     const opt = !!(e.flags & NodeFlags.OptionalChain), optState = opt ? copy(this.state) : undefined; // Q220: ?. short-circuits before args
+    const syncCellCb = e.kind === K.CallExpression && callee.kind === K.PropertyAccessExpression &&
+      genName(exprTypes.get((callee as ts.PropertyAccessExpression).expression)) === "OwnedCell" &&
+      ((callee as ts.PropertyAccessExpression).name.text === "withRef" || (callee as ts.PropertyAccessExpression).name.text === "withMut");
     args.forEach((a, i) => {
       const p = sig?.params[i];
       const mode = borrowMode(p);
       if (mode) { const u = this.borrow(a, mode, undefined, i); if (u) uses.push(u); return; }
       const x = strip(a);
+      if (syncCellCb && i === 0 && (x.kind === K.ArrowFunction || x.kind === K.FunctionExpression) && !hasMod(x, K.AsyncKeyword)) {
+        const sub = new Flow(this.m, this.depth + 1, false, this.syncBorrowMinDepth, this.active, this.pendingMut);
+        sub.callMark = this.active.length;
+        sub.body(x as ts.FunctionLikeDeclaration);
+        return;
+      }
       let unboxRoot: { sym: LocalSym; node: Node } | undefined;
       if (x.kind === K.CallExpression) { // §14.4 / §5: `p.unbox()` or `r.take()` as an argument counts as a Mut/move use of `p`/`r`
         const cp = (x as ts.CallExpression).expression;

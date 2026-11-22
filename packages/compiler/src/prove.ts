@@ -879,13 +879,16 @@ class FnProver {
         this.writePlace(left, val, st);
         return val;
       }
-      await this.checkExpr(left, st);
+      const cur = await this.checkExpr(left, st);
       const rhs = await this.checkExpr(b.right, st);
       if (SHIFT_ASSIGN.has(k)) {
         const bits = isInt(lt) && INT_BOUNDS[(lt as Extract<Type, { k: "num" }>).name]![3] === 64 ? 64n : 32n;
         this.addObligation("T009", `shift count in [0, ${bits - 1n}]`, b.operatorToken, mod, st, `(and (>= ${rhs.smt} 0) (< ${rhs.smt} ${smtInt(bits)}))`, rhs.exact);
       }
-      const val = { smt: this.freshForType(t, BIT_ASSIGN.has(k) ? "bitcomp" : "fcomp"), exact: false };
+      const bitOp = k === K.AmpersandEqualsToken ? "&" : k === K.BarEqualsToken ? "|" : k === K.CaretEqualsToken ? "^" : undefined;
+      const val = bitOp && isInt(lt) && !isSignedInt(lt)
+        ? this.unsignedBitwiseTerm(lt as Extract<Type, { k: "num" }>, bitOp, cur, rhs, st)
+        : { smt: this.freshForType(t, BIT_ASSIGN.has(k) ? "bitcomp" : "fcomp"), exact: false };
       this.writePlace(left, val, st);
       return val;
     }
@@ -953,6 +956,10 @@ class FnProver {
       return { smt: this.freshForType(t, "sh"), exact: false };
     }
 
+    if (isInt(t) && !isSignedInt(t) && (k === K.AmpersandToken || k === K.BarToken || k === K.CaretToken)) {
+      const op = k === K.AmpersandToken ? "&" : k === K.BarToken ? "|" : "^";
+      return this.unsignedBitwiseTerm(t as Extract<Type, { k: "num" }>, op, l, r, st);
+    }
     if (isInt(t) && (k === K.PlusToken || k === K.MinusToken || k === K.AsteriskToken)) {
       const op = k === K.PlusToken ? "+" : k === K.MinusToken ? "-" : "*";
       return this.checkedIntArith(t as Extract<Type, { k: "num" }>, op, l, r, b.operatorToken, st);
@@ -962,6 +969,26 @@ class FnProver {
     }
 
     return { smt: this.freshForType(t, "bin"), exact: false };
+  }
+
+  private unsignedBitwiseTerm(t: Extract<Type, { k: "num" }>, op: "&" | "|" | "^", l: TermVal, r: TermVal, st: State): TermVal {
+    if (l.constVal !== undefined && r.constVal !== undefined) {
+      const cv = op === "&" ? (l.constVal & r.constVal) : op === "|" ? (l.constVal | r.constVal) : (l.constVal ^ r.constVal);
+      return { smt: smtInt(cv), exact: l.exact && r.exact, constVal: cv };
+    }
+    const v = this.freshForType(t, "bit");
+    if (op === "&") {
+      st.assumptions.push(`(<= ${v} ${l.smt})`, `(<= ${v} ${r.smt})`);
+    } else {
+      st.assumptions.push(`(<= ${v} (+ ${l.smt} ${r.smt}))`);
+      if (op === "|") st.assumptions.push(`(>= ${v} ${l.smt})`, `(>= ${v} ${r.smt})`);
+      st.assumptions.push(
+        `(=> (and (<= ${l.smt} 255) (<= ${r.smt} 255)) (<= ${v} 255))`,
+        `(=> (and (<= ${l.smt} 65535) (<= ${r.smt} 65535)) (<= ${v} 65535))`,
+        `(=> (and (<= ${l.smt} 4294967295) (<= ${r.smt} 4294967295)) (<= ${v} 4294967295))`,
+      );
+    }
+    return { smt: v, exact: false };
   }
 
   private async checkIncDec(u: ts.PrefixUnaryExpression | ts.PostfixUnaryExpression, st: State): Promise<TermVal> {
