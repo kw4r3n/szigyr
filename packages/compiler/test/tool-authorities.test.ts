@@ -466,4 +466,104 @@ function symInContract(fs: FakeFs): i32 {
       await loaded.stop();
     }
   });
+
+  it("supports String UTF-8 codecs, open JSON helpers + indent, and string relational ops with edge checks", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "szigyr-utf8-json-str-"));
+    const mainFile = join(dir, "main.szigyr");
+    writeFileSync(mainFile, `
+type Role = "user" | "admin";
+export function main(sys: System): void {
+  const buf = Vec.create<u8>(sys.alloc, 16);
+  const bomInput = "\\uFEFF日本語🚀";
+  const bomBytes = String.encodeUtf8(bomInput, buf);
+  const bomOut = String.decodeUtf8(buf);
+  const bomOk = bomOut.kind === "ok" && bomOut.value === bomInput && bomOut.value.charCodeAt(0) === u16(0xfeff);
+
+  const lone = \`\${String.fromCodePoint(u32(65))}\${String.fromCodePoint(u32(55296))}\`;
+  const loneBytes = String.encodeUtf8(lone, buf);
+  const loneDec = String.decodeUtf8(buf);
+  const loneOk = loneDec.kind === "ok" && loneDec.value.length === 2 && loneDec.value.charCodeAt(1) === u16(0xfffd);
+
+  const bad = Vec.create<u8>(sys.alloc, 3);
+  bad.push(65);
+  bad.push(0x80);
+  bad.push(66);
+  const inv = String.decodeUtf8(bad);
+  const lossy = String.decodeUtf8Lossy(bad);
+
+  const parsed = JSON.parse('{"n":null,"arr":[1,2]}');
+  if (parsed.kind !== "ok") return;
+  const gNull = JSON.get(parsed.value, "n");
+  let isNullVal = false;
+  if (gNull.kind === "ok") {
+    isNullVal = cast<null>(gNull.value).kind === "ok";
+  }
+  const gMiss = JSON.get(parsed.value, "missing");
+  const gProto1 = JSON.get(parsed.value, "toString");
+  const gProto2 = JSON.get(parsed.value, "constructor");
+  const gArr = JSON.get(parsed.value, "arr");
+  let copyCheck = false;
+  if (gArr.kind === "ok") {
+    const items = JSON.items(gArr.value);
+    if (items.kind === "ok") {
+      items.value.push(items.value[0]);
+      const items2 = JSON.items(gArr.value);
+      copyCheck = items2.kind === "ok" && items.value.length === 3 && items2.value.length === 2;
+    }
+  }
+  const s0 = JSON.stringify<{ readonly a: i32 }>({ a: 1 }, 0);
+  const s2 = JSON.stringify<{ readonly a: i32; readonly b: string }>({ a: 1, b: "x" }, 2);
+
+  const r1: Role = "admin";
+  const r2: Role = "user";
+  const words: Array<string> = ["zeta", "alpha", "beta"];
+  words.sort((a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0));
+
+  sys.log.info(\`utf8=\${bomBytes}:\${bomOk}:\${loneBytes}:\${loneOk}:\${inv.kind === "err" ? inv.error.code : "ok"}:\${lossy === "A\\uFFFDB"}\`);
+  sys.log.info(\`json=\${isNullVal}:\${gMiss.kind}:\${gProto1.kind}:\${gProto2.kind}:\${copyCheck}:\${s0 === '{"a":1}'}:\${s2.includes('\\n  "b": "x"')}\`);
+  sys.log.info(\`cmp=\${r1 < r2}:\${words.join(",")}\`);
+}
+`);
+    const runRes = await run(mainFile);
+    expect(runRes.diagnostics).toEqual([]);
+    expect(runRes.trap).toBeNull();
+    expect(runRes.stdout.trim().split("\n")).toEqual([
+      "utf8=16:true:4:true:EINVAL:true",
+      "json=true:err:err:err:true:true:true",
+      "cmp=true:alpha,beta,zeta",
+    ]);
+
+    const diagFile = join(dir, "diags.szigyr");
+    writeFileSync(diagFile, `
+type Tag = "a" | "b";
+function rtUtf8(src: Ref<Slice<u8>>): Result<string, IoError> {
+  "use rt";
+  return String.decodeUtf8(src);
+}
+function rtStrCmp(x: Tag, y: Tag): boolean {
+  "use rt";
+  return x < y;
+}
+function rtStrLen(x: Tag): usize {
+  "use rt";
+  return x.length;
+}
+function badJsonIndentLow(): string {
+  return JSON.stringify<{ readonly a: i32 }>({ a: 1 }, -1);
+}
+function badJsonIndentHigh(): string {
+  return JSON.stringify<{ readonly a: i32 }>({ a: 1 }, 256);
+}
+function badCmpMixed(s: string, n: i32, opt: string | null): boolean {
+  return (s < n) || (opt < s);
+}
+`);
+    const ds = check(diagFile).map((d) => `${d.range.start.line}:${d.code}`);
+    expect(ds).toContain("5:E4001");
+    expect(ds).toContain("9:E4001");
+    expect(ds).toContain("13:E4001");
+    expect(ds).toContain("16:E2008");
+    expect(ds).toContain("19:E2008");
+    expect(ds.filter((x) => x.startsWith("22:"))).toEqual(["22:E2002", "22:E2002"]);
+  });
 });

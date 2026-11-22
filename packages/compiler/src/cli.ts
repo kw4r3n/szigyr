@@ -342,12 +342,12 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
         rs.push(cur);
       }
       const r = rs[0]!;
-      if (rs.length >= 2 && rs.some((cur) => JSON.stringify([cur.stdout, cur.trap]) !== JSON.stringify([r.stdout, r.trap]))) { // D101: --backend=both / --backend=all
+      if (rs.length >= 2 && rs.some((cur) => JSON.stringify([cur.stdout, cur.trap, cur.exitCode ?? 0]) !== JSON.stringify([r.stdout, r.trap, r.exitCode ?? 0]))) { // D101: --backend=both / --backend=all
         if (json) {
-          const byBackend = Object.fromEntries(backends.map((b, k) => [b, { stdout: rs[k]!.stdout, trap: rs[k]!.trap }]));
+          const byBackend = Object.fromEntries(backends.map((b, k) => [b, { stdout: rs[k]!.stdout, trap: rs[k]!.trap, exitCode: rs[k]!.exitCode ?? 0 }]));
           err(line({ kind: "mismatch", ...byBackend }));
         } else {
-          const fmt = (x: RunResult) => `stdout=${JSON.stringify(x.stdout)} trap=${x.trap ? `${x.trap.code}@${x.trap.file}:${x.trap.line}:${x.trap.col}` : "none"}`;
+          const fmt = (x: RunResult) => `stdout=${JSON.stringify(x.stdout)} exitCode=${x.exitCode ?? 0} trap=${x.trap ? `${x.trap.code}@${x.trap.file}:${x.trap.line}:${x.trap.col}` : "none"}`;
           const label = backends.length === 2 ? "js and c" : "js, c, and wasm";
           const pad = Math.max(...backends.map((b) => b.length)) + 1;
           err(`mismatch between ${label} backends:\n${backends.map((b, k) => `  ${(`${b}:`).padEnd(pad)} ${fmt(rs[k]!)}`).join("\n")}\n`);
@@ -355,7 +355,7 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
         return 1;
       }
       out(r.stdout);
-      if (!r.trap) return 0;
+      if (!r.trap) return r.exitCode ?? 0;
       const { code, file, line: l, col, message } = r.trap;
       err(json ? line({ kind: "trap", code, file, range: { start: { line: l, col }, end: { line: l, col } }, ...(message ? { message } : {}) }) : `trap ${code} at ${file}:${l}:${col}\n${message ? `${message}\n` : ""}`);
       return 3;

@@ -1,0 +1,103 @@
+// expect-output: utf8=4:a日:EINVAL:true
+// expect-output: json=42:null:err:3:a,b,arr:2:1:true:true
+// expect-output: proc=0:42:true
+// expect-output: str=true:true:a,b,c:2:1
+// stage: 2
+
+type Tag = "alpha" | "beta";
+
+function fillPrefix(src: Ref<Slice<u8>>, dst: Mut<Slice<u8>>): usize {
+  "use rt";
+  ensures((r: usize) => r <= src.length && r <= dst.length);
+  const n = src.length < dst.length ? src.length : dst.length;
+  for (let i: usize = 0; i < n; i += 1) {
+    dst[i] = src[i];
+  }
+  return n;
+}
+
+function firstByte(src: Ref<Slice<u8>>): u8 {
+  "use rt";
+  requires(src.length > 0);
+  ensures((r: u8) => r === src[0]);
+  return src[0];
+}
+
+export function main(sys: System): void {
+  const buf = Vec.create<u8>(sys.alloc, 8);
+  const written = String.encodeUtf8("a日", buf);
+  const dec = String.decodeUtf8(buf);
+  const decStr = dec.kind === "ok" ? dec.value : "err";
+
+  const bad = Vec.create<u8>(sys.alloc, 4);
+  bad.push(97);
+  bad.push(0xff);
+  bad.push(98);
+  const badRes = String.decodeUtf8(bad);
+  const badCode = badRes.kind === "err" ? badRes.error.code : "ok";
+  const lossy = String.decodeUtf8Lossy(bad);
+  const lossyOk = lossy.length === 3 && lossy.charCodeAt(1) === u16(0xfffd) && lossy.startsWith("a") && lossy.endsWith("b");
+
+  const dst = Vec.create<u8>(sys.alloc, 2);
+  dst.push(0);
+  dst.push(0);
+  const copied = fillPrefix(bad, dst);
+  const b0 = firstByte(dst);
+
+  sys.log.info(`utf8=${written}:${decStr}:${badCode}:${lossyOk}`);
+
+  const parsed = JSON.parse('{"a":42,"b":null,"arr":[1,"two"]}');
+  if (parsed.kind !== "ok") return;
+  const ga = JSON.get(parsed.value, "a");
+  let aStr = "err";
+  if (ga.kind === "ok") {
+    const va = cast<i32>(ga.value);
+    if (va.kind === "ok") aStr = `${va.value}`;
+  }
+
+  const gb = JSON.get(parsed.value, "b");
+  let bStr = "err";
+  if (gb.kind === "ok") {
+    const nb = cast<null>(gb.value);
+    if (nb.kind === "ok") bStr = "null";
+  }
+
+  const gMiss = JSON.get(parsed.value, "toString");
+  const missStr = gMiss.kind === "err" ? "err" : "ok";
+
+  const ks = JSON.keys(parsed.value);
+  let kLen = "0";
+  let kJoined = "";
+  if (ks.kind === "ok") {
+    kLen = `${ks.value.length}`;
+    kJoined = ks.value.join(",");
+  }
+
+  const garr = JSON.get(parsed.value, "arr");
+  let iLen = "0";
+  let i0Str = "err";
+  if (garr.kind === "ok") {
+    const its = JSON.items(garr.value);
+    if (its.kind === "ok") {
+      iLen = `${its.value.length}`;
+      const c0 = cast<i32>(its.value[0]);
+      if (c0.kind === "ok") i0Str = `${c0.value}`;
+    }
+  }
+
+  const pretty = JSON.stringify<{ readonly a: i32; readonly b: boolean }>({ a: 42, b: true }, 2);
+  const compact = JSON.stringify<{ readonly a: i32 }>({ a: 1 }, 0);
+  sys.log.info(`json=${aStr}:${bStr}:${missStr}:${kLen}:${kJoined}:${iLen}:${i0Str}:${pretty.includes('\n  "b": true')}:${compact === '{"a":1}'}`);
+
+  const fp = FakeProc.create();
+  const c0 = fp.exitCode();
+  fp.setExitCode(42);
+  const c1 = fp.exitCode();
+  sys.log.info(`proc=${c0}:${c1}:${copied === usize(2) && b0 === u8(97)}`);
+
+  const t1: Tag = "alpha";
+  const t2: Tag = "beta";
+  const xs: Array<string> = ["c", "a", "b"];
+  xs.sort((x: string, y: string) => (x < y ? -1 : x > y ? 1 : 0));
+  sys.log.info(`str=${t1 < t2}:${t2 >= "beta"}:${xs.join(",")}:${copied}:${firstByte(bad) === u8(97) ? 1 : 0}`);
+}

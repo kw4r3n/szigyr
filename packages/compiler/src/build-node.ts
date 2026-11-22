@@ -289,7 +289,8 @@ export function buildNode(entryFile: string, opts: NodeBuildOptions): NodeBuildR
     `    const cTrap = Array.isArray(v) ? { code: "T" + String(v[0]).padStart(3, "0"), file: v[1] ?? "", line: v[2] ?? 0, col: v[3] ?? 0, message: "trap in C" } : null;`,
     `    const iso = isoRaw ? { code: isoRaw.code, file: isoRaw.file ?? "", line: isoRaw.line ?? 0, col: isoRaw.col ?? 0, ...(isoRaw.message ? { message: isoRaw.message } : {}) } : null;`,
     `    const trap = own ? (cTrap ?? own) : (iso ?? cTrap);`,
-    `    return { stdout, stderr, trap };`,
+    `    const exitCode = trap ? 3 : std.getProcExitCode(sys.proc);`,
+    `    return { stdout, stderr, trap, exitCode };`,
     `  };`,
     `  return { exports, native, Vec: rt.Vec, createSystem, run, stop };`,
     `}`,
@@ -317,6 +318,8 @@ export function buildNode(entryFile: string, opts: NodeBuildOptions): NodeBuildR
       `  const head = msg.startsWith(res.trap.code) ? \`trap \${msg}\` : msg ? \`trap \${res.trap.code}: \${msg}\` : \`trap \${res.trap.code}\`;`,
       `  process.stderr.write(\`\${head}\${p}\\n\`);`,
       `  process.exitCode = 3;`,
+      `} else if (res.exitCode) {`,
+      `  process.exitCode = res.exitCode;`,
       `}`,
       "",
     ].join("\n"));

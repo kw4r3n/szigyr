@@ -289,4 +289,32 @@ describe("node target builder & CLI", () => {
     rmSync(srcDir, { recursive: true, force: true });
     expect(execFileSync(process.execPath, [join(isoDir, "main.js")], { encoding: "utf8" })).toBe("res=30,40\n");
   });
+
+  it("propagates Proc.setExitCode in standalone built node apps while traps override with exit 3", async () => {
+    const srcDir = mkdtempSync(join(tmpdir(), "szigyr-bnode-exit-"));
+    const exitFile = join(srcDir, "exit.szigyr");
+    writeFileSync(exitFile, `export function main(sys: System): void {
+  sys.log.info("bad arg");
+  sys.proc.setExitCode(2);
+}
+`);
+    const exitOut = mkdtempSync(join(tmpdir(), "szigyr-bnode-exit-out-"));
+    expect((await runCli(["build", "--target=node", "-o", exitOut, exitFile])).code).toBe(0);
+    const child2 = spawnSync(process.execPath, [join(exitOut, "main.js")], { encoding: "utf8" });
+    expect(child2.status).toBe(2);
+    expect(child2.stdout).toBe("bad arg\n");
+    expect(child2.stderr).toBe("");
+
+    const trapExitFile = join(srcDir, "trap-exit.szigyr");
+    writeFileSync(trapExitFile, `export function main(sys: System): void {
+  sys.proc.setExitCode(5);
+  panic("oops");
+}
+`);
+    const trapOut = mkdtempSync(join(tmpdir(), "szigyr-bnode-trapexit-out-"));
+    expect((await runCli(["build", "--target=node", "-o", trapOut, trapExitFile])).code).toBe(0);
+    const child3 = spawnSync(process.execPath, [join(trapOut, "main.js")], { encoding: "utf8" });
+    expect(child3.status).toBe(3);
+    expect(child3.stderr).toContain("T006");
+  });
 });

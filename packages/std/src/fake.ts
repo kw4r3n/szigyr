@@ -531,6 +531,7 @@ export class FakeProc implements Proc {
   private readonly envMap = new Map<string, string>();
   private curCwd = "/";
   private curArgs: string[] = [];
+  private curExitCode = 0;
   private runner: ((req: ProcRequest) => Result<ProcOutput, IoError>) | undefined;
   private readonly callLog: ProcRequest[] = [];
   static create(): FakeProc { return new FakeProc(); }
@@ -538,6 +539,7 @@ export class FakeProc implements Proc {
   setEnv(name: string, value: string): void { this.envMap.set(name, value); }
   setCwd(path: string): void { this.curCwd = path; }
   setArgs(args: readonly string[]): void { this.curArgs = [...args]; }
+  exitCode(): number { return this.curExitCode; }
   onRun(fn: (req: ProcRequest) => Result<ProcOutput, IoError>): void { this.runner = fn; }
   calls(): ProcRequest[] {
     return this.callLog.map((c) => ({ ...c, args: [...c.args], env: c.env.map((e) => ({ name: e.name, value: e.value })) }));
@@ -546,6 +548,7 @@ export class FakeProc implements Proc {
   env(name: string): string | null { return this.envMap.get(name) ?? null; }
   cwd(): string { return this.curCwd; }
   args(): string[] { return [...this.curArgs]; }
+  setExitCode(code: number): void { this.curExitCode = code & 0xff; }
 
   async run(program: string, args: readonly string[], options?: ProcOptions): Promise<Result<ProcOutput, IoError>> {
     const req: ProcRequest = {

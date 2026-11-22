@@ -846,4 +846,52 @@ export function runTool(tool: Tool): usize {
       expect(res[0]!.status).toBe("unsat");
     }
   });
+
+  it("proves ensures postconditions over Ref/Mut slice lengths while rejecting by-value owned reads and closure capture", async () => {
+    const { dir, cacheFile } = makeTmp();
+    const okSrc = `
+function copyBounded(src: Ref<Slice<u8>>, dst: Mut<Slice<u8>>): usize {
+  "use rt";
+  ensures((r: usize) => r <= src.length && r <= dst.length);
+  const n = src.length < dst.length ? src.length : dst.length;
+  for (let i: usize = 0; i < n; i += 1) {
+    dst[i] = src[i];
+  }
+  return n;
+}
+
+export function callerUsesEnsures(src: Ref<Slice<u8>>, dst: Mut<Slice<u8>>): u8 {
+  "use rt";
+  requires(dst.length > 0 && src.length > 0);
+  const written = copyBounded(src, dst);
+  if (written > 0) {
+    return dst[written - 1];
+  }
+  return 0;
+}
+`;
+    const okFile = writeTmpFile(dir, "borrow-ensures.szigyr", okSrc);
+    const analysis = analyze(okFile, parser);
+    expect(analysis.diagnostics).toEqual([]);
+    const pRes = await prove(okFile, { analysis, cacheFile, parser });
+    expect(pRes.diagnostics).toEqual([]);
+    expect(pRes.summary.failed).toBe(0);
+    expect(pRes.summary.unknown).toBe(0);
+    expect(pRes.summary.proved).toBeGreaterThan(0);
+
+    const badFile = writeTmpFile(dir, "bad-borrow-ensures.szigyr", `
+function takeVec(v: Vec<u8>): usize {
+  "use owned";
+  ensures((r: usize) => r <= v.length);
+  return v.length;
+}
+function closureInsideEnsures(s: Ref<Slice<u8>>): usize {
+  ensures((r: usize) => ((): boolean => s.length >= r)());
+  return s.length;
+}
+`);
+    const badDiags = analyze(badFile, parser).diagnostics.map((d) => `${d.range.start.line}:${d.code}`);
+    expect(badDiags).toContain("4:E6002");
+    expect(badDiags).toContain("8:E3004");
+  });
 });

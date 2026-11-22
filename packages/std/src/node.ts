@@ -100,8 +100,12 @@ export function stopNodeProcs(): void {
   }
 }
 
+const procExitCodes = new WeakMap<Proc, () => number>();
+export const getProcExitCode = (proc: Proc): number => procExitCodes.get(proc)?.() ?? 0;
+
 export function createNodeProc(argv?: readonly string[]): Proc {
-  return {
+  let exitCode = 0;
+  const proc: Proc = {
     run(program: string, args: readonly string[], options?: ProcOptions): Promise<Result<ProcOutput, IoError>> {
       if (!program) return Promise.resolve(err({ code: "EINVAL", message: "Proc.run: empty program" }));
       if (options?.timeoutMs != null && (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 0)) {
@@ -169,7 +173,10 @@ export function createNodeProc(argv?: readonly string[]): Proc {
     env(name: string): string | null { return Object.hasOwn(process.env, name) ? process.env[name]! : null; },
     cwd(): string { return process.cwd(); },
     args(): string[] { return argv ? [...argv] : process.argv.slice(2); },
+    setExitCode(code: number): void { exitCode = code & 0xff; },
   };
+  procExitCodes.set(proc, () => exitCode);
+  return proc;
 }
 export const nodeProc: Proc = createNodeProc();
 
@@ -333,6 +340,6 @@ export function createSystem(
     spawn: nodeSpawn,
     audio: nodeAudio,
     net: nodeNet,
-    proc: opts?.args ? createNodeProc(opts.args) : nodeProc,
+    proc: createNodeProc(opts?.args),
   };
 }

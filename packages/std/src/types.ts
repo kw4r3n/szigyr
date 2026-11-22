@@ -51,6 +51,7 @@ export interface Proc {
   env(name: string): string | null;
   cwd(): string;
   args(): string[];
+  setExitCode(code: number): void;
 }
 export interface Net {
   fetch(url: string, init?: HttpRequestInit): Promise<Result<HttpResponse, IoError>>;

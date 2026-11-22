@@ -43,12 +43,22 @@ export const browserFs: Fs = {
   writeBytesAtomic: () => err({ code: "ENOSYS", message: "Fs is not available in browser" }),
 };
 
-export const browserProc: Proc = {
-  run: async () => err({ code: "ENOSYS", message: "Proc.run is not available in browser" }),
-  env: () => null,
-  cwd: () => "/",
-  args: () => [],
-};
+const browserProcExitCodes = new WeakMap<Proc, () => number>();
+export const getBrowserProcExitCode = (proc: Proc): number => browserProcExitCodes.get(proc)?.() ?? 0;
+
+export function createBrowserProc(): Proc {
+  let exitCode = 0;
+  const proc: Proc = {
+    run: async () => err({ code: "ENOSYS", message: "Proc.run is not available in browser" }),
+    env: () => null,
+    cwd: () => "/",
+    args: () => [],
+    setExitCode: (code: number) => { exitCode = code & 0xff; },
+  };
+  browserProcExitCodes.set(proc, () => exitCode);
+  return proc;
+}
+export const browserProc: Proc = createBrowserProc();
 
 export const browserNet: Net = {
   fetch: webFetch,
@@ -233,6 +243,7 @@ export interface BrowserRunResult {
   readonly stdout: string;
   readonly stderr: string;
   readonly trap: { readonly code: string; readonly file: string; readonly line: number; readonly col: number; readonly message?: string } | null;
+  readonly exitCode?: number;
 }
 
 export function createBrowserSystem(opts: BrowserRunOptions): System {
@@ -246,7 +257,7 @@ export function createBrowserSystem(opts: BrowserRunOptions): System {
     spawn: browserSpawn,
     audio: createBrowserAudio(opts),
     net: browserNet,
-    proc: browserProc,
+    proc: createBrowserProc(),
   };
 }
 
@@ -269,5 +280,7 @@ export async function runMainBrowser(main: (sys: System) => void | Promise<void>
   }
   const f = takeIsolateTrap();
   const iso = f ? { code: f.code, file: f.file ?? "", line: f.line ?? 0, col: f.col ?? 0, ...(f.message ? { message: f.message } : {}) } : null;
-  return { stdout, stderr, trap: ownTrap ?? iso };
+  const trap = ownTrap ?? iso;
+  const exitCode = !trap ? getBrowserProcExitCode(sys.proc) : 0;
+  return { stdout, stderr, trap, ...(exitCode ? { exitCode } : {}) };
 }

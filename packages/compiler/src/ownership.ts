@@ -1,7 +1,7 @@
 // P3 (D070): ownership and borrowing (§5), run only when P1 and P2 report nothing (Q003). Reads P2's types and symbols.
 import { NodeFlags, SyntaxKind as K, isId, type Node, type ts } from "./parse.ts";
 import type { LocalSym, Module, Program } from "./modules.ts";
-import { assignTarget, callSigs, exprTypes, localOf } from "./expr.ts";
+import { assignTarget, callSigs, ensuresArgs, exprTypes, localOf } from "./expr.ts";
 import { genFx } from "./builtins.ts";
 import { movesLike, ownedDeep, show, tparamHasCap, unref, type Type } from "./types.ts";
 
@@ -128,7 +128,8 @@ class Flow {
   readonly m: ModuleCheck;
   /** Function nesting depth, as P2 counts it in `LocalSym.fnDepth`. */
   readonly depth: number;
-  constructor(m: ModuleCheck, depth: number) { this.m = m; this.depth = depth; }
+  readonly ensuresFn: boolean;
+  constructor(m: ModuleCheck, depth: number, ensuresFn = false) { this.m = m; this.depth = depth; this.ensuresFn = ensuresFn; }
 
   get loopDepth(): number { return this.frames.filter((f) => f.loop).length; }
 
@@ -337,7 +338,7 @@ class Flow {
           else this.ex(x, "store");
         }
         return;
-      case K.ArrowFunction: case K.FunctionExpression: new Flow(this.m, this.depth + 1).body(e as ts.ArrowFunction); return; // captures: `ident`
+      case K.ArrowFunction: case K.FunctionExpression: new Flow(this.m, this.depth + 1, ensuresArgs.has(e)).body(e as ts.ArrowFunction); return; // captures: `ident`
     }
     // literals, `this`, `null`: nothing to track
   }
@@ -348,7 +349,7 @@ class Flow {
     const borrow = borrowMode(sym.declared) !== undefined;
     const isResource = sym.type.k === "resource";
     if (sym.fnDepth < this.depth && !this.captured.has(sym.id)) { // captured by this nested function (§5.5, §5.6, Q012)
-      if (borrow) { this.captured.add(sym.id); this.m.at("E3004", id, `the borrow '${sym.name}' cannot be captured by a closure`, { variable: sym.name, kind: "closure-capture" }); return; }
+      if (borrow && !(this.ensuresFn && sym.fnDepth === this.depth - 1)) { this.captured.add(sym.id); this.m.at("E3004", id, `the borrow '${sym.name}' cannot be captured by a closure`, { variable: sym.name, kind: "closure-capture" }); return; }
       if (isResource) { this.captured.add(sym.id); this.m.at("E3004", id, `the resource '${sym.name}' cannot be captured by a closure`, { variable: sym.name, kind: "resource-escape" }); return; }
       if (movesLike(sym.type)) { this.captured.add(sym.id); this.m.at("E3007", id, `the owned value '${sym.name}' cannot be captured by a closure`, { variable: sym.name, kind: "closure-capture" }); return; }
     }

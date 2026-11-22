@@ -298,7 +298,7 @@ reject/E2002-recursive-type-alias-mutual.szigyr
 reject/E2002-recursive-type-alias.szigyr
 reject/E2002-ref-of-copy-struct.szigyr
 reject/E2002-ref-of-number.szigyr
-reject/E2002-relational-on-strings.szigyr
+reject/E2002-relational-on-booleans.szigyr
 reject/E2002-return-type-mismatch.szigyr
 reject/E2002-return-u32-from-usize.szigyr
 reject/E2002-ring-create-arenabuf.szigyr
@@ -563,6 +563,7 @@ reject/E4001-strict-calls-managed-only-builtin.szigyr
 reject/E4001-strict-calls-managed.szigyr
 reject/E4001-strict-function-to-rt-param.szigyr
 reject/E4001-strict-param-forwarded-to-rt.szigyr
+reject/E4001-string-relational-in-rt.szigyr
 reject/E4002-arena-alloc-owned.szigyr
 reject/E4002-arenabuf-string.szigyr
 reject/E4002-array-param-in-strict.szigyr
@@ -679,6 +680,7 @@ reject/E6002-forAll-in-requires.szigyr
 reject/E6002-fs-readbytes-in-contract.szigyr
 reject/E6002-fs-remove-in-contract.szigyr
 reject/E6002-invariant-mutating-method.szigyr
+reject/E6002-proc-setexitcode-in-contract.szigyr
 reject/E6002-requires-arena-alloc.szigyr
 reject/E6002-requires-builtin-through-nullable.szigyr
 reject/E6002-requires-builtin-through-ref.szigyr
@@ -694,6 +696,7 @@ reject/E6002-requires-ptr-box.szigyr
 reject/E6002-requires-ring-nondeterministic.szigyr
 reject/E6002-requires-spawn-isolate.szigyr
 reject/E6002-strict-unsafe-contract-call.szigyr
+reject/E6002-string-encodeutf8-in-contract.szigyr
 reject/E6003-test-in-function.szigyr
 reject/E6003-test-in-test.szigyr
 reject/E6004-forAll-at-module-level.szigyr
@@ -883,6 +886,7 @@ run/260-fs-dir-stat-atomic.szigyr
 run/261-proc-and-fake-proc.szigyr
 run/262-net-and-fake-net.szigyr
 run/263-url-httpserver-stop-fakefs.szigyr
+run/264-utf8-json-exitcode-ensures-strcmp.szigyr
 run/27-trap-ownedcell-empty.szigyr
 run/28-trap-shift-range.szigyr
 run/29-trap-invariant.szigyr

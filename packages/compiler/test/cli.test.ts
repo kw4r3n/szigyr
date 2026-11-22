@@ -609,3 +609,29 @@ test("forAll fail", (t: Test) => {
   expect(tLines.find((l) => l.name === "details")?.detail).toEqual({ kind: "eq", actual: 2, expected: 3 });
   expect(tLines.find((l) => l.name === "forAll fail")?.detail).toMatchObject({ kind: "forAll", reason: "returned false" });
 });
+
+it("run reflects Proc.setExitCode across backends while traps still exit 3", () => {
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-exit-`));
+  const okFile = join(dir, "exit2.szigyr");
+  writeFileSync(okFile, `function helper(x: i32): i32 {
+  "use rt";
+  return x + 1;
+}
+export function main(sys: System): void {
+  sys.log.info(\`\${helper(4)}\`);
+  sys.proc.setExitCode(2);
+}
+`);
+  const rBoth = szigyr("run", "--backend=both", okFile);
+  expect(rBoth).toEqual({ code: 2, out: "5\n", err: "" });
+
+  const trapFile = join(dir, "trap3.szigyr");
+  writeFileSync(trapFile, `export function main(sys: System): void {
+  sys.proc.setExitCode(7);
+  panic("boom");
+}
+`);
+  const rTrap = szigyr("run", trapFile);
+  expect(rTrap.code).toBe(3);
+  expect(rTrap.err).toContain("T006");
+});

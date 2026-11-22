@@ -131,6 +131,7 @@ const PROC: Members = {
   env: mo(m(RD, [STR], nullable(STR))),
   cwd: mo(m(RD, [], STR)),
   args: mo(m(RD, [], gen("Array", STR))),
+  setExitCode: mo(m(PORT_FX, [num("u8")], VOID)),
 };
 const NET: Members = {
   fetch: mo(m(PORT_FX, [STR, HTTP_REQUEST_INIT_RECORD], gen("Promise", ioResult(HTTP_RESPONSE_RECORD)), { min: 1 })),
@@ -195,7 +196,7 @@ export function opaqueMembers(name: string): Members {
     FakeFs: () => ({ ...FS, addSymlink: mo(m(WR, [STR, STR], ioResult(NULL))) }),
     FakeSpawn: () => SPAWN,
     FakeAudio: () => ({ ...AUDIO, renderFrames: mo(m(PORT_FX, [USIZE], gen("Array", num("f32")))) }),
-    FakeProc: () => ({ ...PROC, setEnv: mo(m(WR, [STR, STR], VOID)), setCwd: mo(m(WR, [STR], VOID)), setArgs: mo(m(WR, [gen("ReadonlyArray", STR)], VOID)), onRun: mo(m(WR, [fn([PROC_REQUEST_RECORD], ioResult(PROC_OUTPUT_RECORD))], VOID)), calls: mo(m(RD, [], gen("Array", PROC_REQUEST_RECORD))) }),
+    FakeProc: () => ({ ...PROC, setEnv: mo(m(WR, [STR, STR], VOID)), setCwd: mo(m(WR, [STR], VOID)), setArgs: mo(m(WR, [gen("ReadonlyArray", STR)], VOID)), exitCode: mo(m(RD, [], num("u8"))), onRun: mo(m(WR, [fn([PROC_REQUEST_RECORD], ioResult(PROC_OUTPUT_RECORD))], VOID)), calls: mo(m(RD, [], gen("Array", PROC_REQUEST_RECORD))) }),
     FakeNet: () => ({ ...NET, onFetch: mo(m(WR, [fn([HTTP_CLIENT_REQUEST_RECORD], ioResult(HTTP_RESPONSE_RECORD))], VOID)), requests: mo(m(RD, [], gen("Array", HTTP_CLIENT_REQUEST_RECORD))) }),
   };
   return Object.hasOwn(table, name) ? table[name]!() : {};
@@ -328,7 +329,10 @@ export function nsMembers(ns: string): Record<string, Member | "variadic"> {
     };
     case "JSON": return {
       parse: mo(m(RD, [STR], result(UNKNOWN, ERROR_RECORD))), // Q035
-      stringify: mo(m(RD, [tT], STR, { tparams: [T], tcheck: "jsonstringify" })),
+      stringify: mo(m(RD, [tT, num("u8")], STR, { min: 1, tparams: [T], tcheck: "jsonstringify" })),
+      get: mo(m(RD, [UNKNOWN, STR], result(UNKNOWN, ERROR_RECORD))),
+      keys: mo(m(RD, [UNKNOWN], result(gen("Array", STR), ERROR_RECORD))),
+      items: mo(m(RD, [UNKNOWN], result(gen("Array", UNKNOWN), ERROR_RECORD))),
     };
     case "Url": return {
       parseQuery: mo(m(RD, [STR], gen("Array", QUERY_PARAM_RECORD))),
@@ -337,7 +341,12 @@ export function nsMembers(ns: string): Record<string, Member | "variadic"> {
       encodeComponent: mo(m(RD, [STR], STR)),
       decodeComponent: mo(m(RD, [STR], result(STR, ERROR_RECORD))),
     };
-    case "String": return { fromCodePoint: mo(m(RD, [num("u32")], STR)) };
+    case "String": return {
+      fromCodePoint: mo(m(RD, [num("u32")], STR)),
+      encodeUtf8: mo(m(WR, [STR, gen("Mut", gen("Vec", num("u8")))], USIZE)),
+      decodeUtf8: mo(m(RD, [gen("Ref", gen("Slice", num("u8")))], ioResult(STR))),
+      decodeUtf8Lossy: mo(m(RD, [gen("Ref", gen("Slice", num("u8")))], STR)),
+    };
     case "Promise": return { all: mo(m(RD, [gen("Array", gen("Promise", tT))], gen("Promise", gen("Array", tT)), { tparams: [T] })) };
     case "DetMath": // §12 (Q191): rt functions, so callable from every layer; f64 only
       return { ...each(DETMATH_UNARY, () => m(RD, [F64], F64)), ...each(DETMATH_BINARY, () => m(RD, [F64, F64], F64)) };

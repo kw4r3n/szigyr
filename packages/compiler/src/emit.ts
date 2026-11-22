@@ -9,7 +9,7 @@ import { sliceGroups, type SliceGroupEntry } from "./ownership.ts";
 import { elemDesc } from "./layout.ts";
 import { emitGenDesc, genDescOf } from "./gendesc.ts";
 import { canonPath, declBindings } from "./modules.ts";
-import { NUM_NAMES, bindTParams, field, isInt, isInt64, isStr, literalFits, movesLike, nonNull, parseExactInt, resultParts, same, subst, unref, type FnType, type NumName, type Type } from "./types.ts";
+import { INT_RANGE, NUM_NAMES, bindTParams, field, isInt, isInt64, isStr, literalFits, movesLike, nonNull, parseExactInt, resultParts, same, subst, unref, type FnType, type NumName, type Type } from "./types.ts";
 import { CLI_NAME, RUNTIME_GLOBAL } from "./names.ts";
 import { DETMATH_PATH, dmBinding } from "./detmath.ts";
 import type { Pos } from "../../runtime-js/src/index.ts";
@@ -34,11 +34,16 @@ const COMPOUND: Partial<Record<K, string>> = {
 };
 /** §12 members that can throw a JS exception (Q035): parse errors, out-of-range code points, string / array / Map / Set size limits. */
 const THROWING: Record<string, readonly string[]> = {
-  JSON: ["stringify"], String: ["fromCodePoint"],
+  String: ["fromCodePoint"],
   string: ["padStart", "padEnd", "replaceAll", "toUpperCase", "toLowerCase"],
   Array: ["push", "concat", "join"], ReadonlyArray: ["concat", "join"], Map: ["set"], Set: ["add"],
 };
 const INT_OP: Record<string, string> = { "+": "add", "-": "sub", "*": "mul" };
+const INT32_BOUNDS: Partial<Record<NumName, readonly [number, number]>> = Object.fromEntries(
+  Object.entries(INT_RANGE).filter(([k]) => !isInt64(k as NumName)).map(([k, [lo, hi]]) => [k, [Number(lo), Number(hi)] as const]),
+);
+const EXACT_F32_INTS = new Set<NumName>(["i8", "u8", "i16", "u16"]);
+const UNSIGNED_32_INTS = new Set<NumName>(["u8", "u16", "u32", "usize"]);
 const ARITH_MUT: Record<string, string> = { "+": "-", "-": "+", "*": "+" };
 const CMP_MUT: Record<string, string> = { "<": "<=", "<=": "<", ">": ">=", ">=": ">", "===": "!==", "!==": "===" };
 const LOGIC_MUT: Record<string, string> = { "&&": "||", "||": "&&" };
@@ -473,7 +478,10 @@ export function emitFile(
       }
       return orig;
     }
-    if (u.operator === K.MinusToken && t && isInt(typeOf(u)!)) return `${RT}.neg(${JSON.stringify(t)}, ${gen(u.operand)}, ${at(u)})`;
+    if (u.operator === K.MinusToken && t && isInt(typeOf(u)!)) {
+      const b = INT32_BOUNDS[t];
+      return b ? `${RT}.chk(${b[0]}, ${b[1]}, -(${gen(u.operand)}), ${JSON.stringify(t)}, ${at(u)})` : `${RT}.neg(${JSON.stringify(t)}, ${gen(u.operand)}, ${at(u)})`;
+    }
     if (u.operator === K.TildeToken && t === "u32") return `${RT}.toU32(${splice(u)})`;
     if (u.operator === K.TildeToken && t === "u64") return `${RT}.toU64(${splice(u)})`;
     return splice(u);
@@ -481,7 +489,10 @@ export function emitFile(
 
   /** `l op r` for a numeric type: range check (int + - *), rounding (f32), u32 normalization, shifts. */
   function op(t: string | undefined, o: string, l: string, r: string, anchor: string): string {
-    if (t && INT_OP[o] && t !== "f32" && t !== "f64") return `${RT}.${INT_OP[o]}(${JSON.stringify(t)}, ${l}, ${r}, ${anchor})`;
+    if (t && INT_OP[o] && t !== "f32" && t !== "f64") {
+      const b = INT32_BOUNDS[t as NumName];
+      return b ? `${RT}.chk(${b[0]}, ${b[1]}, (${l}) ${o} (${r}), ${JSON.stringify(t)}, ${anchor})` : `${RT}.${INT_OP[o]}(${JSON.stringify(t)}, ${l}, ${r}, ${anchor})`;
+    }
     if (t === "f32" && ["+", "-", "*", "/", "%", "**"].includes(o)) return `${RT}.f32((${l}) ${o} (${r}))`;
     if (o === "<<") return `${RT}.shl(${JSON.stringify(t)}, ${l}, ${r}, ${anchor})`;
     if (o === ">>") return `${RT}.shr(${l}, ${r}, ${anchor})`;
@@ -627,7 +638,33 @@ export function emitFile(
     if (callee.kind === K.Identifier) {
       const name = (callee as ts.Identifier).text;
       const t = self?.k === "num" ? self.name : "";
-      if ((NUM_NAMES as readonly string[]).includes(name)) return `${RT}.convert(${q(name)}, ${args[0]}, ${at(callee)})`;
+      if ((NUM_NAMES as readonly string[]).includes(name)) {
+        const dst = name as NumName, argNode = e.arguments[0]!, db = INT32_BOUNDS[dst];
+        if (db && !canMutate()) {
+          const u = unwrapParens(argNode);
+          const neg = u.kind === K.PrefixUnaryExpression && (u as ts.PrefixUnaryExpression).operator === K.MinusToken;
+          const lit = neg ? unwrapParens((u as ts.PrefixUnaryExpression).operand) : u;
+          if (lit.kind === K.NumericLiteral) {
+            const val = neg ? -numValue(lit as ts.NumericLiteral) : numValue(lit as ts.NumericLiteral);
+            if (Number.isInteger(val) && val >= db[0] && val <= db[1]) return val < 0 ? `(${val})` : String(val + 0);
+          }
+        }
+        const src = typeOf(argNode);
+        if (src?.k === "num") {
+          if (src.name === dst) return `(${args[0]})`;
+          if (dst === "f64" && !isInt64(src.name)) return `(${args[0]})`;
+          if (dst === "f32" && !isInt64(src.name)) return EXACT_F32_INTS.has(src.name) ? `(${args[0]})` : `${RT}.f32(${args[0]})`;
+          if (dst === "i64" && INT32_BOUNDS[src.name]) return `BigInt(${args[0]})`;
+          if (dst === "u64" && UNSIGNED_32_INTS.has(src.name)) return `BigInt(${args[0]})`;
+          const sb = INT32_BOUNDS[src.name];
+          if (sb && db) {
+            return sb[0] >= db[0] && sb[1] <= db[1]
+              ? `(${args[0]})`
+              : `${RT}.narrow(${db[0]}, ${db[1]}, ${args[0]}, ${q(dst)}, ${at(callee)})`;
+          }
+        }
+        return `${RT}.convert(${q(name)}, ${args[0]}, ${at(callee)})`;
+      }
       switch (name) {
         case "wrapAdd": case "wrapSub": case "wrapMul": return `${RT}.${name}(${q(t)}, ${args.join(", ")})`;
         case "divTrunc": case "rem": return `${RT}.${name}(${q(t)}, ${args.join(", ")}, ${at(callee)})`;
@@ -676,6 +713,13 @@ export function emitFile(
     if (ns === "Math" && m === "sqrt" && self?.k === "num" && self.name === "f32") return `${RT}.f32(Math.sqrt(${args[0]}))`;
     if (ns === "DetMath") { dmUsed.add(m); return `${dmBinding(m)}(${args.join(", ")})`; } // §12 (Q191): the bundled module, imported below under a hidden name
     if (ns === "JSON" && m === "parse") return `${RT}.jsonParse(${args[0]}, ${at(p.name)})`; // Q035: a syntax error is an `err`, other exceptions are T006
+    if (ns === "JSON" && m === "stringify") return `${RT}.jsonStringify(${args[0]}, ${args.length > 1 ? args[1] : "undefined"}, ${at(p.name)})`;
+    if (ns === "JSON" && m === "get") return `${RT}.jsonGet(${args[0]}, ${args[1]})`;
+    if (ns === "JSON" && m === "keys") return `${RT}.jsonKeys(${args[0]})`;
+    if (ns === "JSON" && m === "items") return `${RT}.jsonItems(${args[0]})`;
+    if (ns === "String" && m === "encodeUtf8") return `${RT}.strEncodeUtf8(${args[0]}, ${args[1]}, ${at(p.name)})`;
+    if (ns === "String" && m === "decodeUtf8") return `${RT}.strDecodeUtf8(${args[0]}, ${at(p.name)})`;
+    if (ns === "String" && m === "decodeUtf8Lossy") return `${RT}.strDecodeUtf8Lossy(${args[0]}, ${at(p.name)})`;
     // Q035: builtins that can throw a JS exception panic (T006) at their name.
     const throws = ns ? THROWING[ns] : r?.k === "gen" ? THROWING[r.name] : r && isStr(r) ? THROWING.string : undefined;
     if (throws?.includes(m)) {

@@ -1,0 +1,9 @@
+// expect: E6002 @ 5:7
+// stage: 2
+function f(p: Proc): i32 {
+  requires(((): boolean => {
+    p.setExitCode(1);
+    return true;
+  })());
+  return 1;
+}

@@ -211,6 +211,9 @@ describe("fakes", () => {
     expect(p.env("MISSING")).toBeNull();
     expect(p.cwd()).toBe("/work");
     expect(p.args()).toEqual(["--flag", "val"]);
+    expect(p.exitCode()).toBe(0);
+    p.setExitCode(27);
+    expect(p.exitCode()).toBe(27);
 
     expect(await p.run("", [])).toEqual({ kind: "err", error: { code: "EINVAL", message: expect.any(String) } });
     expect(await p.run("missing", [])).toEqual({ kind: "err", error: { code: "ENOENT", message: expect.any(String) } });
@@ -423,6 +426,9 @@ describe("runMain", () => {
   it("collects stdout / stderr, awaits async main", async () => {
     const r = await runMain(async (sys) => { sys.log.info("x"); await Promise.resolve(); sys.log.warn("w"); });
     expect(r).toEqual({ stdout: "x\n", stderr: "w\n" });
+    const r2 = await runMain((sys) => { sys.proc.setExitCode(42); });
+    expect(r2).toEqual({ stdout: "", stderr: "", exitCode: 42 });
+    expect(await runMain(() => {})).toEqual({ stdout: "", stderr: "" });
   });
   it("keeps output before a trap and reports it", async () => {
     const r = await runMain((sys) => { sys.log.info("before"); requires(false, pos); sys.log.info("after"); });

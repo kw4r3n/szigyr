@@ -1,0 +1,8 @@
+// expect: E4001 @ 7:12
+// stage: 2
+// open-question: Q018
+type Tag = "a" | "b";
+function f(a: Tag, b: Tag): boolean {
+  "use rt";
+  return a < b;
+}

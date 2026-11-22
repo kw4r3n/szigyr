@@ -361,7 +361,7 @@ async function runNow(entryFile: string, backend?: Backend, analysis?: Analysis,
   // Only stack exhaustion outside any source call (Q035) has no position.
   const own = r.trap ? { code: r.trap.code, file: r.trap.pos?.file ?? "", line: r.trap.pos?.line ?? 0, col: r.trap.pos?.col ?? 0, ...(isolateCause && r.trap.message === `${r.trap.code}: ${isolateCause}` ? { message: isolateCause } : {}) } : null;
   const trap = own ? (c ?? own) : (iso ?? c);
-  return { diagnostics: [], stdout: r.stdout, trap };
+  return { diagnostics: [], stdout: r.stdout, trap, exitCode: trap ? 3 : (r.exitCode ?? 0) };
 }
 
 /** `szigyr test`: checks, emits the entry file's `test(...)` calls and runs them in order (§9.2, D022). */

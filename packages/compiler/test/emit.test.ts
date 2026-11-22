@@ -542,3 +542,98 @@ export async function main(sys: System): Promise<void> {
     }
   }, 120000);
 });
+
+describe("string-literal union members and numeric fast paths", () => {
+  it("allows string members on string-literal unions and reports E2001 on invalid members", async () => {
+    const okMain = project({
+      "main.szigyr": `type Cat = "firewall" | "gpu";
+function inspect(c: Cat, maybe: Cat | null): string {
+  const idx = c.indexOf("w");
+  const mlen = maybe?.length ?? usize(0);
+  return \`\${c.length}:\${c.startsWith("fire")}:\${idx === null ? 99 : idx}:\${c.charCodeAt(0)}:\${mlen}\`;
+}
+export function main(sys: System): void {
+  sys.log.info(inspect("firewall", "gpu"));
+  sys.log.info(inspect("gpu", null));
+}
+`,
+    });
+    const r = await run(okMain);
+    expect(r.diagnostics).toEqual([]);
+    expect(r.trap).toBeNull();
+    expect(r.stdout).toBe("8:true:4:102:3\n3:false:99:103:0\n");
+
+    const badMain = project({
+      "main.szigyr": `type Cat = "a" | "b";
+export function f(c: Cat): string {
+  return c.charAt(0);
+}
+`,
+    });
+    const ds = check(badMain);
+    expect(ds.map((d) => d.code)).toContain("E2001");
+    expect(ds.find((d) => d.code === "E2001")?.data?.suggestions).toEqual(["slice", "charCodeAt"]);
+  });
+
+  it("preserves numeric fast-path execution and trap fidelity", async () => {
+    const okAndTrap = project({
+      "main.szigyr": `function widenAll(b: u8, n: u32): string {
+  const a1: u32 = u32(b);
+  const a2: usize = usize(b);
+  const a3: i32 = i32(b);
+  const a4: f64 = f64(b);
+  const a5: f32 = f32(b);
+  const a6: i64 = i64(b);
+  const a7: u64 = u64(b);
+  const a8: usize = usize(n);
+  const a9: u32 = u32(a8);
+  const c1: u32 = u32(0x7f);
+  const c2: u32 = u32(-0);
+  const c3: i8 = i8(-128);
+  return \`\${a1},\${a2},\${a3},\${a4},\${a5},\${a6},\${a7},\${a9},\${c1},\${c2},\${c3}\`;
+}
+function narrowU8(x: u16): u8 {
+  return u8(x);
+}
+export function main(sys: System): void {
+  sys.log.info(widenAll(200, 4000000000));
+  sys.log.info(\`\${narrowU8(255)}\`);
+}
+test("traps on out-of-range casts and 32-bit overflows", (t: Test) => {
+  t.traps("T003", () => { const _ = u8(256); });
+  t.traps("T003", () => { const _ = u32(-1); });
+  t.traps("T003", () => { const _ = i32(1.5); });
+  t.traps("T003", () => { const _ = i64(9223372036854775807.0); });
+  t.traps("T003", () => { const _ = narrowU8(256); });
+  t.traps("T001", () => { const a: i32 = 2147483647; const _ = a + 1; });
+  t.traps("T001", () => { const a: u8 = 0; const _ = a - 1; });
+  t.traps("T001", () => { const a: i16 = 300; const _ = a * 200; });
+  t.traps("T001", () => { const a: i8 = -128; const _ = -a; });
+  t.traps("T001", () => { let a: u8 = 250; a += 10; });
+});
+`,
+    });
+    const r = await run(okAndTrap);
+    expect(r.diagnostics).toEqual([]);
+    expect(r.trap).toBeNull();
+    expect(r.stdout).toBe("200,200,200,200,200,200,200,4000000000,127,0,-128\n255\n");
+    const tr = await runTestFile(okAndTrap);
+    expect(tr.diagnostics).toEqual([]);
+    expect(tr.results.map((x) => x.ok)).toEqual([true]);
+
+    const trapCases: [string, string, number, number][] = [
+      ["export function main(sys: System): void {\n  const x: u16 = 256;\n  sys.log.info(`${u8(x)}`);\n}", "T003", 3, 19],
+      ["export function main(sys: System): void {\n  const x: i32 = 2147483647;\n  sys.log.info(`${x + 1}`);\n}", "T001", 3, 21],
+      ["export function main(sys: System): void {\n  const x: u8 = 0;\n  sys.log.info(`${x - 1}`);\n}", "T001", 3, 21],
+      ["export function main(sys: System): void {\n  const x: i16 = 300;\n  sys.log.info(`${x * 200}`);\n}", "T001", 3, 21],
+      ["export function main(sys: System): void {\n  const x: i8 = -128;\n  sys.log.info(`${-x}`);\n}", "T001", 3, 19],
+      ["export function main(sys: System): void {\n  let x: u8 = 250;\n  x += 10;\n  sys.log.info(`${x}`);\n}", "T001", 3, 5],
+    ];
+    for (const [src, code, line, col] of trapCases) {
+      const m = project({ "main.szigyr": src });
+      const res = await run(m);
+      expect(res.diagnostics).toEqual([]);
+      expect(res.trap).toMatchObject({ code, line, col });
+    }
+  });
+});

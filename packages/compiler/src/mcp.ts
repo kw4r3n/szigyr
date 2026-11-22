@@ -239,13 +239,13 @@ async function handleWorker(req: WorkerReq): Promise<[unknown, boolean?]> {
       const r0 = rs[0]!;
       let mismatch: unknown;
       if (rs.length >= 2) {
-        const key0 = JSON.stringify([r0.stdout, r0.trap]);
-        if (rs.slice(1).some((rk) => JSON.stringify([rk.stdout, rk.trap]) !== key0)) {
-          mismatch = Object.fromEntries(backends.map((b, i) => [b, { stdout: rs[i]!.stdout, trap: rs[i]!.trap }]));
+        const key0 = JSON.stringify([r0.stdout, r0.trap, r0.exitCode ?? 0]);
+        if (rs.slice(1).some((rk) => JSON.stringify([rk.stdout, rk.trap, rk.exitCode ?? 0]) !== key0)) {
+          mismatch = Object.fromEntries(backends.map((b, i) => [b, { stdout: rs[i]!.stdout, trap: rs[i]!.trap, exitCode: rs[i]!.exitCode ?? 0 }]));
         }
       }
       const ok = !mismatch && !r0.trap;
-      return [{ ok, file: req.file, backend: req.backend, diagnostics: [], stdout: r0.stdout, ...(r0.trap ? { trap: r0.trap } : {}), ...(mismatch ? { mismatch } : {}), durationMs: ms() }];
+      return [{ ok, file: req.file, backend: req.backend, diagnostics: [], stdout: r0.stdout, exitCode: r0.exitCode ?? 0, ...(r0.trap ? { trap: r0.trap } : {}), ...(mismatch ? { mismatch } : {}), durationMs: ms() }];
     }
     if (req.op === "prove") {
       applyOverlays(parser, req.file, req.content, req.overlays);

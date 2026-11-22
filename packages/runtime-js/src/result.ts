@@ -1,3 +1,4 @@
+import { readU8Slice, replaceU8Vec, type Slice, type Vec } from "./collections.ts";
 import { RANGE, RANGE64, type Int32Type, type NumType } from "./num.ts";
 import { isTrap, Trap, trap, type Pos } from "./trap.ts";
 
@@ -81,6 +82,66 @@ export function jsonParse(text: string, pos?: Pos): Result<unknown, { readonly c
     if (e instanceof Trap) throw e;
     if (e instanceof SyntaxError) return err({ code: e.name, message: e.message });
     return trap("T006", `parse: ${e instanceof Error ? e.message : String(e)}`, pos);
+  }
+}
+
+export function jsonStringify(v: unknown, indent?: number, pos?: Pos): string {
+  try {
+    return (indent === undefined ? JSON.stringify(v) : JSON.stringify(v, undefined, indent)) ?? "null";
+  } catch (e) {
+    if (isTrap(e)) throw e;
+    return trap("T006", `stringify: ${e instanceof Error ? e.message : String(e)}`, pos);
+  }
+}
+
+const isPlainObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+export function jsonGet(v: unknown, key: string): Result<unknown, CastError> {
+  if (!isPlainObj(v)) return err({ code: "cast", message: "$: expected object" });
+  return Object.hasOwn(v, key) ? ok(v[key]) : err({ code: "cast", message: `$: missing field ${key}` });
+}
+
+export function jsonKeys(v: unknown): Result<string[], CastError> {
+  return isPlainObj(v) ? ok(Object.keys(v)) : err({ code: "cast", message: "$: expected object" });
+}
+
+export function jsonItems(v: unknown): Result<unknown[], CastError> {
+  return Array.isArray(v) ? ok(v.slice()) : err({ code: "cast", message: "$: expected array" });
+}
+
+// Lazy init keeps module load AudioWorklet-safe where TextEncoder/TextDecoder may be absent.
+let utf8Enc: TextEncoder | undefined;
+let utf8DecStrict: TextDecoder | undefined;
+let utf8DecLossy: TextDecoder | undefined;
+
+export function strEncodeUtf8(s: string, dst: Vec<number>, pos?: Pos): number {
+  try {
+    const bytes = (utf8Enc ??= new TextEncoder()).encode(s);
+    if (bytes.byteLength > 0xffffffff) return trap("T006", "UTF-8 output exceeds usize limit (4GiB)", pos);
+    replaceU8Vec(dst, bytes);
+    return bytes.byteLength;
+  } catch (e) {
+    if (isTrap(e)) throw e;
+    return trap("T006", `encodeUtf8: ${e instanceof Error ? e.message : String(e)}`, pos);
+  }
+}
+
+export function strDecodeUtf8(src: Vec<number> | Slice<number>, pos?: Pos): Result<string, { readonly code: string; readonly message: string }> {
+  try {
+    return ok((utf8DecStrict ??= new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })).decode(readU8Slice(src)));
+  } catch (e) {
+    if (isTrap(e)) throw e;
+    if (e instanceof TypeError) return err({ code: "EINVAL", message: e.message });
+    return trap("T006", `decodeUtf8: ${e instanceof Error ? e.message : String(e)}`, pos);
+  }
+}
+
+export function strDecodeUtf8Lossy(src: Vec<number> | Slice<number>, pos?: Pos): string {
+  try {
+    return (utf8DecLossy ??= new TextDecoder("utf-8", { fatal: false, ignoreBOM: true })).decode(readU8Slice(src));
+  } catch (e) {
+    if (isTrap(e)) throw e;
+    return trap("T006", `decodeUtf8Lossy: ${e instanceof Error ? e.message : String(e)}`, pos);
   }
 }
 

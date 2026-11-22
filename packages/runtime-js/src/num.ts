@@ -19,12 +19,18 @@ const is64 = (t: string): t is Int64Type => t === "i64" || t === "u64";
 
 // `+ 0` turns -0 into +0: integers have no negative zero (Q090).
 function inRange(t: Int32Type, r: number, pos?: Pos): number {
-  const [lo, hi] = RANGE[t];
+  const b = RANGE[t];
+  return r >= b[0] && r <= b[1] ? r + 0 : trap("T001", `${t} overflow`, pos);
+}
+export function chk(lo: number, hi: number, r: number, t: Int32Type, pos?: Pos): number {
   return r >= lo && r <= hi ? r + 0 : trap("T001", `${t} overflow`, pos);
 }
+export function narrow(lo: number, hi: number, x: number, t: Int32Type, pos?: Pos): number {
+  return x >= lo && x <= hi ? x : trap("T003", `cannot convert ${x} to ${t}`, pos);
+}
 function inRange64(t: Int64Type, r: bigint, pos?: Pos): bigint {
-  const [lo, hi] = RANGE64[t];
-  return r >= lo && r <= hi ? r : trap("T001", `${t} overflow`, pos);
+  const b = RANGE64[t];
+  return r >= b[0] && r <= b[1] ? r : trap("T001", `${t} overflow`, pos);
 }
 
 // Operands are in range, so |a op b| < 2^64 and the double result is exact whenever it is in range (32-bit); 64-bit uses exact BigInt.
@@ -55,8 +61,7 @@ export function neg(t: IntType, a: NumVal, pos?: Pos): NumVal {
 
 /** Wrap an exact integer (|x| < 2^53) into the range of `t`. */
 function wrap(t: Int32Type, x: number): number {
-  const [lo, hi] = RANGE[t];
-  const m = hi - lo + 1;
+  const b = RANGE[t], lo = b[0], m = b[1] - lo + 1;
   return ((((x - lo) % m) + m) % m) + lo;
 }
 const wrap64 = (t: Int64Type, x: bigint): bigint => (t === "i64" ? BigInt.asIntN(64, x) : BigInt.asUintN(64, x));
@@ -128,11 +133,11 @@ export function convert(t: NumType, x: NumVal, pos?: Pos): NumVal {
     if (t === "f64") return Number(x);
     if (t === "f32") return bigintToF32(x);
     if (is64(t)) {
-      const [lo, hi] = RANGE64[t];
-      return x >= lo && x <= hi ? x : trap("T003", `cannot convert ${x} to ${t}`, pos);
+      const b = RANGE64[t];
+      return x >= b[0] && x <= b[1] ? x : trap("T003", `cannot convert ${x} to ${t}`, pos);
     }
-    const [lo, hi] = RANGE[t];
-    return x >= BigInt(lo) && x <= BigInt(hi) ? Number(x) : trap("T003", `cannot convert ${x} to ${t}`, pos);
+    const b = RANGE[t];
+    return x >= BigInt(b[0]) && x <= BigInt(b[1]) ? Number(x) : trap("T003", `cannot convert ${x} to ${t}`, pos);
   }
   if (t === "f64") return x;
   if (t === "f32") return Math.fround(x);
@@ -146,8 +151,8 @@ export function convert(t: NumType, x: NumVal, pos?: Pos): NumVal {
       ? BigInt(x)
       : trap("T003", `cannot convert ${x} to u64`, pos);
   }
-  const [lo, hi] = RANGE[t];
-  return Number.isInteger(x) && x >= lo && x <= hi ? x + 0 : trap("T003", `cannot convert ${x} to ${t}`, pos);
+  const b = RANGE[t];
+  return Number.isInteger(x) && x >= b[0] && x <= b[1] ? x + 0 : trap("T003", `cannot convert ${x} to ${t}`, pos);
 }
 /** f32 results are rounded per operation (double arithmetic then fround is exact for + - * / sqrt). */
 export const f32 = Math.fround;

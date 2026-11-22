@@ -119,7 +119,7 @@ export interface ResourceMeta { kind: "own" | "ownWith"; valType: Type; ctxType?
 export const resourceCalls = new WeakMap<ts.CallExpression, ResourceMeta>();
 /** Q042: `panic("...")` literals, the one string strict / rt code may write. Q012: `ensures` arguments, the one function expression. */
 const panicLits = new WeakSet<Node>();
-const ensuresArgs = new WeakSet<Node>();
+export const ensuresArgs = new WeakSet<Node>();
 export function expr(c: Checker, e: ts.Expression, want?: Type): Type {
   const t = exprUnrecorded(c, e, want);
   exprTypes.set(e, t);
@@ -258,7 +258,7 @@ function unresolved(c: Checker, id: ts.Identifier): void {
 function contractLocal(c: Checker, id: ts.Identifier, s: LocalSym): void {
   const k = c.fx.contract;
   if (!k || s.fnDepth > k.depth) return; // declared inside the contract expression (e.g. the `r` of ensures)
-  const ok = s.param && s.fnDepth === k.depth && (k.kind === "requires" || !(isOwned(unref(s.declared)) || s.declared !== s.type));
+  const ok = s.param && s.fnDepth === k.depth && (k.kind === "requires" || !movesLike(s.declared));
   if (!ok) c.at("E6002", id, `a contract cannot refer to '${s.name}'`);
 }
 
@@ -410,6 +410,7 @@ function lookupMember(c: Checker, t: Type, name: ts.Identifier, inCall: boolean)
       return { kind: "method", sig: subst(s, bindTParams(t.iface.tparams, t.args)) as FnType, layer: "managed" };
     }
     case "union": { // a field common to every member of a tagged union (`kind`, §3.2)
+      if (isStr(t)) break;
       const fs = t.members.map((m) => field(m, n));
       if (!isTaggedUnion(t) || fs.some((f) => !f)) return missing("E2002");
       // writing the tag through the union could flip it under a caller's narrowing (Q122)
@@ -447,7 +448,12 @@ function lookupMember(c: Checker, t: Type, name: ts.Identifier, inCall: boolean)
   }
   if (isStr(t)) {
     const m = stringMember(n);
-    return m ? fromMember(c, m, name, inCall) : reportUnknownBuiltinMember(c, name, t, Object.keys(stringMembers()));
+    if (!m) return reportUnknownBuiltinMember(c, name, t, Object.keys(stringMembers()));
+    if (!c.callAllowed("managed")) {
+      c.at("E4001", name, `string member '${n}' is managed-only`, { callerLayer: c.fx.layer, calleeLayer: "managed" });
+      return MERR;
+    }
+    return fromMember(c, m, name, inCall);
   }
   return missing("E2002");
 }
@@ -643,7 +649,10 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
       const [lt, rt] = operands(c, b.left, b.right, undefined);
       if (isErr(lt) || isErr(rt)) return BOOL;
       if (isNum(lt) && isNum(rt)) { if (lt.name !== rt.name) c.at("E2003", op, `cannot compare '${lt.name}' and '${rt.name}'`, { left: lt.name, right: rt.name }); }
-      else c.at("E2002", op, "relational operators need numbers of the same type"); // Q018
+      else if (isStr(lt) && isStr(rt)) {
+        if (!c.callAllowed("managed")) c.at("E4001", op, "string relational comparison is managed-only", { callerLayer: c.fx.layer, calleeLayer: "managed" });
+      }
+      else c.at("E2002", op, "relational operators need numbers of the same type or strings"); // Q018
       numFix(c, op, b.left, b.right, lt, rt);
       return BOOL;
     }

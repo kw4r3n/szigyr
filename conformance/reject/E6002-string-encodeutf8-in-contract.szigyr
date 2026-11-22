@@ -1,0 +1,6 @@
+// expect: E6002 @ 4:19
+// stage: 2
+function f(s: string, dst: Mut<Vec<u8>>): i32 {
+  requires(String.encodeUtf8(s, dst) > usize(0));
+  return 1;
+}

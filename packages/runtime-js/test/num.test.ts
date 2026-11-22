@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Trap, add, sub, mul, neg, wrapAdd, wrapSub, wrapMul, divTrunc, rem, convert, f32, shl, shr, ushr, toU32, type Pos } from "../src/index.ts";
+import { Trap, add, sub, mul, neg, chk, narrow, wrapAdd, wrapSub, wrapMul, divTrunc, rem, convert, f32, shl, shr, ushr, toU32, type Pos } from "../src/index.ts";
 
 const pos: Pos = { file: "a.ts", line: 3, col: 7 };
 const trapOf = (f: () => unknown): Trap => { try { f(); } catch (e) { if (e instanceof Trap) return e; throw e; } throw new Error("no trap"); };
@@ -91,6 +91,15 @@ describe("convert", () => {
     const a = f32(0.1), b = f32(0.2);
     expect(f32(a + b)).toBe(0.30000001192092896);
     expect(f32(f32(a + b) + f32(0.3))).toBe(0.6000000238418579);
+  });
+  it("chk and narrow helpers", () => {
+    expect(chk(-128, 127, 42, "i8")).toBe(42);
+    expect(Object.is(chk(-128, 127, -0, "i8"), 0)).toBe(true);
+    const t1 = trapOf(() => chk(-128, 127, 128, "i8", pos));
+    expect([t1.code, t1.pos]).toEqual(["T001", pos]);
+    expect(narrow(0, 255, 255, "u8")).toBe(255);
+    const t3 = trapOf(() => narrow(0, 255, 256, "u8", pos));
+    expect([t3.code, t3.pos]).toEqual(["T003", pos]);
   });
 });
 
