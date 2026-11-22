@@ -238,6 +238,13 @@ describe("resident incremental checker, --watch mode, and stdio MCP server", () 
     expect(builtinsRead.result.contents[0]).toMatchObject({ uri: "szigyr://builtins", mimeType: "application/json" });
     const builtinsJson = JSON.parse(builtinsRead.result.contents[0].text) as Record<string, any>;
     expect(builtinsJson.namespaces.Math).toBeDefined();
+    expect(builtinsJson.namespaces.Math.min.signature).not.toContain("[]");
+    expect(builtinsJson.namespaces.Math.min.signature).not.toContain("...");
+    expect(builtinsJson.namespaces.JSON.stringify.signature).toContain("indent?: u8");
+    expect(builtinsJson.namespaces.JSON.stringify.minArgs).toBe(1);
+    expect(builtinsJson.namespaces.JSON.get).toBeDefined();
+    expect(builtinsJson.namespaces.String.encodeUtf8).toBeDefined();
+    expect(builtinsJson.opaqueTypes.Proc.setExitCode).toBeDefined();
     expect(builtinsJson.string.slice).toBeDefined();
     expect(builtinsJson.genericTypes.Vec).toBeDefined();
     expect(builtinsJson.capabilities).toContain("Copy");

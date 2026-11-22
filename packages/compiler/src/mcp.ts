@@ -337,9 +337,9 @@ function formatMembers(ms: Record<string, Member | "variadic">, ns?: string) {
   return Object.fromEntries(Object.entries(ms).map(([k, v]) => {
     const entry = formatMember(v);
     if (ns === "Math" && ["abs", "sqrt", "floor", "ceil", "trunc", "round", "sign"].includes(k)) return [k, { ...entry, signature: "(f32) => f32 | (f64) => f64" }];
-    if (ns === "Math" && (k === "min" || k === "max")) return [k, { ...entry, signature: "(...xs: f32[]) => f32 | (...xs: f64[]) => f64" }];
+    if (ns === "Math" && (k === "min" || k === "max")) return [k, { ...entry, signature: "(1+ f32 args) => f32 | (1+ f64 args) => f64" }];
     if (ns === "Number" && ["isFinite", "isNaN", "isInteger"].includes(k)) return [k, { ...entry, signature: "(f32 | f64) => boolean" }];
-    if (ns === "JSON" && k === "stringify") return [k, { ...entry, signature: "<T extends Codec (concrete, no i64/u64)>(T) => string" }];
+    if (ns === "JSON" && k === "stringify") return [k, { ...entry, signature: "<T extends Codec (concrete, no i64/u64)>(v: T, indent?: u8) => string" }];
     return [k, entry];
   }));
 }
