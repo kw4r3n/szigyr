@@ -7,7 +7,7 @@ function make(alloc: Alloc): RingPair<i32> {
 }
 export function main(sys: System): void {
   const p = make(sys.alloc);
-  const { tx } = p;
+  const { tx, rx } = p;
   tx.push(1);
   sys.log.info("unreachable");
 }

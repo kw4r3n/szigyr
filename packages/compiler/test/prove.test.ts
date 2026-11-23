@@ -1256,4 +1256,128 @@ export function safeGet(l: Lim, s: Ref<Slice<i32>>, y: u8): i32 {
     const p4 = await prove(cacheTs, { cacheFile, parser, timeoutMs: 2500 });
     expect(p4.functions[0]!.cached).toBe(false);
   });
+
+  it("handles Pool.insert/remove, Array/builtin mutators, ??, for-of, and inexact lengths soundly (PROVE_VERSION=5)", async () => {
+    const { dir } = makeTmp();
+    const file = writeTmpFile(dir, "sound-fixes.szigyr", `
+function mutateArr(xs: i32[]): void {
+  const _p = xs.pop();
+}
+
+export function poolRemoveUnderflow(p: Mut<Pool<i32>>, h: Handle<i32>): usize {
+  "use rt";
+  requires(p.length === 1);
+  const _v = p.remove(h);
+  return p.length - 1;
+}
+
+export function poolInsertEnsures(p: Mut<Pool<i32>>): usize {
+  "use rt";
+  requires(p.length === 0);
+  ensures((r: usize) => r === 0);
+  const _h = p.insert(42);
+  return p.length;
+}
+
+export function poolLoopRemove(p: Mut<Pool<i32>>, h: Handle<i32>): usize {
+  "use rt";
+  requires(p.length === 1);
+  ensures((r: usize) => r === 1);
+  let i: usize = 0;
+  while (i < 1) {
+    if (p.has(h)) { const _v = p.remove(h); }
+    i = i + 1;
+  }
+  return p.length;
+}
+
+export function arrPopOob(xs: i32[]): i32 {
+  requires(xs.length === 1);
+  const _x = xs.pop();
+  return xs[0];
+}
+
+export function arrPushOob(xs: i32[]): i32 {
+  requires(xs.length === 0);
+  const _n = xs.push(7);
+  return xs[0];
+}
+
+export function arrHelperOob(xs: i32[]): i32 {
+  requires(xs.length === 1);
+  mutateArr(xs);
+  return xs[0];
+}
+
+export function encodeUtf8Oob(dst: Mut<Vec<u8>>): u8 {
+  requires(dst.length === 1);
+  const _n = String.encodeUtf8("", dst);
+  return dst[0];
+}
+
+export function readBytesOob(fs: Fs, dst: Mut<Vec<u8>>): u8 {
+  requires(dst.length === 1);
+  const _r = fs.readBytes("a.bin", dst);
+  return dst[0];
+}
+
+export function nullishShortCircuit(x: i32 | null): i32 {
+  "use rt";
+  let y: i32 = 1;
+  const _z: i32 = x ?? (y = 2);
+  return divTrunc(10, y - 1);
+}
+
+export function forOfHavoc(xs: readonly i32[]): i32 {
+  ensures((r: i32) => r === 0);
+  let s: i32 = 0;
+  for (const x of xs) {
+    s = s + x;
+  }
+  return s;
+}
+
+export function inexactFilled(alloc: Alloc, f: f64): usize {
+  "use owned";
+  requires(f === 0.0);
+  ensures((r: usize) => r === 0);
+  const v = Vec.filled<i32>(alloc, usize(f), 0);
+  return v.length;
+}
+
+export function main(sys: System): void {
+  const p = Pool.create<i32>(sys.alloc, 4);
+  const h = p.insert(10);
+  if (h !== null) sys.log.info(\`\${poolRemoveUnderflow(p, h)}\`);
+}
+`);
+    const a = analyze(file, parser);
+    expect(a.diagnostics).toEqual([]);
+    const pr = await prove(file, { analysis: a, cache: false, parser });
+    const by = new Map(pr.functions.map((f) => [f.fn, f]));
+
+    expect(by.get("poolRemoveUnderflow")!.obligations.some((o) => o.kind === "T001" && o.status === "failed")).toBe(true);
+    expect(by.get("poolInsertEnsures")!.obligations.some((o) => o.kind === "T005" && o.status === "proved")).toBe(false);
+    expect(by.get("poolLoopRemove")!.obligations.find((o) => o.kind === "T005")?.status).toBe("failed");
+    expect(by.get("arrPopOob")!.obligations.some((o) => o.kind === "T002" && o.status === "failed")).toBe(true);
+    expect(by.get("arrPushOob")!.obligations.some((o) => o.kind === "T002" && o.status === "proved")).toBe(true);
+    expect(by.get("arrHelperOob")!.obligations.some((o) => o.kind === "T002" && o.status === "proved")).toBe(false);
+    expect(by.get("encodeUtf8Oob")!.obligations.some((o) => o.kind === "T002" && o.status === "proved")).toBe(false);
+    expect(by.get("readBytesOob")!.obligations.some((o) => o.kind === "T002" && o.status === "proved")).toBe(false);
+    expect(by.get("nullishShortCircuit")!.obligations.some((o) => o.kind === "T007" && o.status === "failed")).toBe(true);
+    expect(by.get("forOfHavoc")!.obligations.some((o) => o.kind === "T005" && o.status === "failed")).toBe(true);
+    expect(by.get("inexactFilled")!.obligations.find((o) => o.kind === "T005")?.status).toBe("unknown");
+
+    // Release build keeps the T001 subtraction check on poolRemoveUnderflow and traps at runtime.
+    const outDir = join(dir, "dist-pool-release");
+    const br = buildNode(file, { outDir, mode: "app", backend: "c", analysis: a, parser, proved: pr.proved });
+    expect(br.diagnostics).toEqual([]);
+    const loaded = await (await import(pathToFileURL(join(outDir, "app.js")).href)).load();
+    try {
+      const res = await loaded.run();
+      expect(res.trap?.code).toBe("T001");
+    } finally {
+      await loaded.stop();
+    }
+  });
 });

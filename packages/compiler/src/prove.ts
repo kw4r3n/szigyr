@@ -6,6 +6,7 @@ import type { Diagnostic, Range } from "./diagnostics.ts";
 import { DETMATH_PATH } from "./detmath.ts";
 import { analyze, type Analysis } from "./index.ts";
 import { callFns, exprTypes, localOf } from "./expr.ts";
+import { NAMESPACES, genMembers, nsMembers, opaqueMembers, stringMembers, type Member } from "./builtins.ts";
 import { caseConstLits } from "./checker.ts";
 import { canonPath, directiveOf, displayPath, type ConstSym, type FnSym, type LocalSym, type Module, type Program as Decls, type TypeSym } from "./modules.ts";
 import { CACHE_DIR } from "./names.ts";
@@ -14,7 +15,7 @@ import { detectSolver, runSmtBatch, type SmtQuery, type SmtValue } from "./smt.t
 import { trapSites, type TrapSite } from "./traps.ts";
 import { isBool, isInt, isTaggedUnion, kindOf, nonNull, show, unref, type Type } from "./types.ts";
 
-const PROVE_VERSION = "4";
+const PROVE_VERSION = "5";
 
 export type ObligationKind = "T001" | "T002" | "T003" | "T004" | "T005" | "T007" | "T009" | "T010";
 export type ObligationStatus = "proved" | "failed" | "unknown" | "timeout";
@@ -82,7 +83,34 @@ const INT_BOUNDS: Record<string, readonly [bigint, bigint, boolean, number]> = {
 };
 
 const SEQ_CONTAINER = new Set(["Vec", "Slice", "Array", "ReadonlyArray", "ArenaBuf", "Pool"]);
+const LENGTH_PRESERVING_MUTATORS = new Set(["fill", "set"]);
 const MAX_U32 = 4294967295n;
+
+function lookupBuiltinMember(recvExpr: ts.Expression, recvT: Type, method: string): Member | undefined {
+  let table: Record<string, Member | "variadic"> | undefined;
+  const r = strip(recvExpr);
+  if (isId(r) && !localOf.has(r) && NAMESPACES.has(r.text)) {
+    table = nsMembers(r.text);
+  } else {
+    const u = unref(recvT);
+    if (u.k === "gen") table = genMembers(u);
+    else if (u.k === "opaque") table = opaqueMembers(u.name);
+    else if (u.k === "prim" && u.name === "string") table = stringMembers();
+  }
+  if (!table || !Object.hasOwn(table, method)) return undefined;
+  const m = table[method];
+  return m && m !== "variadic" ? m : undefined;
+}
+
+function isMutArgType(t: Type): boolean {
+  if (t.k === "gen" && t.name === "Mut") {
+    const inner = unref(t.args[0]!);
+    return !(inner.k === "gen" && inner.name === "Slice");
+  }
+  if (t.k === "gen" && t.name === "Array") return true;
+  if (t.k === "record" && !t.struct && t.fields.some((f) => !f.readonly)) return true;
+  return false;
+}
 const INT_CONV = new Set(Object.keys(INT_BOUNDS));
 const ARITH_ASSIGN: Partial<Record<K, "+" | "-" | "*">> = {
   [K.PlusEqualsToken]: "+",
@@ -519,7 +547,7 @@ class FnProver {
       }
       if (p.name.text === "length") {
         const lk = this.lengthKeyOf(p.expression);
-        if (lk && st.env.has(lk)) return { smt: st.env.get(lk)!, exact: true };
+        if (lk && st.env.has(lk)) return { smt: st.env.get(lk)!, exact: !st.inexact.has(lk) };
       }
       const fk = this.fieldKeyOf(p);
       if (fk && st.env.has(fk)) return { smt: st.env.get(fk)!, exact: !st.inexact.has(fk) };
@@ -810,7 +838,7 @@ class FnProver {
       }
       if (p.name.text === "length") {
         const lk = this.lengthKeyOf(p.expression);
-        if (lk && st.env.has(lk)) return { smt: st.env.get(lk)!, exact: true };
+        if (lk && st.env.has(lk)) return { smt: st.env.get(lk)!, exact: !st.inexact.has(lk) };
         if (this.isLenCall(p.expression)) {
           const base = await this.checkExpr(p.expression, st);
           return { smt: base.containerLen ?? base.smt, exact: base.exact };
@@ -899,7 +927,7 @@ class FnProver {
 
   private containerLen(arrExpr: ts.Expression, st: State): TermVal {
     const lk = this.lengthKeyOf(arrExpr);
-    if (lk && st.env.has(lk)) return { smt: st.env.get(lk)!, exact: true };
+    if (lk && st.env.has(lk)) return { smt: st.env.get(lk)!, exact: !st.inexact.has(lk) };
     const v = this.fresh("Int", "len", [0n, MAX_U32]);
     return { smt: v, exact: true };
   }
@@ -974,6 +1002,35 @@ class FnProver {
       tSt.assumptions.push(l.smt);
       this.joinInto(st, tSt, rSt, l.smt, st.assumptions.length);
       return { smt: `(or ${l.smt} ${r.smt})`, exact: l.exact && r.exact };
+    }
+
+    if (k === K.QuestionQuestionToken) {
+      const l = await this.checkExpr(b.left, st);
+      const lt = unref(this.typeOf(b.left));
+      if (lt.k === "prim" && lt.name === "null") {
+        return await this.checkExpr(b.right, st);
+      }
+      const nnT = lt.k === "union" ? nonNull(lt) : undefined;
+      if (!nnT) {
+        return l;
+      }
+      const nnKey = this.nnKeyOf(b.left);
+      const hasNn = !!(nnKey && st.env.has(nnKey));
+      const nnCond = hasNn ? st.env.get(nnKey!)! : this.fresh("Bool", "nn_q");
+      const nnExact = hasNn ? !st.inexact.has(nnKey!) : false;
+      const baseLen = st.assumptions.length;
+      const nonNullSt = cloneState(st);
+      nonNullSt.assumptions.push(nnCond);
+      const nullSt = cloneState(st);
+      nullSt.assumptions.push(`(not ${nnCond})`);
+      const r = await this.checkExpr(b.right, nullSt);
+      this.joinInto(st, nonNullSt, nullSt, nnCond, baseLen);
+      const u = unref(t);
+      const inner = unref(nnT);
+      if ((isInt(u) && isInt(inner)) || (isBool(u) && isBool(inner))) {
+        return { smt: `(ite ${nnCond} ${l.smt} ${r.smt})`, exact: nnExact && l.exact && r.exact };
+      }
+      return { smt: this.freshForType(t, "nullish"), exact: false };
     }
 
     const l = await this.checkExpr(b.left, st);
@@ -1536,14 +1593,11 @@ class FnProver {
         }
       });
     }
-    // Havoc Mut<Vec<T>> / Mut<Struct> args BEFORE evaluating ensures (Mut<Slice<T>> length cannot change)
+    // Havoc mutable arguments (Mut<...> except Mut<Slice>, Array, mutable records) BEFORE evaluating ensures
     target.sig.params.forEach((pt, idx) => {
-      if (pt.k === "gen" && pt.name === "Mut") {
-        const inner = unref(pt.args[0]!);
-        if (!(inner.k === "gen" && inner.name === "Slice")) {
-          const argNode = c.arguments[idx];
-          if (argNode) this.havocTarget(argNode, st);
-        }
+      if (isMutArgType(pt)) {
+        const argNode = c.arguments[idx];
+        if (argNode) this.havocTarget(argNode, st);
       }
     });
     if (!cs?.ensures.length) return undefined;
@@ -1702,7 +1756,7 @@ class FnProver {
         st.assumptions.push(ok);
         return { smt: `(- ${b.smt} ${a.smt})`, exact: a.exact && b.exact };
       }
-      if (recvT.k === "gen" && recvT.name === "Vec") {
+      if (recvT.k === "gen" && (recvT.name === "Vec" || recvT.name === "Array") && (m === "push" || m === "pop" || m === "clear")) {
         for (const a of c.arguments) await this.checkExpr(a, st);
         const lk = this.lengthKeyOf(p.expression);
         if (lk) {
@@ -1715,13 +1769,39 @@ class FnProver {
             const nv = this.fresh("Int", "vpop", [0n, MAX_U32]);
             st.assumptions.push(`(= ${nv} (ite (> ${curLen} 0) (- ${curLen} 1) 0))`);
             st.env.set(lk, nv);
-          } else if (m === "clear") {
+          } else {
             st.env.set(lk, "0");
+            st.inexact.delete(lk);
+          }
+        }
+        return { smt: this.freshForType(retT, m), exact: false };
+      }
+      if (recvT.k === "gen" && recvT.name === "Pool" && (m === "insert" || m === "remove")) {
+        for (const a of c.arguments) await this.checkExpr(a, st);
+        const lk = this.lengthKeyOf(p.expression);
+        if (lk) {
+          const curLen = st.env.get(lk) ?? this.fresh("Int", "plen", [0n, MAX_U32]);
+          if (m === "insert") {
+            const nv = this.fresh("Int", "pinsert", [0n, MAX_U32]);
+            st.assumptions.push(`(or (= ${nv} ${curLen}) (= ${nv} (+ ${curLen} 1)))`);
+            st.env.set(lk, nv);
+            st.inexact.add(lk);
+          } else {
+            const nv = this.fresh("Int", "premove", [0n, MAX_U32]);
+            st.assumptions.push(`(= ${nv} (ite (> ${curLen} 0) (- ${curLen} 1) 0))`);
+            st.env.set(lk, nv);
           }
         }
         return { smt: this.freshForType(retT, m), exact: false };
       }
       for (const a of c.arguments) await this.checkExpr(a, st);
+      const member = lookupBuiltinMember(p.expression, recvT, m);
+      if (member?.kind === "method") {
+        if (member.fx.mutates && !LENGTH_PRESERVING_MUTATORS.has(m)) this.havocTarget(p.expression, st);
+        member.sig.params.forEach((pt, idx) => {
+          if (isMutArgType(pt) && c.arguments[idx]) this.havocTarget(c.arguments[idx]!, st);
+        });
+      }
       return { smt: this.freshForType(retT, m), exact: false };
     }
 
@@ -1890,27 +1970,39 @@ class FnProver {
         }
       } else if (n.kind === K.CallExpression) {
         const c = n as ts.CallExpression;
+        const markExprTarget = (arg: ts.Expression): void => {
+          const sa = strip(arg);
+          if (isId(sa)) {
+            const sym = localOf.get(sa);
+            if (sym) markSym(sym);
+          } else if (sa.kind === K.PropertyAccessExpression) {
+            markProp(sa as ts.PropertyAccessExpression);
+          }
+        };
         if (c.expression.kind === K.PropertyAccessExpression) {
           const p = c.expression as ts.PropertyAccessExpression;
-          if (p.name.text === "push" || p.name.text === "pop" || p.name.text === "clear" || p.name.text === "reset") {
+          const mName = p.name.text;
+          const recvT = this.typeOf(p.expression);
+          const member = lookupBuiltinMember(p.expression, recvT, mName);
+          if (
+            mName === "push" || mName === "pop" || mName === "clear" || mName === "reset" ||
+            mName === "insert" || mName === "remove" ||
+            (member?.kind === "method" && member.fx.mutates && !LENGTH_PRESERVING_MUTATORS.has(mName))
+          ) {
+            markExprTarget(p.expression);
             const lk = this.lengthKeyOf(p.expression);
             if (lk) out.add(lk);
+          }
+          if (member?.kind === "method") {
+            member.sig.params.forEach((pt, idx) => {
+              if (isMutArgType(pt) && c.arguments[idx]) markExprTarget(c.arguments[idx]!);
+            });
           }
         }
         if (callFns.has(c)) {
           const fn = callFns.get(c);
           fn?.sig.params.forEach((pt, idx) => {
-            if (pt.k === "gen" && pt.name === "Mut" && !(pt.args[0]!.k === "gen" && pt.args[0]!.name === "Slice")) {
-              const a = c.arguments[idx];
-              if (!a) return;
-              const sa = strip(a);
-              if (isId(sa)) {
-                const sym = localOf.get(sa);
-                if (sym) markSym(sym);
-              } else if (sa.kind === K.PropertyAccessExpression) {
-                markProp(sa as ts.PropertyAccessExpression);
-              }
-            }
+            if (isMutArgType(pt) && c.arguments[idx]) markExprTarget(c.arguments[idx]!);
           });
         }
       }
@@ -2364,7 +2456,85 @@ class FnProver {
         await this.checkLoop(s as ts.ForStatement | ts.WhileStatement | ts.DoStatement, st);
         return;
       }
+      case K.ForOfStatement: {
+        await this.checkForOf(s as ts.ForOfStatement, st);
+        return;
+      }
+      case K.EmptyStatement:
+        return;
+      default:
+        // Fail closed on any unhandled statement kind so stale assumptions cannot survive.
+        this.havocModSet(new Set(st.env.keys()), st);
+        return;
     }
+  }
+
+  private initForOfBinders(initializer: ts.ForInitializer, st: State): void {
+    if (initializer.kind !== K.VariableDeclarationList) return;
+    for (const d of (initializer as ts.VariableDeclarationList).declarations) {
+      if (isId(d.name)) {
+        const sym = localOf.get(d.name);
+        if (sym) this.initLocal(st, sym, sym.name);
+      } else if (d.name.kind === K.ArrayBindingPattern) {
+        for (const el of (d.name as ts.ArrayBindingPattern).elements) {
+          if (el.kind === K.BindingElement && isId(el.name)) {
+            const sym = localOf.get(el.name);
+            if (sym) this.initLocal(st, sym, sym.name);
+          }
+        }
+      }
+    }
+  }
+
+  private async checkForOf(loop: ts.ForOfStatement, st: State): Promise<void> {
+    await this.checkExpr(loop.expression, st);
+    const { invs, rest } = this.extractLoopInvariants(loop.statement);
+    if (invs.length) {
+      const entryInvSt = cloneState(st);
+      this.initForOfBinders(loop.initializer, entryInvSt);
+      for (const inv of invs) {
+        const c = this.evalPureBool(inv.arguments[0]!, entryInvSt, this.f.mod, new Map());
+        this.addObligation("T010", "invariant (entry)", inv.expression, this.f.mod, entryInvSt, c.smt, c.exact);
+      }
+    }
+    const modSet = this.collectModSet(loop.statement);
+    const loopSt = cloneState(st);
+    this.havocModSet(modSet, loopSt);
+    this.initForOfBinders(loop.initializer, loopSt);
+    for (const inv of invs) {
+      const c = this.evalPureBool(inv.arguments[0]!, loopSt, this.f.mod, new Map());
+      loopSt.assumptions.push(c.smt);
+    }
+
+    const bodySt = cloneState(loopSt);
+    const savedBreaks = this.loopBreaks;
+    const savedContinues = this.loopContinues;
+    this.loopBreaks = [];
+    this.loopContinues = [];
+    this.loopDepth++;
+    try {
+      for (const stmt of rest) {
+        await this.checkStmt(stmt, bodySt);
+        if (bodySt.terminated) break;
+      }
+    } finally {
+      this.loopDepth--;
+    }
+    const continues = this.loopContinues;
+    this.loopBreaks = savedBreaks;
+    this.loopContinues = savedContinues;
+
+    const backEdges: State[] = [...continues];
+    if (!bodySt.terminated) backEdges.push(bodySt);
+    for (const be of backEdges) {
+      if (invs.length) this.initForOfBinders(loop.initializer, be);
+      for (const inv of invs) {
+        const c = this.evalPureBool(inv.arguments[0]!, be, this.f.mod, new Map());
+        this.addObligation("T010", "invariant (step)", inv.expression, this.f.mod, be, c.smt, c.exact);
+      }
+    }
+
+    this.havocModSet(modSet, st);
   }
 
   private async checkLoop(loop: ts.ForStatement | ts.WhileStatement | ts.DoStatement, st: State): Promise<void> {

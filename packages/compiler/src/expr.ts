@@ -313,7 +313,7 @@ function unresolved(c: Checker, id: ts.Identifier): void {
 /** E6002 (Q056): what a contract may refer to. */
 function contractLocal(c: Checker, id: ts.Identifier, s: LocalSym): void {
   const k = c.fx.contract;
-  if (!k || s.fnDepth > k.depth) return; // declared inside the contract expression (e.g. the `r` of ensures)
+  if (!k || k.kind === "invariant" || s.fnDepth > k.depth) return; // declared inside the contract expression (e.g. the `r` of ensures)
   const ok = s.param && s.fnDepth === k.depth && (k.kind === "requires" || !movesLike(s.declared));
   if (!ok) c.at("E6002", id, `a contract cannot refer to '${s.name}'`);
 }
@@ -1339,6 +1339,7 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
     if (sym?.k === "cfn") { // §14.1 / §14.3: unsafe callers only; rt + unsafe drops the Ffi argument
       c.noteUnsafeOp(callee); // §14.4.2
       if (!c.fx.unsafe) c.at("E4008", callee, `the C function '${sym.name}' can only be called from a function with 'use unsafe'`, { op: sym.name });
+      if (c.fx.contract) c.at("E6002", callee, `a contract cannot call the C function '${sym.name}'`, { kind: "nondet-call", name: sym.name });
       const sig = c.fx.layer === "rt" ? { ...sym.sig, params: sym.sig.params.slice(1) } : sym.sig;
       return callSig(c, sig, e, callee, want);
     }
@@ -1774,7 +1775,7 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
     case "requires": case "invariant": case "ensures": {
       if (!arity(1)) return VOID;
       const saved = c.fx.contract;
-      if (name !== "invariant") c.fx.contract = { kind: name, depth: c.fx.depth };
+      c.fx.contract = { kind: name, depth: c.fx.depth };
       if (name === "ensures") {
         const a = args[0]!;
         const r = c.fx.ret ?? ERROR;

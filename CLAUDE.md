@@ -8,6 +8,7 @@ TypeScript の構文をそのまま使い、意味を「健全なサブセット
 | ファイル | 役割 |
 | --- | --- |
 | `docs/SPEC.md` | 言語仕様（現在の規範。ただし絶対ではなく、AI フレンドリーさを損なう場合は SPEC 側を見直す） |
+| `docs/STDLIB.md` | 標準ライブラリ・Capability・Fake・Node lib ホスト API のシグネチャ一覧（`szigyr://stdlib`） |
 | `docs/ROADMAP.md` | 段階と完了条件。「現在の段階」もここ |
 | `docs/OPEN_QUESTIONS.md` | 仕様の穴の記録（なければ作る） |
 | `docs/DIAGNOSTICS.md` | エラーコード一覧（なければ作る） |

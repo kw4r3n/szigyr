@@ -287,7 +287,7 @@ export function unify(p: Type, a: Type, m: Map<number, Type>, ids: Set<number>):
       return;
     }
     case "gen":
-      if (a.k === "gen" && (a.name === p.name || (p.name === "ReadonlyArray" && a.name === "Array") || (p.name === "Slice" && a.name === "Vec") || (p.name === "Ptr" && a.name === "ConstPtr"))) p.args.forEach((x, i) => unify(x, a.args[i]!, m, ids));
+      if (a.k === "gen" && (a.name === p.name || (p.name === "ReadonlyArray" && a.name === "Array") || (p.name === "Slice" && a.name === "Vec") || (p.name === "Ptr" && a.name === "ConstPtr") || (p.name === "ConstPtr" && a.name === "Ptr"))) p.args.forEach((x, i) => unify(x, a.args[i]!, m, ids));
       else if (p.name === "ReadonlyArray" && a.k === "tuple" && a.elems.length > 0) unify(p.args[0]!, union(a.elems), m, ids);
       return;
     case "tuple":
@@ -479,7 +479,7 @@ export function comparable(t: Type): boolean {
     case "record": return !isOwned(t) && t.fields.every((f) => comparable(f.type));
     case "union": return t.members.every(comparable);
     case "tuple": return t.elems.every(comparable);
-    case "gen": return t.name !== "Vec" && t.name !== "Slice" && t.name !== "Pool" && t.name !== "Arena" && t.name !== "OwnedCell" && t.name !== "Promise" && t.name !== "RingTx" && t.name !== "RingRx" && t.args.every(comparable);
+    case "gen": return t.name !== "Vec" && t.name !== "Slice" && t.name !== "Pool" && t.name !== "Arena" && t.name !== "OwnedCell" && t.name !== "Promise" && t.name !== "RingTx" && t.name !== "RingRx" && t.name !== "Port" && t.name !== "CHandle" && t.name !== "Ptr" && t.name !== "ConstPtr" && t.name !== "CType" && t.args.every(comparable);
     default: return true;
   }
 }

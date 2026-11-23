@@ -456,6 +456,7 @@ reject/E3002-move-into-struct-in-loop.szigyr
 reject/E3002-reassigned-on-one-path-only-in-loop.szigyr
 reject/E3002-result-owned-loop-move.szigyr
 reject/E3003-field-assignment-used-as-value.szigyr
+reject/E3003-partial-destructure-owned-struct.szigyr
 reject/E3003-partial-move-as-argument.szigyr
 reject/E3003-partial-move-by-return.szigyr
 reject/E3003-partial-move-into-struct-literal.szigyr

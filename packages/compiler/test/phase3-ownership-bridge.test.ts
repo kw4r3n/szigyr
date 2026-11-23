@@ -109,7 +109,11 @@ describe("Phase 3: Result<Owned, E> and OwnedCell.withRef / withMut", () => {
     expectCode("rt-str-err", `export function f(r: Result<Vec<f32>, string>): i32 { "use rt"; return r.kind === "ok" ? 1 : 0; }`, "E4002");
 
     // Result<Owned, Native> is still banned as Struct field, Vec/Pool element, audio state, Ptr.box, module const
-    expectCode("struct-field-res", `type S = Struct<{ r: Result<Vec<f32>, i32> }>;`, "E4002");
+    const structResDs = check(writeTmp(dir, "struct-field-res.szigyr", `type S = Struct<{ r: Result<Vec<f32>, i32> }>;`));
+    expect(structResDs.map((d) => d.code)).toContain("E4002");
+    expect(structResDs[0]?.message).not.toContain("needs a Native type");
+    expect(structResDs[0]?.message).toContain("Result<Owned, E>");
+    expectCode("alias-struct-field-res", `type Box<T extends Native> = Struct<{ x: T }>;\nfunction f(b: Box<Result<Vec<f32>, i32>>): void {}`, "E4002");
     expectCode("vec-elem-res", `export function f(a: Alloc): Vec<Result<Vec<f32>, i32>> { return Vec.create<Result<Vec<f32>, i32>>(a, 1); }`, "E4002");
     expectCode(
       "audio-res",

@@ -100,6 +100,8 @@ const forms: [string, string, string[]][] = [
   ["optional tuple element rejected", "type A = [i32, string?];", ["E1008@1:16"]],
   ["local and for-of tuple destructuring allowed", "function f(t: [i32, string], xs: [string, i32][]): void { const [, b] = t; let [x, y] = t; for (const [k, v] of xs) {} }", []],
   ["as const is rejected (Q026)", "function f(): i32 { const x: i32 = 1 as const; return x; }", ["E1005@1:38"]],
+  ["single-statement using in if rejected", "function f(c: boolean, x: Disposable): void { if (c) using r = x; }", ["E1000@1:54"]],
+  ["single-statement await using in while rejected", "async function f(c: boolean, x: AsyncDisposable): Promise<void> { while (c) await using r = x; }", ["E1000@1:77"]],
 ];
 
 it.each(forms)("%s", (_name, src, want) => {

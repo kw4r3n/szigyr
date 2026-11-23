@@ -32,7 +32,13 @@ const RESOURCES = [
   {
     uri: "szigyr://spec",
     name: "Szigyr Language Specification v1",
-    description: "Normative Szigyr language specification (layers, types, capabilities, ownership, FFI, built-ins, codes).",
+    description: "Normative Szigyr language specification (layers, types, capabilities, ownership, FFI, built-in index, codes).",
+    mimeType: "text/markdown",
+  },
+  {
+    uri: "szigyr://stdlib",
+    name: "Szigyr Standard Library & Capability Reference",
+    description: "Normative signatures and record definitions for built-in capabilities, fakes, namespaces, members, and Node host library API.",
     mimeType: "text/markdown",
   },
   {
@@ -506,6 +512,10 @@ function readResource(uri: unknown) {
   if (typeof uri !== "string" || !uri) throw new RpcError(-32602, "resources/read requires non-empty string 'uri'");
   if (uri === "szigyr://spec") {
     const text = readFileSync(new URL("../../../docs/SPEC.md", import.meta.url), "utf8");
+    return { contents: [{ uri, mimeType: "text/markdown", text }] };
+  }
+  if (uri === "szigyr://stdlib") {
+    const text = readFileSync(new URL("../../../docs/STDLIB.md", import.meta.url), "utf8");
     return { contents: [{ uri, mimeType: "text/markdown", text }] };
   }
   if (uri === "szigyr://builtins") {

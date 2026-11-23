@@ -257,12 +257,17 @@ describe("resident incremental checker, --watch mode, and stdio MCP server", () 
     // resources/list & resources/read
     const resList = await rpc({ jsonrpc: "2.0", id: 31, method: "resources/list" });
     const resUris = (resList.result.resources as { uri: string }[]).map((r) => r.uri);
-    expect(resUris).toEqual(["szigyr://spec", "szigyr://builtins"]);
+    expect(resUris).toEqual(["szigyr://spec", "szigyr://stdlib", "szigyr://builtins"]);
 
     const specRead = await rpc({ jsonrpc: "2.0", id: 32, method: "resources/read", params: { uri: "szigyr://spec" } });
     expect(specRead.result.contents).toHaveLength(1);
     expect(specRead.result.contents[0]).toMatchObject({ uri: "szigyr://spec", mimeType: "text/markdown" });
     expect(specRead.result.contents[0].text).toContain("Szigyr");
+
+    const stdlibRead = await rpc({ jsonrpc: "2.0", id: 321, method: "resources/read", params: { uri: "szigyr://stdlib" } });
+    expect(stdlibRead.result.contents).toHaveLength(1);
+    expect(stdlibRead.result.contents[0]).toMatchObject({ uri: "szigyr://stdlib", mimeType: "text/markdown" });
+    expect(stdlibRead.result.contents[0].text).toContain("DisplayEvent");
 
     const builtinsRead = await rpc({ jsonrpc: "2.0", id: 33, method: "resources/read", params: { uri: "szigyr://builtins" } });
     expect(builtinsRead.result.contents).toHaveLength(1);

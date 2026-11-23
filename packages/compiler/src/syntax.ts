@@ -615,7 +615,9 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     const isUsing = !!(list.flags & NodeFlags.Using);
     const isAwaitUsing = (list.flags & NodeFlags.AwaitUsing) === NodeFlags.AwaitUsing;
     if (isUsing) {
-      if (where !== "local") { e1000(list, isAwaitUsing ? "'await using'" : "'using'"); return; }
+      const stmtParent = list.parent?.parent;
+      const inStmtList = !!stmtParent && (stmtParent.kind === K.Block || stmtParent.kind === K.CaseClause || stmtParent.kind === K.DefaultClause);
+      if (where !== "local" || !inStmtList) { e1000(list, isAwaitUsing ? "'await using'" : "'using'"); return; }
       if (isAwaitUsing && !fc.async) e1000(list, "'await using' outside an async function");
       for (const d of list.declarations) {
         if (d.exclamationToken) e1000(d.exclamationToken, "definite assignment assertion");

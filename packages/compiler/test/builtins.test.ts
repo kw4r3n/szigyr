@@ -62,13 +62,31 @@ it("documents every builtin global name in SPEC and keeps BUILTIN_NAMES complete
   expect([...BUILTIN_NAMES].sort()).toEqual([...expected].sort());
 });
 
+it("keeps docs/SPEC.md compact (<= 28 KB) and provides docs/STDLIB.md reference entries", () => {
+  const spec = readFileSync(new URL("../../../docs/SPEC.md", import.meta.url), "utf8");
+  const stdlib = readFileSync(new URL("../../../docs/STDLIB.md", import.meta.url), "utf8");
+  expect(Buffer.byteLength(spec, "utf8")).toBeLessThanOrEqual(28_000);
+  for (const key of ["DisplayEvent", "HttpServerRawResponse", "FakeNet", "DetMath", "fromTypedArray"]) {
+    expect(stdlib, key).toContain(key);
+  }
+});
+
 // The expected sets are written out here, not read from the tables, so flipping a table entry fails this test.
 const NONDET_GEN_EXPECTED = ["RingTx", "RingRx", "Ptr", "ConstPtr", "CHandle", "Port"];
 const NONDET_OPAQUE_EXPECTED = [...AUTHORITIES, "JsRef", "AudioStream", "DisplaySurface", "HttpServer", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeSpawn", "FakeAudio", "FakeDisplay", "FakeNet", "FakeProc"];
 it("reports a function nondeterministic exactly for the §7.3 builtin types", () => {
   const det = (p: Type): boolean => isDeterministic({ k: "fn", tparams: [], params: [p], ret: VOID });
-  for (const name of Object.keys(NONDET_GEN)) expect(det(gen(name as GenName, F64)), `gen ${name}`).toBe(!NONDET_GEN_EXPECTED.includes(name));
-  for (const name of OPAQUE_NAMES) expect(det(opaque(name)), `opaque ${name}`).toBe(!NONDET_OPAQUE_EXPECTED.includes(name));
+  const detRet = (r: Type): boolean => isDeterministic({ k: "fn", tparams: [], params: [], ret: r });
+  for (const name of Object.keys(NONDET_GEN)) {
+    const t = gen(name as GenName, F64);
+    expect(det(t), `gen param ${name}`).toBe(!NONDET_GEN_EXPECTED.includes(name));
+    expect(detRet(t), `gen ret ${name}`).toBe(!NONDET_GEN_EXPECTED.includes(name));
+  }
+  for (const name of OPAQUE_NAMES) {
+    const t = opaque(name);
+    expect(det(t), `opaque param ${name}`).toBe(!NONDET_OPAQUE_EXPECTED.includes(name));
+    expect(detRet(t), `opaque ret ${name}`).toBe(!NONDET_OPAQUE_EXPECTED.includes(name));
+  }
 });
 
 it("reserves the exact names SPEC §13 lists, and treats them like a builtin name (Q231)", () => {

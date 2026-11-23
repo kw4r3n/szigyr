@@ -205,6 +205,31 @@ export function checkImportNames(files: ParsedFile[], display: (p: string) => st
   return out;
 }
 
+/** Finds the first invalid field type inside any nested `Struct` produced by type substitution. */
+function badStructField(t: Type): Type | null {
+  switch (t.k) {
+    case "record":
+      for (const f of t.fields) {
+        if (t.struct && !structField(f.type) && !(f.type.k === "gen" && (f.type.name === "Ref" || f.type.name === "Mut"))) return f.type;
+        const sub = badStructField(f.type);
+        if (sub) return sub;
+      }
+      return null;
+    case "union": for (const m of t.members) { const sub = badStructField(m); if (sub) return sub; } return null;
+    case "gen": for (const a of t.args) { const sub = badStructField(a); if (sub) return sub; } return null;
+    case "tuple": for (const el of t.elems) { const sub = badStructField(el); if (sub) return sub; } return null;
+    case "fn":
+      for (const p of t.params) { const sub = badStructField(p); if (sub) return sub; }
+      return badStructField(t.ret);
+    default: return null;
+  }
+}
+
+const structFieldMsg = (t: Type): string =>
+  isNative(t)
+    ? `a Struct field cannot hold '${show(t)}' (owned unions such as Result<Owned, E> and Slice are not allowed in Struct fields)`
+    : `a Struct field needs a Native type, not '${show(t)}'`;
+
 /** The program's symbol tables, built in two passes: shells, then signatures (needs all type names). */
 export class Program {
   readonly mods: Module[] = [];
@@ -682,6 +707,10 @@ export class Program {
   private checkSubstInsts(): void {
     for (const { mod, node, t, args } of this.substInsts) {
       if (!args.some((a) => ownedDeep(a)) && ownedDeep(t)) this.rep.at(mod, "E3007", node, `'${show(t)}' holds a managed container of an owned type`, { kind: "managed-owned", actual: show(t) });
+      const bad = badStructField(t);
+      if (bad && !args.some((a) => badStructField(a) !== null)) {
+        this.rep.at(mod, "E4002", node, structFieldMsg(bad), { requiredCap: "Native", actual: show(bad) });
+      }
     }
   }
 
@@ -842,7 +871,7 @@ export class Program {
       if (!p.type) { this.rep.at(e.mod, "E2006", p.name, "property needs a type annotation", { kind: "missing-annotation" }); return ERROR; }
       const name = p.name.text;
       const type = this.typeOf(p.type, e);
-      if (struct && !structField(type) && !(type.k === "gen" && (type.name === "Ref" || type.name === "Mut"))) this.rep.at(e.mod, "E4002", p.type, `a Struct field needs a Native type, not '${show(type)}'`, { requiredCap: "Native", actual: show(type) }); // Q086; a borrow field is P3's E3004 (§5.5)
+      if (struct && !structField(type) && !(type.k === "gen" && (type.name === "Ref" || type.name === "Mut"))) this.rep.at(e.mod, "E4002", p.type, structFieldMsg(type), { requiredCap: "Native", actual: show(type) }); // Q086; a borrow field is P3's E3004 (§5.5)
       fields.push({ name, type, readonly: hasMod(p, K.ReadonlyKeyword) });
     }
     return record(fields, struct);

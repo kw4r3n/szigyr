@@ -253,3 +253,157 @@ export function main(sys: System): void {
     expect(ds.map((d) => d.code)).toEqual(["E4006"]);
   });
 });
+
+describe("audit soundness, inference, and comparable fixes", () => {
+  it("invalidates narrowing when an arrow default-parameter initializer mutates a captured local", () => {
+    const ds = checkSrc(`
+export function f(): i32 {
+  let x: i32 | null = 10;
+  const inner = (a: i32 = ((): i32 => { x = null; return 0; })()): i32 => a;
+  if (x !== null) {
+    const _z = inner();
+    return x + 1;
+  }
+  return 0;
+}
+`);
+    expect(ds.map((d) => d.code)).toContain("E2002");
+  });
+
+  it("enforces contract purity (E6002) in invariant(...) while allowing loop locals", () => {
+    const okDs = checkSrc(`
+export function good(v: Ref<Vec<i32>>): usize {
+  let i: usize = 0;
+  while (i < v.length) {
+    invariant(i >= 0 && i <= v.length);
+    i = i + 1;
+  }
+  return i;
+}
+`);
+    expect(okDs).toEqual([]);
+
+    const badDs = checkSrc(`
+function nextRand(r: Random): u32 { return r.nextU32(); }
+export function bad(r: Random): i32 {
+  let i: i32 = 0;
+  while (i < 2) {
+    invariant(nextRand(r) >= 0);
+    i = i + 1;
+  }
+  return i;
+}
+`);
+    expect(badDs.map((d) => d.code)).toEqual(["E6002"]);
+  });
+
+  it("infers T from Ptr<U> passed to ConstPtr<T> while rejecting t.eq on Port, Ptr, and CHandle", () => {
+    const okDs = checkSrc(`
+declare module "c:m:stdio.h" {
+  type Opaque = CStruct<{ readonly x: i32 }>;
+}
+import type { Opaque } from "c:m:stdio.h";
+function peek<T extends Native & Copy>(p: ConstPtr<T>): boolean {
+  "use owned";
+  "use unsafe";
+  return p.isNull();
+}
+function callPeek(): boolean {
+  "use owned";
+  "use unsafe";
+  const p: Ptr<i32> = Ptr.null<i32>();
+  return peek(p);
+}
+function badEq(p1: Ptr<i32>, p2: Ptr<i32>, c1: CHandle<Opaque>, c2: CHandle<Opaque>, t: Test): void {
+  t.eq(p1, p2);
+  t.eq(c1, c2);
+}
+function worker(port: Port<i32, i32>): void { port.close(); }
+test("port eq", (t: Test) => {
+  const sp = FakeSpawn.create();
+  const p1 = sp.isolate(worker);
+  const p2 = sp.isolate(worker);
+  t.eq(p1, p2);
+});
+`);
+    const e2002 = okDs.filter((d) => d.code === "E2002");
+    expect(e2002).toHaveLength(3);
+    expect(okDs.some((d) => d.code === "E2006")).toBe(false);
+  });
+
+  it("rejects partial destructuring of owned Struct when any owned field is omitted while allowing Copy omissions", () => {
+    const twoOwned = checkSrc(`
+type Pair = Struct<{ a: Vec<i32>; b: Vec<i32> }>;
+function f(alloc: Alloc): usize {
+  "use owned";
+  const s: Pair = { a: Vec.create<i32>(alloc, 1), b: Vec.create<i32>(alloc, 2) };
+  const { a } = s;
+  return a.length;
+}
+`);
+    expect(twoOwned.map((d) => d.code)).toEqual(["E3003"]);
+    expect(twoOwned[0]?.data).toEqual({ field: "b", fields: ["b"] });
+
+    const onlyCopy = checkSrc(`
+type Meta = Struct<{ id: i32; a: Vec<i32> }>;
+function f(alloc: Alloc): i32 {
+  "use owned";
+  const s: Meta = { id: 7, a: Vec.create<i32>(alloc, 1) };
+  const { id } = s;
+  return id;
+}
+`);
+    expect(onlyCopy.map((d) => d.code)).toEqual(["E3003"]);
+
+    const rvalueRing = checkSrc(`
+function f(alloc: Alloc): boolean {
+  "use owned";
+  const { tx } = Ring.create<i32>(alloc, 4);
+  return tx.push(1);
+}
+`);
+    expect(rvalueRing.map((d) => d.code)).toEqual(["E3003"]);
+
+    const omitCopyOk = checkSrc(`
+type Meta = Struct<{ a: Vec<i32>; id: i32 }>;
+function okUse(alloc: Alloc): usize {
+  "use owned";
+  const s: Meta = { a: Vec.create<i32>(alloc, 1), id: 7 };
+  const { a } = s;
+  return a.length;
+}
+`);
+    expect(omitCopyOk).toEqual([]);
+
+    const useAfterOmit = checkSrc(`
+type Meta = Struct<{ a: Vec<i32>; id: i32 }>;
+function badReuse(alloc: Alloc): i32 {
+  "use owned";
+  const s: Meta = { a: Vec.create<i32>(alloc, 1), id: 7 };
+  const { a } = s;
+  return s.id;
+}
+`);
+    expect(useAfterOmit.map((d) => d.code)).toEqual(["E3001"]);
+
+    const borrowReadCopyOk = checkSrc(`
+type Meta = Struct<{ a: Vec<i32>; id: i32 }>;
+function peekId(s: Ref<Meta>): i32 {
+  "use owned";
+  const { id } = s;
+  return id;
+}
+`);
+    expect(borrowReadCopyOk).toEqual([]);
+
+    const borrowMoveErr = checkSrc(`
+type Pair = Struct<{ a: Vec<i32>; b: Vec<i32> }>;
+function badBorrow(s: Ref<Pair>): usize {
+  "use owned";
+  const { a } = s;
+  return a.length;
+}
+`);
+    expect(borrowMoveErr.map((d) => d.code)).toEqual(["E3004"]);
+  });
+});

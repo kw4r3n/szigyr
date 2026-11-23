@@ -3,7 +3,7 @@
 // open-question: Q199
 export function main(sys: System): void {
   const p = Ring.create<i32>(sys.alloc, 0);
-  const { tx } = p;
+  const { tx, rx } = p;
   tx.push(1);
   sys.log.info("unreachable");
 }

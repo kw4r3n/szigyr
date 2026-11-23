@@ -120,8 +120,8 @@ export class MicroDawSession {
 
   constructor(alloc: Alloc) {
     this.alloc = alloc;
-    const { tx: cmdTx } = Ring.create<SynthCmd>(alloc, 128);
-    const { rx: telRx } = Ring.create<SynthTelemetry>(alloc, 64);
+    const { tx: cmdTx, rx: _cmdRx } = Ring.create<SynthCmd>(alloc, 128);
+    const { tx: _telTx, rx: telRx } = Ring.create<SynthTelemetry>(alloc, 64);
     this.cmdTxCell = OwnedCell.create<RingTx<SynthCmd>>(cmdTx);
     this.telRxCell = OwnedCell.create<RingRx<SynthTelemetry>>(telRx);
     this.stream = null;

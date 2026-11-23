@@ -380,7 +380,7 @@ test("bpmToSamplesPerStep, midiToFreq, clampF32, and oscSample", (t: Test) => {
 test("initial state defaults, command updates, stereo pan, voice stealing, envelope decay, and 16-step wrap", (t: Test) => {
   const alloc = TestAlloc.create();
   const { tx: eCmdTx, rx: eCmdRx } = Ring.create<SynthCmd>(alloc, 16);
-  const { tx: eTelTx } = Ring.create<SynthTelemetry>(alloc, 8);
+  const { tx: eTelTx, rx: _eTelRx } = Ring.create<SynthTelemetry>(alloc, 8);
   let emptyState = createInitialSynthState(alloc, eCmdRx, eTelTx);
   emptyState.voices.clear();
   emptyState.steps.clear();
@@ -667,7 +667,7 @@ test("initial state defaults, command updates, stereo pan, voice stealing, envel
 test("cutoff filter attenuates high harmonics and right-odd voice pans right", (t: Test) => {
   const alloc = TestAlloc.create();
   const { tx: cmdLo, rx: rxLo } = Ring.create<SynthCmd>(alloc, 16);
-  const { tx: txTelLo } = Ring.create<SynthTelemetry>(alloc, 16);
+  const { tx: txTelLo, rx: _rxTelLo } = Ring.create<SynthTelemetry>(alloc, 16);
   let stLo = createInitialSynthState(alloc, rxLo, txTelLo);
   cmdLo.push({ kind: CMD_SET_WAVE, a: WAVE_SAW, b: 0, f: f32(0) });
   cmdLo.push({ kind: CMD_SET_ATTACK, a: 0, b: 0, f: f32(0.002) });
@@ -678,7 +678,7 @@ test("cutoff filter attenuates high harmonics and right-odd voice pans right", (
   const pkLo = renderTestChunk(t, stLo, outLo, 256);
 
   const { tx: cmdHi, rx: rxHi } = Ring.create<SynthCmd>(alloc, 16);
-  const { tx: txTelHi } = Ring.create<SynthTelemetry>(alloc, 16);
+  const { tx: txTelHi, rx: _rxTelHi } = Ring.create<SynthTelemetry>(alloc, 16);
   let stHi = createInitialSynthState(alloc, rxHi, txTelHi);
   cmdHi.push({ kind: CMD_SET_WAVE, a: WAVE_SAW, b: 0, f: f32(0) });
   cmdHi.push({ kind: CMD_SET_ATTACK, a: 0, b: 0, f: f32(0.002) });
@@ -691,7 +691,7 @@ test("cutoff filter attenuates high harmonics and right-odd voice pans right", (
 
   // Verify filter alpha calculation (* vs +) and 0.99 upper stability clamp at cutoff=12000 Hz
   const { tx: cmdC4, rx: rxC4 } = Ring.create<SynthCmd>(alloc, 8);
-  const { tx: telC4 } = Ring.create<SynthTelemetry>(alloc, 8);
+  const { tx: telC4, rx: _rxTelC4 } = Ring.create<SynthTelemetry>(alloc, 8);
   let stC4 = createInitialSynthState(alloc, rxC4, telC4);
   cmdC4.push({ kind: CMD_SET_WAVE, a: WAVE_SQUARE, b: 0, f: f32(0) });
   cmdC4.push({ kind: CMD_SET_ATTACK, a: 0, b: 0, f: f32(0.002) });
@@ -734,7 +734,7 @@ test("forAll validates bounded audio output and timing helpers", (_t: Test) => {
     if (!Number.isFinite(f) || f <= 0) return false;
     const alloc = TestAlloc.create();
     const { tx: cmdTx, rx: cmdRx } = Ring.create<SynthCmd>(alloc, 8);
-    const { tx: telTx } = Ring.create<SynthTelemetry>(alloc, 8);
+    const { tx: telTx, rx: _telRx } = Ring.create<SynthTelemetry>(alloc, 8);
     let st = createInitialSynthState(alloc, cmdRx, telTx);
     const wn: u8 = wave % 4;
     cmdTx.push({ kind: CMD_SET_WAVE, a: wn, b: 0, f: f32(0) });

@@ -788,4 +788,52 @@ export async function main(sys: System): Promise<void> {
     });
     expect(() => dummyPort.send(unTx)).toThrow(/cannot split a queue-mode Ring/);
   }, 60_000);
+
+  it("supports tagged union shared fields, (A | null) -> (A | B) | null widening, dead kind branches, and 64-bit Arena alignment across JS/C/Wasm", async () => {
+    const main = project({
+      "main.szigyr": `type A = { readonly kind: "a"; readonly x: i32 };
+type B = { readonly kind: "b"; readonly x: i32 };
+export function getSharedX(u: A | B): i32 {
+  "use rt";
+  return u.x;
+}
+export function widenNullable(x: A | null): (A | B) | null {
+  "use rt";
+  return x;
+}
+export function deadKindCheck(u: A | B): i32 {
+  "use rt";
+  if (u.kind === "c") {
+    const _v = u;
+    return 1;
+  }
+  return 0;
+}
+export function allocI64(ar: Mut<Arena>): ArenaBuf<i64> | null {
+  "use rt";
+  return ar.alloc<i64>(2, 0);
+}
+test("c/wasm parity fixes", (t: Test) => {
+  t.eq(getSharedX({ kind: "a", x: 42 }), 42);
+  t.eq(getSharedX({ kind: "b", x: -7 }), -7);
+  const w1 = widenNullable({ kind: "a", x: 9 });
+  t.ok(w1 !== null && w1.kind === "a" && w1.x === 9);
+  t.eq(widenNullable(null), null);
+  t.eq(deadKindCheck({ kind: "a", x: 1 }), 0);
+});
+`,
+    });
+    expect(check(main)).toEqual([]);
+    for (const backend of ["js", "c", "wasm"] as const) {
+      const tr = await runTestFile(main, { backend });
+      expect(tr.diagnostics).toEqual([]);
+      expect(tr.results).toEqual([{ name: "c/wasm parity fixes", ok: true }]);
+    }
+
+    const { analyze } = await import("../src/index.ts");
+    const { emitC } = await import("../src/emit-c.ts");
+    const a = analyze(main);
+    const cOut = emitC(a.decls!, "native");
+    expect(cOut?.c).toContain("uint64_t ao64");
+  });
 });

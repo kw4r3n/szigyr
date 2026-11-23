@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
-import { check, CLI_NAME, deterministicFunctions, rtTrapSites } from "../src/index.ts";
+import { check, CLI_NAME, deterministicFunctions, queryFile, rtTrapSites } from "../src/index.ts";
 
 /** Writes the files to a fresh directory and checks `main.szigyr`. */
 function run(files: Record<string, string>): string[] {
@@ -72,7 +72,9 @@ it("E5001 for a global authority carries a fix that takes the authority as a par
 
 it("answers which functions are deterministic (§7.3, Q062)", () => {
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-`));
-  writeFileSync(join(dir, "main.szigyr"), [
+  const file = join(dir, "main.szigyr");
+  writeFileSync(file, [
+    'import * as path from "npm:node:path";',
     "type Env = { readonly log: Log };",
     "interface I { m(): i32; }",
     "function pure(x: i32, xs: Array<string>): i32 { return x; }",
@@ -81,11 +83,32 @@ it("answers which functions are deterministic (§7.3, Q062)", () => {
     "function viaIface(i: I): void {}",
     "function viaUnknown(u: unknown | null): void {}",
     "function viaJs(r: Result<JsRef, string>): void {}",
+    "function retFn(): (x: i32) => i32 { return (x: i32): i32 => x; }",
+    "function retFake(): FakeClock { return FakeClock.create(0); }",
+    "function retUnknown(): unknown | null { return null; }",
+    "function retJs(): JsRef { return path; }",
+    "function retRing(a: Alloc): RingPair<i32> { return Ring.create<i32>(a, 4); }",
+    "function badContract(): boolean { requires(retFake().nowMs() >= 0); return true; }",
     "",
   ].join("\n"));
-  expect(deterministicFunctions(join(dir, "main.szigyr"))).toEqual({
-    pure: true, viaRecord: false, viaFn: false, viaIface: false, viaUnknown: false, viaJs: false,
+  expect(deterministicFunctions(file)).toEqual({
+    pure: true,
+    viaRecord: false,
+    viaFn: false,
+    viaIface: false,
+    viaUnknown: false,
+    viaJs: false,
+    retFn: false,
+    retFake: false,
+    retUnknown: false,
+    retJs: false,
+    retRing: false,
+    badContract: true,
   });
+  expect(check(file).map((d) => d.code)).toEqual(["E6002"]);
+  const q = queryFile(file);
+  expect(q.symbols.find((s) => s.name === "retJs")).toMatchObject({ pure: false, mutatable: false });
+  expect(q.symbols.find((s) => s.name === "retFake")).toMatchObject({ pure: false, mutatable: true });
 });
 
 // Forms: [name, source, expected sorted "code line:col" list]

@@ -311,8 +311,32 @@ class Flow {
   private vars(list: ts.VariableDeclarationList): void {
     for (const d of list.declarations) {
       // destructuring moves the whole value (§5.3, Q052); taking only Copy fields out of a borrow just reads it
-      const copyOut = d.name.kind === K.ObjectBindingPattern && !!d.initializer && isId(strip(d.initializer)) && borrowMode(localOf.get(strip(d.initializer) as ts.Identifier)?.declared)
+      const isBorrowInit = d.name.kind === K.ObjectBindingPattern && !!d.initializer && isId(strip(d.initializer))
+        && !!borrowMode(localOf.get(strip(d.initializer) as ts.Identifier)?.declared);
+      const copyOut = isBorrowInit
         && (d.name as ts.ObjectBindingPattern).elements.every((el) => isId(el.name) && !movesLike(localOf.get(el.name)?.type ?? { k: "error" }));
+      if (d.name.kind === K.ObjectBindingPattern && !!d.initializer && !isBorrowInit) {
+        const p = d.name as ts.ObjectBindingPattern;
+        const srcType = unref(exprTypes.get(p) ?? exprTypes.get(strip(d.initializer)) ?? { k: "error" });
+        if (srcType.k === "record") {
+          const bound = new Set<string>();
+          for (const el of p.elements) {
+            if (!isId(el.name)) continue;
+            const prop = el.propertyName && isId(el.propertyName) ? el.propertyName : el.name;
+            bound.add(prop.text);
+          }
+          const omitted = srcType.fields.filter((f) => !bound.has(f.name) && movesLike(f.type));
+          if (omitted.length > 0) {
+            const names = omitted.map((f) => f.name);
+            this.m.at(
+              "E3003",
+              p,
+              `cannot partially destructure owned struct; bind remaining owned field(s): ${names.map((n) => `'${n}'`).join(", ")}`,
+              { field: names[0]!, fields: names },
+            );
+          }
+        }
+      }
       if (d.initializer) this.ex(d.initializer, copyOut ? "read" : "move");
       this.declared(d.name);
     }

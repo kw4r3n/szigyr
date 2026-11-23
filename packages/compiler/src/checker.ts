@@ -37,8 +37,8 @@ interface FnCtx {
   inCtor: boolean;
   tparams: Map<string, TParam>;
   depth: number;
-  /** Set while checking the argument of `requires` / `ensures` (E6002, Q056). */
-  contract?: { kind: "requires" | "ensures"; depth: number };
+  /** Set while checking the argument of `requires` / `ensures` / `invariant` (E6002, Q056). */
+  contract?: { kind: "requires" | "ensures" | "invariant"; depth: number };
   /** The enclosing named function's parameter list (E5001 fixes, Q073). */
   params?: ts.NodeArray<ts.ParameterDeclaration>;
   /** The function-like node being checked (Q122). */
@@ -166,7 +166,8 @@ export class Checker {
         const t = r && unref(r.type);
         if (r && t && isTaggedUnion(t)) {
           const v = (y as ts.StringLiteral).text;
-          out.set(r.key, subUnion(t.members.filter((m) => (kindOf(m) === v) === eq)));
+          const rest = t.members.filter((m) => (kindOf(m) === v) === eq);
+          if (rest.length) out.set(r.key, subUnion(rest));
         }
       } else if (y.kind === K.StringLiteral) { // x === "a" on a string-literal union
         const r = this.keyOf(x);
@@ -1456,7 +1457,10 @@ export function capturedAssigned(root: Node): Set<Node> {
     if (!n) return;
     if (FN_KINDS.has(n.kind)) {
       const f = n as ts.FunctionLikeDeclaration, next: LexScope = { parent: sc, fn: n, vars: new Map() };
-      for (const p of f.parameters) bind(p.name, next);
+      for (const p of f.parameters) {
+        walk(p.initializer, next);
+        bind(p.name, next);
+      }
       walk(f.body, next);
       return;
     }

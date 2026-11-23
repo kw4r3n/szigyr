@@ -1,0 +1,9 @@
+// expect: E3003 @ 7:9
+// stage: 2
+type Pair = Struct<{ a: Vec<i32>; b: Vec<i32> }>;
+function takeOne(alloc: Alloc): usize {
+  "use owned";
+  const s: Pair = { a: Vec.create<i32>(alloc, 1), b: Vec.create<i32>(alloc, 2) };
+  const { a } = s;
+  return a.length;
+}

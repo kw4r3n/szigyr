@@ -53,10 +53,10 @@ const badMutLeaf = (t: Type): boolean =>
   (t.k === "gen" && UNMUTATABLE_GEN.has(t.name));
 
 export function isDeterministic(sig: FnType, unsafe = false, extraTypes: readonly Type[] = []): boolean {
-  return !unsafe && !hasForbidden([...sig.params, ...extraTypes], badDetLeaf, true); // §7.3 / §14: unsafe functions are never deterministic
+  return !unsafe && !hasForbidden([...sig.params, sig.ret, ...extraTypes], badDetLeaf, true); // §7.3 / §14: unsafe functions are never deterministic
 }
 
 /** SPEC-v1 §7: safe functions and class methods excluding System/Ffi/Js/JsRef/Test/Ptr/ConstPtr/CHandle. */
 export function isMutatable(sig: FnType, unsafe = false, extraTypes: readonly Type[] = []): boolean {
-  return !unsafe && !hasForbidden([...sig.params, ...extraTypes], badMutLeaf, false);
+  return !unsafe && !hasForbidden([...sig.params, sig.ret, ...extraTypes], badMutLeaf, false);
 }

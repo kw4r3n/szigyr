@@ -324,7 +324,16 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
     if (!cvts.has(name)) {
       let body: string;
       if (nonNull(from) && nonNull(to)) body = `${ct} r = {0}; r.some = x.some; if (x.some) r.v = ${cvt("x.v", nonNull(from)!, nonNull(to)!, where)}; return r;`;
-      else if (isTaggedUnion(from) && isTaggedUnion(to)) {
+      else if (from.k === "record" && isTaggedUnion(to)) {
+        const j = memberOf(to, kindOf(from)!);
+        if (j < 0) throw new CUnsupported(where, `converting '${show(from)}' to '${show(to)}'`);
+        litId(kindOf(from)!);
+        body = `${ct} r = {0}; r.m${j} = x; return r;`;
+      } else if (isTaggedUnion(from) && to.k === "record" && kindOf(to) !== undefined) {
+        const i = memberOf(from, kindOf(to)!);
+        if (i < 0) throw new CUnsupported(where, `converting '${show(from)}' to '${show(to)}'`);
+        body = `if (x.kind == ${litId(kindOf(to)!)}) return x.m${i}; sz_fail("bad union tag");`;
+      } else if (isTaggedUnion(from) && isTaggedUnion(to)) {
         const fm = umembers(from);
         body = `${ct} r; switch (x.kind) { ${fm.flatMap((m, i) => { const j = memberOf(to, kindOf(m)!); return j < 0 ? [] : [`case ${litId(kindOf(m)!)}: r.m${j} = x.m${i}; return r;`]; }).join(" ")} } sz_fail("bad union tag");`;
       } else throw new CUnsupported(where, `converting '${show(from)}' to '${show(to)}'`);
@@ -1322,6 +1331,25 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
         return this.t(t, t.k === "num" ? `(${CNUM[t.name]})${base}.${name}` : `${base}.${name}`, p);
       }
       if (rt.k === "union" && isTaggedUnion(rt) && name === "kind") return this.t(this.typeOf(p), `${this.placeOrValue(p.expression)}.kind`, p);
+      if (rt.k === "union" && isTaggedUnion(rt)) {
+        const ft = this.typeOf(p);
+        const uv = `t${this.tmp++}`;
+        this.emit(`${ctype(rt, this.where)} ${uv} = ${this.placeOrValue(p.expression)};`);
+        const res = `t${this.tmp++}`;
+        this.emit(`${ctype(ft, this.where)} ${res};`);
+        this.emit(`switch (${uv}.kind) {`);
+        for (const [i, m] of umembers(rt).entries()) {
+          const rec = m as Extract<Type, { k: "record" }>;
+          const mf = rec.fields.find((f) => f.name === name);
+          if (!mf) continue;
+          const val = `${uv}.m${i}.f_${name}`;
+          const rhs = mf.type.k === "union" ? this.narrow(val, mf.type, ft) : this.conv(val, mf.type, ft);
+          this.emit(`  case ${litId(kindOf(m)!)}: ${res} = ${rhs}; break;`);
+        }
+        this.emit(`  default: sz_fail("bad union tag");`);
+        this.emit(`}`);
+        return this.t(ft, res, p);
+      }
       if (rt.k === "opaque" && AUTH.has(rt.name)) return this.t(this.typeOf(p), `sz_get(${this.ex(p.expression)}, "${name}")`, p); // sys.alloc etc.
       throw this.no(p, `the member '${name}'`);
     }
@@ -1617,7 +1645,7 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
             const x = this.t(et, this.conv(this.ex(e.arguments[1]!), this.typeOf(e.arguments[1]!), et), e);
             const nct = ctype(t, this.where), r = `t${this.tmp++}`;
             this.emit(`${nct} ${r};`);
-            this.emit(`{ uint32_t ao = (${pv}->used + ${lay.a - 1}) & ~${lay.a - 1}u; if ((uint64_t)ao + (uint64_t)(${n}) * ${lay.z} > ${pv}->cap) { ${r}.some = false; } else { for (uint32_t k = 0; k < ${n}; k++) ${el.st(`((uint8_t *)${pv}->data + ao)`, "k", x)} ${pv}->used = ao + (${n}) * ${lay.z}; sz_arena_note(${pv}, ao, ${cstr(elemDesc(et))}); ${r}.some = true; ${r}.v.arena = ${pv}->id; ${r}.v.gen = ${pv}->gen; ${r}.v.off = ao; ${r}.v.len = ${n}; } }`);
+            this.emit(`{ uint64_t ao64 = ((uint64_t)${pv}->used + ${lay.a - 1}ULL) & ~(uint64_t)${lay.a - 1}ULL; if (ao64 + (uint64_t)(${n}) * ${lay.z} > ${pv}->cap) { ${r}.some = false; } else { uint32_t ao = (uint32_t)ao64; for (uint32_t k = 0; k < ${n}; k++) ${el.st(`((uint8_t *)${pv}->data + ao)`, "k", x)} ${pv}->used = ao + (${n}) * ${lay.z}; sz_arena_note(${pv}, ao, ${cstr(elemDesc(et))}); ${r}.some = true; ${r}.v.arena = ${pv}->id; ${r}.v.gen = ${pv}->gen; ${r}.v.off = ao; ${r}.v.len = ${n}; } }`);
             return this.t(t, r, e);
           }
           case "view": {
