@@ -1,0 +1,7 @@
+// expect: E1000 @ 6:18
+// stage: 1
+// open-question: Q004
+type R = { readonly a: i32 };
+function f(k: string): void {
+  const o: R = { [k]: 1 };
+}

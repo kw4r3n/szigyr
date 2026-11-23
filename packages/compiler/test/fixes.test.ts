@@ -146,4 +146,21 @@ it("attaches concrete-type, resource-escape, conflictAt, cycle, and CLI kind/mis
   writeFileSync(compound, "export function f(a: i32, b: f64): i32 {\n  let x: i32 = a;\n  x += b;\n  return x;\n}\n");
   const cd = check(compound).find((d) => d.code === "E2003");
   expect(cd?.fixes?.map((fx) => fx.title)).toEqual(["convert right to 'i32'"]);
+
+  // safe Part D fixes: public modifier on class member & mutable TypeLiteral in strict code
+  const pubFile = join(dir, "pub.szigyr");
+  writeFileSync(pubFile, "export class A {\n  public m(): i32 { return 1; }\n}\n");
+  expect(code).toBe(1);
+  let fixOut = "";
+  const fixRc = await cliMain(["check", "--fix", pubFile], (s) => { fixOut += s; }, () => {});
+  expect(fixRc).toBe(0);
+  expect(readFileSync(pubFile, "utf8")).not.toContain("public");
+  expect(check(pubFile)).toEqual([]);
+
+  const mutRecFile = join(dir, "mut-rec.szigyr");
+  writeFileSync(mutRecFile, "function f(p: { x: i32; y: i32 }): i32 {\n  \"use owned\";\n  return p.x + p.y;\n}\n");
+  const mrRc = await cliMain(["check", "--fix", mutRecFile], () => {}, () => {});
+  expect(mrRc).toBe(0);
+  expect(readFileSync(mutRecFile, "utf8")).toContain("readonly x: i32; readonly y: i32");
+  expect(check(mutRecFile)).toEqual([]);
 });

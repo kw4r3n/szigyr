@@ -3,7 +3,7 @@ import { NodeFlags, SyntaxKind as K, hasMod, isId, isParamProp, type Node, type 
 import { Program, declBindings, legalUnion, type CStructSym, type ClassValueSym, type FnSym, type Layer, type LocalSym, type Module, type ValueSym } from "./modules.ts";
 import { PROMISE_CONTAINERS, assignTarget, checkTo, exprTypes, hasPromise, cond, expr, isLitOnly, localOf, promiseOk, usingInitExprs, type FnArgRef } from "./expr.ts";
 import {
-  ASYNC_DISPOSABLE, AUTHORITIES, DISPOSABLE, ERROR, NEVER, NULL, STR, VOID, assignable, hasAuthority, hasTParam, hasPtr, layerOk, crossOk, ptrTargetOk, field, isBool, isErr, isInt, isNull, isTaggedUnion, kindOf, nonNull, parseExactInt, restElem, same, show, subst, bindTParams, unref, union, subUnion,
+  ASYNC_DISPOSABLE, AUTHORITIES, DISPOSABLE, ERROR, NEVER, NULL, STR, VOID, assignable, hasAuthority, hasTParam, hasPtr, layerOk, crossOk, ptrTargetOk, field, isBool, isCopy, isErr, isInt, isNull, isTaggedUnion, kindOf, nonNull, parseExactInt, restElem, same, show, subst, bindTParams, unref, union, subUnion,
   type Capability, type ClassSym, type FnType, type TParam, type Type,
   hasLoneSurrogate,
 } from "./types.ts";
@@ -92,6 +92,8 @@ export class Checker {
 
   /** Q121: the `this.f` targets of the constructor's initializing statements (readonly fields may be assigned there only). */
   ctorInits = new Set<Node>();
+  /** Strict / rt local symbols whose own declaration already reported E4002 (avoids duplicate cascade on uses). */
+  readonly badLayerLocals = new Set<number>();
   /** The first expression typed as the error type (D009: only after a diagnostic). */
   firstError: { node: Node; mod: Module } | undefined;
   run(hasPriorErrors = false): void {
@@ -290,8 +292,35 @@ export class Checker {
   }
   layerType(t: Type, node: Node, layer: Layer): void {
     if (layer === "rt" && hasAuthority(t)) this.at("E4006", node, "rt functions cannot take authorities", { layer: "rt", actual: show(t) });
-    else if (t.k === "fn") this.at("E4003", node, `a function value cannot be used in ${layer} code`, { layer, actual: show(t) }); // §2: function values are E4003
-    else if (!layerOk(t)) this.at("E4002", node, `'${show(t)}' cannot be used in ${layer} code`, { layer, actual: show(t) });
+    else if (t.k === "fn") this.at("E4003", node, `a function value cannot be used in ${layer} code; pass a top-level '${layer === "rt" ? "use rt" : "use owned"}' function name instead`, { layer, actual: show(t), kind: "strict-fn-type" }); // §2: function values are E4003
+    else if (!layerOk(t)) this.reportLayerType(t, node, layer);
+  }
+  reportLayerType(t: Type, node: Node, layer: Layer): void {
+    const uNode = node.kind === K.ParenthesizedExpression ? assignTarget(node as ts.Expression) : node;
+    if (isId(uNode)) {
+      const sym = localOf.get(uNode);
+      if (sym && this.badLayerLocals.has(sym.id)) return;
+    }
+    const u = unref(t);
+    if (u.k === "gen" && (u.name === "Array" || u.name === "ReadonlyArray")) {
+      this.at("E4002", node, `'${show(t)}' cannot be used in ${layer} code; use 'Vec<T>', 'Ref<Slice<T>>', or 'Mut<Slice<T>>'`, { layer, actual: show(t), kind: "managed-array" });
+    } else if (u.k === "record" && !u.struct && u.fields.some((f) => !f.readonly)) {
+      this.at("E4002", node, `'${show(t)}' cannot be used in ${layer} code; mark fields 'readonly' or wrap in 'OwnedStruct<{ ... }>'`, { layer, actual: show(t), kind: "mutable-record" });
+      if (node.kind === K.TypeLiteral && u.fields.every((f) => isCopy(f.type) && layerOk(f.type))) {
+        const edits = (node as ts.TypeLiteralNode).members
+          .filter((m): m is ts.PropertySignatureDeclaration => m.kind === K.PropertySignature)
+          .filter((m) => !m.modifiers?.some((x) => x.kind === K.ReadonlyKeyword))
+          .map((m) => {
+            const p = this.mod.pf.position(m.name.getStart(this.mod.sf));
+            return { range: { start: p, end: p }, newText: "readonly " };
+          });
+        if (edits.length) this.prog.rep.out.at(-1)!.fixes = [{ title: "mark record fields 'readonly'", edits }];
+      }
+    } else if (u.k === "prim" && u.name === "string") {
+      this.at("E4002", node, `'${show(t)}' cannot be used in ${layer} code`, { layer, actual: show(t), kind: "managed-string" });
+    } else {
+      this.at("E4002", node, `'${show(t)}' cannot be used in ${layer} code`, { layer, actual: show(t) });
+    }
   }
 
   /** E4010 (Q240 (a)): a strict / rt generic function may not instantiate itself, directly or through a cycle of
@@ -479,7 +508,10 @@ export class Checker {
           checkTo(this, p.initializer, unref(t));
         }
       }
-      if (isId(p.name)) this.declare(p.name, unref(t), { param: true, mutable: true, declared: t });
+      if (isId(p.name)) {
+        const sym = this.declare(p.name, unref(t), { param: true, mutable: true, declared: t });
+        if (this.fx.layer !== "managed" && t.k !== "fn" && !layerOk(t)) this.badLayerLocals.add(sym.id);
+      }
       else if (p.name.kind === K.ObjectBindingPattern) {
         exprTypes.set(p.name, t);
         this.destructure(p.name as ts.ObjectBindingPattern, t, true);
@@ -696,7 +728,10 @@ export class Checker {
               if (!assignable(elem, at)) this.at("E2002", d.name, "element type does not match the annotation");
               elem = at;
             }
-            if (isId(d.name)) this.declare(d.name, elem, { mutable: isLet });
+            if (isId(d.name)) {
+              const sym = this.declare(d.name, elem, { mutable: isLet });
+              if (this.fx.layer !== "managed" && !layerOk(elem)) this.badLayerLocals.add(sym.id);
+            }
             else if (d.name.kind === K.ArrayBindingPattern) this.destructureTuple(d.name as ts.ArrayBindingPattern, elem, isLet);
           }
         }
@@ -962,7 +997,7 @@ export class Checker {
         t = ERROR;
       } else if (init.kind === K.StringLiteral && !mutableDecl) {
         t = hasLoneSurrogate((init as ts.StringLiteral).text) ? STR : { k: "lit", value: (init as ts.StringLiteral).text }; // Q016, Q238
-        if (this.fx.layer !== "managed") this.at("E4002", init, `strings cannot be used in ${this.fx.layer} code`); // Q042
+        if (this.fx.layer !== "managed") this.at("E4002", init, `strings cannot be used in ${this.fx.layer} code`, { layer: this.fx.layer, actual: "string", kind: "managed-string" }); // Q042
       } else {
         t = expr(this, init);
         if (t.k === "lit" || (t.k === "union" && t.members.every((m) => m.k === "lit") && mutableDecl)) t = mutableDecl ? STR : t;
@@ -983,6 +1018,7 @@ export class Checker {
       if (isId(d.name)) {
         const cl = !mutableDecl && !isUsing && init ? this.resolveCaseLit(init, this.mod, t, (n) => this.scope.lookup(n)) : undefined;
         const sym = this.declare(d.name, t, { mutable: mutableDecl });
+        if (this.fx.layer !== "managed" && !isErr(t) && !layerOk(t)) this.badLayerLocals.add(sym.id);
         if (init && !d.type && t.k === "num" && isLitOnly(init)) this.litLets.set(sym.id, d.name);
         if (cl) this.localConstLits.set(sym.id, cl);
       } else if (d.name.kind === K.ObjectBindingPattern) this.destructure(d.name as ts.ObjectBindingPattern, t, mutableDecl);
@@ -1001,7 +1037,8 @@ export class Checker {
         if (f) ft = f.type; else this.at("E2002", prop, `no field '${prop.text}'`);
       } else if (t.k !== "error") this.at("E2002", prop, "only records can be destructured");
       exprTypes.set(el.name, ft);
-      this.declare(el.name, ft, { mutable: mutableDecl });
+      const sym = this.declare(el.name, ft, { mutable: mutableDecl });
+      if (this.fx.layer !== "managed" && !isErr(ft) && !layerOk(ft)) this.badLayerLocals.add(sym.id);
     }
   }
 
@@ -1016,7 +1053,8 @@ export class Checker {
       if (!el.name || !isId(el.name)) return;
       const et = t.k === "tuple" && i < t.elems.length ? t.elems[i]! : ERROR;
       exprTypes.set(el.name, et);
-      this.declare(el.name, et, { mutable: mutableDecl });
+      const sym = this.declare(el.name, et, { mutable: mutableDecl });
+      if (this.fx.layer !== "managed" && !isErr(et) && !layerOk(et)) this.badLayerLocals.add(sym.id);
     });
   }
 

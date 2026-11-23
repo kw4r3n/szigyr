@@ -4,6 +4,7 @@ export interface ExplainEntry {
   readonly title: string;
   readonly description: string;
   readonly remediation: string;
+  readonly kinds?: Readonly<Record<string, string>>;
 }
 
 const e = (
@@ -12,11 +13,33 @@ const e = (
   title: string,
   description: string,
   remediation: string,
-): [string, ExplainEntry] => [code, { code, phase, title, description, remediation }];
+  kinds?: Readonly<Record<string, string>>,
+): [string, ExplainEntry] => [code, { code, phase, title, description, remediation, ...(kinds ? { kinds } : {}) }];
 
 const ENTRIES: Record<string, ExplainEntry> = Object.fromEntries([
   // P1 Syntax & Subset (E1000-E1009)
-  e("E1000", "P1", "Disallowed syntax or reserved word", "Uses TypeScript/JavaScript syntax, a reserved identifier, a forbidden directive (e.g. '\"use strict\"'), or a BigInt literal (e.g. '1n') outside the Szigyr subset.", "Use allowed Szigyr syntax (e.g. switch, explicit loops, Record/OwnedStruct/Class, typed declarations), use '\"use owned\"' instead of '\"use strict\"' (or omit for managed), and omit 'n' on i64/u64 contextual numeric literals."),
+  e("E1000", "P1", "Disallowed syntax or reserved word", "Uses TypeScript/JavaScript syntax, a reserved identifier, a forbidden directive (e.g. '\"use strict\"'), or a BigInt literal (e.g. '1n') outside the Szigyr subset.", "Use allowed Szigyr syntax (e.g. switch, explicit loops, Record/OwnedStruct/Class, typed declarations), use '\"use owned\"' instead of '\"use strict\"' (or omit for managed), and omit 'n' on i64/u64 contextual numeric literals.", {
+    enum: "Replace 'enum E { A, B }' with a string-literal union 'type E = \"A\" | \"B\"'.",
+    "public-modifier": "Remove 'public' from class fields/methods (members are public by default; only constructor parameter properties take 'public').",
+    "rest-param-layer": "Rest parameters '...xs: Array<T>' are managed-only; pass 'Ref<Slice<T>>' or 'Vec<T>' explicitly in strict/rt functions.",
+    "class-extends": "Use 'implements' with an interface and composition instead of class inheritance ('extends').",
+    "class-accessor": "Replace 'get'/'set' accessors with explicit methods or fields.",
+    "index-signature": "Replace index signatures with explicit fields or 'Map<K, V>'.",
+    "object-method": "Use plain data fields in record literals or declare a 'class' with methods.",
+    "object-accessor": "Replace accessors in object literals with plain fields or functions.",
+    "computed-property": "Use static identifier property keys or a 'Map<K, V>'.",
+    "destructuring-assignment": "Assign into separate variables or rebind with 'const'/'let' instead of '[a, b] = ...' / '{ a } = ...'.",
+    "for-in": "Replace 'for..in' with 'for..of' or an indexed 'for' loop.",
+    "labeled-statement": "Extract a helper function and 'return', or track a boolean exit flag instead of labels.",
+    label: "Use an early return or boolean flag instead of labeled 'break'/'continue'.",
+    "bigint-literal": "Remove the 'n' suffix and annotate as 'i64' or 'u64'.",
+    directive: "Use '\"use owned\"' (strict) or '\"use rt\"' (real-time), or omit directives for managed code.",
+    namespace: "Use ES module files and 'import * as ns from \"./mod.szigyr\"' instead of 'namespace'.",
+    typeof: "Szigyr is statically typed; branch on tagged unions ('.kind') or 'cast<T>(x)' instead of runtime 'typeof'.",
+    delete: "Use 'Map.delete(k)' or explicit 'T | null' fields instead of 'delete'.",
+    instanceof: "Use tagged union '.kind === \"...\"' checks instead of 'instanceof'.",
+    "module-statement": "Place statements inside 'export function main(sys: System): void' or module-level declarations.",
+  }),
   e("E1001", "P1", "'var' declaration not allowed", "'var' has function hoisting semantics that are outside the Szigyr subset.", "Replace 'var' with 'const' (immutable binding) or 'let' (mutable binding)."),
   e("E1002", "P1", "Loose equality '==' or '!='", "Implicit-coercion equality operators are disallowed.", "Use strict equality '===' or '!=='."),
   e("E1003", "P1", "Default export or star re-export not allowed", "Default exports ('export default', 'export { x as default }') and wildcard re-exports ('export *') are disallowed.", "Use named exports ('export function', 'export { ... }') and explicit named imports ('import { a, b } from \"...\"')."),
@@ -30,7 +53,16 @@ const ENTRIES: Record<string, ExplainEntry> = Object.fromEntries([
   // P2/P4 Types, Authorities & C Headers (E2000-E2013)
   e("E2000", "P2", "Unresolved name or disallowed global", "Identifier is not in scope, references a reserved global name, or accesses an unknown type.", "Declare or import the symbol cleanly or pass the required authority parameter explicitly."),
   e("E2001", "P2", "Unknown member or invalid member access", "Property or method does not exist on the receiver type or cannot be accessed in this context.", "Check the type's declared fields or query the built-in member allowlist (via 'szigyr query' or MCP resource 'szigyr://builtins')."),
-  e("E2002", "P2", "Type or capability mismatch", "Expression type, generic capability constraint (Copy, Native, Owned, Send, Key, Codec), or usage position does not match requirements (e.g. cast<T>, js.decode<T>, js.callback<T>, Arena.alloc<T>, and JSON.stringify<T> require concrete types without type parameters; JSON.stringify also forbids i64/u64).", "Align the expression type, add explicit capability bounds (e.g. 'T extends Copy & Native'), use concrete types where required, or adjust target type annotations."),
+  e("E2002", "P2", "Type or capability mismatch", "Expression type, generic capability constraint (Copy, Native, Owned, Send, Key, Codec), or usage position does not match requirements (e.g. cast<T>, js.decode<T>, js.callback<T>, Arena.alloc<T>, and JSON.stringify<T> require concrete types without type parameters; JSON.stringify also forbids i64/u64).", "Align the expression type, add explicit capability bounds (e.g. 'T extends Copy & Native'), use concrete types where required, or adjust target type annotations.", {
+    "spread-non-rest": "Pass individual positional arguments, or add a trailing '...rest: Array<T>' parameter to the managed callee.",
+    "bad-rest-type": "Annotate rest parameters as '...rest: Array<T>' (or 'T[]' / 'ReadonlyArray<T>').",
+    "illegal-union": "Only tagged unions with string-literal 'kind', string-literal unions, or 'T | null' are supported.",
+    "promise-position": "Await the 'Promise<T>' or return it directly from an 'async' function instead of storing it in fields/containers.",
+    "type-only": "Import a value symbol separately; 'import type' bindings are erased at compile time.",
+    "concrete-type-required": "Provide a concrete type argument without unresolved type parameters here.",
+    "missing-capability": "Ensure the type satisfies the required capability (Copy, Native, Owned, Send, Key, or Codec).",
+    "json-int64": "Convert 'i64'/'u64' fields to 'f64' or 'string' before calling 'JSON.stringify'.",
+  }),
   e("E2003", "P2", "Mixed numeric types in operator", "Arithmetic, comparison, bitwise, or equality operators require both operands to share the same exact numeric type (i8..f64).", "Explicitly convert one side (e.g. 'f64(x)', 'i32(y)') or annotate the 'let' variable with the matching numeric type."),
   e("E2004", "P2", "Condition must be boolean", "Conditionals (if, while, do-while, for, ?:, &&, ||, !) only accept 'boolean', not truthy/falsy values.", "Compare explicitly (e.g. 'x !== 0', 's.length > 0', 'v !== null')."),
   e("E2005", "P2", "Non-exhaustive switch", "A 'switch' over a string-literal union, tagged union ('kind'), boolean, or other value omits cases without a 'default' branch.", "Add the missing 'case' branches reported in diagnostic data or add a 'default' clause."),

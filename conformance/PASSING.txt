@@ -91,6 +91,8 @@ reject/E1000-await-outside-async.szigyr
 reject/E1000-break-in-arrow-inside-loop.szigyr
 reject/E1000-break-outside-loop.szigyr
 reject/E1000-class-extends.szigyr
+reject/E1000-class-index-signature.szigyr
+reject/E1000-computed-property.szigyr
 reject/E1000-continue-in-switch.szigyr
 reject/E1000-ctor-default-this.szigyr
 reject/E1000-destructuring-assignment.szigyr
@@ -122,11 +124,15 @@ reject/E1000-member-name-proto.szigyr
 reject/E1000-member-name-then.szigyr
 reject/E1000-module-array-destructuring.szigyr
 reject/E1000-module-destructuring-duplicate-name.szigyr
+reject/E1000-namespace-decl.szigyr
+reject/E1000-object-accessor.szigyr
 reject/E1000-object-destructuring-assignment.szigyr
 reject/E1000-object-literal-proto.szigyr
+reject/E1000-object-method.szigyr
 reject/E1000-object-type.szigyr
 reject/E1000-param-prop-dup-field.szigyr
 reject/E1000-pre-dec-in-value-pos.szigyr
+reject/E1000-public-method.szigyr
 reject/E1000-regex-flag-g.szigyr
 reject/E1000-reserved-bigint-class.szigyr
 reject/E1000-reserved-i64-type.szigyr
@@ -637,6 +643,7 @@ reject/E4002-ring-element-owned.szigyr
 reject/E4002-strict-generic-authority-type-argument.szigyr
 reject/E4002-strict-generic-never-reaches-parameter.szigyr
 reject/E4002-strict-generic-type-argument-not-allowed.szigyr
+reject/E4002-strict-mutable-record.szigyr
 reject/E4002-strict-param-never.szigyr
 reject/E4002-string-literal-local-in-strict.szigyr
 reject/E4002-string-param-in-rt.szigyr

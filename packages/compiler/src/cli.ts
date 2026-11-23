@@ -203,9 +203,12 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
       });
       for (let i = 0; i < entries.length; i++) {
         const entry = entries[i]!;
+        const kindsText = entry.kinds
+          ? `kinds:\n${Object.entries(entry.kinds).map(([k, v]) => `  ${k}: ${v}\n`).join("")}`
+          : "";
         out(json
           ? line({ kind: "explain", ...entry })
-          : `${i > 0 ? "\n" : ""}${entry.code} [${entry.phase}]: ${entry.title}\n${entry.description}\nfix: ${entry.remediation}\n`);
+          : `${i > 0 ? "\n" : ""}${entry.code} [${entry.phase}]: ${entry.title}\n${entry.description}\nfix: ${entry.remediation}\n${kindsText}`);
       }
       return 0;
     }

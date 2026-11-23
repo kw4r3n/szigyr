@@ -153,4 +153,20 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
     expect(e2001.remediation).not.toContain("docs/SPEC.md");
     expect(e2001.remediation).not.toContain("§12");
   });
+
+  it("emits specific data.kind metadata and deduplicates E4002 local cascade in strict code", () => {
+    expect(checkSrc("enum E { A, B }\n").diags[0]).toMatchObject({ code: "E1000", data: { kind: "enum" } });
+    expect(checkSrc("export function f(x: i32): void { if (x < 0) throw \"neg\"; }\n").diags[0]).toMatchObject({ code: "E1007", data: { kind: "throw", syntax: "throw" } });
+    expect(checkSrc("export function f(x: i32): i32 { try { return x; } catch (e) { return 0; } }\n").diags[0]).toMatchObject({ code: "E1007", data: { kind: "try", syntax: "try" } });
+    expect(checkSrc("class A { public m(): void {} }\n").diags[0]).toMatchObject({ code: "E1000", data: { kind: "public-modifier" } });
+    expect(checkSrc("class A { get x(): i32 { return 1; } }\n").diags[0]).toMatchObject({ code: "E1000", data: { kind: "class-accessor" } });
+    expect(checkSrc("class A { [k: string]: i32; }\n").diags[0]).toMatchObject({ code: "E1000", data: { kind: "index-signature" } });
+    expect(checkSrc("export function f(): void { const o = { m(): i32 { return 1; } }; }\n").diags[0]).toMatchObject({ code: "E1000", data: { kind: "object-method" } });
+    expect(checkSrc("export function f(xs: Array<i32>): void { \"use owned\"; }\n").diags[0]).toMatchObject({ code: "E4002", data: { kind: "managed-array" } });
+    expect(checkSrc("export function f(p: { x: i32; y: i32 }): i32 { \"use owned\"; return p.x + p.y; }\n").diags[0]).toMatchObject({ code: "E4002", data: { kind: "mutable-record" } });
+    expect(checkSrc("export function f(): void { \"use owned\"; const g = (x: i32): i32 => x; }\n").diags[0]).toMatchObject({ code: "E4003", data: { kind: "strict-arrow" } });
+
+    const cascade = checkSrc("function f(xs: Array<i32>): usize {\n  \"use owned\";\n  return xs.length + xs.length + xs.length;\n}\n");
+    expect(cascade.diags.filter((d) => d.code === "E4002")).toHaveLength(1);
+  });
 });

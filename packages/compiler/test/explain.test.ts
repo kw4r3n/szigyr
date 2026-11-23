@@ -51,4 +51,7 @@ it("keeps explain entries free of hallucinated capabilities, stale filenames, an
   expect(explainCode("T012")!.description).toContain("Arena.view");
   expect(explainCode("E3003")!.remediation).toContain("Destructure");
   expect(explainCode("E3003")!.remediation).not.toContain("without reusing the parent");
+  expect(explainCode("E1000")!.kinds?.enum).toContain("string-literal union");
+  expect(explainCode("E1000")!.kinds?.["public-modifier"]).toContain("Remove 'public'");
+  expect(explainCode("E2002")!.kinds?.["spread-non-rest"]).toContain("...rest");
 });

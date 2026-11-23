@@ -157,7 +157,7 @@ export function expr(c: Checker, e: ts.Expression, want?: Type): Type {
   const t = exprUnrecorded(c, e, want);
   exprTypes.set(e, t);
   // E4002 for a value without an annotation (Q027, Q042, Q053); function values are E4003's; Resource binding allowed as using init
-  if (c.fx.layer !== "managed" && t.k !== "fn" && !(t.k === "resource" && usingInitExprs.has(e)) && !layerOk(t) && !panicLits.has(e)) c.at("E4002", e, `'${show(t)}' cannot be used in ${c.fx.layer} code`);
+  if (c.fx.layer !== "managed" && t.k !== "fn" && !(t.k === "resource" && usingInitExprs.has(e)) && !layerOk(t) && !panicLits.has(e)) c.reportLayerType(t, e, c.fx.layer);
   if (!promiseOk.has(e) && !PROMISE_CONTAINERS.has(e.kind) && hasPromise(t)) c.at("E2002", e, "a Promise can only be awaited or returned");
   if (t.k === "error") c.firstError ??= { node: e, mod: c.mod };
   return t;
@@ -1101,7 +1101,7 @@ function arrLit(c: Checker, e: ts.ArrayLiteralExpression, want: Type | undefined
 
 /** Arrow functions and function expressions (parameter types inferred from contextual fn type when present, else E2006; return inferred when not annotated). */
 function checkArrow(c: Checker, e: ts.ArrowFunction | ts.FunctionExpression, want: FnType | undefined, inferRet: boolean, openIds?: Set<number>): FnType {
-  if (c.fx.layer !== "managed" && !ensuresArgs.has(e)) c.at("E4003", e, `a function expression cannot be written in ${c.fx.layer} code`); // §2, Q012
+  if (c.fx.layer !== "managed" && !ensuresArgs.has(e)) c.at("E4003", e, `a function expression cannot be written in ${c.fx.layer} code; define a top-level function and pass its name instead`, { layer: c.fx.layer, kind: "strict-arrow" }); // §2, Q012
   const tps = tparamShells(e.typeParameters, "managed", true);
   const outerTps = c.fx.tparams;
   c.fx.tparams = new Map([...outerTps, ...tps.map((p) => [p.name, p] as const)]);
@@ -1843,7 +1843,7 @@ function fnArgRef(c: Checker, a: ts.Expression, target: Layer): { ref: FnArgRef;
     c.at("E2002", a, `'${fnRef.typeOnly}' is type-only and cannot be used as a value`, { kind: "type-only", name: fnRef.typeOnly });
     return undefined;
   }
-  c.at("E4003", a, "a function argument must be the name of a module-level strict / rt function or a function parameter of the caller");
+  c.at("E4003", a, "a function argument must be the name of a module-level strict / rt function or a function parameter of the caller", { kind: "strict-fn-arg" });
   return undefined;
 }
 
