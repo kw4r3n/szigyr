@@ -1,0 +1,1185 @@
+import {
+  NUM_STEPS,
+  WAVE_SAW,
+  WAVE_SINE,
+  WAVE_SQUARE,
+  WAVE_TRI,
+} from "./dsp.szigyr";
+import {
+  DawSnapshot,
+  MicroDawSession,
+  TelemetrySnapshot,
+  createSession,
+} from "./engine.szigyr";
+
+const SURF_W: u32 = 540;
+const SURF_H: u32 = 360;
+const BTN_X0: f64 = 6;
+const BTN_Y: f64 = 6;
+const BTN_W: f64 = 42;
+const BTN_H: f64 = 24;
+const BTN_PITCH: f64 = 44;
+const GRID_X: f64 = 48;
+const GRID_Y: f64 = 44;
+const COL_W: f64 = 30;
+const ROW_H: f64 = 22;
+const BAR_X: f64 = 48;
+const BAR_W: f64 = 160;
+const BAR_H: f64 = 16;
+const PAD_X: f64 = 48;
+const PAD_Y: f64 = 304;
+const PAD_W: f64 = 56;
+const PAD_H: f64 = 28;
+const PAD_PITCH: f64 = 60;
+const SCOPE_X: f64 = 224;
+const SCOPE_Y: f64 = 232;
+const SCOPE_W: f64 = 276;
+const SCOPE_H: f64 = 60;
+const HIST_LEN: usize = 16;
+
+export type DawArgs = {
+  readonly frames: usize;
+  readonly autoplay: boolean;
+};
+
+export type GridHit = {
+  readonly col: i32;
+  readonly row: i32;
+};
+
+export type DawRunSummary = {
+  readonly frames: usize;
+  readonly audioOpen: boolean;
+  readonly lastStep: u8;
+  readonly peak: f32;
+  readonly snapshot: DawSnapshot;
+};
+
+export function parseDawArgs(args: ReadonlyArray<string>): DawArgs {
+  let frames: usize = 0;
+  let autoplay = false;
+  for (const a of args) {
+    if (a === "--autoplay") {
+      autoplay = true;
+    } else if (a.startsWith("--frames=")) {
+      const n = Number.parseFloat(a.slice(9));
+      if (Number.isFinite(n) && n > 0) frames = usize(Math.floor(n));
+    }
+  }
+  return { frames, autoplay };
+}
+
+export function rowNote(row: i32): u8 {
+  switch (row) {
+    case 0: return 72;
+    case 1: return 70;
+    case 2: return 67;
+    case 3: return 65;
+    case 4: return 63;
+    case 5: return 60;
+    case 6: return 55;
+    case 7: return 48;
+    default: return 0;
+  }
+}
+
+export function rowLabel(row: i32): string {
+  switch (row) {
+    case 0: return "C5";
+    case 1: return "Bb4";
+    case 2: return "G4";
+    case 3: return "F4";
+    case 4: return "Eb4";
+    case 5: return "C4";
+    case 6: return "G3";
+    default: return "C3";
+  }
+}
+
+export function mapStepToRow(note: u8): i32 {
+  if (note === 0) return -1;
+  let best: i32 = 0;
+  let bestDist: i32 = i32(Math.abs(f64(i32(rowNote(0)) - i32(note))));
+  // szigyr-equivalent[num -> 0]: r=0 checks rowNote(0), already initialized in bestDist
+  for (let r: i32 = 1; r < 8; r += 1) {
+    const d = i32(Math.abs(f64(i32(rowNote(r)) - i32(note))));
+    if (d < bestDist) {
+      bestDist = d;
+      best = r;
+    }
+  }
+  return best;
+}
+
+export function padNote(idx: i32): u8 {
+  switch (idx) {
+    case 0: return 48;
+    case 1: return 51;
+    case 2: return 55;
+    case 3: return 58;
+    case 4: return 60;
+    case 5: return 63;
+    case 6: return 67;
+    default: return 72;
+  }
+}
+
+export function padLabel(idx: i32): string {
+  switch (idx) {
+    case 0: return "C3 A";
+    case 1: return "Eb S";
+    case 2: return "G3 D";
+    case 3: return "Bb F";
+    case 4: return "C4 G";
+    case 5: return "Eb H";
+    case 6: return "G4 J";
+    default: return "C5 K";
+  }
+}
+
+export function padNoteForKey(key: string): u8 {
+  switch (key) {
+    case "a": return 48;
+    case "s": return 51;
+    case "d": return 55;
+    case "f": return 58;
+    case "g": return 60;
+    case "h": return 63;
+    case "j": return 67;
+    case "k": return 72;
+    default: return 0;
+  }
+}
+
+export function waveName(w: u8): string {
+  switch (w) {
+    case WAVE_SAW: return "saw";
+    case WAVE_SQUARE: return "sqr";
+    case WAVE_TRI: return "tri";
+    default: return "sin";
+  }
+}
+
+export function presetByIndex(idx: i32): string {
+  switch (idx) {
+    case 0: return "acid";
+    case 1: return "arp";
+    case 2: return "ambient";
+    default: return "empty";
+  }
+}
+
+export function btnText(idx: i32, playing: boolean): string {
+  switch (idx) {
+    case 0: return playing ? "STOP" : "PLAY";
+    case 1: return "RST";
+    case 2: return "SAW";
+    case 3: return "SQR";
+    case 4: return "TRI";
+    case 5: return "SIN";
+    case 6: return "ACID";
+    case 7: return "ARP";
+    case 8: return "AMB";
+    case 9: return "CLR";
+    case 10: return "BPM-";
+    default: return "BPM+";
+  }
+}
+
+export function hitToolbar(x: f64, y: f64): i32 {
+  if (y < BTN_Y || y >= BTN_Y + BTN_H) return -1;
+  for (let i: i32 = 0; i < 12; i += 1) {
+    const bx = BTN_X0 + f64(i) * BTN_PITCH;
+    if (x >= bx && x < bx + BTN_W) return i;
+  }
+  return -1;
+}
+
+export function hitGridCell(x: f64, y: f64): GridHit {
+  if (x < GRID_X || x >= GRID_X + f64(NUM_STEPS) * COL_W || y < GRID_Y || y >= GRID_Y + 8 * ROW_H) {
+    return { col: -1, row: -1 };
+  }
+  return {
+    col: i32(Math.floor((x - GRID_X) / COL_W)),
+    row: i32(Math.floor((y - GRID_Y) / ROW_H)),
+  };
+}
+
+export function paramY(idx: i32): f64 {
+  return 232 + f64(idx) * 22;
+}
+
+export function hitParamBar(x: f64, y: f64): i32 {
+  if (x < BAR_X || x >= BAR_X + BAR_W) return -1;
+  for (let i: i32 = 0; i < 3; i += 1) {
+    const py = paramY(i);
+    if (y >= py && y < py + BAR_H) return i;
+  }
+  return -1;
+}
+
+export function clamp01(v: f64): f64 {
+  if (!Number.isFinite(v)) return 0;
+  return Math.min(1, Math.max(0, v));
+}
+
+export function paramRatioFromX(x: f64): f64 {
+  return clamp01((x - BAR_X) / BAR_W);
+}
+
+export function hitPad(x: f64, y: f64): i32 {
+  if (y < PAD_Y || y >= PAD_Y + PAD_H) return -1;
+  for (let i: i32 = 0; i < 8; i += 1) {
+    const px = PAD_X + f64(i) * PAD_PITCH;
+    if (x >= px && x < px + PAD_W) return i;
+  }
+  return -1;
+}
+
+export function applyParamRatio(session: MicroDawSession, barIdx: i32, ratio: f64): void {
+  const r = clamp01(ratio);
+  if (barIdx === 0) {
+    session.setBpm(u32(Math.round(40 + r * 200)));
+  } else if (barIdx === 1) {
+    session.setCutoff(f32(120 + r * 11880));
+  } else if (barIdx === 2) {
+    session.setGain(f32(r));
+  }
+}
+
+async function ensureAudio(session: MicroDawSession, audio: Audio, log: Log): Promise<void> {
+  const started = await session.startAudio(audio);
+  if (started.kind === "err") log.warn(started.error.message); // szigyr-equivalent[delete-stmt]: FakeAudio.open({48000,2}) succeeds cleanly unless audio host errors
+}
+
+async function renderDawFrame(
+  surface: DisplaySurface,
+  session: MicroDawSession,
+  lastStep: u8,
+  curPeak: f32,
+  history: ReadonlyArray<f32>,
+  histPos: usize,
+  flashPad: i32,
+): Promise<void> {
+  const snap = session.snapshot();
+  const bg: DisplayColor = { r: 16, g: 18, b: 22, a: 255 };
+  const panel: DisplayColor = { r: 30, g: 34, b: 42, a: 255 };
+  const accent: DisplayColor = { r: 44, g: 112, b: 226, a: 255 };
+  const green: DisplayColor = { r: 40, g: 168, b: 108, a: 255 };
+  const gold: DisplayColor = { r: 244, g: 196, b: 64, a: 255 };
+  const border: DisplayColor = { r: 58, g: 64, b: 78, a: 255 };
+  const ink: DisplayColor = { r: 232, g: 235, b: 240, a: 255 };
+
+  surface.clear(bg);
+
+  // Top toolbar buttons
+  for (let i: i32 = 0; i < 12; i += 1) {
+    const bx = BTN_X0 + f64(i) * BTN_PITCH;
+    let fill = panel;
+    if (i === 0 && snap.playing) fill = green;
+    else if (i >= 2 && i <= 5 && u8(i - 2) === snap.wave) fill = accent;
+    else if (i >= 6 && i <= 9 && presetByIndex(i - 6) === snap.preset) fill = accent;
+    surface.fillRect(bx, BTN_Y, BTN_W, BTN_H, fill);
+    surface.strokeRect(bx, BTN_Y, BTN_W, BTN_H, border);
+    surface.drawText(bx + 4, BTN_Y + 6, btnText(i, snap.playing), ink);
+  }
+
+  // Row labels & 16x8 step grid
+  for (let r: i32 = 0; r < 8; r += 1) {
+    surface.drawText(8, GRID_Y + f64(r) * ROW_H + 5, rowLabel(r), ink);
+  }
+  for (let col: i32 = 0; col < 16; col += 1) {
+    const cx = GRID_X + f64(col) * COL_W;
+    const isPlayhead = snap.playing && u8(col) === lastStep;
+    const cellNoteRow = mapStepToRow(snap.steps[usize(col)].note);
+    for (let row: i32 = 0; row < 8; row += 1) {
+      const cy = GRID_Y + f64(row) * ROW_H;
+      let colFill = col % 4 === 0 ? panel : bg;
+      if (cellNoteRow === row) colFill = isPlayhead ? gold : accent;
+      else if (isPlayhead) colFill = border;
+      surface.fillRect(cx + 1, cy + 1, COL_W - 2, ROW_H - 2, colFill);
+      surface.strokeRect(cx + 1, cy + 1, COL_W - 2, ROW_H - 2, border);
+    }
+  }
+
+  // Parameter sliders (BPM, CUT, VOL)
+  const ratios: Array<f64> = [
+    clamp01((f64(snap.bpm) - 40) / 200),
+    clamp01((f64(snap.cutoff) - 120) / 11880),
+    clamp01(f64(snap.gain)),
+  ];
+  const barLabels: Array<string> = ["BPM", "CUT", "VOL"];
+  for (let i: i32 = 0; i < 3; i += 1) {
+    const py = paramY(i);
+    surface.drawText(8, py + 2, barLabels[usize(i)], ink);
+    surface.fillRect(BAR_X, py, BAR_W, BAR_H, panel);
+    surface.fillRect(BAR_X, py, ratios[usize(i)] * BAR_W, BAR_H, accent);
+    surface.strokeRect(BAR_X, py, BAR_W, BAR_H, border);
+  }
+
+  // Peak oscilloscope bars + meter
+  surface.fillRect(SCOPE_X, SCOPE_Y, SCOPE_W, SCOPE_H, panel);
+  surface.strokeRect(SCOPE_X, SCOPE_Y, SCOPE_W, SCOPE_H, border);
+  const midY = SCOPE_Y + SCOPE_H / 2;
+  surface.drawLine(SCOPE_X + 2, midY, SCOPE_X + SCOPE_W - 2, midY, border);
+  for (let i: usize = 0; i < HIST_LEN; i += 1) {
+    const idx = (histPos + i) % HIST_LEN;
+    const barH = Math.round(clamp01(f64(history[idx])) * 24);
+    surface.fillRect(SCOPE_X + 6 + f64(i) * 16, midY - barH, 12, barH * 2, green);
+  }
+  const meterH = Math.round(clamp01(f64(curPeak)) * (SCOPE_H - 4));
+  surface.fillRect(508, SCOPE_Y, 20, SCOPE_H, panel);
+  surface.fillRect(510, SCOPE_Y + SCOPE_H - 2 - meterH, 16, meterH, green);
+  surface.strokeRect(508, SCOPE_Y, 20, SCOPE_H, border);
+
+  // Piano pads
+  for (let p: i32 = 0; p < 8; p += 1) {
+    const px = PAD_X + f64(p) * PAD_PITCH;
+    surface.fillRect(px, PAD_Y, PAD_W, PAD_H, p === flashPad ? gold : panel);
+    surface.strokeRect(px, PAD_Y, PAD_W, PAD_H, border);
+    surface.drawText(px + 6, PAD_Y + 8, padLabel(p), ink);
+  }
+
+  const peakPct = Math.round(clamp01(f64(curPeak)) * 100);
+  const audioFlag = session.isAudioOpen() ? "on" : "off";
+  surface.drawText(
+    8,
+    342,
+    `audio=${audioFlag} bpm=${snap.bpm} wave=${waveName(snap.wave)} preset=${snap.preset} step=${lastStep} peak=${peakPct}%`,
+    ink,
+  );
+  await surface.present();
+}
+
+class AudioGuard implements AsyncDisposable {
+  private readonly session: MicroDawSession;
+
+  constructor(session: MicroDawSession) {
+    this.session = session;
+  }
+
+  async disposeAsync(): Promise<void> {
+    await this.session.stopAudio();
+  }
+}
+
+export async function runMicroDawSession(
+  session: MicroDawSession,
+  display: Display,
+  audio: Audio,
+  clock: Clock,
+  log: Log,
+  width: u32,
+  height: u32,
+  maxFrames: usize,
+  autoplay: boolean,
+): Promise<Result<DawRunSummary, IoError>> {
+  const openRes = await display.open({ title: "Szigyr MicroDAW", width, height });
+  if (openRes.kind === "err") return err(openRes.error);
+  await using surface = openRes.value;
+
+  if (autoplay) {
+    await ensureAudio(session, audio, log);
+    session.setPlaying(true);
+  }
+
+  const history: Array<f32> = [];
+  // szigyr-equivalent[< -> <=]: renderDawFrame accesses modulo HIST_LEN (16), leaving extra slots unread
+  for (let i: usize = 0; i < HIST_LEN; i += 1) history.push(f32(0));
+
+  // szigyr-equivalent[0 -> 1]: circular buffer offsets shift identically modulo HIST_LEN
+  let histPos: usize = 0;
+  let lastStep: u8 = 0;
+  let curPeak: f32 = f32(0);
+  let flashPad: i32 = -1;
+  let dragParam: i32 = -1;
+  let frames: usize = 0;
+  let running = true;
+
+  while (running) {
+    const tel: TelemetrySnapshot | null = session.pollTelemetry();
+    if (tel !== null) {
+      lastStep = tel.step;
+      curPeak = tel.peak;
+    }
+    history[histPos] = curPeak;
+    histPos = (histPos + 1) % HIST_LEN;
+
+    await renderDawFrame(surface, session, lastStep, curPeak, history, histPos, flashPad);
+    flashPad = -1;
+    frames += 1;
+    if (maxFrames > 0) {
+      if (autoplay && frames < maxFrames) await clock.sleep(15);
+      if (frames >= maxFrames) break;
+    }
+
+    const events = surface.pollEvents();
+    for (const ev of events) {
+      switch (ev.kind) {
+        case "pointerDown": {
+          if (ev.button === 0) {
+            const btn = hitToolbar(ev.x, ev.y);
+            if (btn === 0) {
+              if (!session.snapshot().playing) {
+                await ensureAudio(session, audio, log);
+                session.setPlaying(true);
+              } else {
+                session.setPlaying(false);
+              }
+            } else if (btn === 1) {
+              session.resetSequencer();
+              lastStep = 0;
+            // szigyr-equivalent[num -> 0]: 0 and 1 matched earlier; hitToolbar returns -1 or 0..11
+            } else if (btn >= 2 && btn <= 5) {
+              session.setWave(u8(btn - 2));
+            // szigyr-equivalent[num -> 0]: 0..5 matched earlier; hitToolbar returns -1 or 0..11
+            } else if (btn >= 6 && btn <= 9) {
+              session.loadPreset(presetByIndex(btn - 6));
+            } else if (btn === 10) {
+              session.setBpm(u32(session.snapshot().bpm) - 5);
+            } else if (btn === 11) {
+              session.setBpm(u32(session.snapshot().bpm) + 5);
+            } else {
+              const cell = hitGridCell(ev.x, ev.y);
+              if (cell.col >= 0) {
+                const snap = session.snapshot();
+                const curRow = mapStepToRow(snap.steps[usize(cell.col)].note);
+                // szigyr-equivalent[0 -> 1]: engine setStep ignores velocity when note === 0
+                if (curRow === cell.row) session.setStep(usize(cell.col), 0, f32(0));
+                else session.setStep(usize(cell.col), rowNote(cell.row), f32(0.85));
+              } else {
+                const bar = hitParamBar(ev.x, ev.y);
+                if (bar >= 0) {
+                  dragParam = bar;
+                  applyParamRatio(session, bar, paramRatioFromX(ev.x));
+                } else {
+                  const p = hitPad(ev.x, ev.y);
+                  if (p >= 0) {
+                    await ensureAudio(session, audio, log);
+                    session.triggerNote(padNote(p), f32(0.9));
+                    flashPad = p;
+                  }
+                }
+              }
+            }
+          }
+          break;
+        }
+        case "pointerMove": {
+          if (dragParam >= 0 && (ev.buttons & 1) !== 0) {
+            applyParamRatio(session, dragParam, paramRatioFromX(ev.x));
+          }
+          break;
+        }
+        case "pointerUp": {
+          if (ev.button === 0) dragParam = -1;
+          break;
+        }
+        case "wheel": {
+          const bar = hitParamBar(ev.x, ev.y);
+          // szigyr-equivalent[if -> true]: applyParamRatio ignores bar < 0
+          if (bar >= 0) {
+            const snap = session.snapshot();
+            const cur = bar === 0
+              ? (f64(snap.bpm) - 40) / 200
+              : bar === 1
+                ? (f64(snap.cutoff) - 120) / 11880
+                : f64(snap.gain);
+            if (ev.dy < 0) applyParamRatio(session, bar, cur + 0.05);
+            else if (ev.dy > 0) applyParamRatio(session, bar, cur - 0.05);
+          }
+          break;
+        }
+        case "keyDown": {
+          switch (ev.key) {
+            case "Space":
+            case "p":
+              if (!session.snapshot().playing) {
+                await ensureAudio(session, audio, log);
+                session.setPlaying(true);
+              } else {
+                session.setPlaying(false);
+              }
+              break;
+            case "r":
+              session.resetSequencer();
+              lastStep = 0;
+              break;
+            case "1":
+              session.setWave(WAVE_SAW);
+              break;
+            case "2":
+              session.setWave(WAVE_SQUARE);
+              break;
+            case "3":
+              session.setWave(WAVE_TRI);
+              break;
+            case "4":
+              session.setWave(WAVE_SINE);
+              break;
+            case "ArrowUp":
+              session.setBpm(u32(session.snapshot().bpm) + 5);
+              break;
+            case "ArrowDown":
+              session.setBpm(u32(session.snapshot().bpm) - 5);
+              break;
+            case "Escape":
+              running = false;
+              break;
+            default: {
+              const note = padNoteForKey(ev.key);
+              if (note !== 0) {
+                await ensureAudio(session, audio, log);
+                session.triggerNote(note, f32(0.9));
+              }
+              break;
+            }
+          }
+          break;
+        }
+        case "keyUp":
+          break;
+        case "close":
+          running = false;
+          break;
+      }
+      if (!running) break;
+    }
+  }
+
+  const finalPeakPct = Math.round(clamp01(f64(curPeak)) * 100);
+  const audioOpen = session.isAudioOpen();
+  log.info(`microdaw:frames=${frames}:audio=${audioOpen}:step=${lastStep}:peak=${finalPeakPct}`);
+  return ok({ frames, audioOpen, lastStep, peak: curPeak, snapshot: session.snapshot() });
+}
+
+export async function runMicroDawStudio(
+  alloc: Alloc,
+  display: Display,
+  audio: Audio,
+  clock: Clock,
+  log: Log,
+  width: u32,
+  height: u32,
+  maxFrames: usize,
+  autoplay: boolean,
+): Promise<Result<DawRunSummary, IoError>> {
+  const session = createSession(alloc);
+  await using _audioGuard = new AudioGuard(session);
+  return await runMicroDawSession(session, display, audio, clock, log, width, height, maxFrames, autoplay);
+}
+
+export async function runMicroDawApp(
+  alloc: Alloc,
+  display: Display,
+  audio: Audio,
+  clock: Clock,
+  log: Log,
+  maxFrames: usize,
+  autoplay: boolean,
+): Promise<Result<DawRunSummary, IoError>> {
+  return await runMicroDawStudio(alloc, display, audio, clock, log, SURF_W, SURF_H, maxFrames, autoplay);
+}
+
+export async function main(sys: System): Promise<void> {
+  const parsed = parseDawArgs(sys.proc.args());
+  const res = await runMicroDawApp(
+    sys.alloc,
+    sys.display,
+    sys.audio,
+    sys.clock,
+    sys.log,
+    parsed.frames,
+    parsed.autoplay,
+  );
+  if (res.kind === "err") {
+    sys.log.error(res.error.message);
+    sys.proc.setExitCode(1);
+  }
+}
+
+test("MicroDAW pure geometry, mapping, clamping, and param helpers", (t: Test) => {
+  const a0 = parseDawArgs(["--frames=0", "--frames=-1", "--frames=bad", "1234567892"]);
+  t.eq(a0.frames, usize(0));
+  t.eq(a0.autoplay, false);
+  const a1 = parseDawArgs(["--autoplay", "--frames=2", "--frames=0", "--frames=3.8"]);
+  t.eq(a1.frames, usize(3));
+  t.eq(a1.autoplay, true);
+  t.eq(parseDawArgs(["--frames=2", "--frames=0"]).frames, usize(2));
+  t.eq(parseDawArgs(["--frames=1"]).frames, usize(1));
+
+  t.eq(rowNote(0), u8(72));
+  t.eq(rowNote(1), u8(70));
+  t.eq(rowNote(2), u8(67));
+  t.eq(rowNote(3), u8(65));
+  t.eq(rowNote(4), u8(63));
+  t.eq(rowNote(5), u8(60));
+  t.eq(rowNote(6), u8(55));
+  t.eq(rowNote(7), u8(48));
+  t.eq(rowNote(8), u8(0));
+
+  t.eq(rowLabel(0), "C5");
+  t.eq(rowLabel(1), "Bb4");
+  t.eq(rowLabel(2), "G4");
+  t.eq(rowLabel(3), "F4");
+  t.eq(rowLabel(4), "Eb4");
+  t.eq(rowLabel(5), "C4");
+  t.eq(rowLabel(6), "G3");
+  t.eq(rowLabel(7), "C3");
+
+  t.eq(mapStepToRow(0), -1);
+  t.eq(mapStepToRow(72), 0);
+  t.eq(mapStepToRow(71), 0);
+  t.eq(mapStepToRow(70), 1);
+  t.eq(mapStepToRow(48), 7);
+  t.eq(mapStepToRow(20), 7);
+  t.eq(mapStepToRow(59), 5);
+  t.eq(mapStepToRow(51), 7);
+  t.eq(mapStepToRow(52), 6);
+  t.eq(mapStepToRow(36), 7);
+
+  t.eq(padNote(0), u8(48));
+  t.eq(padNote(1), u8(51));
+  t.eq(padNote(2), u8(55));
+  t.eq(padNote(3), u8(58));
+  t.eq(padNote(4), u8(60));
+  t.eq(padNote(5), u8(63));
+  t.eq(padNote(6), u8(67));
+  t.eq(padNote(7), u8(72));
+
+  t.eq(padLabel(0), "C3 A");
+  t.eq(padLabel(1), "Eb S");
+  t.eq(padLabel(2), "G3 D");
+  t.eq(padLabel(3), "Bb F");
+  t.eq(padLabel(4), "C4 G");
+  t.eq(padLabel(5), "Eb H");
+  t.eq(padLabel(6), "G4 J");
+  t.eq(padLabel(7), "C5 K");
+
+  t.eq(padNoteForKey("a"), u8(48));
+  t.eq(padNoteForKey("s"), u8(51));
+  t.eq(padNoteForKey("d"), u8(55));
+  t.eq(padNoteForKey("f"), u8(58));
+  t.eq(padNoteForKey("g"), u8(60));
+  t.eq(padNoteForKey("h"), u8(63));
+  t.eq(padNoteForKey("j"), u8(67));
+  t.eq(padNoteForKey("k"), u8(72));
+  t.eq(padNoteForKey("q"), u8(0));
+
+  t.eq(waveName(WAVE_SAW), "saw");
+  t.eq(waveName(WAVE_SQUARE), "sqr");
+  t.eq(waveName(WAVE_TRI), "tri");
+  t.eq(waveName(WAVE_SINE), "sin");
+  t.eq(presetByIndex(0), "acid");
+  t.eq(presetByIndex(1), "arp");
+  t.eq(presetByIndex(2), "ambient");
+  t.eq(presetByIndex(3), "empty");
+
+  t.eq(hitToolbar(6, 5), -1);
+  t.eq(hitToolbar(6, 30), -1);
+  t.eq(hitToolbar(5, 6), -1);
+  t.eq(hitToolbar(6, 6), 0);
+  t.eq(hitToolbar(47, 29), 0);
+  t.eq(hitToolbar(48, 6), -1);
+  t.eq(hitToolbar(49, 12), -1);
+  t.eq(hitToolbar(50, 12), 1);
+  t.eq(hitToolbar(94, 12), 2);
+  t.eq(hitToolbar(270, 12), 6);
+  t.eq(hitToolbar(446, 12), 10);
+  t.eq(hitToolbar(490, 12), 11);
+  t.eq(hitToolbar(531, 29), 11);
+  t.eq(hitToolbar(532, 12), -1);
+  t.eq(hitToolbar(535, 12), -1);
+
+  t.eq(hitGridCell(47, 44).col, -1);
+  t.eq(hitGridCell(47, 44).row, -1);
+  t.eq(hitGridCell(528, 44).col, -1);
+  t.eq(hitGridCell(48, 43).col, -1);
+  t.eq(hitGridCell(48, 220).col, -1);
+  const g0 = hitGridCell(48, 44);
+  t.eq(g0.col, 0);
+  t.eq(g0.row, 0);
+  const gMid = hitGridCell(78, 66);
+  t.eq(gMid.col, 1);
+  t.eq(gMid.row, 1);
+  const gEnd = hitGridCell(527, 219);
+  t.eq(gEnd.col, 15);
+  t.eq(gEnd.row, 7);
+
+  t.eq(hitParamBar(47, 232), -1);
+  t.eq(hitParamBar(208, 232), -1);
+  t.eq(hitParamBar(48, 231), -1);
+  t.eq(hitParamBar(48, 248), -1);
+  t.eq(hitParamBar(48, 292), -1);
+  t.eq(hitParamBar(48, 232), 0);
+  t.eq(hitParamBar(207, 247), 0);
+  t.eq(hitParamBar(120, 254), 1);
+  t.eq(hitParamBar(120, 269), 1);
+  t.eq(hitParamBar(207, 276), 2);
+  t.eq(hitParamBar(207, 291), 2);
+  t.eq(clamp01(0 / 0), 0);
+  t.eq(paramRatioFromX(0), 0);
+  t.eq(paramRatioFromX(128), 0.5);
+  t.eq(paramRatioFromX(400), 1);
+
+  t.eq(hitPad(48, 303), -1);
+  t.eq(hitPad(48, 332), -1);
+  t.eq(hitPad(47, 304), -1);
+  t.eq(hitPad(48, 304), 0);
+  t.eq(hitPad(103, 331), 0);
+  t.eq(hitPad(104, 304), -1);
+  t.eq(hitPad(468, 320), 7);
+  t.eq(hitPad(523, 331), 7);
+  t.eq(hitPad(524, 320), -1);
+  t.eq(hitPad(530, 320), -1);
+
+  const alloc = TestAlloc.create();
+  const s = createSession(alloc);
+  applyParamRatio(s, 0, 0.5);
+  t.eq(s.snapshot().bpm, u8(140));
+  applyParamRatio(s, 1, 0.5);
+  t.eq(s.snapshot().cutoff, f32(6060));
+  applyParamRatio(s, 2, 0.25);
+  t.eq(s.snapshot().gain, f32(0.25));
+  applyParamRatio(s, 3, 0.9);
+  t.eq(s.snapshot().gain, f32(0.25));
+});
+
+test("fast 1x1 baseline smoke", async (t: Test) => {
+  const alloc = TestAlloc.create();
+  const display = FakeDisplay.create();
+  const audio = FakeAudio.create();
+  const clock = FakeClock.create(0);
+  const log = MemoryLog.create();
+  const r = await runMicroDawStudio(alloc, display, audio, clock, log, 1, 1, 1, false);
+  t.eq(r.kind, "ok");
+});
+
+test("MicroDAW pointer toolbar, grid edit, slider drag, and wheel controls", async (t: Test) => {
+  const alloc = TestAlloc.create();
+  const audio = FakeAudio.create();
+  const clock = FakeClock.create(0);
+  const log = MemoryLog.create();
+
+  const d1 = FakeDisplay.create();
+  d1.pushEvent({ kind: "pointerDown", x: 12, y: 12, button: 0 }); // PLAY ON
+  d1.pushEvent({ kind: "pointerDown", x: 144, y: 12, button: 0 }); // SQR wave (btn 3)
+  d1.pushEvent({ kind: "pointerDown", x: 186, y: 12, button: 2 }); // right click TRI MUST be ignored (keeps SQR)
+  d1.pushEvent({ kind: "pointerDown", x: 318, y: 12, button: 0 }); // ARP preset (btn 7)
+  d1.pushEvent({ kind: "pointerDown", x: 52, y: 198, button: 0 }); // toggle OFF step 0 (arp has 48 at row 7)
+  d1.pushEvent({ kind: "pointerDown", x: 82, y: 50, button: 0 }); // toggle ON step 1 -> row 0 (note=72, vel=0.85)
+  d1.pushEvent({ kind: "pointerDown", x: 128, y: 260, button: 0 }); // direct click CUT slider -> 6060 (no drag overwrite)
+  d1.pushEvent({ kind: "pointerUp", x: 128, y: 260, button: 0 });
+  d1.pushEvent({ kind: "pointerDown", x: 128, y: 240, button: 0 }); // drag BPM slider -> 140
+  d1.pushEvent({ kind: "pointerUp", x: 168, y: 240, button: 2 }); // right pointerUp -> keeps drag active
+  d1.pushEvent({ kind: "pointerMove", x: 168, y: 240, buttons: 1 }); // drag BPM slider -> 190
+  d1.pushEvent({ kind: "pointerMove", x: 48, y: 240, buttons: 0 }); // buttons=0 at 48 -> must NOT drop to 40
+  d1.pushEvent({ kind: "pointerUp", x: 168, y: 240, button: 0 }); // ends drag
+  d1.pushEvent({ kind: "pointerMove", x: 48, y: 240, buttons: 1 }); // drag stopped -> stays 190
+  d1.pushEvent({ kind: "pointerDown", x: 496, y: 12, button: 0 }); // BPM+ (btn 11) -> 195
+  d1.pushEvent({ kind: "close" });
+  d1.pushEvent({ kind: "pointerDown", x: 406, y: 12, button: 0 }); // trailing ignored
+  const r1 = await runMicroDawStudio(alloc, d1, audio, clock, log, 1, 1, 0, false);
+  t.eq(r1.kind, "ok");
+  if (r1.kind === "ok") {
+    t.eq(r1.value.audioOpen, true);
+    t.eq(r1.value.snapshot.playing, true);
+    t.eq(r1.value.snapshot.wave, WAVE_SQUARE);
+    t.eq(r1.value.snapshot.preset, "arp");
+    t.eq(r1.value.snapshot.bpm, u8(195));
+    t.eq(r1.value.snapshot.cutoff, f32(6060));
+    t.eq(r1.value.snapshot.steps[0].note, u8(0));
+    t.eq(r1.value.snapshot.steps[0].vel, f32(0));
+    t.eq(r1.value.snapshot.steps[1].note, u8(72));
+    t.eq(r1.value.snapshot.steps[1].vel, f32(0.85));
+  }
+
+  // Boundary buttons & wheel on BPM (bar=0)
+  const dB1 = FakeDisplay.create();
+  dB1.pushEvent({ kind: "keyDown", key: "Space", repeat: false, shift: false, ctrl: false, alt: false }); // playing=true
+  dB1.pushEvent({ kind: "pointerDown", x: 12, y: 12, button: 0 }); // STOP off (btn 0)
+  dB1.pushEvent({ kind: "pointerDown", x: 230, y: 12, button: 0 }); // SIN (btn 5)
+  dB1.pushEvent({ kind: "pointerDown", x: 406, y: 12, button: 0 }); // CLR (btn 9 -> empty)
+  dB1.pushEvent({ kind: "pointerDown", x: 452, y: 12, button: 0 }); // BPM- (btn 10 -> 115)
+  dB1.pushEvent({ kind: "wheel", x: 128, y: 240, dx: 0, dy: -120 }); // wheel on bar 0 (BPM 115 -> 125)
+  const rB1 = await runMicroDawStudio(alloc, dB1, audio, clock, log, 1, 1, 2, false);
+  t.eq(rB1.kind, "ok");
+  if (rB1.kind === "ok") {
+    t.eq(rB1.value.snapshot.playing, false);
+    t.eq(rB1.value.snapshot.wave, WAVE_SINE);
+    t.eq(rB1.value.snapshot.preset, "empty");
+    t.eq(rB1.value.snapshot.bpm, u8(125));
+  }
+
+  // SAW/ACID boundary buttons + wheel on CUT (dy:0/-120) and VOL (dy:1)
+  const dB2 = FakeDisplay.create();
+  dB2.pushEvent({ kind: "keyDown", key: "4", repeat: false, shift: false, ctrl: false, alt: false }); // SINE first
+  dB2.pushEvent({ kind: "pointerDown", x: 406, y: 12, button: 0 }); // empty first
+  dB2.pushEvent({ kind: "pointerDown", x: 100, y: 12, button: 0 }); // SAW (btn 2)
+  dB2.pushEvent({ kind: "pointerDown", x: 276, y: 12, button: 0 }); // ACID (btn 6)
+  dB2.pushEvent({ kind: "wheel", x: 128, y: 260, dx: 0, dy: 0 }); // dy=0 -> no-op
+  dB2.pushEvent({ kind: "wheel", x: 128, y: 260, dx: 0, dy: -120 }); // CUT +5% -> ~2994
+  dB2.pushEvent({ kind: "wheel", x: 128, y: 282, dx: 0, dy: 1 }); // VOL -5% (dy=1 tests >0 vs >1)
+  const rB2 = await runMicroDawStudio(alloc, dB2, audio, clock, log, 1, 1, 2, false);
+  t.eq(rB2.kind, "ok");
+  if (rB2.kind === "ok") {
+    t.eq(rB2.value.snapshot.wave, WAVE_SAW);
+    t.eq(rB2.value.snapshot.preset, "acid");
+    t.ok(rB2.value.snapshot.cutoff > f32(2900) && rB2.value.snapshot.cutoff < f32(3050));
+    t.ok(rB2.value.snapshot.gain > f32(0.58) && rB2.value.snapshot.gain < f32(0.62));
+  }
+});
+
+test("MicroDAW keyboard shortcuts and idle pointer move guards", async (t: Test) => {
+  const alloc = TestAlloc.create();
+  const audio = FakeAudio.create();
+  const clock = FakeClock.create(0);
+  const log = MemoryLog.create();
+
+  const dK1 = FakeDisplay.create();
+  dK1.pushEvent({ kind: "pointerMove", x: 208, y: 240, buttons: 1 }); // dragParam=-1 must ignore
+  dK1.pushEvent({ kind: "keyDown", key: "Space", repeat: false, shift: false, ctrl: false, alt: false }); // playing=true
+  dK1.pushEvent({ kind: "keyDown", key: "3", repeat: false, shift: false, ctrl: false, alt: false }); // TRI
+  dK1.pushEvent({ kind: "keyDown", key: "ArrowUp", repeat: false, shift: false, ctrl: false, alt: false }); // 125
+  dK1.pushEvent({ kind: "keyDown", key: "Escape", repeat: false, shift: false, ctrl: false, alt: false });
+  dK1.pushEvent({ kind: "keyDown", key: "1", repeat: false, shift: false, ctrl: false, alt: false }); // trailing ignored
+  const rK1 = await runMicroDawStudio(alloc, dK1, audio, clock, log, 1, 1, 0, false);
+  t.eq(rK1.kind, "ok");
+  if (rK1.kind === "ok") {
+    t.eq(rK1.value.frames, usize(1));
+    t.eq(rK1.value.audioOpen, true);
+    t.eq(rK1.value.snapshot.playing, true);
+    t.eq(rK1.value.snapshot.wave, WAVE_TRI);
+    t.eq(rK1.value.snapshot.bpm, u8(125));
+  }
+
+  const dKp = FakeDisplay.create();
+  dKp.pushEvent({ kind: "keyDown", key: "p", repeat: false, shift: false, ctrl: false, alt: false }); // p ON
+  const rKp = await runMicroDawStudio(alloc, dKp, audio, clock, log, 1, 1, 2, false);
+  t.eq(rKp.kind, "ok");
+  if (rKp.kind === "ok") {
+    t.eq(rKp.value.audioOpen, true);
+    t.eq(rKp.value.snapshot.playing, true);
+  }
+
+  const dK2 = FakeDisplay.create();
+  dK2.pushEvent({ kind: "keyDown", key: "p", repeat: false, shift: false, ctrl: false, alt: false }); // p ON
+  dK2.pushEvent({ kind: "keyDown", key: "p", repeat: false, shift: false, ctrl: false, alt: false }); // p OFF
+  dK2.pushEvent({ kind: "keyDown", key: "4", repeat: false, shift: false, ctrl: false, alt: false }); // SINE
+  dK2.pushEvent({ kind: "keyDown", key: "1", repeat: false, shift: false, ctrl: false, alt: false }); // SAW
+  dK2.pushEvent({ kind: "keyDown", key: "ArrowDown", repeat: false, shift: false, ctrl: false, alt: false }); // 115
+  const rK2 = await runMicroDawStudio(alloc, dK2, audio, clock, log, 1, 1, 2, false);
+  t.eq(rK2.kind, "ok");
+  if (rK2.kind === "ok") {
+    t.eq(rK2.value.snapshot.playing, false);
+    t.eq(rK2.value.snapshot.wave, WAVE_SAW);
+    t.eq(rK2.value.snapshot.bpm, u8(115));
+  }
+
+  const dK3 = FakeDisplay.create();
+  dK3.pushEvent({ kind: "keyDown", key: "2", repeat: false, shift: false, ctrl: false, alt: false }); // SQR
+  dK3.pushEvent({ kind: "keyDown", key: "q", repeat: false, shift: false, ctrl: false, alt: false }); // unmapped key -> audio off
+  dK3.pushEvent({ kind: "keyUp", key: "a", shift: false, ctrl: false, alt: false });
+  const rK3 = await runMicroDawStudio(alloc, dK3, audio, clock, log, 1, 1, 2, false);
+  t.eq(rK3.kind, "ok");
+  if (rK3.kind === "ok") {
+    t.eq(rK3.value.audioOpen, false);
+    t.eq(rK3.value.snapshot.wave, WAVE_SQUARE);
+  }
+
+  const dK4 = FakeDisplay.create();
+  dK4.pushEvent({ kind: "keyDown", key: "4", repeat: false, shift: false, ctrl: false, alt: false }); // SINE
+  dK4.pushEvent({ kind: "keyDown", key: "a", repeat: false, shift: false, ctrl: false, alt: false }); // key 'a' ensures audio
+  const rK4 = await runMicroDawStudio(alloc, dK4, audio, clock, log, 1, 1, 2, false);
+  t.eq(rK4.kind, "ok");
+  if (rK4.kind === "ok") {
+    t.eq(rK4.value.audioOpen, true);
+    t.eq(rK4.value.snapshot.wave, WAVE_SINE);
+  }
+  const logs = log.entries();
+  t.ok(logs[logs.length - 1].message.includes("microdaw:frames=2:"));
+});
+
+test("MicroDAW live DSP pad trigger and sequencer reset sync", async (t: Test) => {
+  const alloc = TestAlloc.create();
+  const audio = FakeAudio.create();
+  const clock = FakeClock.create(0);
+  const log = MemoryLog.create();
+
+  const sTrig = createSession(alloc);
+  t.eq((await sTrig.startAudio(audio)).kind, "ok");
+  const dTrigPad = FakeDisplay.create();
+  dTrigPad.pushEvent({ kind: "pointerDown", x: 52, y: 310, button: 0 });
+  await runMicroDawSession(sTrig, dTrigPad, audio, clock, log, 1, 1, 2, false);
+  t.eq(audio.renderFrames(1024).length, usize(2048));
+  const telPad = sTrig.pollTelemetry();
+  t.ok(telPad !== null && telPad.peak > f32(0.1));
+  await sTrig.stopAudio();
+
+  const sTrigKey = createSession(alloc);
+  t.eq((await sTrigKey.startAudio(audio)).kind, "ok");
+  const dTrigKey = FakeDisplay.create();
+  dTrigKey.pushEvent({ kind: "keyDown", key: "a", repeat: false, shift: false, ctrl: false, alt: false });
+  const rTrigKey = await runMicroDawSession(sTrigKey, dTrigKey, audio, clock, log, 1, 1, 2, false);
+  t.eq(rTrigKey.kind, "ok");
+  t.eq(audio.renderFrames(1024).length, usize(2048));
+  const telKey = sTrigKey.pollTelemetry();
+  t.ok(telKey !== null && telKey.peak > f32(0.1));
+  await sTrigKey.stopAudio();
+
+  const sRstBtn = createSession(alloc);
+  t.eq((await sRstBtn.startAudio(audio)).kind, "ok");
+  sRstBtn.setBpm(240);
+  sRstBtn.setPlaying(true);
+  t.eq(audio.renderFrames(3072).length, usize(6144));
+  const dRstBtn = FakeDisplay.create();
+  dRstBtn.pushEvent({ kind: "pointerDown", x: 56, y: 12, button: 0 }); // RST
+  const rRstBtn = await runMicroDawSession(sRstBtn, dRstBtn, audio, clock, log, 1, 1, 2, false);
+  t.eq(rRstBtn.kind, "ok");
+  if (rRstBtn.kind === "ok") t.eq(rRstBtn.value.lastStep, u8(0));
+  t.eq(audio.renderFrames(1024).length, usize(2048));
+  const telRstBtn = sRstBtn.pollTelemetry();
+  t.ok(telRstBtn !== null && telRstBtn.step === u8(0));
+  await sRstBtn.stopAudio();
+
+  const sRstKey = createSession(alloc);
+  t.eq((await sRstKey.startAudio(audio)).kind, "ok");
+  sRstKey.setBpm(240);
+  sRstKey.setPlaying(true);
+  t.eq(audio.renderFrames(3072).length, usize(6144));
+  const dRstKey = FakeDisplay.create();
+  dRstKey.pushEvent({ kind: "keyDown", key: "r", repeat: false, shift: false, ctrl: false, alt: false });
+  const rRstKey = await runMicroDawSession(sRstKey, dRstKey, audio, clock, log, 1, 1, 2, false);
+  t.eq(rRstKey.kind, "ok");
+  if (rRstKey.kind === "ok") t.eq(rRstKey.value.lastStep, u8(0));
+  t.eq(audio.renderFrames(1024).length, usize(2048));
+  const telRstKey = sRstKey.pollTelemetry();
+  t.ok(telRstKey !== null && telRstKey.step === u8(0));
+  await sRstKey.stopAudio();
+});
+
+test("AudioGuard, autoplay, and FakeDisplay pad flash lifecycle", async (t: Test) => {
+  const alloc = TestAlloc.create();
+  const audio = FakeAudio.create();
+  const clock = FakeClock.create(0);
+  const log = MemoryLog.create();
+
+  const sGuard = createSession(alloc);
+  if (true) {
+    await using _g = new AudioGuard(sGuard);
+    t.eq((await sGuard.startAudio(audio)).kind, "ok");
+    t.ok(sGuard.isAudioOpen());
+  }
+  t.ok(!sGuard.isAudioOpen());
+
+  // Fresh autoplay=true opens audio & sets playing=true cleanly on 1x1 display
+  const dAuto = FakeDisplay.create();
+  const rAuto = await runMicroDawStudio(alloc, dAuto, audio, clock, log, 1, 1, 1, true);
+  t.eq(rAuto.kind, "ok");
+  if (rAuto.kind === "ok") {
+    t.eq(rAuto.value.audioOpen, true);
+    t.eq(rAuto.value.snapshot.playing, true);
+  }
+  t.eq(clock.nowMs(), 0); // single frame does not sleep
+
+  const dPadMiss = FakeDisplay.create();
+  dPadMiss.pushEvent({ kind: "pointerDown", x: 10, y: 310, button: 0 }); // outside pads/grid/bars
+  const rPadMiss = await runMicroDawStudio(alloc, dPadMiss, audio, clock, log, 1, 1, 2, false);
+  t.eq(rPadMiss.kind, "ok");
+  if (rPadMiss.kind === "ok") t.eq(rPadMiss.value.audioOpen, false);
+
+  const dPadFlash = FakeDisplay.create();
+  dPadFlash.pushEvent({ kind: "pointerDown", x: 52, y: 310, button: 0 }); // PAD 0
+  const rPadFlash = await runMicroDawApp(alloc, dPadFlash, audio, clock, log, 2, false);
+  t.eq(rPadFlash.kind, "ok");
+  if (rPadFlash.kind === "ok") t.eq(rPadFlash.value.audioOpen, true);
+  t.eq(dPadFlash.pixelAt(52, 308).r, u8(244));
+  t.eq(dPadFlash.pixelAt(52, 308).g, u8(196));
+  t.eq(dPadFlash.pixelAt(52, 308).b, u8(64));
+
+  const dPadClear = FakeDisplay.create();
+  dPadClear.pushEvent({ kind: "pointerDown", x: 52, y: 310, button: 0 }); // frame 1 flash, frame 2 cleared
+  const rPadClear = await runMicroDawApp(alloc, dPadClear, audio, clock, log, 3, false);
+  t.eq(rPadClear.kind, "ok");
+  t.eq(dPadClear.pixelAt(52, 308).r, u8(30));
+});
+
+test("FakeDisplay renders exact RGBA palette, grid margins, sliders, scope, meter, and texts", async (t: Test) => {
+  const alloc = TestAlloc.create();
+  const display = FakeDisplay.create();
+  const audio = FakeAudio.create();
+  const clock = FakeClock.create(0);
+  const log = MemoryLog.create();
+
+  const eqRgba = (c: DisplayColor, r: u8, g: u8, b: u8, a: u8): void => {
+    t.eq(c.r, r);
+    t.eq(c.g, g);
+    t.eq(c.b, b);
+    t.eq(c.a, a);
+  };
+
+  // Open error path
+  const bad = await runMicroDawStudio(alloc, display, audio, clock, log, 0, 360, 1, false);
+  t.eq(bad.kind, "err");
+
+  // Render live DSP audio frames so pollTelemetry() populates scope bars, peak meter, and playhead
+  const s = createSession(alloc);
+  const stRes = await s.startAudio(audio);
+  t.eq(stRes.kind, "ok");
+  s.setPlaying(true);
+  t.eq(audio.renderFrames(1024).length, usize(2048));
+
+  // First 2 frames: newest peak at i=15 (x=470..482), i=14 (x=454..466), i=0 still empty
+  const res = await runMicroDawSession(s, display, audio, clock, log, 540, 360, 2, true);
+  t.eq(res.kind, "ok");
+  t.eq(display.presentCount(), usize(2));
+  t.eq(clock.nowMs(), 15);
+  let resPeak = f32(0);
+  if (res.kind === "ok") {
+    t.eq(res.value.frames, usize(2));
+    t.eq(res.value.audioOpen, true);
+    t.eq(res.value.lastStep, u8(0));
+    t.ok(res.value.peak > f32(0.1) && res.value.peak < f32(0.8));
+    resPeak = res.value.peak;
+  }
+  const wantPct = Math.round(clamp01(f64(resPeak)) * 100);
+  const logList = log.entries();
+  t.ok(logList[logList.length - 1].message.includes(`step=0:peak=${wantPct}`));
+
+  // Palette & margins (bg={16,18,22,255})
+  eqRgba(display.pixelAt(0, 0), u8(16), u8(18), u8(22), u8(255));
+  eqRgba(display.pixelAt(535, 3), u8(16), u8(18), u8(22), u8(255));
+  eqRgba(display.pixelAt(529, 45), u8(16), u8(18), u8(22), u8(255)); // col < 16
+  eqRgba(display.pixelAt(49, 221), u8(16), u8(18), u8(22), u8(255)); // row < 8
+  eqRgba(display.pixelAt(530, 310), u8(16), u8(18), u8(22), u8(255)); // p < 8
+
+  // Toolbar buttons: PLAY green, RST panel, SAW & ACID accent, border
+  eqRgba(display.pixelAt(12, 12), u8(40), u8(168), u8(108), u8(255));
+  eqRgba(display.pixelAt(6, 6), u8(58), u8(64), u8(78), u8(255));
+  eqRgba(display.pixelAt(47, 29), u8(58), u8(64), u8(78), u8(255));
+  eqRgba(display.pixelAt(56, 12), u8(30), u8(34), u8(42), u8(255));
+  eqRgba(display.pixelAt(100, 12), u8(44), u8(112), u8(226), u8(255));
+  eqRgba(display.pixelAt(276, 12), u8(44), u8(112), u8(226), u8(255));
+  eqRgba(display.pixelAt(496, 12), u8(30), u8(34), u8(42), u8(255));
+
+  // Step grid 1px margins, cell borders & interior colors
+  eqRgba(display.pixelAt(48, 204), u8(16), u8(18), u8(22), u8(255));
+  eqRgba(display.pixelAt(52, 198), u8(16), u8(18), u8(22), u8(255));
+  eqRgba(display.pixelAt(76, 204), u8(58), u8(64), u8(78), u8(255));
+  eqRgba(display.pixelAt(77, 204), u8(16), u8(18), u8(22), u8(255));
+  eqRgba(display.pixelAt(52, 218), u8(58), u8(64), u8(78), u8(255));
+  eqRgba(display.pixelAt(52, 219), u8(16), u8(18), u8(22), u8(255));
+  eqRgba(display.pixelAt(52, 204), u8(244), u8(196), u8(64), u8(255));
+  eqRgba(display.pixelAt(52, 48), u8(58), u8(64), u8(78), u8(255));
+  eqRgba(display.pixelAt(49, 199), u8(58), u8(64), u8(78), u8(255));
+  eqRgba(display.pixelAt(76, 217), u8(58), u8(64), u8(78), u8(255));
+  eqRgba(display.pixelAt(112, 204), u8(44), u8(112), u8(226), u8(255));
+  eqRgba(display.pixelAt(172, 48), u8(30), u8(34), u8(42), u8(255));
+  eqRgba(display.pixelAt(82, 48), u8(16), u8(18), u8(22), u8(255));
+
+  // Parameter sliders (BPM=120 -> x=112, CUT=2400 -> x=78.7, VOL=0.65 -> x=152)
+  eqRgba(display.pixelAt(48, 232), u8(58), u8(64), u8(78), u8(255));
+  eqRgba(display.pixelAt(207, 247), u8(58), u8(64), u8(78), u8(255));
+  eqRgba(display.pixelAt(108, 240), u8(44), u8(112), u8(226), u8(255));
+  eqRgba(display.pixelAt(115, 240), u8(30), u8(34), u8(42), u8(255));
+  eqRgba(display.pixelAt(78, 262), u8(44), u8(112), u8(226), u8(255));
+  eqRgba(display.pixelAt(79, 262), u8(30), u8(34), u8(42), u8(255));
+  eqRgba(display.pixelAt(149, 284), u8(44), u8(112), u8(226), u8(255));
+  eqRgba(display.pixelAt(155, 284), u8(30), u8(34), u8(42), u8(255));
+
+  // Scope border, center-line edges, active trailing bars i=14/15 + bottom half, and exact peak meter height
+  eqRgba(display.pixelAt(224, 232), u8(58), u8(64), u8(78), u8(255));
+  eqRgba(display.pixelAt(499, 291), u8(58), u8(64), u8(78), u8(255));
+  eqRgba(display.pixelAt(225, 262), u8(30), u8(34), u8(42), u8(255)); // inside box before line start 226
+  eqRgba(display.pixelAt(226, 262), u8(58), u8(64), u8(78), u8(255));
+  eqRgba(display.pixelAt(498, 262), u8(58), u8(64), u8(78), u8(255));
+  eqRgba(display.pixelAt(500, 262), u8(16), u8(18), u8(22), u8(255)); // right of scope border
+  eqRgba(display.pixelAt(234, 260), u8(30), u8(34), u8(42), u8(255)); // i=0 empty panel on frame 2
+  eqRgba(display.pixelAt(458, 260), u8(40), u8(168), u8(108), u8(255)); // i=14 green bar
+  eqRgba(display.pixelAt(474, 260), u8(40), u8(168), u8(108), u8(255)); // i=15 green bar upper half
+  eqRgba(display.pixelAt(474, 265), u8(40), u8(168), u8(108), u8(255)); // i=15 green bar lower half (kills *2 -> +2)
+  eqRgba(display.pixelAt(474, 236), u8(30), u8(34), u8(42), u8(255));
+  eqRgba(display.pixelAt(508, 232), u8(58), u8(64), u8(78), u8(255));
+  eqRgba(display.pixelAt(527, 291), u8(58), u8(64), u8(78), u8(255));
+  const expectedMeterTop: u32 = 290 - u32(Math.round(clamp01(f64(resPeak)) * 56));
+  eqRgba(display.pixelAt(518, expectedMeterTop), u8(40), u8(168), u8(108), u8(255));
+  eqRgba(display.pixelAt(518, expectedMeterTop - 1), u8(30), u8(34), u8(42), u8(255));
+  eqRgba(display.pixelAt(518, 288), u8(40), u8(168), u8(108), u8(255));
+  eqRgba(display.pixelAt(518, 236), u8(30), u8(34), u8(42), u8(255));
+
+  // Piano pads & all 32 drawnTexts coordinates, labels, ink RGBA
+  eqRgba(display.pixelAt(48, 304), u8(58), u8(64), u8(78), u8(255));
+  eqRgba(display.pixelAt(52, 310), u8(30), u8(34), u8(42), u8(255));
+  eqRgba(display.pixelAt(472, 310), u8(30), u8(34), u8(42), u8(255));
+
+  const ts = display.drawnTexts();
+  t.eq(ts.length, usize(32));
+  t.eq(ts[0].x, 10);
+  t.eq(ts[0].y, 12);
+  t.eq(ts[0].text, "STOP");
+  eqRgba(ts[0].color, u8(232), u8(235), u8(240), u8(255));
+  t.eq(ts[1].x, 54);
+  t.eq(ts[1].text, "RST");
+  t.eq(ts[11].x, 494);
+  t.eq(ts[11].text, "BPM+");
+  t.eq(ts[12].x, 8);
+  t.eq(ts[12].y, 49);
+  t.eq(ts[12].text, "C5");
+  t.eq(ts[19].x, 8);
+  t.eq(ts[19].y, 203);
+  t.eq(ts[19].text, "C3");
+  t.eq(ts[20].x, 8);
+  t.eq(ts[20].y, 234);
+  t.eq(ts[20].text, "BPM");
+  t.eq(ts[22].x, 8);
+  t.eq(ts[22].y, 278);
+  t.eq(ts[22].text, "VOL");
+  t.eq(ts[23].x, 54);
+  t.eq(ts[23].y, 312);
+  t.eq(ts[23].text, "C3 A");
+  t.eq(ts[30].x, 474);
+  t.eq(ts[30].y, 312);
+  t.eq(ts[30].text, "C5 K");
+  t.eq(ts[31].x, 8);
+  t.eq(ts[31].y, 342);
+  t.ok(ts[31].text.includes(`audio=on bpm=120 wave=saw preset=acid step=0 peak=${wantPct}%`));
+
+  // Direct 1-frame render with full 16-entry history -> kills i=0->1, SCOPE_X+6->+0, i<HIST_LEN->i<=HIST_LEN
+  const openFull = await display.open({ title: "full", width: 540, height: 360 });
+  t.eq(openFull.kind, "ok");
+  if (openFull.kind === "ok") {
+    await using surf = openFull.value;
+    const fullHist: Array<f32> = [];
+    for (let i: usize = 0; i < HIST_LEN; i += 1) fullHist.push(resPeak);
+    await renderDawFrame(surf, s, 0, resPeak, fullHist, 0, -1);
+  }
+  eqRgba(display.pixelAt(228, 260), u8(30), u8(34), u8(42), u8(255)); // left margin before bar 0
+  eqRgba(display.pixelAt(234, 260), u8(40), u8(168), u8(108), u8(255)); // i=0 bar drawn
+  eqRgba(display.pixelAt(488, 260), u8(30), u8(34), u8(42), u8(255)); // right margin stays panel (i < 16)
+
+  // SINE wave (btn 5) + empty preset (btn 9) highlight bounds + step > 0 telemetry
+  s.setWave(WAVE_SINE);
+  s.loadPreset("empty");
+  s.setBpm(240);
+  t.eq(audio.renderFrames(2048).length, usize(4096));
+  const dHi = FakeDisplay.create();
+  const resHi = await runMicroDawSession(s, dHi, audio, clock, log, 540, 360, 1, false);
+  t.eq(resHi.kind, "ok");
+  if (resHi.kind === "ok") t.ok(resHi.value.lastStep > u8(0));
+  eqRgba(dHi.pixelAt(230, 12), u8(44), u8(112), u8(226), u8(255)); // SIN active
+  eqRgba(dHi.pixelAt(406, 12), u8(44), u8(112), u8(226), u8(255)); // CLR active ("empty")
+  eqRgba(dHi.pixelAt(56, 12), u8(30), u8(34), u8(42), u8(255)); // RST stays panel despite presetByIndex(-5)==="empty"
+  await s.stopAudio();
+
+  // Single-frame idle state checks flashPad initial -1 & lastStep initial 0
+  const dOff = FakeDisplay.create();
+  const resOff = await runMicroDawApp(alloc, dOff, audio, clock, log, 1, false);
+  t.eq(resOff.kind, "ok");
+  eqRgba(dOff.pixelAt(518, 288), u8(30), u8(34), u8(42), u8(255));
+  eqRgba(dOff.pixelAt(12, 12), u8(30), u8(34), u8(42), u8(255));
+  eqRgba(dOff.pixelAt(52, 310), u8(30), u8(34), u8(42), u8(255));
+  const tsOff = dOff.drawnTexts();
+  t.eq(tsOff[0].text, "PLAY");
+  t.ok(tsOff[31].text.includes("audio=off"));
+  t.ok(tsOff[31].text.includes("step=0 peak=0%"));
+});

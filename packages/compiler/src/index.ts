@@ -30,6 +30,7 @@ setNodeAudio(createNodeAudio());
 setNodeDisplay(createNodeDisplay());
 export { buildBrowser, type BrowserBuildMode, type BrowserBuildOptions, type BrowserBuildResult } from "./build-browser.ts";
 export { buildNode, type NodeBuildBackend, type NodeBuildMode, type NodeBuildOptions, type NodeBuildResult } from "./build-node.ts";
+export { serveLsp, type LspOptions } from "./lsp.ts";
 export * from "./diagnostics.ts";
 export * from "./names.ts";
 export { explainCode, type ExplainEntry };

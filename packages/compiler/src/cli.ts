@@ -7,11 +7,12 @@ import { parseArgs } from "node:util";
 import { analyze, buildBrowser, buildNode, check, CLI_NAME, CliError, createParser, explainCode, mutate, prove, queryFile, run, shutdownSmt, type Backend, type BrowserBuildMode, type Diagnostic, type NodeBuildBackend, type NodeBuildMode, type RunResult } from "./index.ts";
 import { dedupeDiagnostics } from "./diagnostics.ts";
 import { serveMcp } from "./mcp.ts";
+import { serveLsp } from "./lsp.ts";
 import { runTestPass, startWatch } from "./watch.ts";
 import { CUnsupported } from "./emit-c.ts";
 import { CBuildError } from "./native.ts";
 
-const USAGE = `usage: ${CLI_NAME} <check|run|test|mutate|prove|query|explain|build|mcp> [--json] [--watch] [--fix] [--no-cache] [--all] [--filter=<pat>] [--strict] [--timeout=<ms>] [--fail-on-survived] [--backend=js|c|both|wasm|all] [--target=node|browser] [--mode=app|lib] [--release] [-o <dir>] <file...|code>`;
+const USAGE = `usage: ${CLI_NAME} <check|run|test|mutate|prove|query|explain|build|mcp|lsp> [--json] [--watch] [--fix] [--no-cache] [--all] [--filter=<pat>] [--strict] [--timeout=<ms>] [--fail-on-survived] [--backend=js|c|both|wasm|all] [--target=node|browser] [--mode=app|lib] [--release] [-o <dir>] <file...|code>`;
 
 function lineStartsOf(text: string): number[] {
   const starts = [0];
@@ -142,7 +143,7 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
   const diags = (ds: readonly Diagnostic[]): string => ds.map((d) => json ? line({ kind: "diagnostic", ...d }) : `${d.file}:${d.range.start.line}:${d.range.start.col}: ${d.severity} ${d.code}: ${d.message}\n`).join("");
   const parser = createParser(); // D161: one tsgo process for every file of this command (spawned on first use)
   try {
-    if (cmd !== "check" && cmd !== "run" && cmd !== "test" && cmd !== "mutate" && cmd !== "prove" && cmd !== "query" && cmd !== "explain" && cmd !== "build" && cmd !== "mcp") {
+    if (cmd !== "check" && cmd !== "run" && cmd !== "test" && cmd !== "mutate" && cmd !== "prove" && cmd !== "query" && cmd !== "explain" && cmd !== "build" && cmd !== "mcp" && cmd !== "lsp") {
       throw new CliError(cmd ? `unknown command '${cmd}'\n${USAGE}` : USAGE);
     }
     let timeoutMs: number | undefined;
@@ -152,9 +153,9 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
       }
       timeoutMs = Number(rawTimeout);
     }
-    if (cmd === "mcp") {
+    if (cmd === "mcp" || cmd === "lsp") {
       if (files.length || rawBackend !== undefined || noCache || watch || fix || all || filter !== undefined || strict || release || rawTimeout !== undefined || failOnSurvived || target !== undefined) {
-        throw new CliError(`mcp: takes no positional arguments or build/watch/backend flags\n${USAGE}`);
+        throw new CliError(`${cmd}: takes no positional arguments or build/watch/backend flags\n${USAGE}`);
       }
     } else if (cmd === "explain") {
       if (files.length !== 1) throw new CliError(`explain: exactly one code required\n${USAGE}`);
@@ -185,6 +186,9 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
     }
     if (cmd === "mcp") {
       return await serveMcp({ parser });
+    }
+    if (cmd === "lsp") {
+      return await serveLsp({ parser });
     }
     if (cmd === "explain") {
       const entry = explainCode(files[0]!);

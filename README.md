@@ -70,10 +70,21 @@ stdio JSON-RPC 2.0 MCP サーバとして起動します（未リンクの場合
 
 既存アプリを `.szigyr` へ書き換える場合も、AI エージェントには作業前に `szigyr://spec`（または [`docs/SPEC.md`](docs/SPEC.md)）と `szigyr://builtins` を参照させると仕様に沿ったコードを生成できます。
 
+## エディタ向け `szigyr lsp`
+
+`Content-Length` フレーム対応の stdio Language Server Protocol サーバです（診断 `publishDiagnostics`・型/シンボル `hover`・`quickfix` `codeAction`・`documentSymbol`・未保存マルチファイルバッファ対応）。
+
+```json
+{
+  "command": "szigyr",
+  "args": ["lsp"]
+}
+```
+
 ## ドキュメント・実例・コンパイラ開発
 
 - **仕様と設計記録**: [`docs/SPEC.md`](docs/SPEC.md) / [`docs/DIAGNOSTICS.md`](docs/DIAGNOSTICS.md) / [`docs/ROADMAP.md`](docs/ROADMAP.md) / [`docs/DECISIONS.md`](docs/DECISIONS.md) / [`docs/OPEN_QUESTIONS.md`](docs/OPEN_QUESTIONS.md)
-- **実例**: [`examples/retouch/`](examples/retouch)（画像フィルタ・契約証明・`Display` Canvas 2D / SDL3 対話アプリ [`app.szigyr`](examples/retouch/app.szigyr)）、[`examples/microdaw/`](examples/microdaw)（ポリフォニックシンセ／16 ステップシーケンサ・Browser AudioWorklet Wasm / Linux WebKitGTK Desktop）、[`examples/gzlog/`](examples/gzlog)（`zlib` C FFI＋`Resource.ownWith`）、[`examples/workspace-tool/`](examples/workspace-tool)（`Fs`・`Proc`・`Net`・`Url`・`use rt` 走査・Web UI）、[`examples/audio-portable/`](examples/audio-portable)（Node + ブラウザ Wasm AudioWorklet）、[`examples/audio/`](examples/audio)（Node + SDL3 FFI）
+- **実例**: [`examples/retouch/`](examples/retouch)（画像フィルタ・契約証明・`Display` Canvas 2D / SDL3 対話アプリ [`app.szigyr`](examples/retouch/app.szigyr)）、[`examples/microdaw/`](examples/microdaw)（ポリフォニックシンセ／16 ステップシーケンサ・純 `.szigyr` `Display`＋`Audio` 版 [`app.szigyr`](examples/microdaw/app.szigyr)・Browser AudioWorklet Wasm / Linux WebKitGTK Desktop）、[`examples/gzlog/`](examples/gzlog)（`zlib` C FFI＋`Resource.ownWith`）、[`examples/workspace-tool/`](examples/workspace-tool)（`Fs`・`Proc`・`Net`・`Url`・`use rt` 走査・Web UI）、[`examples/audio-portable/`](examples/audio-portable)（Node + ブラウザ Wasm AudioWorklet）、[`examples/audio/`](examples/audio)（Node + SDL3 FFI）
 - **このリポジトリでの開発検証**:
   ```bash
   pnpm typecheck

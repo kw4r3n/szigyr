@@ -256,6 +256,12 @@
 - [x] 純 Szigyr 対話アプリ `examples/retouch/app.szigyr`（ツールバー・ブラシドラッグ・Web Worker Wasm 周波数分離・Undo/Redo・HUD・`FakeDisplay` 単体テスト）を実装し、`szigyr mutate --no-cache` で `223 killed / 10 timeout / 0 survived`（14 targets）を達成。
 - **検証（Q279）**: `pnpm typecheck` 通過、`pnpm verify:conformance` 通過（`accept=84 reject=695 run=226`、`ok`）、`rtk bypass pnpm conformance` 通過（1 ファイル `1,384/1,384`）、`rtk bypass pnpm test` 通過（57 ファイル `557/557`；`packages/compiler/test/display.test.ts` 6/6 のチェッカ検査・`T002` 3 バックエンド一致・`SDL_VIDEODRIVER=dummy` の `run`＆再配置 `buildNode` SDL3 E2E・Playwright Chromium の Canvas 2D 描画／ドラッグ／Web Worker Wasm／Undo／`Escape` 終了 E2E を含む）。
 
+## 純 Szigyr MicroDAW & `szigyr lsp`（2026-11-23）
+
+- [x] **純 Szigyr MicroDAW スタジオ**（`examples/microdaw/app.szigyr`）: 既存 DSP・セッション層（`dsp.szigyr` / `engine.szigyr`）を保ったまま `Display`＋`Audio`＋`Clock` を同時駆動する純 Szigyr 対話 UI（`540x360` ツールバー・16x8 ステップグリッド・BPM/Cutoff/Gain スライダー・ピーク波形バー＋メーター・8 パッド・キーボード／マウス操作・`AudioGuard` `AsyncDisposable` 終了解放）を実装し、`FakeDisplay`＋`FakeAudio`＋`FakeClock` の colocated テスト 7 件で JS / C / Wasm 3 バックエンド一致と `szigyr mutate --no-cache --fail-on-survived` の `534 killed / 21 timeout / 0 survived`（24 targets）を達成。
+- [x] **最小 stdio LSP サーバ**（`packages/compiler/src/lsp.ts`・`szigyr lsp`・`serveLsp`）: `Content-Length` JSON-RPC 2.0・`initialize`/`shutdown`/`exit`・未保存マルチファイル overlay（`didOpen`/`didChange`/`didSave`/`didClose`＋閉鎖時依存再診断）・`publishDiagnostics`・`hover`（宣言／仮引数／AST 式型・層・純粋性・capability）・`codeAction`（`quickfix` 編集適用）・`documentSymbol` を常駐増分パーサ上で実装。
+- **検証**: `pnpm typecheck` 通過、`pnpm verify:conformance` 通過（`accept=84 reject=695 run=226`、`ok`）、`rtk bypass pnpm conformance` 通過（1 ファイル `1,384/1,384`）、`rtk bypass pnpm test` 通過（59 ファイル `562/562`；`packages/compiler/test/lsp.test.ts` 1/1 の分割チャンク・UTF-8・`E1001`/`E1002`・quickfix・hover・シンボル・マルチファイル overlay E2E および `packages/compiler/test/microdaw-display.test.ts` 4/4 の `SDL_VIDEODRIVER=dummy` ＋ `SDL_AUDIO_DRIVER=disk` 同時駆動・再配置 `buildNode`・Chromium Canvas 2D ＋ AudioWorklet Wasm E2E を含む）。
+
 ## 保留
 
 - **ネイティブモバイル殻（iOS / Android）**（Q279）: モバイル専用ターゲットの必要が出たときに着手する（ブラウザ版 Wasm 成果物自体はモバイルブラウザでも動く）。
