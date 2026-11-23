@@ -191,11 +191,13 @@ reject/E2001-arenabuf-member.szigyr
 reject/E2001-array-flatmap.szigyr
 reject/E2001-detmath-unknown-member.szigyr
 reject/E2001-handle-member.szigyr
+reject/E2001-i64-tofixed.szigyr
 reject/E2001-number-issafeinteger.szigyr
 reject/E2001-number-max-value.szigyr
 reject/E2001-pool-clear.szigyr
 reject/E2001-read-of-owned-through-ptr.szigyr
 reject/E2001-readonly-array-push.szigyr
+reject/E2001-readonly-array-splice.szigyr
 reject/E2001-slice-push.szigyr
 reject/E2001-string-charat.szigyr
 reject/E2001-vec-insert.szigyr
@@ -299,6 +301,7 @@ reject/E2002-narrow-tag-written-through-union.szigyr
 reject/E2002-narrow-while-break.szigyr
 reject/E2002-narrowing-captured-assigned-shadowed.szigyr
 reject/E2002-new-map-key-record.szigyr
+reject/E2002-new-set-bad-iterable.szigyr
 reject/E2002-nullable-return-without-narrowing.szigyr
 reject/E2002-nullish-assign-non-null.szigyr
 reject/E2002-optional-index-non-null.szigyr
@@ -614,6 +617,7 @@ reject/E4001-forAll-rt-unsafe.szigyr
 reject/E4001-fs-exists-in-strict.szigyr
 reject/E4001-managed-calls-rt-unsafe.szigyr
 reject/E4001-managed-function-as-fn-arg.szigyr
+reject/E4001-number-tostring-strict.szigyr
 reject/E4001-optional-call-strict.szigyr
 reject/E4001-pow-assign-in-strict.szigyr
 reject/E4001-pow-operator-in-rt.szigyr
@@ -974,6 +978,7 @@ run/273-nullish-assign.szigyr
 run/274-optional-index-and-call.szigyr
 run/275-rest-and-call-spread.szigyr
 run/276-param-destructuring.szigyr
+run/277-managed-stdlib-additions.szigyr
 run/28-trap-shift-range.szigyr
 run/29-trap-invariant.szigyr
 run/30-int-no-negative-zero.szigyr

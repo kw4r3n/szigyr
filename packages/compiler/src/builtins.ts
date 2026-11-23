@@ -3,7 +3,7 @@ import {
   AUDIO_CONFIG_RECORD, ASYNC_DISPOSABLE, BOOL, DIR_ENTRY_RECORD, DISPLAY_COLOR_RECORD, DISPLAY_CONFIG_RECORD, DISPLAY_EVENT_UNION, DISPOSABLE, ENV_VAR_RECORD, ERROR_RECORD, F64, FILE_STAT_RECORD,
   HTTP_BODY_UNION, HTTP_CLIENT_REQUEST_RECORD, HTTP_HEADER_RECORD, HTTP_REQUEST_INIT_RECORD, HTTP_RESPONSE_RECORD, HTTP_SERVER_CONFIG_RECORD,
   HTTP_SERVER_RAW_RESPONSE_RECORD, HTTP_SERVER_REQUEST_RECORD, HTTP_SERVER_RESPONSE_RECORD, NULL, PROC_OPTIONS_RECORD, PROC_OUTPUT_RECORD, PROC_REQUEST_RECORD,
-  QUERY_PARAM_RECORD, REGEXP_MATCH_RECORD, STR, UNKNOWN, USIZE, VOID, fn, gen, newTParam, nullable, num, opaque, result, record, ro, tuple, unref,
+  QUERY_PARAM_RECORD, REGEXP_MATCH_RECORD, STR, UNKNOWN, USIZE, VOID, fn, gen, isInt64, newTParam, nullable, num, opaque, result, record, ro, tuple, unref,
   type FnType, type GenName, type NumName, type Type, AUTHORITIES, NUM_NAMES, GEN_ARITY, OPAQUE_NAMES,
 } from "./types.ts";
 import { DETMATH_BINARY, DETMATH_UNARY } from "./detmath.ts";
@@ -256,13 +256,23 @@ export function stringMembers(): Members {
 }
 export const stringMember = (name: string): Member | undefined => pick(stringMembers(), name);
 
+export function numMembers(name: NumName): Members {
+  return {
+    toString: mo(m(RD, [num("u8")], STR, { min: 0 })),
+    ...(!isInt64(name) ? { toFixed: mo(m(RD, [num("u8")], STR, { min: 0 })) } : {}),
+  };
+}
+export const numMember = (t: NumName, name: string): Member | undefined => pick(numMembers(t), name);
+
 function arrayMembers(T: Type, readonly: boolean): Members {
   const A = newTParam("A"), U = newTParam("U");
   const tA: Type = { k: "tparam", p: A }, tU: Type = { k: "tparam", p: U };
   const pred = cb([T, USIZE], BOOL);
   const sigs: Members = {
     length: prop(USIZE),
+    at: m(RD, [num("i32")], nullable(T)),
     slice: m(RD, [USIZE, USIZE], gen("Array", T), { min: 0 }),
+    toSorted: m(RD, [cb([T, T], F64)], gen("Array", T)),
     map: m(RD, [cb([T, USIZE], tU)], gen("Array", tU), { tparams: [U] }),
     filter: m(RD, [pred], gen("Array", T)),
     reduce: m(RD, [cb([tA, T, USIZE], tA), tA], tA, { tparams: [A] }),
@@ -274,7 +284,8 @@ function arrayMembers(T: Type, readonly: boolean): Members {
   if (!readonly) {
     Object.assign(sigs, {
       push: m(WR, [T], USIZE), pop: m(WR, [], nullable(T)), reverse: m(WR, [], gen("Array", T)),
-      sort: m(WR, [cb([T, T], F64)], gen("Array", T)), fill: m(WR, [T, USIZE, USIZE], gen("Array", T), { min: 1 }),
+      sort: m(WR, [cb([T, T], F64)], gen("Array", T)), splice: m(WR, [num("i32"), USIZE], gen("Array", T), { min: 1, rest: gen("Array", T) }),
+      fill: m(WR, [T, USIZE, USIZE], gen("Array", T), { min: 1 }),
     });
   }
   return sigs;
@@ -403,7 +414,13 @@ export function nsMembers(ns: string): Record<string, Member | "variadic"> {
       decodeUtf8: mo(m(RD, [gen("Ref", gen("Slice", num("u8")))], ioResult(STR))),
       decodeUtf8Lossy: mo(m(RD, [gen("Ref", gen("Slice", num("u8")))], STR)),
     };
-    case "Promise": return { all: mo(m(RD, [gen("Array", gen("Promise", tT))], gen("Promise", gen("Array", tT)), { tparams: [T] })) };
+    case "Promise": {
+      const T2 = newTParam("T"), tT2: Type = { k: "tparam", p: T2 };
+      return {
+        all: mo(m(RD, [gen("Array", gen("Promise", tT))], gen("Promise", gen("Array", tT)), { tparams: [T] })),
+        resolve: mo(m(RD, [tT2], gen("Promise", tT2), { tparams: [T2], min: 0 })),
+      };
+    }
     case "DetMath": // §12 (Q191): rt functions, so callable from every layer; f64 only
       return { ...each(DETMATH_UNARY, () => m(RD, [F64], F64)), ...each(DETMATH_BINARY, () => m(RD, [F64, F64], F64)) };
     case "Vec": {
@@ -458,6 +475,7 @@ export function builtinMethods(): { owner: string; name: string; fx: Fx }[] {
   for (const g of Object.keys(GEN_ARITY) as GenName[]) add(g, genMembers({ name: g, args: [UNKNOWN, UNKNOWN] }));
   for (const o of OPAQUE_NAMES) add(o, opaqueMembers(o));
   for (const ns of NAMESPACES) add(`${ns}.`, nsMembers(ns));
+  add("number", numMembers("f64"));
   add("string", stringMembers());
   return out;
 }

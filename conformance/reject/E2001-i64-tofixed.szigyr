@@ -1,0 +1,5 @@
+// expect: E2001 @ 4:12
+// stage: 2
+function f(x: i64): string {
+  return x.toFixed(2);
+}

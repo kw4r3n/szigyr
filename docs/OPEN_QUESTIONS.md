@@ -1984,3 +1984,11 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
   - (a) `docs/SPEC.md:100` の見出しを `**Deterministic**`（または `**Deterministic (query deterministic)**`）へ合わせて統一する。
   - (b) `docs/SPEC.md:100` を現状維持する。
 - 既定案: (a)。
+
+### Q309 `i64`/`u64` の `.toFixed()` 省略と `Array.toSorted` の比較関数必須化
+- 関連: §5、D181、`docs/STDLIB.md`
+- 状況: 設計評価の指示 E で数値の `toFixed(n)` と配列の `toSorted` を `managed` へ追加する際、`i64`/`u64`（JS の `BigInt`）には JS 標準の `.toFixed()` がなく、`Number(...)` 経由にすると 53 bit 超で精度が失われ Node と結果を一致させられない。また JS の引数なし `Array.prototype.toSorted()` は辞書順文字列ソートとなり数値比較と異なる（既存の `Array.prototype.sort` と同様に比較関数 `(a: T, b: T) => f64` が必要）。
+- 選択肢:
+  - (a) `i64`/`u64` への `.toFixed()` は実装せず（`E2001`）、`i64`/`u64` には JS の `BigInt.prototype.toString` と一致する `.toString(radix?)` のみを許可する。`toSorted` は `Array.sort` に揃えて比較関数 `(a: T, b: T) => f64` 必須とする。
+  - (b) `i64`/`u64` 用に独自 `.toFixed` を実装し、引数なし `toSorted()` を辞書順または数値別オーバーロードで導入する。
+- 既定案: (a)。

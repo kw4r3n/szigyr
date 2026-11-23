@@ -37,8 +37,9 @@ const COMPOUND: Partial<Record<K, string>> = {
 /** §12 members that can throw a JS exception (Q035): parse errors, out-of-range code points, string / array / Map / Set size limits. */
 const THROWING: Record<string, readonly string[]> = {
   String: ["fromCodePoint"],
+  num: ["toString", "toFixed"],
   string: ["padStart", "padEnd", "repeat", "replaceAll", "toUpperCase", "toLowerCase"],
-  Array: ["push", "concat", "join"], ReadonlyArray: ["concat", "join"], Map: ["set"], Set: ["add"],
+  Array: ["push", "concat", "join", "splice"], ReadonlyArray: ["concat", "join"], Map: ["set"], Set: ["add"],
 };
 const INT_OP: Record<string, string> = { "+": "add", "-": "sub", "*": "mul" };
 const INT32_BOUNDS: Partial<Record<NumName, readonly [number, number]>> = Object.fromEntries(
@@ -1101,13 +1102,13 @@ export function emitFile(
       return `${RT}.parseIntStrict(${q(m.slice(5).toLowerCase())}, ${args.join(", ")})`;
     }
     // Q035: builtins that can throw a JS exception panic (T006) at their name.
-    const throws = ns ? THROWING[ns] : r?.k === "gen" ? THROWING[r.name] : r && isStr(r) ? THROWING.string : undefined;
+    const throws = ns ? THROWING[ns] : r?.k === "gen" ? THROWING[r.name] : r?.k === "num" ? THROWING.num : r && isStr(r) ? THROWING.string : undefined;
     if (throws?.includes(m)) {
       const guarded = (o: string): string => `${RT}.guarded(${o}, ${q(m)}, [${args.join(", ")}], ${at(p.name)})`;
       return p.questionDotToken ? optional(gen(recv), awaited, guarded) : guarded(ns ?? gen(recv));
     }
     if (r?.k === "gen") {
-      if ((r.name === "Array" || r.name === "ReadonlyArray") && (m === "pop" || m === "find")) return nn(`${RT}.nn(${withArgs([])})`);
+      if ((r.name === "Array" || r.name === "ReadonlyArray") && (m === "pop" || m === "find" || m === "at")) return nn(`${RT}.nn(${withArgs([])})`);
       if ((r.name === "Array" || r.name === "ReadonlyArray") && (m === "indexOf" || m === "findIndex")) return nn(`${RT}.idxOrNull(${withArgs([])})`);
       if (r.name === "Map" && m === "get") return nn(`${RT}.nn(${withArgs([])})`);
       if ((r.name === "Vec" || r.name === "Slice") && m === "borrowSlice") return nn(withArgs([at(p.name)]));

@@ -4,13 +4,13 @@ import { NodeFlags, SyntaxKind as K, isId, type Node, type ts } from "./parse.ts
 import type { Checker } from "./checker.ts";
 import type { Diagnostic } from "./diagnostics.ts";
 import { tparamShells, type FnSym, type Layer, type LocalSym, type ValueSym } from "./modules.ts";
-import { BUILTIN_FUNCTIONS, GLOBAL_AUTHORITIES, NAMESPACES, RESERVED, contractBanned, genMember, genMembers, nsMember, nsMembers, opaqueMember, opaqueMembers, stringMember, stringMembers, type Member } from "./builtins.ts";
+import { BUILTIN_FUNCTIONS, GLOBAL_AUTHORITIES, NAMESPACES, RESERVED, contractBanned, genMember, genMembers, nsMember, nsMembers, numMember, numMembers, opaqueMember, opaqueMembers, stringMember, stringMembers, type Member } from "./builtins.ts";
 import { isDeterministic } from "./determinism.ts";
 import { isGeneratable } from "./gendesc.ts";
 import {
   AUDIO_CONFIG_RECORD, BOOL, ERROR, ERROR_RECORD, F64, NEVER, NULL, NUM_NAMES, STR, UNKNOWN, USIZE, VOID, assignable, audioStateOk, bindTParams, borrowOk, boxable, comparable, field, fn, gen, hasArenaBuf, hasAuthority, hasCap, hasInt64, hasLayout, hasPtr, hasRawPtr, hasTParam,
   isAuthority, isBool, isCopy, isInt, isInt64, isNative, isNull, isNum, isOwned, isOwnedCap, isStr, movesLike, holdsOwned, ownedDeep, ptrTargetOk, isTaggedUnion, kindOf, keyOk, intLiteralFits, literalFits, nonNull, nullable, num, opaque, parseExactInt, result, resultParts, restElem,
-  same, sendable, show, subst, tparamHasCap, unify, union, unref, castable, collectTParams, layerOk, type ClassSym, type FnType, type NumName, type Type,
+  same, sendable, show, subst, tparamHasCap, tuple, unify, union, unref, castable, collectTParams, layerOk, type ClassSym, type FnType, type NumName, type Type,
   hasLoneSurrogate,
 } from "./types.ts";
 
@@ -386,10 +386,6 @@ const didYouMean = (suggestions: readonly string[]): string =>
 function reportUnknownBuiltinMember(c: Checker, name: ts.Identifier, t: Type, available: readonly string[]): MemberResult {
   const n = name.text;
   const recv = show(t);
-  if (t.k === "gen" && (t.name === "Array" || t.name === "ReadonlyArray") && n === "at") {
-    c.at("E2001", name, `'${recv}' has no member 'at'; use indexing '[i]' and 'length'`, { receiver: recv, member: n, suggestions: ["[i]", "length"] });
-    return MERR;
-  }
   if (t.k === "gen" && (t.name === "Vec" || t.name === "Slice") && n === "slice") {
     c.at("E2001", name, `'${recv}' has no member 'slice'; use 'borrowSlice(a, b)' (returns a borrowed Slice, arg/recv only)`, { receiver: recv, member: n, suggestions: ["borrowSlice"] });
     return MERR;
@@ -570,7 +566,15 @@ function lookupMember(c: Checker, t: Type, name: ts.Identifier, inCall: boolean)
       }
       return reportUnknownBuiltinMember(c, name, t, ["borrow", "get", "take"]);
     }
-    case "num": return missing("E2001");
+    case "num": {
+      const m = numMember(t.name, n);
+      if (!m) return reportUnknownBuiltinMember(c, name, t, Object.keys(numMembers(t.name)));
+      if (!c.callAllowed("managed")) {
+        c.at("E4001", name, `numeric member '${n}' is managed-only`, { callerLayer: c.fx.layer, calleeLayer: "managed" });
+        return MERR;
+      }
+      return fromMember(c, m, name, inCall);
+    }
     case "prim": if (t.name === "boolean") return missing("E2001"); break;
   }
   if (isStr(t)) {
@@ -1051,6 +1055,12 @@ function objLit(c: Checker, e: ts.ObjectLiteralExpression, want: Type | undefine
   return bad ? ERROR : rec;
 }
 
+function iterableElem(t: Type): Type | undefined {
+  if (t.k === "gen" && (t.name === "Array" || t.name === "ReadonlyArray" || t.name === "Set")) return t.args[0]!;
+  if (t.k === "gen" && t.name === "Map") return tuple([t.args[0]!, t.args[1]!]);
+  return t.k === "iter" ? t.elem : undefined;
+}
+
 function arrLit(c: Checker, e: ts.ArrayLiteralExpression, want: Type | undefined): Type {
   const w = want && unref(nonNull(want) ?? want);
   if (w && isErr(w)) return ERROR;
@@ -1079,11 +1089,12 @@ function arrLit(c: Checker, e: ts.ArrayLiteralExpression, want: Type | undefined
     if (first) elem = expr(c, first);
     else if (e.elements.every((x) => isLitOnly(x))) elem = F64;
     else if (e.elements.every((x) => x.kind === K.StringLiteral || x.kind === K.NoSubstitutionTemplateLiteral)) elem = STR;
-    else { // only spreads: the element type comes from the first spread (arrays only, like the loop below)
+    else { // only spreads: the element type comes from the first spread
       const sp = e.elements.find((x) => x.kind === K.SpreadElement) as ts.SpreadElement | undefined;
       if (!sp) { c.at("E2006", e, "an array literal of literals that share no type needs a type from its context"); return ERROR; } // Q235
       const st = expr(c, sp.expression);
-      if (st.k === "gen" && (st.name === "Array" || st.name === "ReadonlyArray")) elem = st.args[0]!;
+      const el = iterableElem(unref(st));
+      if (el) elem = el;
       else { if (!isErr(st)) c.at("E2002", sp.expression, `cannot spread '${show(st)}' into an array`); return ERROR; }
     }
     if (elem.k === "lit") elem = STR;
@@ -1093,7 +1104,8 @@ function arrLit(c: Checker, e: ts.ArrayLiteralExpression, want: Type | undefined
   for (const x of e.elements) {
     if (x.kind === K.SpreadElement) {
       const st = expr(c, (x as ts.SpreadElement).expression);
-      if (!isErr(st) && !(st.k === "gen" && (st.name === "Array" || st.name === "ReadonlyArray") && assignable(st.args[0]!, elem))) { c.at("E2002", (x as ts.SpreadElement).expression, "spread element type mismatch"); bad = true; }
+      const el = iterableElem(unref(st));
+      if (!isErr(st) && !(el && assignable(el, elem))) { c.at("E2002", (x as ts.SpreadElement).expression, "spread element type mismatch"); bad = true; }
     } else if (isErr(checkTo(c, x, elem))) bad = true;
   }
   return bad ? ERROR : gen("Array", elem);
@@ -1575,6 +1587,18 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
       if (e.questionDotToken) {
         c.at("E2002", p.name, "'?.' cannot be used to call a method directly; call it normally or via 'o?.m()'");
         return ERROR;
+      }
+      if (ns === "Promise" && p.name.text === "resolve" && !e.arguments.length) {
+        if (e.typeArguments) {
+          if (e.typeArguments.length !== 1) { c.at("E2002", p.name, "expects 1 type argument(s)"); return ERROR; }
+          c.walkTypePos(e.typeArguments[0]!, "typearg", { unsafe: c.fx.unsafe, cdecl: false });
+          const ta = c.typeOf(e.typeArguments[0]!, true);
+          if (!isErr(ta) && !(ta.k === "prim" && ta.name === "void")) {
+            c.at("E2002", p.name, "expects 1 argument(s), got 0");
+            return ERROR;
+          }
+        }
+        return gen("Promise", VOID);
       }
       return callSig(c, m.sig, e, p.name, want);
     }
@@ -2153,20 +2177,53 @@ function newExpr(c: Checker, e: ts.NewExpression, want: Type | undefined): Type 
     return ERROR;
   }
   if ((id.text === "Map" || id.text === "Set") && !c.scope.lookup(id.text)) { // Q029
-    if (e.arguments?.length) { c.at("E2001", id, `'new ${id.text}' takes no arguments`); return ERROR; }
-    const n = id.text === "Map" ? 2 : 1;
+    const args = e.arguments ?? ([] as unknown as ts.NodeArray<ts.Expression>);
+    if (id.text === "Map" || !args.length) {
+      if (args.length) { c.at("E2001", id, `'new ${id.text}' takes no arguments`); return ERROR; }
+      const n = id.text === "Map" ? 2 : 1;
+      if (e.typeArguments) {
+        if (e.typeArguments.length !== n) { c.at("E2002", id, `'${id.text}' takes ${n} type argument(s)`); return ERROR; }
+        for (const t of e.typeArguments) c.walkTypePos(t, "typearg", { unsafe: c.fx.unsafe, cdecl: false }); // §14.4
+        const targs = e.typeArguments.map((t) => c.typeOf(t));
+        if (!keyOk(targs[0]!)) { c.at("E2002", e.typeArguments[0]!, `a ${id.text} ${id.text === "Map" ? "key" : "element"} is a string, number, boolean or string literal union`); return ERROR; } // Q081
+        return gen(id.text, ...targs);
+      }
+      const w = want && (nonNull(want) ?? want);
+      if (w?.k === "gen" && w.name === id.text) return w;
+      if (w && isErr(w)) return ERROR;
+      c.at("E2006", id, `cannot infer the type arguments of '${id.text}'`);
+      return ERROR;
+    }
+    if (args.length > 1) { c.at("E2002", id, `'new Set' expects at most 1 argument(s), got ${args.length}`); return ERROR; }
+    const a = args[0]!;
+    if (a.kind === K.SpreadElement) { c.at("E2002", a, "'new Set' does not accept spread arguments"); return ERROR; }
+    const checkSetArg = (elemT: Type): void => {
+      if (a.kind === K.ArrayLiteralExpression) { checkTo(c, a, gen("ReadonlyArray", elemT)); return; }
+      const at = expr(c, a);
+      if (isErr(at)) return;
+      const el = iterableElem(unref(at));
+      if (!el) c.at("E2002", a, `'new Set' expects an Array, ReadonlyArray, Set, or Iterator, got '${show(at)}'`);
+      else if (!isErr(el) && !assignable(el, elemT)) c.at("E2002", a, `expected iterable of '${show(elemT)}', got '${show(el)}'`, { expected: show(elemT), actual: show(el) });
+    };
     if (e.typeArguments) {
-      if (e.typeArguments.length !== n) { c.at("E2002", id, `'${id.text}' takes ${n} type argument(s)`); return ERROR; }
-      for (const t of e.typeArguments) c.walkTypePos(t, "typearg", { unsafe: c.fx.unsafe, cdecl: false }); // §14.4
-      const targs = e.typeArguments.map((t) => c.typeOf(t));
-      if (!keyOk(targs[0]!)) { c.at("E2002", e.typeArguments[0]!, `a ${id.text} ${id.text === "Map" ? "key" : "element"} is a string, number, boolean or string literal union`); return ERROR; } // Q081
-      return gen(id.text, ...targs);
+      if (e.typeArguments.length !== 1) { c.at("E2002", id, "'Set' takes 1 type argument(s)"); return ERROR; }
+      c.walkTypePos(e.typeArguments[0]!, "typearg", { unsafe: c.fx.unsafe, cdecl: false });
+      const elemT = c.typeOf(e.typeArguments[0]!);
+      if (!keyOk(elemT)) { c.at("E2002", e.typeArguments[0]!, "a Set element is a string, number, boolean or string literal union"); return ERROR; }
+      checkSetArg(elemT);
+      return gen("Set", elemT);
     }
     const w = want && (nonNull(want) ?? want);
-    if (w?.k === "gen" && w.name === id.text) return w;
+    if (w?.k === "gen" && w.name === "Set") { checkSetArg(w.args[0]!); return w; }
     if (w && isErr(w)) return ERROR;
-    c.at("E2006", id, `cannot infer the type arguments of '${id.text}'`);
-    return ERROR;
+    const at = expr(c, a);
+    if (isErr(at)) return ERROR;
+    const rawEl = iterableElem(unref(at));
+    if (!rawEl) { c.at("E2002", a, `'new Set' expects an Array, ReadonlyArray, Set, or Iterator, got '${show(at)}'`); return ERROR; }
+    if (isErr(rawEl)) return ERROR;
+    const elemT = rawEl.k === "lit" ? STR : rawEl;
+    if (!keyOk(elemT)) { c.at("E2002", a, "a Set element is a string, number, boolean or string literal union"); return ERROR; }
+    return gen("Set", elemT);
   }
   if (id.text === "RegExp" && !c.scope.lookup(id.text)) {
     c.at("E2002", id, `'new RegExp(...)' is not allowed; use a regex literal '/.../' or 'RegExp.compile(pattern, flags)'`);

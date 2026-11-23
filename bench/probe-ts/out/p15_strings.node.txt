@@ -1,0 +1,6 @@
+hello|world|foo
+6 -1
+llo foo
+007
+104
+HELLO,WORLD,FOO 15 true true

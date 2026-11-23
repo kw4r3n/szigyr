@@ -103,8 +103,8 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
     const strCharAt = checkSrc("export function f(s: string): string { return s.charAt(0); }\n").diags[0]!;
     expect(strCharAt).toMatchObject({ code: "E2001", data: { suggestions: ["slice", "charCodeAt"] } });
 
-    const arrAt = checkSrc("export function f(xs: Array<i32>): i32 { return xs.at(0); }\n").diags[0]!;
-    expect(arrAt).toMatchObject({ code: "E2001", data: { suggestions: ["[i]", "length"] } });
+    const arrMissing = checkSrc("export function f(xs: Array<i32>): usize { return xs.pus(1); }\n").diags[0]!;
+    expect(arrMissing).toMatchObject({ code: "E2001", data: { suggestions: ["push", "pop"] } });
 
     const typo = checkSrc("export function f(s: string): string { return s.toUperCase(); }\n").diags[0]!;
     expect(typo.code).toBe("E2001");

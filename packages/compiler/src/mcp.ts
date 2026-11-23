@@ -4,7 +4,7 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { BUILTIN_FUNCTIONS, CAPABILITY_NAMES, NAMESPACES, SPEC_RESERVED, genMembers, nsMembers, opaqueMembers, stringMembers, type Member } from "./builtins.ts";
+import { BUILTIN_FUNCTIONS, CAPABILITY_NAMES, NAMESPACES, SPEC_RESERVED, genMembers, nsMembers, numMembers, opaqueMembers, stringMembers, type Member } from "./builtins.ts";
 import { analyze, check, CLI_NAME, createParser, displayPath, explainCode, mutate, prove, queryFile, run, runTestFile, shutdownSmt, type Backend, type Parser } from "./index.ts";
 import { GEN_ARITY, OPAQUE_NAMES, show, type GenName, type Type } from "./types.ts";
 
@@ -504,6 +504,7 @@ function buildBuiltinsCatalog() {
       }),
     ),
     opaqueTypes: Object.fromEntries([...OPAQUE_NAMES].map((name) => [name, formatMembers(opaqueMembers(name))])),
+    number: formatMembers(numMembers("f64")),
     string: formatMembers(stringMembers()),
   };
 }
