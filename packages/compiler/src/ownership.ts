@@ -482,10 +482,13 @@ class Flow {
     this.moved(id, sym);
   }
 
-  private exclusive(n: Node, sym: LocalSym, conflict?: Node): void {
+  private exclusive(n: Node, sym: LocalSym, conflict?: Node, enclosing = false): void {
     if (this.e3005.has(n)) return;
     this.e3005.add(n);
-    this.m.at("E3005", n, `'${sym.name}' is used by another argument of this call`, {
+    const msg = enclosing
+      ? `'${sym.name}' conflicts with an enclosing borrow or assignment`
+      : `'${sym.name}' is used by another argument of this call`;
+    this.m.at("E3005", n, msg, {
       variable: sym.name,
       ...(conflict ? { conflictAt: this.m.mod.pf.position(conflict.getStart(this.m.mod.sf)) } : {}),
     });
@@ -549,7 +552,7 @@ class Flow {
       if (!sym) return;
       if (borrowMode(sym.declared)) { this.m.at("E3004", l, `the borrow parameter '${sym.name}' cannot be reassigned`, { variable: sym.name, kind: "reassign-borrow" }); return; } // Q151
       const cAct = this.active.find((x) => x.sym.id === sym.id);
-      if (cAct) this.exclusive(l, sym, cAct.node); // Q170: overwriting a borrowed root
+      if (cAct) this.exclusive(l, sym, cAct.node, true); // Q170: overwriting a borrowed root
       if (sym.fnDepth < this.depth) this.ident(l, "read"); // a captured local (E3004 / E3007)
       this.state?.delete(sym.id); // §5.2: a reassigned `let` is usable again
       return;
@@ -573,8 +576,8 @@ class Flow {
     this.place(obj);
     const target = l.kind === K.PropertyAccessExpression ? this.placeOf(l) : this.placeOf(obj);
     const cAct = root && this.active.find((x) => x.sym.id === root.sym.id && (!target || pathsOverlap(x.path, target.path)));
-    if (root && cAct) this.exclusive(l, root.sym, cAct.node); // Q170: a write under a borrow of the same place (Q190: a disjoint field is another place)
-    if (root) this.active.push({ sym: root.sym, mode: "mut", node: root.id, base: true, path: root.path, slice: false }); // popped by the caller
+    if (root && cAct) this.exclusive(l, root.sym, cAct.node, true); // Q170: a write under a borrow of the same place (Q190: a disjoint field is another place)
+    if (root) this.active.push({ sym: root.sym, mode: "mut", node: root.id, base: true, path: target?.path ?? root.path, slice: false }); // popped by the caller
     if (l.kind === K.ElementAccessExpression) this.ex((l as ts.ElementAccessExpression).argumentExpression, "read");
     if (!tmp && this.isReadOnly(obj)) this.m.at("E3006", l, root ? `cannot write through the Ref '${root.sym.name}'` : "cannot write through a Ref or ConstPtr", { ...(root ? { variable: root.sym.name } : {}), kind: "readonly-ref" });
     return obj;
@@ -690,10 +693,10 @@ class Flow {
     const node = strip(e);
     // Q170: within one call either side `Mut` conflicts; an outer borrow conflicts only with an inner `Mut` (Q065, Q067).
     // Q190: disjoint field paths are different places (a); a sibling pair of `slice` arguments is left to the runtime check (b).
-    const cAct = this.active.find((x, i) => x.sym.id === r.sym.id && pathsOverlap(x.path, r.path)
+    const cActIdx = this.active.findIndex((x, i) => x.sym.id === r.sym.id && pathsOverlap(x.path, r.path)
       && (mode === "mut" || (i >= this.callMark && x.mode === "mut"))
       && !(i >= this.callMark && x.slice && r.slice && !x.ptrSlice && !r.ptrSlice));
-    if (cAct) this.exclusive(node, r.sym, cAct.node);
+    if (cActIdx >= 0) this.exclusive(node, r.sym, this.active[cActIdx]!.node, cActIdx < this.callMark);
     const cPend = this.pendingMut.find((s) => s.sym.id === r.sym.id);
     if (cPend) this.exclusive(node, r.sym, cPend.node); // §14.4: an earlier `unbox` of this call
     this.active.push({ sym: r.sym, mode, node, base: false, path: r.path, slice: r.slice, ptrSlice: r.ptrSlice }); // popped by `call`; active while `slice` bounds are evaluated

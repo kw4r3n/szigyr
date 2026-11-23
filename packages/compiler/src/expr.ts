@@ -1181,12 +1181,24 @@ function resourceCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpr
     }
   }
 
+  const cleanupArg = args[wantArgs - 1]!;
+  const fnRef = lookupModuleFn(c, cleanupArg);
+
   let C: Type | undefined;
   if (m === "ownWith") {
     const ctxArg = args[1]!;
     if (e.typeArguments?.[1]) {
       C = c.typeOf(e.typeArguments[1]!);
       c.walkTypePos(e.typeArguments[1]!, "local", { unsafe: c.fx.unsafe, cdecl: false });
+      checkTo(c, ctxArg, C);
+    } else if (
+      fnRef.sym &&
+      fnRef.sym.sig.tparams.length === 0 &&
+      fnRef.sym.sig.params.length === 2 &&
+      !isErr(fnRef.sym.sig.params[0]!) &&
+      !(fnRef.sym.sig.params[0]!.k === "gen" && (fnRef.sym.sig.params[0]!.name === "Ref" || fnRef.sym.sig.params[0]!.name === "Mut"))
+    ) {
+      C = fnRef.sym.sig.params[0]!;
       checkTo(c, ctxArg, C);
     } else {
       C = unref(expr(c, ctxArg));
@@ -1208,7 +1220,6 @@ function resourceCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpr
     }
   }
 
-  const cleanupArg = args[wantArgs - 1]!;
   const expParams = m === "own" ? [T] : [C!, T];
   let cleanupFn: FnSym | undefined;
   const checkCleanupSym = (sym: FnSym): FnSym | undefined => {
@@ -1231,7 +1242,6 @@ function resourceCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpr
     if (sym.layer !== "managed") c.fnSites.push({ from: c.fn, callee: sym, refs: new Map(), node: cleanupArg, mod: c.mod });
     return sym;
   };
-  const fnRef = lookupModuleFn(c, cleanupArg);
   if (fnRef.sym) {
     cleanupFn = checkCleanupSym(fnRef.sym);
   } else if (fnRef.typeOnly) {

@@ -406,4 +406,66 @@ function badBorrow(s: Ref<Pair>): usize {
 `);
     expect(borrowMoveErr.map((d) => d.code)).toEqual(["E3004"]);
   });
+
+  it("allows disjoint field assignment LHS with sibling Mut borrow, keeps overlapping E3005/E3001, and infers Resource.ownWith ctx", () => {
+    const disjointOk = checkSrc(`
+type St = Struct<{ rx: RingRx<f32>; gain: f32 }>;
+function drainGain(rx: Mut<RingRx<f32>>, g: f32): f32 {
+  "use rt";
+  const next = rx.pop();
+  return next !== null ? next : g;
+}
+function step(st: Mut<St>): void {
+  "use rt";
+  const prevGain = st.gain;
+  st.gain = drainGain(st.rx, prevGain);
+  st.gain = drainGain(st.rx, st.gain);
+}
+`);
+    expect(disjointOk).toEqual([]);
+
+    const conflictWhole = checkSrc(`
+type St = Struct<{ rx: RingRx<f32>; gain: f32 }>;
+function mutateWhole(st: Mut<St>): f32 { "use rt"; return st.gain; }
+function consumeWhole(st: St): f32 { "use owned"; return st.gain; }
+function badMutWhole(st: Mut<St>): void {
+  "use rt";
+  st.gain = mutateWhole(st);
+}
+function badMoveWhole(alloc: Alloc): void {
+  "use owned";
+  const { tx, rx } = Ring.create<f32>(alloc, 4);
+  tx.push(f32(1));
+  const st: St = { rx, gain: f32(0) };
+  st.gain = consumeWhole(st);
+}
+`);
+    expect(conflictWhole.map((d) => d.code)).toEqual(["E3005", "E3001"]);
+    expect(conflictWhole[0]?.message).toContain("enclosing borrow or assignment");
+
+    const sameField = checkSrc(`
+type Pair = Struct<{ a: Vec<i32>; b: Vec<i32> }>;
+function mutA(a: Mut<Vec<i32>>, alloc: Alloc): Vec<i32> {
+  "use owned";
+  a.push(1);
+  return Vec.create<i32>(alloc, 1);
+}
+function badSame(s: Mut<Pair>, alloc: Alloc): void {
+  "use owned";
+  s.a = mutA(s.a, alloc);
+}
+`);
+    expect(sameField.map((d) => d.code)).toEqual(["E3005"]);
+    expect(sameField[0]?.message).toContain("enclosing borrow or assignment");
+
+    const ownWithCtxInfer = checkSrc(`
+function releaseWithU32(tag: u32, v: Vec<i32>): void { "use owned"; }
+function make(alloc: Alloc): usize {
+  "use owned";
+  using r = Resource.ownWith(Vec.create<i32>(alloc, 2), 0, releaseWithU32);
+  return r.borrow().length;
+}
+`);
+    expect(ownWithCtxInfer).toEqual([]);
+  });
 });
