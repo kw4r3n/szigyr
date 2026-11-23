@@ -438,13 +438,13 @@ export function emitFile(
             const v = parseExactInt(n.getText(sf), false)!;
             const mutVal = v === 0n ? "1n" : "0n";
             const id = addMutant(v === 0n ? "0 -> 1" : "num -> 0", n);
-            return `(${RT}.m === ${id} ? ${mutVal} : ${orig})`;
+            return `(${RT}.mut(${id}) ? ${mutVal} : ${orig})`;
           }
           const v = numValue(n as ts.NumericLiteral);
           const mutVal = v === 0 ? 1 : 0;
           if (literalFits(mutVal, t.name)) {
             const id = addMutant(v === 0 ? "0 -> 1" : "num -> 0", n);
-            return `(${RT}.m === ${id} ? ${mutVal} : ${orig})`;
+            return `(${RT}.mut(${id}) ? ${mutVal} : ${orig})`;
           }
         }
         return orig;
@@ -453,7 +453,7 @@ export function emitFile(
         if (canMutate() && !isCaseExpr(n) && !isLoopCondLit(n) && typeOf(n)?.k === "prim") {
           const val = n.kind === K.TrueKeyword;
           const id = addMutant(val ? "true -> false" : "false -> true", n);
-          return `(${RT}.m === ${id} ? ${!val} : ${val})`;
+          return `(${RT}.mut(${id}) ? ${!val} : ${val})`;
         }
         return splice(n);
       }
@@ -570,7 +570,7 @@ export function emitFile(
     if (canMutate() && !alreadyBoolLit && !hasActiveNarrowing(s.expression)) {
       const idT = addMutant("if -> true", s.expression);
       const idF = addMutant("if -> false", s.expression);
-      condJs = `${RT}.m === ${idT} ? true : ${RT}.m === ${idF} ? false : (${condJs})`;
+      condJs = `${RT}.mut(${idT}) ? true : ${RT}.mut(${idF}) ? false : (${condJs})`;
     }
     return `if (${condJs}) ${gen(s.thenStatement)}${s.elseStatement ? ` else ${gen(s.elseStatement)}` : ""}`;
   }
@@ -600,7 +600,7 @@ export function emitFile(
       }
     }
     const id = addMutant("delete-stmt", s, true);
-    return `{ if (${RT}.m !== ${id}) { ${orig} } }`;
+    return `{ if (!${RT}.mut(${id})) { ${orig} } }`;
   }
 
   /** `body(o)` with `o` bound to the receiver of a `?.`: null short-circuits before the arguments are evaluated (§10.7). */
@@ -642,7 +642,7 @@ export function emitFile(
         if (canMutate() && !isCaseExpr(u) && !isVecCreateCapArg(u)) {
           const mutVal = v === 0n ? "1n" : "0n";
           const id = addMutant(v === 0n ? "0 -> 1" : "num -> 0", u);
-          return `(${RT}.m === ${id} ? ${mutVal} : ${orig})`;
+          return `(${RT}.mut(${id}) ? ${mutVal} : ${orig})`;
         }
         return orig;
       }
@@ -652,7 +652,7 @@ export function emitFile(
         const mutVal = v === 0 ? 1 : 0;
         if (literalFits(mutVal, t as NumName)) {
           const id = addMutant(v === 0 ? "0 -> 1" : "num -> 0", u);
-          return `(${RT}.m === ${id} ? ${mutVal} : ${orig})`;
+          return `(${RT}.mut(${id}) ? ${mutVal} : ${orig})`;
         }
       }
       return orig;

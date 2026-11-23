@@ -19,7 +19,7 @@ import type { ClassSym, Type } from "./types.ts";
 import * as rt from "../../runtime-js/src/index.ts";
 import { FakeAudio, FakeClock, FakeDisplay, FakeFs, FakeNet, FakeProc, FakeSpawn, MemoryLog, SeededRandom, TestAlloc } from "../../std/src/index.ts";
 
-const MUTATE_VERSION = "6";
+const MUTATE_VERSION = "7";
 
 export interface SkippedTarget {
   readonly fn: string;
@@ -214,8 +214,10 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
     m: 0,
     steps: 0,
     stepLimit: Infinity,
+    deadlineMs: Infinity,
     recording: false,
     reached: new Set<number>(),
+    reachedMutants: new Set<number>(),
     watchFn: -1,
     watchDepth: 0,
   };
@@ -224,9 +226,16 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
     ...rt,
     FakeAudio, FakeClock, FakeDisplay, FakeNet, FakeProc, SeededRandom, MemoryLog, FakeFs, FakeSpawn, TestAlloc,
     get m(): number { return mutState.m; },
+    mut(id: number): boolean { if (mutState.recording) mutState.reachedMutants.add(id); return mutState.m === id; },
     test(name: string, fn: TestFn, file = entryDisplay): void { registeredTests.push({ name, fn, file }); },
     hit(fnId: number): void { if (mutState.recording) mutState.reached.add(fnId); },
-    step(): void { if (++mutState.steps > mutState.stepLimit) throw new StepLimitReached(); },
+    step(): void {
+      const s = ++mutState.steps;
+      if (s > mutState.stepLimit) throw new StepLimitReached();
+      if ((s & 15) === 0 && mutState.deadlineMs < Infinity && performance.now() > mutState.deadlineMs) {
+        throw new StepLimitReached();
+      }
+    },
     cOnly(): never { throw new COnlyReached(); },
     enter(fnId: number): void { if (mutState.watchFn === fnId) mutState.watchDepth++; },
     leave(fnId: number): void { if (mutState.watchFn === fnId) mutState.watchDepth--; },
@@ -245,6 +254,7 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
       }
     },
     mArith(id: number, t: string, orig: string, mut: string, l: rt.NumVal, r: rt.NumVal, pos?: rt.Pos): rt.NumVal {
+      if (mutState.recording) mutState.reachedMutants.add(id);
       const o = mutState.m === id ? mut : orig;
       if (t !== "f32" && t !== "f64") {
         if (o === "+") return rt.add(t as rt.IntType, l, r, pos);
@@ -256,6 +266,7 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
       return t === "f32" ? rt.f32(res) : res;
     },
     mCmp(id: number, orig: string, mut: string, l: unknown, r: unknown): boolean {
+      if (mutState.recording) mutState.reachedMutants.add(id);
       const o = mutState.m === id ? mut : orig;
       switch (o) {
         case "<": return (l as number) < (r as number);
@@ -267,16 +278,19 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
       }
     },
     mCmpHandle(id: number, orig: string, l: rt.PoolHandle | null, r: rt.PoolHandle | null): boolean {
+      if (mutState.recording) mutState.reachedMutants.add(id);
       const o = mutState.m === id ? (orig === "===" ? "!==" : "===") : orig;
       const eq = rt.handleEq(l, r);
       return o === "===" ? eq : !eq;
     },
     mLogic(id: number, orig: string, fa: () => boolean, fb: () => boolean): boolean {
+      if (mutState.recording) mutState.reachedMutants.add(id);
       const o = mutState.m === id ? (orig === "&&" ? "||" : "&&") : orig;
       const a = fa();
       return o === "&&" ? (a && fb()) : (a || fb());
     },
     async mLogicAsync(id: number, orig: string, fa: () => Promise<boolean>, fb: () => Promise<boolean>): Promise<boolean> {
+      if (mutState.recording) mutState.reachedMutants.add(id);
       const o = mutState.m === id ? (orig === "&&" ? "||" : "&&") : orig;
       const a = await fa();
       return o === "&&" ? (a && (await fb())) : (a || (await fb()));
@@ -332,11 +346,14 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
     mutState.stepLimit = limit;
     mutState.recording = record;
     mutState.reached = new Set();
+    mutState.reachedMutants = new Set();
     mutState.watchFn = -1;
     mutState.watchDepth = 0;
     rt.takeIsolateTrap();
     const t0 = performance.now();
+    mutState.deadlineMs = mId > 0 && asyncTimeoutMs !== undefined ? t0 + asyncTimeoutMs : Infinity;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let timedOutByTimer = false;
     try {
       const runP = rt.capturing(async () => {
         await fn(new rt.Test());
@@ -348,6 +365,8 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
           runP,
           new Promise<never>((_res, rej) => {
             timer = setTimeout(() => {
+              timedOutByTimer = true;
+              mutState.stepLimit = -1;
               rt.stopFakeIsolates();
               rej(new StepLimitReached());
             }, asyncTimeoutMs);
@@ -368,8 +387,12 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       mutState.recording = false;
+      mutState.deadlineMs = Infinity;
       rt.stopFakeIsolates();
       rt.takeIsolateTrap();
+      if (timedOutByTimer) {
+        await new Promise<void>((r) => setImmediate(r));
+      }
     }
   }
 
@@ -383,6 +406,7 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
     steps: number;
     durationMs: number;
     reached: Set<number>;
+    reachedMutants: Set<number>;
   }
   const activeTests: BaselineTest[] = [];
   const skippedTests: string[] = [];
@@ -404,7 +428,7 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
     const curIdx = astCursor.get(t.file) ?? 0;
     astCursor.set(t.file, curIdx + 1);
     const ta = testAstsByFile.get(t.file)?.[curIdx];
-    activeTests.push({ name: t.name, mod: ta?.mod ?? entryMod, source: ta?.source ?? "", node: ta?.node ?? entryMod.sf, fn: t.fn, steps: mutState.steps, durationMs: out.durationMs, reached: new Set(mutState.reached) });
+    activeTests.push({ name: t.name, mod: ta?.mod ?? entryMod, source: ta?.source ?? "", node: ta?.node ?? entryMod.sf, fn: t.fn, steps: mutState.steps, durationMs: out.durationMs, reached: new Set(mutState.reached), reachedMutants: new Set(mutState.reachedMutants) });
   }
 
   // Cache load (Q277).
@@ -445,7 +469,9 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
     const fnMutants = (mutantsByFn.get(target.fnId) ?? []).filter((m) => !isEquivalentSuppressed(target.mod, m.range.start.line, m.op));
     if (!fnMutants.length) continue;
 
-    const reaching = activeTests.filter((t) => t.reached.has(target.fnId));
+    const reaching = activeTests
+      .filter((t) => t.reached.has(target.fnId))
+      .sort((a, b) => (a.durationMs - b.durationMs) || (a.steps - b.steps));
     const cacheId = `${target.mod.pf.path}::${target.name}`;
     const key = computeCacheKey(decls, target, reaching);
     const hit = useCache ? cacheStore[cacheId] : undefined;
@@ -469,8 +495,9 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
     for (const spec of fnMutants) {
       let status: "killed" | "survived" | "timeout" = "survived";
       for (const t of reaching) {
-        const limit = Math.max(t.steps * 8 + 1000, 10_000);
-        const asyncTimeoutMs = Math.max(500, Math.ceil(t.durationMs * 20));
+        if (!t.reachedMutants.has(spec.id)) continue;
+        const limit = Math.max(t.steps * 8 + 1000, 2_000);
+        const asyncTimeoutMs = Math.max(400, Math.ceil(t.durationMs * 10));
         const out = await runOneTest(t.fn, spec.id, limit, false, asyncTimeoutMs);
         if (!out.ok) {
           status = out.kind === "timeout" ? "timeout" : "killed";
@@ -700,7 +727,7 @@ async function findWitness(
   fnId: number,
   fnImpl: (...args: unknown[]) => unknown,
   mutantId: number,
-  mutState: { m: number; steps: number; stepLimit: number; recording: boolean; watchFn: number; watchDepth: number },
+  mutState: { m: number; steps: number; stepLimit: number; deadlineMs: number; recording: boolean; watchFn: number; watchDepth: number },
 ): Promise<Witness | null> {
   if (fnSym.sig.tparams.length !== 0 || fnSym.sig.params.length === 0) return null;
   if (!fnSym.sig.params.every(isGeneratable)) return null;
@@ -720,7 +747,7 @@ async function findWitness(
     throw x;
   };
   const arm = (mId: number): void => {
-    mutState.m = mId; mutState.steps = 0; mutState.stepLimit = 10_000;
+    mutState.m = mId; mutState.steps = 0; mutState.stepLimit = 10_000; mutState.deadlineMs = Infinity;
     mutState.recording = false; mutState.watchFn = fnId; mutState.watchDepth = 0;
   };
   const disarm = (): void => { mutState.watchFn = -1; mutState.watchDepth = 0; };

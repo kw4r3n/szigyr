@@ -320,6 +320,128 @@ test("countUp", (t: Test) => {
     expect(res.summary.timeout).toBe(timeouts.length);
     expect(res.summary.survived).toBe(0);
   });
+
+  it("orders reaching tests fastest-first so a slow test declared earlier does not bloat timeout budgets", async () => {
+    const src = `function sumLoop(n: i32): i32 {
+  let acc: i32 = 0;
+  let i: i32 = 0;
+  while (i < n) {
+    acc += i + 1;
+    i += 1;
+  }
+  return acc;
+}
+test("slow first", (t: Test) => {
+  let k: i32 = 0;
+  for (let j: i32 = 0; j < 80000; j += 1) {
+    k = (k + j) & 255;
+  }
+  t.ok(k >= 0);
+  t.eq(sumLoop(3), 6);
+});
+test("fast second", (t: Test) => {
+  t.eq(sumLoop(0), 0);
+  t.eq(sumLoop(3), 6);
+});
+`;
+    const { file, cacheFile } = tmpFile("fast-first.szigyr", src);
+    const t0 = performance.now();
+    const res = await mutate(file, { cache: false, cacheFile });
+    const elapsed = performance.now() - t0;
+    expect(res.diagnostics).toEqual([]);
+    expect(res.baselineFailure).toBeNull();
+    expect(res.summary.survived).toBe(0);
+    expect(res.summary.timeout).toBeGreaterThanOrEqual(2);
+    expect(elapsed).toBeLessThan(5000);
+  });
+
+  it("enforces wall-clock deadline on heavy sync loops and drains timed-out async loops without corrupting later mutants", async () => {
+    const src = `function paintN(surf: DisplaySurface, n: i32): void {
+  const c: DisplayColor = { r: 10, g: 20, b: 30, a: 255 };
+  let i: i32 = 0;
+  while (i < n) {
+    surf.clear(c);
+    i += 1;
+  }
+}
+async function eventLoop(display: Display): Promise<i32> {
+  const opened = await display.open({ title: "t", width: 200, height: 200 });
+  if (opened.kind === "err") return -1;
+  await using surf = opened.value;
+  let frames: i32 = 0;
+  let running = true;
+  while (running) {
+    paintN(surf, 1);
+    await surf.present();
+    frames += 1;
+    for (const ev of surf.pollEvents()) {
+      if (ev.kind === "close") running = false;
+    }
+  }
+  return frames;
+}
+function addOne(x: i32): i32 {
+  return x + 1;
+}
+test("async display loop and addOne", async (t: Test) => {
+  const d = FakeDisplay.create();
+  d.pushEvent({ kind: "close" });
+  t.eq(await eventLoop(d), 1);
+  t.eq(addOne(4), 5);
+  t.eq(addOne(-1), 0);
+});
+`;
+    const { file, cacheFile } = tmpFile("zombie-async.szigyr", src);
+    const t0 = performance.now();
+    const res = await mutate(file, { cache: false, cacheFile });
+    const elapsed = performance.now() - t0;
+    expect(res.diagnostics).toEqual([]);
+    expect(res.baselineFailure).toBeNull();
+    expect(res.summary.timeout).toBeGreaterThanOrEqual(2);
+    const addOneMutants = res.mutants.filter((m) => m.fn === "addOne");
+    expect(addOneMutants.length).toBeGreaterThan(0);
+    for (const m of addOneMutants) expect(m.status).toBe("killed");
+    expect(elapsed).toBeLessThan(10_000);
+  });
+
+  it("filters tests by per-mutant site reachability so unreached branches do not re-run heavy tests", async () => {
+    const src = `function dispatch(branch: i32, x: i32): i32 {
+  if (branch === 0) {
+    let s: i32 = 0;
+    for (let i: i32 = 0; i < 40000; i += 1) {
+      s = (s + i + x) & 255;
+    }
+    return s;
+  }
+  if (branch === 1) {
+    return x * 2 + 1;
+  }
+  return x + 99;
+}
+test("heavy branch 0", (t: Test) => {
+  t.ok(dispatch(0, 3) >= 0);
+});
+test("fast branch 1", (t: Test) => {
+  t.eq(dispatch(1, 0), 1);
+  t.eq(dispatch(1, 5), 11);
+});
+`;
+    const { file, cacheFile } = tmpFile("site-reach.szigyr", src);
+    const t0 = performance.now();
+    const res = await mutate(file, { cache: false, cacheFile });
+    const elapsed = performance.now() - t0;
+    expect(res.diagnostics).toEqual([]);
+    expect(res.baselineFailure).toBeNull();
+    // Line 10 is inside `branch === 1` (`x * 2 + 1`), reached only by fast test & all killed
+    const branch1Mutants = res.mutants.filter((m) => m.range.start.line === 10);
+    expect(branch1Mutants.length).toBeGreaterThanOrEqual(3);
+    for (const m of branch1Mutants) expect(m.status).toBe("killed");
+    // Line 12 (`x + 99`) is never reached -> survived with witness
+    const branch2Survived = res.mutants.filter((m) => m.range.start.line === 12 && m.status === "survived");
+    expect(branch2Survived.length).toBeGreaterThanOrEqual(2);
+    expect(branch2Survived.some((m) => m.witness !== null)).toBe(true);
+    expect(elapsed).toBeLessThan(5000);
+  });
 });
 
 describe("mutate: witness search & shrinking (Q277)", () => {
