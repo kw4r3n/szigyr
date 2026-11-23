@@ -88,7 +88,7 @@ const forms: [string, string, string[]][] = [
   ["empty statement", "function f(): void { ; }", ["E1000@1:22"]],
   ["public method", "class A { public m(): void {} }", ["E1000@1:11"]],
   ["override method", "class A { override m(): void {} }", ["E1000@1:11"]],
-  ["field-only interface and extends rejected", "interface A { readonly x: i32; }\ninterface B extends A { readonly y: string; }", ["E1000@1:15", "E1000@2:13", "E1000@2:25"]],
+  ["field-only interface and extends allowed", "interface A { readonly x: i32; }\ninterface B extends A { readonly y: string; }", []],
   ["trailing default params allowed", "function f(a: i32, b: i32 = a + 1): i32 { return b; }", []],
   ["non-trailing default param rejected", "function f(a: i32 = 1, b: i32): i32 { return a + b; }", ["E1008@1:24"]],
   ["constructor parameter properties allowed", "class A { constructor(private readonly x: i32, public y: i32 = 0) {} }", []],

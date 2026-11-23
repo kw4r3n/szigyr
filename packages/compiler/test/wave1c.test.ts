@@ -37,14 +37,15 @@ afterAll(async () => {
   for (const d of tmpRoots) rmSync(d, { recursive: true, force: true });
 });
 
-describe("Wave 1-C interfaces, default params, and constructor parameter properties", () => {
-  it("supports queryFile metadata for method-only interfaces and constructor parameter properties, and rejects field/extends interfaces", () => {
+describe("Wave 1-C field interfaces, default params, and constructor parameter properties", () => {
+  it("supports queryFile metadata for field-only interfaces and constructor parameter properties", () => {
     const { dir } = makeTmp();
     const f = writeTmp(
       dir,
       "mod.szigyr",
       [
-        `export interface Greeter { greet(name: string): string; }`,
+        `export interface Base { readonly x: i32; }`,
+        `export interface Point extends Base { readonly y: i32; }`,
         `export class Box {`,
         `  constructor(private readonly id: i32, public label: string = "a") {}`,
         `  getId(): i32 { return this.id; }`,
@@ -55,11 +56,16 @@ describe("Wave 1-C interfaces, default params, and constructor parameter propert
 
     const q = queryFile(f, parser);
     expect(q.diagnostics).toEqual([]);
-    const gr = q.symbols.find((s) => s.name === "Greeter");
-    expect(gr).toMatchObject({
-      name: "Greeter",
+    const pt = q.symbols.find((s) => s.name === "Point");
+    expect(pt).toMatchObject({
+      name: "Point",
       kind: "interface",
       exported: true,
+      caps: ["Native", "Copy", "Send", "Codec"],
+      fields: [
+        { name: "x", type: "i32", readonly: true, private: false, static: false },
+        { name: "y", type: "i32", readonly: true, private: false, static: false },
+      ],
     });
     const box = q.symbols.find((s) => s.name === "Box");
     expect(box).toMatchObject({
@@ -71,11 +77,6 @@ describe("Wave 1-C interfaces, default params, and constructor parameter propert
         { name: "label", type: "string", readonly: false, private: false, static: false },
       ],
     });
-
-    const badField = writeTmp(dir, "bad_field.szigyr", `export interface Bad { readonly x: i32; }\n`);
-    expect(check(badField, parser)).toMatchObject([{ code: "E1000" }]);
-    const badExt = writeTmp(dir, "bad_ext.szigyr", `interface A { m(): void; }\ninterface B extends A {}\n`);
-    expect(check(badExt, parser)).toMatchObject([{ code: "E1000" }]);
   });
 
   it("proves contracts through omitted default parameters and checks rt trap sites in defaults", async () => {

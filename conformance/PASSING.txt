@@ -110,7 +110,6 @@ reject/E1000-getter.szigyr
 reject/E1000-in-operator.szigyr
 reject/E1000-inc-in-value-pos.szigyr
 reject/E1000-interface-extends-method.szigyr
-reject/E1000-interface-field.szigyr
 reject/E1000-interface-mixed.szigyr
 reject/E1000-intersection-type.szigyr
 reject/E1000-label.szigyr
@@ -207,6 +206,7 @@ reject/E2002-cast-class-target.szigyr
 reject/E2002-cast-of-result.szigyr
 reject/E2002-cast-type-parameter.szigyr
 reject/E2002-cast-unknown-target.szigyr
+reject/E2002-class-implements-record-interface.szigyr
 reject/E2002-constptr-to-ptr.szigyr
 reject/E2002-constraint-unmet-alias.szigyr
 reject/E2002-constraint-unmet-class-declared-later.szigyr
@@ -247,6 +247,8 @@ reject/E2002-inc-on-string.szigyr
 reject/E2002-includes-array-element.szigyr
 reject/E2002-indexof-record-element.szigyr
 reject/E2002-inferred-return-union.szigyr
+reject/E2002-interface-extends-conflict.szigyr
+reject/E2002-interface-extends-struct.szigyr
 reject/E2002-interface-structural-conformance.szigyr
 reject/E2002-js-callback-function-argument.szigyr
 reject/E2002-js-callback-returns-value.szigyr

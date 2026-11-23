@@ -1,0 +1,8 @@
+// expect: E2002 @ 6:20
+// stage: 2
+interface Pt {
+  readonly x: i32;
+}
+class C implements Pt {
+  readonly x: i32 = 1;
+}

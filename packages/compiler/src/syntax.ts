@@ -6,7 +6,7 @@ import { isValidCHeader } from "./cdecl.ts";
 import type { Diagnostic } from "./diagnostics.ts";
 import { DETMATH_PATH } from "./detmath.ts";
 import { canonPath } from "./modules.ts";
-import { NodeFlags, SyntaxKind as K, isId, isParamProp, type Node, type ParsedFile, type ts } from "./parse.ts";
+import { NodeFlags, SyntaxKind as K, isId, isParamProp, isRecordInterface, type Node, type ParsedFile, type ts } from "./parse.ts";
 import { RUNTIME_GLOBAL } from "./names.ts";
 
 /** Q004: type names rejected as E1000 rather than E2000. */
@@ -562,21 +562,45 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     mods(d, [K.ExportKeyword]);
     declName(d.name);
     typeParams(d.typeParameters);
+    const hasMethods = d.members.some((m) => m.kind === K.MethodSignature);
     const names = new Set<string>(); // Q223 (a): a member name once per interface
-    for (const h of d.heritageClauses ?? []) e1000(h, "'extends' on an interface is not allowed; use 'type' for record types", { kind: "interface-extends" });
-    for (const m of d.members) {
-      if (m.kind === K.PropertySignature) {
-        at("E1000", m, "interface declares methods only; use 'type Name = { readonly ... }' for record types", { kind: "interface-field" });
-        continue;
+    if (hasMethods) {
+      for (const h of d.heritageClauses ?? []) e1000(h, "'extends' on a method interface", { kind: "interface-extends" });
+      for (const m of d.members) {
+        if (m.kind === K.PropertySignature) {
+          at("E1000", m, "interface cannot mix fields and methods", { kind: "interface-mixed" });
+          continue;
+        }
+        if (m.kind !== K.MethodSignature) { e1000(m, "interface member other than a method signature"); continue; }
+        const s = m as ts.MethodSignatureDeclaration;
+        mods(s, []);
+        memberName(s);
+        if (isId(s.name)) claim(names, s.name);
+        typeParams(s.typeParameters);
+        params(s.parameters);
+        if (s.type) type(s.type);
       }
-      if (m.kind !== K.MethodSignature) { e1000(m, "interface member other than a method signature"); continue; }
-      const s = m as ts.MethodSignatureDeclaration;
-      mods(s, []);
-      memberName(s);
-      if (isId(s.name)) claim(names, s.name);
-      typeParams(s.typeParameters);
-      params(s.parameters);
-      if (s.type) type(s.type);
+    } else if (isRecordInterface(d)) {
+      for (const h of d.heritageClauses ?? []) {
+        if (h.token !== K.ExtendsKeyword) { e1000(h, "this clause on an interface"); continue; }
+        for (const t of h.types) {
+          const exp = t.expression;
+          const ok = isId(exp) || (exp.kind === K.PropertyAccessExpression && isId((exp as ts.PropertyAccessExpression).expression) && isId((exp as ts.PropertyAccessExpression).name));
+          if (!ok) e1000(t.expression, "this extends clause");
+          for (const a of t.typeArguments ?? []) type(a);
+        }
+      }
+      for (const m of d.members) {
+        if (m.kind !== K.PropertySignature) { e1000(m, "interface member other than a property signature"); continue; }
+        const p = m as ts.PropertySignatureDeclaration;
+        mods(p, [K.ReadonlyKeyword]);
+        memberName(p);
+        if (isId(p.name)) claim(names, p.name);
+        if (p.type) type(p.type);
+      }
+    } else {
+      for (const h of d.heritageClauses ?? []) e1000(h, "'extends' on an interface");
+      for (const m of d.members) e1000(m, "interface member other than a method or field signature");
     }
   }
 

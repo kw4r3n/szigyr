@@ -129,7 +129,7 @@ it("registers forAll as a builtin function rather than reserved (§12, §16.1)",
   expect(BUILTIN_NAMES.has("forAll")).toBe(true);
 });
 
-it("enforces Group A TS-divergence cleanups (Result.ok/err, method-only interface, no satisfies, borrowSlice, OwnedStruct)", () => {
+it("enforces Group A TS-divergence cleanups (Result.ok/err, field-only interface, no satisfies, borrowSlice, OwnedStruct)", () => {
   const dir = mkdtempSync(join(tmpdir(), "szigyr-group-a-"));
   const checkSrc = (name: string, src: string) => {
     const f = join(dir, name);
@@ -137,12 +137,12 @@ it("enforces Group A TS-divergence cleanups (Result.ok/err, method-only interfac
     return check(f);
   };
   expect(checkSrc("free-ok-err.szigyr", `export function f(ok: i32, err: string): i32 { const r: Result<i32, string> = ok > 0 ? Result.ok(ok) : Result.err(err); return r.kind === "ok" ? r.value : 0; }\n`)).toEqual([]);
+  expect(checkSrc("rec-iface.szigyr", `export interface Base { readonly x: i32; }\nexport interface Pt extends Base { readonly y: i32; }\nexport function sum(p: Pt): i32 { return p.x + p.y; }\n`)).toEqual([]);
   const hint = (src: string, file: string) => checkSrc(file, src).map((d) => `${d.code}:${d.message}`);
   expect(hint(`export function f(): void { const x = ok(1); }\n`, "unbound-ok.szigyr")[0]).toMatch(/^E2000:.*Result\.ok/);
   expect(hint(`export function f(): void { const x = err("a"); }\n`, "unbound-err.szigyr")[0]).toMatch(/^E2000:.*Result\.err/);
   expect(hint(`export type R = Struct<{ readonly x: i32 }>;\n`, "unbound-struct.szigyr")[0]).toMatch(/^E2000:.*OwnedStruct/);
-  expect(hint(`interface R { x: i32; }\n`, "iface-prop.szigyr")[0]).toMatch(/^E1000:/);
-  expect(hint(`interface A { m(): void; }\ninterface B extends A {}\n`, "iface-ext.szigyr")[0]).toMatch(/^E1000:/);
+  expect(hint(`interface A { m(): void; }\ninterface B extends A { n(): void; }\n`, "iface-ext.szigyr")[0]).toMatch(/^E1000:/);
   expect(hint(`export function f(): i32 { return 1 satisfies i32; }\n`, "satisfies.szigyr")[0]).toMatch(/^E1000:/);
   expect(hint(`function take(s: Ref<Slice<i32>>): usize { return s.length; }\nexport function f(a: Alloc): usize { const v = Vec.create<i32>(a, 4); return take(v.slice(0, 1)); }\n`, "vec-slice.szigyr")[0]).toMatch(/^E2001:.*borrowSlice/);
   expect(hint(`function take(s: Ref<Slice<i32>>): usize { return s.slice(0, 1).length; }\n`, "slice-slice.szigyr")[0]).toMatch(/^E2001:.*borrowSlice/);
