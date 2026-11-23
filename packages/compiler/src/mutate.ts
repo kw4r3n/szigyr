@@ -19,7 +19,7 @@ import type { ClassSym, Type } from "./types.ts";
 import * as rt from "../../runtime-js/src/index.ts";
 import { FakeAudio, FakeClock, FakeDisplay, FakeFs, FakeNet, FakeProc, FakeSpawn, MemoryLog, SeededRandom, TestAlloc } from "../../std/src/index.ts";
 
-const MUTATE_VERSION = "7";
+const MUTATE_VERSION = "8";
 
 export interface SkippedTarget {
   readonly fn: string;

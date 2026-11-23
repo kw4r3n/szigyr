@@ -73,6 +73,16 @@ const isLoopCondLit = (n: Node): boolean => {
   if (p.kind === K.ForStatement) return (p as ts.ForStatement).condition === cur;
   return false;
 };
+/** Whether `n` is the step literal of a `for (...; ...; x += k)` / `x -= k` incrementor (`k -> 0` always hangs). */
+const isForStepLit = (n: Node): boolean => {
+  const { cur, parent } = unwrapParentExpr(n);
+  if (!parent || parent.kind !== K.BinaryExpression) return false;
+  const b = parent as ts.BinaryExpression;
+  const k = b.operatorToken.kind;
+  if (b.right !== cur || (k !== K.PlusEqualsToken && k !== K.MinusEqualsToken)) return false;
+  const { cur: inc, parent: fp } = unwrapParentExpr(b);
+  return fp?.kind === K.ForStatement && (fp as ts.ForStatement).incrementor === inc;
+};
 
 export interface MutantSpec {
   id: number;
@@ -436,11 +446,13 @@ export function emitFile(
         if (t?.k === "num") {
           if (isInt64(t.name)) {
             const v = parseExactInt(n.getText(sf), false)!;
+            if (v !== 0n && isForStepLit(n)) return orig;
             const mutVal = v === 0n ? "1n" : "0n";
             const id = addMutant(v === 0n ? "0 -> 1" : "num -> 0", n);
             return `(${RT}.mut(${id}) ? ${mutVal} : ${orig})`;
           }
           const v = numValue(n as ts.NumericLiteral);
+          if (v !== 0 && isForStepLit(n)) return orig;
           const mutVal = v === 0 ? 1 : 0;
           if (literalFits(mutVal, t.name)) {
             const id = addMutant(v === 0 ? "0 -> 1" : "num -> 0", n);
@@ -639,7 +651,7 @@ export function emitFile(
       if (t && isInt64(t)) {
         const v = parseExactInt(u.operand.getText(sf), true)!;
         const orig = `${v}n`;
-        if (canMutate() && !isCaseExpr(u) && !isVecCreateCapArg(u)) {
+        if (canMutate() && !isCaseExpr(u) && !isVecCreateCapArg(u) && !(v !== 0n && isForStepLit(u))) {
           const mutVal = v === 0n ? "1n" : "0n";
           const id = addMutant(v === 0n ? "0 -> 1" : "num -> 0", u);
           return `(${RT}.mut(${id}) ? ${mutVal} : ${orig})`;
@@ -649,6 +661,7 @@ export function emitFile(
       const orig = t === "f32" ? `${RT}.f32(${rawText})` : t && isInt(typeOf(u)!) ? `(${rawText} + 0)` : rawText;
       if (canMutate() && !isCaseExpr(u) && !isVecCreateCapArg(u) && t) {
         const v = -numValue(u.operand as ts.NumericLiteral);
+        if (v !== 0 && isForStepLit(u)) return orig;
         const mutVal = v === 0 ? 1 : 0;
         if (literalFits(mutVal, t as NumName)) {
           const id = addMutant(v === 0 ? "0 -> 1" : "num -> 0", u);

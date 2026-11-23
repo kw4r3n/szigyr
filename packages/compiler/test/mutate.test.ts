@@ -442,6 +442,50 @@ test("fast branch 1", (t: Test) => {
     expect(branch2Survived.some((m) => m.witness !== null)).toBe(true);
     expect(elapsed).toBeLessThan(5000);
   });
+
+  it("skips num -> 0 mutation on nonzero for-loop incrementor steps while still mutating 0 -> 1", async () => {
+    const src = `function sumSteps(n: usize): usize {
+  "use rt";
+  let acc: usize = 0;
+  for (let i: usize = 0; i < n; i += 1) {
+    acc = wrapAdd(acc, i + 1);
+  }
+  for (let j: i32 = i32(n); j > 0; j -= 1) {
+    acc = wrapAdd(acc, usize(j + 1));
+  }
+  for (let m: i32 = 0; m < i32(n); m -= -1) {
+    acc = wrapAdd(acc, usize(m + 1));
+  }
+  return acc;
+}
+test("sumSteps", (t: Test) => {
+  t.eq(sumSteps(0), usize(0));
+  t.eq(sumSteps(4), usize(34));
+});
+`;
+    const { file, cacheFile } = tmpFile("for-step-lit.szigyr", src);
+    const res = await mutate(file, { cache: false, cacheFile });
+    expect(res.diagnostics).toEqual([]);
+    expect(res.baselineFailure).toBeNull();
+    expect(res.summary.timeout).toBe(0);
+    expect(res.summary.survived).toBe(0);
+    expect(res.mutants.some((m) => m.op === "num -> 0" && (m.range.start.line === 4 || m.range.start.line === 7 || m.range.start.line === 10))).toBe(false);
+
+    const zSrc = `function zeroStep(k0: i32): i32 {
+  for (let k: i32 = k0; k < 0; k += 0) {
+    return k;
+  }
+  return k0;
+}
+test("zeroStep", (t: Test) => {
+  t.eq(zeroStep(0), 0);
+});
+`;
+    const z = tmpFile("for-step-zero.szigyr", zSrc);
+    const zRes = await mutate(z.file, { cache: false, cacheFile: z.cacheFile });
+    expect(zRes.diagnostics).toEqual([]);
+    expect(zRes.mutants.some((m) => m.op === "0 -> 1" && m.range.start.line === 2 && m.range.start.col === 37)).toBe(true);
+  });
 });
 
 describe("mutate: witness search & shrinking (Q277)", () => {

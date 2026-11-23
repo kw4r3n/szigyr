@@ -49,4 +49,6 @@ it("keeps explain entries free of hallucinated capabilities, stale filenames, an
   expect(explainCode("T009")!.remediation).toContain("64-bit");
   expect(explainCode("T011")!.description).toContain("Pool");
   expect(explainCode("T012")!.description).toContain("Arena.view");
+  expect(explainCode("E3003")!.remediation).toContain("Destructure");
+  expect(explainCode("E3003")!.remediation).not.toContain("without reusing the parent");
 });

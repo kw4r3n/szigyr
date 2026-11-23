@@ -236,7 +236,10 @@ export async function serveLsp(opts: LspOptions = {}): Promise<number> {
         if (sym) {
           return {
             contents: { kind: "markdown", value: formatSymbolHover(sym) },
-            range: toLspRange(sym.range),
+            range: {
+              start: toLspPos(pf.position(narrow.getStart(pf.sourceFile))),
+              end: toLspPos(pf.position(narrow.end)),
+            },
           };
         }
 

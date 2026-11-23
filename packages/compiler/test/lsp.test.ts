@@ -207,6 +207,10 @@ export function main(sys: System): void {
       });
       expect(hoverFn.result.contents.value).toContain("function main");
       expect(hoverFn.result.contents.value).toContain("managed");
+      expect(hoverFn.result.range).toEqual({
+        start: { line: 2, character: 16 },
+        end: { line: 2, character: 20 },
+      });
 
       const hoverLocal = await lsp.request("textDocument/hover", {
         textDocument: { uri: mainUri },
@@ -237,6 +241,10 @@ export function main(sys: System): void {
       });
       expect(pHoverLib.result.contents.value).toContain("layer: `rt`");
       expect(pHoverLib.result.contents.value).toContain("pure: `true`");
+      expect(pHoverLib.result.range).toEqual({
+        start: { line: 0, character: 16 },
+        end: { line: 0, character: 21 },
+      });
 
       const pLibEdited = lsp.waitForDiagnostics(libUri);
       const pMainBroken = lsp.waitForDiagnostics(mainUri);
