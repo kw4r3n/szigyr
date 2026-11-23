@@ -1888,3 +1888,51 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
   - (a) ① `HttpServer` に `stop(): void`（進行中レスポンスに `Connection: close` を付けて返し終えた後にソケットを閉じて停止する冪等な優雅停止）と `waitClosed(): Promise<void>` を追加する。② `QueryParam` レコードと `Url` 組込名前空間（managed 専用：`parseQuery`, `getQueryParam`, `formatQuery`, `encodeComponent`, `decodeComponent`）を追加し、`runtime-js/src/result.ts` の `URLSearchParams` / UTF-8 `encodeURIComponent`（孤立サロゲートも置換文字経由で安全に符号化）で Node/ブラウザ両対応する。③ `FakeFs` の書込で親ディレクトリ未存在を `nodeFs` と同じ `ENOENT` にし、`FakeFs.addSymlink(path, target): Result<null, IoError>`（循環 `ELOOP`・`stat` の `lstat` 化・`readDir` の `"symlink"`・`exists` のリンク先解決）を追加する。
   - (b) アプリ側のポーリング・自前パーサ・`nodeFs` 専用 E2E 検証のまま据え置く。
 - 既定案: (a)。
+
+### Q297 null 合体代入 `x ??= v` の層範囲・評価回数・型
+- 関連: §3.1、§4、Q257
+- 状況: TS の `x ??= v` を解禁するにあたり、対応層・左辺の評価回数・式全体の型・文位置での絞り込みを定める必要がある。
+- 選択肢:
+  - (a) 全層（managed / strict / rt、JS / C / Wasm 一致）で許可。左辺は `T | null` 必須（非 null は `E2002`）かつ 1 回のみ評価し、右辺は左辺が `null` のときのみ短絡評価（文脈型は左辺の `T | null`、数値/文字列リテラルは `T` を引き継ぐ）。式全体の型は右辺が `T` に代入可能なら `T`、そうでなければ `T | null`。文位置の `x ??= v` で右辺が非 null なら直後から `x` を `T` に絞り込む。
+  - (b) managed 限定、または左辺を常に `T | null` とみなす。
+- 既定案: (a)。
+
+### Q298 省略可能添字 `a?.[i]` の層範囲と書き込み禁止
+- 関連: §4、Q025
+- 状況: `a?.[i]` を解禁するにあたり、対応するレシーバ型・層・書き込み左辺の扱いを決める必要がある。
+- 選択肢:
+  - (a) `a[i]` と同じコンテナ型（`Array` / `ReadonlyArray` / `tuple` / `Vec` / `Slice`）を `T | null` で受け、読み取りのみ許可（`a?.[i] = v` や複合代入左辺は `E2002`）。`strict` / `rt` は非 Result ユニオンに `Copy` を要するため事実上 `managed` のみとなるが、`managed` 内の `Vec<T> | null` も JS ランタイムで短絡・範囲検査（`T002`）を行う。
+  - (b) `Vec` / `Slice` からの `?.[` を別途禁止する。
+- 既定案: (a)。
+
+### Q299 省略可能呼び出し `f?.()` の層範囲と戻り値型
+- 関連: §4、Q025
+- 状況: `f?.()` と `o.f?.()` / `o?.f?.()` を解禁するにあたり、層制限と短絡評価を明確にする。
+- 選択肢:
+  - (a) 関数値自体が `managed` 専用のため `f?.()` は `managed` 専用とし、`strict` / `rt` は `E4001`。呼び出し対象は `(Params) => R | null` 必須（非 null は `E2002`）。対象を 1 回評価し、`null` なら引数を評価せず `null` を返し（返り値型は `R | null`）、`await` 付き引数や `o?.f()`（呼び出し可能フィールド）にも対応する。
+  - (b) `(Params) => R | null` を直接書ける位置だけ許可し `o.f?.()` を拒否する。
+- 既定案: (a)。
+
+### Q300 残余引数 `...rest` の層・位置・型制約
+- 関連: §3.5、Q004
+- 状況: TS の残余引数 `...rest: Array<T>`（`T[]`）および `ReadonlyArray<T>`（`readonly T[]`）を許可する範囲と、非 managed 層や特殊コールバックでの拒否規則を定める必要がある。
+- 選択肢:
+  - (a) `managed` 層の末尾引数のみ許可し、型は `Array<T>` / `ReadonlyArray<T>`（`T[]` / `readonly T[]`）必須（それ以外は `E2002`、`?`/既定値付きは `E1008`、分割代入付き/末尾以外は `E1000`）。末尾の既定引数の後ろも許可する（既定引数を省略せず渡した後の可変長部分を受ける）。`strict` / `rt` / `c:` では `E1000`（`data.kind = "rest-param-layer"` 等）で拒否し、`forAll` / `fuzzContracts` / `spawn.isolate` / `audio.open` でも拒否する。
+  - (b) `Array<T>` のみに絞る、または `strict` / `rt` でも固定引数のスプレッド展開を認める。
+- 既定案: (a)。
+
+### Q301 関数呼び出しスプレッド `f(...xs)` の制約
+- 関連: §3.5、Q053、Q300
+- 状況: 関数呼び出しでの `...xs` を一般引数へ展開すると静的引数個数検査や所有権・C ABI 境界と衝突する。
+- 選択肢:
+  - (a) `managed` 専用（`strict` / `rt` は `E4001`）かつ、呼び出し先が `...rest` 引数を持つ場合の末尾 `rest` 引数位置（固定引数はすべて実引数で与えた後ろ）および `Math.min` / `Math.max` への `Array<T>` / `ReadonlyArray<T>` の展開に限定する（他位置は `E2002`）。
+  - (b) 固定引数位置や `strict` / `rt` の関数への配列展開も許す。
+- 既定案: (a)。
+
+### Q302 引数の分割代入と所有権・C/Wasm 対応
+- 関連: §3.5、§5、Q052
+- 状況: `function f({ a, b: c }: R)` と `function f([a, b]: [T0, T1])` を許可する際の既定値・所有権・後続既定引数・C/Wasm 出力を定める必要がある。
+- 選択肢:
+  - (a) レコード / `OwnedStruct` / `CStruct`（および `Ref<OwnedStruct>` / `Mut<OwnedStruct>`）のオブジェクト分割代入は全層（JS / C / Wasm 一致）、タプルの配列分割代入は `managed` で許可する（`strict` / `rt` のタプル注釈は `E4002`）。パターンの型注釈は必須（`E2006`、コンテキスト付きアロー関数を除く）。パターン内の既定値 `{ a = 1 }` は `E1008`、ネストや残余要素は `E1000` を維持し、引数全体への `= {...}` 既定値と後続既定引数からの束縛名参照は許可する。`OwnedStruct` 値渡しで `Owned` フィールドを省略すると `E3003`、`Ref`/`Mut` から `Owned` フィールドを取り出すと `E3004` とする（`Copy` フィールドのみの読み取りは許可）。
+  - (b) `managed` 限定またはトップレベル `function` のみ許可する。
+- 既定案: (a)。

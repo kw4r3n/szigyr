@@ -25,7 +25,7 @@ const UNSAFE_DIRECTIVE = "use unsafe";
 const CONTRACTS = new Set(["requires", "ensures", "invariant"]);
 /** Q054: annotation heads that make a module-level const mutable. */
 const MUTABLE_TYPES = new Set(["Array", "Map", "Set", "Vec", "Pool", "Arena", "OwnedStruct"]);
-// Logical assignments (&&=, ||=, ??=) are disallowed and fall to E1000.
+// Logical assignments (&&=, ||=) are disallowed and fall to E1000.
 const BINARY_OPS = new Set<K>([
   K.PlusToken, K.MinusToken, K.AsteriskToken, K.SlashToken, K.PercentToken, K.AsteriskAsteriskToken,
   K.LessThanToken, K.LessThanEqualsToken, K.GreaterThanToken, K.GreaterThanEqualsToken, K.EqualsEqualsEqualsToken, K.ExclamationEqualsEqualsToken,
@@ -33,6 +33,7 @@ const BINARY_OPS = new Set<K>([
   K.AmpersandAmpersandToken, K.BarBarToken, K.QuestionQuestionToken,
   K.EqualsToken, K.PlusEqualsToken, K.MinusEqualsToken, K.AsteriskEqualsToken, K.SlashEqualsToken, K.PercentEqualsToken, K.AsteriskAsteriskEqualsToken,
   K.AmpersandEqualsToken, K.BarEqualsToken, K.CaretEqualsToken, K.LessThanLessThanEqualsToken, K.GreaterThanGreaterThanEqualsToken, K.GreaterThanGreaterThanGreaterThanEqualsToken,
+  K.QuestionQuestionEqualsToken,
 ]);
 const PREFIX_OPS = new Set<K>([K.MinusToken, K.ExclamationToken, K.TildeToken]);
 
@@ -78,7 +79,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
   /** Contract and `test` calls that sit in an allowed position (E6001 / E6003 otherwise). */
   const allowedCalls = new Set<Node>();
   /** Q120 / Q124 / §16.1: what the enclosing function allows. Arrows inherit `thisOk` and `inTest`. */
-  let fc = { thisOk: false, async: false, inTest: false, loops: 0, breaks: 0 };
+  let fc = { thisOk: false, async: false, inTest: false, loops: 0, breaks: 0, layer: undefined as string | undefined };
 
   const calleeName = (s: Node): { call: ts.CallExpression; name: string } | undefined => {
     if (s.kind !== K.ExpressionStatement) return;
@@ -131,7 +132,9 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       }
     }
   }
-  for (let i = prologue(stmts, true, true); i < stmts.length; i++) {
+  const topStart = prologue(stmts, true, true);
+  fc.layer = fileLayer;
+  for (let i = topStart; i < stmts.length; i++) {
     const s = stmts[i]!;
     switch (s.kind) {
       case K.ImportDeclaration: importDecl(s as ts.ImportDeclaration); break;
@@ -168,12 +171,9 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
   }
   return out;
 
-  /** Leading string-literal statements (directives, Q039). Returns the index of the first other statement.
-   * §14.4: "use unsafe" may accompany the layer directive in either order; anywhere else it is E1009. */
-  function prologue(list: ts.NodeArray<ts.Statement>, allowDirective: boolean, isModule = false): number {
+  function peekLayer(list: ts.NodeArray<ts.Statement>, allowDirective: boolean): { layerAt: number; layer: string | undefined; lits: ts.StringLiteral[] } {
     const lits: ts.StringLiteral[] = [];
-    let i = 0;
-    for (; i < list.length; i++) {
+    for (let i = 0; i < list.length; i++) {
       const s = list[i]!;
       if (s.kind !== K.ExpressionStatement || (s as ts.ExpressionStatement).expression.kind !== K.StringLiteral) break;
       lits.push((s as ts.ExpressionStatement).expression as ts.StringLiteral);
@@ -181,7 +181,14 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     let layerAt = -1;
     if (allowDirective && lits[0] && DIRECTIVES.has(lits[0].text)) layerAt = 0;
     else if (allowDirective && lits[0]?.text === UNSAFE_DIRECTIVE && lits[1] && DIRECTIVES.has(lits[1].text)) layerAt = 1;
-    const layer = layerAt >= 0 ? lits[layerAt]!.text : undefined;
+    return { layerAt, layer: layerAt >= 0 ? lits[layerAt]!.text : undefined, lits };
+  }
+
+  /** Leading string-literal statements (directives, Q039). Returns the index of the first other statement.
+   * §14.4: "use unsafe" may accompany the layer directive in either order; anywhere else it is E1009. */
+  function prologue(list: ts.NodeArray<ts.Statement>, allowDirective: boolean, isModule = false): number {
+    const { layerAt, layer, lits } = peekLayer(list, allowDirective);
+    const i = lits.length;
     if (isModule) fileLayer = layer;
     let unsafeSeen = false;
     lits.forEach((lit, j) => {
@@ -399,7 +406,11 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     const isTestCb = (n.kind === K.ArrowFunction || n.kind === K.FunctionExpression) && n.parent?.kind === K.CallExpression &&
       allowedCalls.has(n.parent) && (n.parent as ts.CallExpression).arguments[1] === n;
     const inTest = (n.kind === K.ArrowFunction || n.kind === K.FunctionExpression) && (fc.inTest || isTestCb);
-    fc = { thisOk, async: !!n.modifiers?.some((m) => m.kind === K.AsyncKeyword), inTest, loops: 0, breaks: 0 };
+    const fnLayer = kind === "function" && n.body?.kind === K.Block
+      ? peekLayer((n.body as ts.Block).statements, true).layer
+      : undefined;
+    const layer = fnLayer ?? (n.kind === K.ArrowFunction || n.kind === K.FunctionExpression ? fc.layer : fileLayer);
+    fc = { thisOk, async: !!n.modifiers?.some((m) => m.kind === K.AsyncKeyword), inTest, loops: 0, breaks: 0, layer };
     try { scoped(() => fn0(n, kind)); } finally { fc = saved; } // parameters and the top level of the body share one scope
   }
   function fn0(n: ts.FunctionDeclaration | ts.MethodDeclaration | ts.ArrowFunction | ts.FunctionExpression | ts.ConstructorDeclaration, kind: FnKind): void {
@@ -417,8 +428,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     else if (n.kind === K.ArrowFunction) mods(n, [K.AsyncKeyword]);
     else if (n.kind === K.Constructor) mods(n, []);
     typeParams(n.typeParameters);
-    params(n.parameters, { allowDefaults: true, allowParamProps: n.kind === K.Constructor, forbidThis: n.kind === K.Constructor });
-    for (const p of n.parameters) if (isId(p.name)) bind(p.name);
+    params(n.parameters, { allowDefaults: true, allowParamProps: n.kind === K.Constructor, forbidThis: n.kind === K.Constructor, allowRest: fc.layer === undefined, allowDestructure: true, bind: true, layer: fc.layer });
     if (n.type) type(n.type);
     const body = n.body;
     if (!body) { e1000(n, "function overload or declaration without body"); return; }
@@ -463,36 +473,57 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     }
   }
 
-  function params(list: ts.NodeArray<ts.ParameterDeclaration>, opts?: { allowDefaults?: boolean; allowParamProps?: boolean; forbidThis?: boolean }): void {
+  function params(list: ts.NodeArray<ts.ParameterDeclaration>, opts?: { allowDefaults?: boolean; allowParamProps?: boolean; forbidThis?: boolean; allowRest?: boolean; allowDestructure?: boolean; bind?: boolean; layer?: string }): void {
     let seenDefault = false;
-    for (const p of list) {
+    for (let i = 0; i < list.length; i++) {
+      const p = list[i]!;
       mods(p, opts?.allowParamProps ? [K.PrivateKeyword, K.PublicKeyword, K.ReadonlyKeyword] : []);
       if (opts?.allowParamProps) {
         const hasPub = !!p.modifiers?.some((m) => m.kind === K.PublicKeyword);
         const hasPriv = !!p.modifiers?.some((m) => m.kind === K.PrivateKeyword);
         if (hasPub && hasPriv) e1000(p.modifiers![0]!, "conflicting access modifiers");
       }
-      if (p.dotDotDotToken) { e1000(p, "rest parameter"); continue; }
-      if (!isId(p.name)) { e1000(p.name, "parameter destructuring"); continue; }
-      if (p.name.text === "this") { e1000(p.name, "'this' parameter"); continue; }
-      declName(p.name);
-      if (opts?.allowParamProps && isParamProp(p) && (SPECIAL_MEMBERS.has(p.name.text) || p.name.text.startsWith(RUNTIME_GLOBAL))) {
-        e1000(p.name, `member name '${p.name.text}'`, { kind: "reserved-name", name: p.name.text });
+      if (p.dotDotDotToken) {
+        if (!opts?.allowRest) {
+          if (opts?.layer) e1000(p, `rest parameter in '${opts.layer}' (managed only)`, { kind: "rest-param-layer", layer: opts.layer });
+          else e1000(p, "rest parameter", { kind: "rest-param" });
+          continue;
+        }
+        if (i !== list.length - 1) { e1000(p, "non-trailing rest parameter", { kind: "rest-param" }); continue; }
+        if (!isId(p.name)) { e1000(p.name, "rest parameter destructuring", { kind: "rest-param" }); continue; }
       }
+      if (!isId(p.name)) {
+        if (opts?.allowDestructure && (p.name.kind === K.ObjectBindingPattern || p.name.kind === K.ArrayBindingPattern)) {
+          if (isParamProp(p)) e1000(p.modifiers![0]!, "parameter property with destructuring", { kind: "param-destructuring" });
+          if (p.name.kind === K.ObjectBindingPattern) bindingPattern(p.name as ts.ObjectBindingPattern);
+          else arrayBindingPattern(p.name as ts.ArrayBindingPattern);
+        } else {
+          e1000(p.name, "parameter destructuring", { kind: "param-destructuring" });
+          continue;
+        }
+      } else {
+        if (p.name.text === "this") { e1000(p.name, "'this' parameter"); continue; }
+        declName(p.name);
+        if (opts?.bind) bind(p.name);
+        if (opts?.allowParamProps && isParamProp(p) && (SPECIAL_MEMBERS.has(p.name.text) || p.name.text.startsWith(RUNTIME_GLOBAL))) {
+          e1000(p.name, `member name '${p.name.text}'`, { kind: "reserved-name", name: p.name.text });
+        }
+      }
+      const idName = isId(p.name) ? { name: p.name.text } : {};
       if (p.questionToken) {
-        at("E1008", p.name, "optional parameter is not allowed", { kind: "optional-param", name: p.name.text });
+        at("E1008", p.name, "optional parameter is not allowed", { kind: "optional-param", ...idName });
         nullableFix(p.questionToken, p.type);
       } else if (p.initializer) {
-        if (!opts?.allowDefaults) {
-          at("E1008", p.name, "default parameter is not allowed here", { kind: "default-param", name: p.name.text });
+        if (!opts?.allowDefaults || p.dotDotDotToken) {
+          at("E1008", p.name, "default parameter is not allowed here", { kind: "default-param", ...idName });
         } else {
           seenDefault = true;
           const saved = fc;
           fc = { ...fc, async: false, ...(opts.forbidThis ? { thisOk: false } : {}) };
           try { expr(p.initializer); } finally { fc = saved; }
         }
-      } else if (seenDefault && opts?.allowDefaults) {
-        at("E1008", p.name, "required parameter cannot follow a default parameter", { kind: "non-trailing-default", name: p.name.text });
+      } else if (seenDefault && opts?.allowDefaults && !p.dotDotDotToken) {
+        at("E1008", p.name, "required parameter cannot follow a default parameter", { kind: "non-trailing-default", ...idName });
       }
       if (p.type) type(p.type);
     }
@@ -577,7 +608,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         memberName(s);
         if (isId(s.name)) claim(names, s.name);
         typeParams(s.typeParameters);
-        params(s.parameters);
+        params(s.parameters, { allowRest: fc.layer === undefined, layer: fc.layer });
         if (s.type) type(s.type);
       }
     } else if (isRecordInterface(d)) {
@@ -790,8 +821,11 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
   }
 
   // ---- expressions (§3, §4)
-  function args(list: ts.NodeArray<ts.Expression> | undefined): void {
-    for (const a of list ?? []) expr(a); // a spread argument falls to E1000 (Q053)
+  function args(list: ts.NodeArray<ts.Expression> | undefined, allowSpread = false): void {
+    for (const a of list ?? []) {
+      if (allowSpread && a.kind === K.SpreadElement) expr((a as ts.SpreadElement).expression);
+      else expr(a);
+    }
   }
 
   function expr(e: ts.Expression): void {
@@ -860,7 +894,6 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       }
       case K.CallExpression: {
         const c = e as ts.CallExpression;
-        if (c.questionDotToken) e1000(c, "optional call");
         const callee = c.expression;
         if (callee.kind === K.ImportKeyword) at("E7001", callee, "dynamic import is not allowed", { kind: "dynamic-import" });
         else if (isId(callee) && callee.text === "require") at("E7001", callee, "'require' is not allowed", { kind: "require" });
@@ -871,14 +904,14 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
           expr(callee);
         }
         for (const t of c.typeArguments ?? []) type(t);
-        args(c.arguments);
+        args(c.arguments, true);
         return;
       }
       case K.NewExpression: {
         const x = e as ts.NewExpression;
         expr(x.expression);
         for (const t of x.typeArguments ?? []) type(t);
-        args(x.arguments);
+        args(x.arguments, true);
         return;
       }
       case K.PropertyAccessExpression: {
@@ -889,7 +922,6 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       }
       case K.ElementAccessExpression: {
         const x = e as ts.ElementAccessExpression;
-        if (x.questionDotToken) e1000(x, "'?.[]'");
         expr(x.expression); expr(x.argumentExpression);
         return;
       }
@@ -1019,7 +1051,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       }
       case K.FunctionType: {
         const f = t as ts.FunctionTypeNode;
-        typeParams(f.typeParameters); params(f.parameters); if (f.type) type(f.type);
+        typeParams(f.typeParameters); params(f.parameters, { allowRest: fc.layer === undefined, layer: fc.layer }); if (f.type) type(f.type);
         return;
       }
       case K.ArrayType: {

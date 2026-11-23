@@ -9,7 +9,7 @@ import { isDeterministic } from "./determinism.ts";
 import { isGeneratable } from "./gendesc.ts";
 import {
   AUDIO_CONFIG_RECORD, BOOL, ERROR, ERROR_RECORD, F64, NEVER, NULL, NUM_NAMES, STR, UNKNOWN, USIZE, VOID, assignable, audioStateOk, bindTParams, borrowOk, boxable, comparable, field, fn, gen, hasArenaBuf, hasAuthority, hasCap, hasInt64, hasLayout, hasPtr, hasRawPtr, hasTParam,
-  isAuthority, isBool, isCopy, isInt, isInt64, isNative, isNull, isNum, isOwned, isOwnedCap, isStr, movesLike, holdsOwned, ownedDeep, ptrTargetOk, isTaggedUnion, kindOf, keyOk, intLiteralFits, literalFits, nonNull, nullable, num, opaque, parseExactInt, result, resultParts,
+  isAuthority, isBool, isCopy, isInt, isInt64, isNative, isNull, isNum, isOwned, isOwnedCap, isStr, movesLike, holdsOwned, ownedDeep, ptrTargetOk, isTaggedUnion, kindOf, keyOk, intLiteralFits, literalFits, nonNull, nullable, num, opaque, parseExactInt, result, resultParts, restElem,
   same, sendable, show, subst, tparamHasCap, unify, union, unref, castable, collectTParams, layerOk, type ClassSym, type FnType, type NumName, type Type,
   hasLoneSurrogate,
 } from "./types.ts";
@@ -312,7 +312,7 @@ function contractLocal(c: Checker, id: ts.Identifier, s: LocalSym): void {
 }
 
 // ---- members
-type MemberResult = { kind: "value"; type: Type; readonly: boolean } | { kind: "method"; sig: FnType; managedOnly?: boolean; layer?: Layer } | { kind: "variadic" } | { kind: "error" };
+type MemberResult = { kind: "value"; type: Type; readonly: boolean; optRaw?: Type } | { kind: "method"; sig: FnType; managedOnly?: boolean; layer?: Layer } | { kind: "variadic" } | { kind: "error" };
 const MERR: MemberResult = { kind: "error" };
 
 /** True when `id` names a builtin namespace object, not shadowed by a declaration. */
@@ -499,7 +499,7 @@ function member(c: Checker, p: ts.PropertyAccessExpression, inCall: boolean): Me
     const nn = nonNull(recv);
     if (!nn) { c.at("E2002", name, "'?.' needs a nullable receiver"); return MERR; }
     const r = lookupMember(c, unref(nn), name, inCall);
-    if (r.kind === "value") return { ...r, type: nullable(r.type) };
+    if (r.kind === "value") return { ...r, optRaw: r.type, type: nullable(r.type) };
     if (r.kind === "method") return { ...r, sig: { ...r.sig, ret: nullable(r.sig.ret) } };
     return r;
   }
@@ -603,38 +603,53 @@ function constIndex(c: Checker, e0: ts.Expression): bigint | null {
 }
 
 function element(c: Checker, e: ts.ElementAccessExpression, write: boolean): Type {
-  const t = unref(expr(c, e.expression));
+  if (write && (e.flags & NodeFlags.OptionalChain || e.questionDotToken)) {
+    c.at("E2002", e, "optional chaining cannot be used on an assignment target");
+    return ERROR;
+  }
+  let t = expr(c, e.expression);
   const idx = e.argumentExpression;
   if (isErr(t)) { expr(c, idx, USIZE); return ERROR; }
-  if (t.k === "gen" && ["Array", "ReadonlyArray", "Vec", "Slice"].includes(t.name)) {
-    checkTo(c, idx, USIZE);
-    if (write && t.name === "ReadonlyArray") { c.at("E2002", idx, "ReadonlyArray cannot be written"); return ERROR; }
-    return t.args[0]!;
+  const opt = !!e.questionDotToken;
+  if (opt) {
+    const nn = nonNull(t);
+    if (!nn) { c.at("E2002", e.expression, "'?.[]' needs a nullable receiver"); return ERROR; }
+    t = nn;
   }
-  if (t.k === "tuple") {
-    checkTo(c, idx, USIZE);
-    if (write) { c.at("E2002", idx, "tuple elements are readonly and cannot be assigned"); return ERROR; }
-    const k = constIndex(c, idx);
-    if (k !== null) {
-      if (k < 0n) return ERROR; // negative index already reported E2008 by checkTo(..., USIZE)
-      if (k >= BigInt(t.elems.length)) {
-        c.at("E2002", idx, `tuple index ${k} is out of bounds for tuple of length ${t.elems.length}`);
-        return ERROR;
-      }
-      return t.elems[Number(k)]!;
+  t = unref(t);
+  const elemType = (): Type => {
+    if (t.k === "gen" && ["Array", "ReadonlyArray", "Vec", "Slice"].includes(t.name)) {
+      checkTo(c, idx, USIZE);
+      if (write && t.name === "ReadonlyArray") { c.at("E2002", idx, "ReadonlyArray cannot be written"); return ERROR; }
+      return t.args[0]!;
     }
-    if (assignTarget(idx).kind === K.NumericLiteral) return ERROR; // non-integer literal (e.g. 1.5) already reported E2008
-    if (t.elems.every((el) => same(el, t.elems[0]!))) return t.elems[0]!;
-    c.at("E2002", idx, `dynamic index on heterogeneous tuple '${show(t)}' is not allowed; use a constant index literal`);
+    if (t.k === "tuple") {
+      checkTo(c, idx, USIZE);
+      if (write) { c.at("E2002", idx, "tuple elements are readonly and cannot be assigned"); return ERROR; }
+      const k = constIndex(c, idx);
+      if (k !== null) {
+        if (k < 0n) return ERROR; // negative index already reported E2008 by checkTo(..., USIZE)
+        if (k >= BigInt(t.elems.length)) {
+          c.at("E2002", idx, `tuple index ${k} is out of bounds for tuple of length ${t.elems.length}`);
+          return ERROR;
+        }
+        return t.elems[Number(k)]!;
+      }
+      if (assignTarget(idx).kind === K.NumericLiteral) return ERROR; // non-integer literal (e.g. 1.5) already reported E2008
+      if (t.elems.every((el) => same(el, t.elems[0]!))) return t.elems[0]!;
+      c.at("E2002", idx, `dynamic index on heterogeneous tuple '${show(t)}' is not allowed; use a constant index literal`);
+      return ERROR;
+    }
+    if (isStr(t)) {
+      c.at("E2001", idx, `'string' cannot be indexed; use 'charCodeAt(i)', 'codePointAt(i)', or 'slice(i, i + 1)'`, { receiver: show(t), suggestions: ["charCodeAt", "codePointAt", "slice"] });
+      return ERROR;
+    }
+    const builtin = (t.k === "gen") || t.k === "opaque";
+    c.at(builtin ? "E2001" : "E2002", idx, `'${show(t)}' cannot be indexed`); // Q007
     return ERROR;
-  }
-  if (isStr(t)) {
-    c.at("E2001", idx, `'string' cannot be indexed; use 'charCodeAt(i)', 'codePointAt(i)', or 'slice(i, i + 1)'`, { receiver: show(t), suggestions: ["charCodeAt", "codePointAt", "slice"] });
-    return ERROR;
-  }
-  const builtin = (t.k === "gen") || t.k === "opaque";
-  c.at(builtin ? "E2001" : "E2002", idx, `'${show(t)}' cannot be indexed`); // Q007
-  return ERROR;
+  };
+  const r = opt ? c.branch(elemType) : elemType();
+  return opt && !isErr(r) ? nullable(r) : r;
 }
 
 // ---- assignment targets
@@ -812,6 +827,17 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
     if (isErr(lt)) { expr(c, b.right); return ERROR; }
     checkTo(c, b.right, lt); // narrowing by the assignment is a statement's (Checker.assignNarrow, Q133)
     return lt;
+  }
+  if (k === K.QuestionQuestionEqualsToken) {
+    const lt = lvalue(c, b.left);
+    if (isErr(lt)) { expr(c, b.right); return ERROR; }
+    const inner = nonNull(lt);
+    if (!inner) { c.at("E2002", b, "'??=' needs a nullable left operand"); expr(c, b.right); return ERROR; }
+    const rt = c.branch(() => expr(c, b.right, inner));
+    if (assignable(rt, inner)) return inner;
+    if (assignable(rt, lt)) return lt;
+    c.at("E2002", b.right, `expected '${show(inner)}', got '${show(rt)}'`);
+    return ERROR;
   }
   const base = COMPOUND[k];
   if (base !== undefined) {
@@ -1080,23 +1106,46 @@ function checkArrow(c: Checker, e: ts.ArrowFunction | ts.FunctionExpression, wan
   const outerTps = c.fx.tparams;
   c.fx.tparams = new Map([...outerTps, ...tps.map((p) => [p.name, p] as const)]);
   e.typeParameters?.forEach((d, i) => { if (d.constraint) c.prog.resolveConstraint(d.constraint, tps[i]!, { mod: c.mod, tparams: c.fx.tparams }); });
-  const params = e.parameters.map((p, i) => {
-    if (!p.type) {
-      const wt = want && !want.tparams.length ? want.params[i] : undefined;
-      if (wt && !isErr(wt) && !(openIds && hasTParam(wt, openIds))) return wt;
-      c.at("E2006", p.name, "parameter needs a type annotation");
-      return ERROR;
+  const params: Type[] = [];
+  let rest: Type | undefined;
+  let pi = 0;
+  for (let i = 0; i < e.parameters.length; i++) {
+    const p = e.parameters[i]!;
+    if (p.dotDotDotToken) {
+      let rt: Type;
+      if (!p.type) {
+        const wt = want && !want.tparams.length ? want.rest : undefined;
+        if (wt && !isErr(wt) && !(openIds && hasTParam(wt, openIds))) rt = wt;
+        else { c.at("E2006", p.name, "parameter needs a type annotation"); rt = ERROR; }
+      } else {
+        c.walkTypePos(p.type, "sig", { unsafe: c.fx.unsafe, cdecl: false });
+        rt = c.typeOf(p.type);
+        const u = unref(rt);
+        if (!isErr(u) && !restElem(u)) {
+          c.at("E2002", p.type, `rest parameter must have type 'Array<T>' or 'ReadonlyArray<T>', got '${show(rt)}'`, { kind: "bad-rest-type", actual: show(rt) });
+          rt = ERROR;
+        }
+      }
+      if (i === e.parameters.length - 1) rest = rt;
+      continue;
     }
-    c.walkTypePos(p.type, "sig", { unsafe: c.fx.unsafe, cdecl: false });
-    return c.typeOf(p.type);
-  });
+    const idx = pi++;
+    if (!p.type) {
+      const wt = want && !want.tparams.length ? want.params[idx] : undefined;
+      if (wt && !isErr(wt) && !(openIds && hasTParam(wt, openIds))) params.push(wt);
+      else { c.at("E2006", p.name, "parameter needs a type annotation"); params.push(ERROR); }
+    } else {
+      c.walkTypePos(p.type, "sig", { unsafe: c.fx.unsafe, cdecl: false });
+      params.push(c.typeOf(p.type));
+    }
+  }
   let ret = e.type ? (c.walkTypePos(e.type, "sig", { unsafe: c.fx.unsafe, cdecl: false }), c.typeOf(e.type, true)) : undefined;
   c.fx.tparams = outerTps;
   if (!ret && want && !inferRet) ret = want.ret;
-  const firstDef = e.parameters.findIndex((p) => !!p.initializer);
-  const sig: FnType = { ...fn(params, ret ?? ERROR, tps), ...(firstDef >= 0 ? { min: firstDef } : {}) };
+  const firstDef = e.parameters.findIndex((p) => !p.dotDotDotToken && !!p.initializer);
+  const sig: FnType = { ...fn(params, ret ?? ERROR, tps, rest), ...(firstDef >= 0 ? { min: firstDef } : {}) };
   const got = c.fnBody(e, sig, { inferRet: !ret });
-  return { ...fn(params, ret ?? got, tps), ...(firstDef >= 0 ? { min: firstDef } : {}) };
+  return { ...fn(params, ret ?? got, tps, rest), ...(firstDef >= 0 ? { min: firstDef } : {}) };
 }
 
 // ---- calls
@@ -1315,7 +1364,7 @@ function isolateCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpre
   }
   const sym = isoFnRef.sym;
   if (sym.sig.tparams.length) return bad(`the isolate entry '${sym.name}' cannot be generic`, "generic-entry");
-  if (sym.sig.min !== undefined) return bad(`the isolate entry '${sym.name}' cannot have default parameters`);
+  if (sym.sig.min !== undefined || sym.sig.rest) return bad(`the isolate entry '${sym.name}' cannot have default or rest parameters`);
   if (sym.layer !== "managed") return bad(`the isolate entry '${sym.name}' is a ${sym.layer} function; isolates run managed functions`, "non-managed-entry");
   const sig = sym.sig;
   const portT = sig.params.length === 1 || sig.params.length === 2 ? unref(sig.params[0]!) : undefined;
@@ -1440,11 +1489,25 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
     if (m.kind === "variadic") { // Math.min / Math.max (Q033, f32/f64 polymorphic)
       if (!e.arguments.length) { c.at("E2002", p.name, "expects at least one argument"); return ERROR; }
       if (e.typeArguments) { c.at("E2002", p.name, "expects 0 type argument(s)"); return ERROR; }
+      const firstSpread = e.arguments.findIndex((a) => a.kind === K.SpreadElement);
+      if (firstSpread >= 0 && !c.callAllowed("managed")) {
+        c.at("E4001", e.arguments[firstSpread]!, "call spread '...' is managed-only", { callerLayer: c.fx.layer, calleeLayer: "managed" });
+        return ERROR;
+      }
       const cached: (Type | undefined)[] = [];
       let ft: FloatNum | undefined;
       let ftArg: ts.Expression | undefined;
       for (let i = 0; i < e.arguments.length; i++) {
         const a = e.arguments[i]!;
+        if (a.kind === K.SpreadElement) {
+          const sp = (a as ts.SpreadElement).expression;
+          if (ctxSensitive(sp)) continue;
+          const st = expr(c, sp);
+          cached[i] = st;
+          const re = restElem(unref(st));
+          if (re && isFloatNum(re)) { ft = re; ftArg = a; break; }
+          continue;
+        }
         if (isLitOnly(a)) continue;
         const at = expr(c, a);
         cached[i] = at;
@@ -1453,6 +1516,19 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
       const target = ft ?? wantFloatType(want);
       for (let i = 0; i < e.arguments.length; i++) {
         const a = e.arguments[i]!;
+        if (a.kind === K.SpreadElement) {
+          const sp = (a as ts.SpreadElement).expression;
+          const st = cached[i] ?? (sp.kind === K.ArrayLiteralExpression ? checkTo(c, sp, gen("Array", target), true) : expr(c, sp));
+          if (isErr(st)) continue;
+          const re = restElem(unref(st));
+          if (!re) { c.at("E2002", a, `spread argument '...' must have type 'Array<T>' or 'ReadonlyArray<T>', got '${show(st)}'`, { actual: show(st) }); continue; }
+          if (isFloatNum(re)) {
+            if (re.name !== target.name) c.at("E2003", a, `cannot mix '${target.name}' and '${re.name}'`, { left: target.name, right: re.name });
+          } else if (!isErr(re)) {
+            c.at("E2002", a, `expected '${target.name}', got '${show(re)}'`, { expected: target.name, actual: show(re) });
+          }
+          continue;
+        }
         if (isLitOnly(a)) { checkTo(c, a, target, true); continue; }
         const at = cached[i] ?? expr(c, a);
         if (isErr(at)) continue;
@@ -1496,14 +1572,47 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
       if ((m.managedOnly || m.layer === "managed") && !c.callAllowed("managed")) c.at("E4001", p.name, `'${p.name.text}' is managed-only`, { callerLayer: c.fx.layer, calleeLayer: "managed" }); // Q044
       if (m.sig.tcheck === "trap" && e.arguments[0]) trapCode(c, e.arguments[0], p.name.text);
       unsafeOp(c, p);
+      if (e.questionDotToken) {
+        c.at("E2002", p.name, "'?.' cannot be used to call a method directly; call it normally or via 'o?.m()'");
+        return ERROR;
+      }
       return callSig(c, m.sig, e, p.name, want);
+    }
+    if (e.questionDotToken) {
+      if (!c.callAllowed("managed")) { c.at("E4001", e, "'?.()' is managed-only", { callerLayer: c.fx.layer, calleeLayer: "managed" }); return ERROR; }
+      const nn = nonNull(m.type);
+      if (!nn) { c.at("E2002", p.name, "'?.()' needs a nullable callee"); return ERROR; }
+      const fnT = unref(nn);
+      if (fnT.k === "fn") {
+        const r = callSig(c, fnT, e, p.name, want);
+        return isErr(r) ? ERROR : nullable(r);
+      }
+      if (!isErr(fnT)) c.at("E2002", p.name, `'${show(m.type)}' is not callable`);
+      return ERROR;
+    }
+    if (p.questionDotToken && (e.flags & NodeFlags.OptionalChain) && m.optRaw && unref(m.optRaw).k === "fn") {
+      const r = callSig(c, unref(m.optRaw) as FnType, e, p.name, want);
+      return isErr(r) ? ERROR : nullable(r);
     }
     if (m.type.k === "fn") return callSig(c, m.type, e, p.name, want);
     if (!isErr(m.type)) c.at("E2002", p.name, `'${show(m.type)}' is not callable`);
     return ERROR;
   }
   if (isId(callee)) fnCalleeIds.add(callee);
-  const t = unref(expr(c, callee));
+  const t0 = expr(c, callee);
+  if (e.questionDotToken) {
+    if (!c.callAllowed("managed")) { c.at("E4001", e, "'?.()' is managed-only", { callerLayer: c.fx.layer, calleeLayer: "managed" }); return ERROR; }
+    const nn = isErr(t0) ? undefined : nonNull(t0);
+    if (!isErr(t0) && !nn) { c.at("E2002", callee, "'?.()' needs a nullable callee"); return ERROR; }
+    const fnT = nn ? unref(nn) : ERROR;
+    if (fnT.k === "fn") {
+      const r = callSig(c, fnT, e, callee, want);
+      return isErr(r) ? ERROR : nullable(r);
+    }
+    if (!isErr(fnT)) c.at("E2002", callee, `'${show(t0)}' is not callable`);
+    return ERROR;
+  }
+  const t = unref(t0);
   if (t.k === "fn") {
     const got = callSig(c, t, e, callee, want, c.fx.layer === "managed" ? undefined : c.fx.layer);
     // Q189 (b): a call through a function-typed parameter of the enclosing strict / rt function
@@ -1521,11 +1630,27 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
 function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpression, anchor: Node, want: Type | undefined, q189?: Layer): Type {
   const args = e.arguments ?? ([] as unknown as ts.NodeArray<ts.Expression>);
   callSigs.set(e, sig);
+  const firstSpread = args.findIndex((a) => a.kind === K.SpreadElement);
+  if (firstSpread >= 0) {
+    if (!c.callAllowed("managed")) {
+      c.at("E4001", args[firstSpread]!, "call spread '...' is managed-only", { callerLayer: c.fx.layer, calleeLayer: "managed" });
+      return ERROR;
+    }
+    if (!sig.rest || firstSpread < sig.params.length) {
+      c.at("E2002", args[firstSpread]!, sig.rest ? "spread argument '...' cannot appear before fixed parameters" : "spread argument '...' is only valid for a rest parameter", { kind: "spread-non-rest" });
+      return ERROR;
+    }
+  }
   const min = sig.min ?? sig.params.length;
-  if (args.length < min || args.length > sig.params.length) {
-    c.at("E2002", anchor, `expects ${min === sig.params.length ? min : `${min}-${sig.params.length}`} argument(s), got ${args.length}`);
+  if (args.length < min || (!sig.rest && args.length > sig.params.length)) {
+    const expStr = sig.rest ? `at least ${min}` : (min === sig.params.length ? `${min}` : `${min}-${sig.params.length}`);
+    c.at("E2002", anchor, `expects ${expStr} argument(s), got ${args.length}`);
     return ERROR;
   }
+  const restEl = sig.rest ? restElem(sig.rest) : undefined;
+  const paramType = (a: ts.Expression, i: number): Type =>
+    i < sig.params.length ? sig.params[i]! : (restEl ? (a.kind === K.SpreadElement ? gen("ReadonlyArray", restEl) : restEl) : ERROR);
+  const argNode = (a: ts.Expression): ts.Expression => (a.kind === K.SpreadElement ? (a as ts.SpreadElement).expression : a);
   const ids = new Set(sig.tparams.map((p) => p.id));
   const m = new Map<number, Type>();
   if (e.typeArguments) for (const t of e.typeArguments) c.walkTypePos(t, sig.tcheck === "castptr" || sig.tcheck === "ptrnull" || sig.tcheck === "ptrsizeof" ? "ptrarg" : sig.tcheck === "chandle" ? "chandlearg" : "typearg", { unsafe: c.fx.unsafe, cdecl: false }); // §14.4, §14.5; Q219: cast / CHandle targets are pointees
@@ -1542,7 +1667,7 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
   if (q189) {
     const refs = new Map<number, FnArgRef>();
     args.forEach((a, i) => {
-      const p = sig.params[i]!;
+      const p = paramType(a, i);
       if (unref(p).k !== "fn") return;
       done[i] = true;
       const r = fnArgRef(c, a, q189);
@@ -1555,25 +1680,28 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
   }
   args.forEach((a, i) => { // 1: arguments that do not need context
     if (done[i]) return; // Q189 (b): function-typed arguments were resolved by the pre-pass
-    const p = sig.params[i]!;
-    if (!open(p)) { checkTo(c, a, unref(subst(p, m)), true); done[i] = true; }
-    else if (!isFnExpr(a) && !ctxSensitive(a)) { const t = expr(c, a); unify(unref(p), t, m, ids); later[i] = t; }
+    const p = paramType(a, i), x = argNode(a);
+    if (!open(p)) { checkTo(c, x, unref(subst(p, m)), true); done[i] = true; }
+    else if (!isFnExpr(x) && !ctxSensitive(x)) { const t = expr(c, x); unify(unref(p), t, m, ids); later[i] = t; }
   });
   const needsArrowParamBind = (): boolean => args.some((a, i) => {
-    if (done[i] || later[i] || !isFnExpr(a)) return false;
-    if (!a.parameters.some((p) => !p.type)) return false;
-    const sp = unref(subst(sig.params[i]!, m));
+    if (done[i] || later[i]) return false;
+    const x = argNode(a);
+    if (!isFnExpr(x)) return false;
+    if (!x.parameters.some((p) => !p.type)) return false;
+    const sp = unref(subst(paramType(a, i), m));
     if (sp.k !== "fn") return false;
-    return a.parameters.some((p, pi) => !p.type && !!sp.params[pi] && hasTParam(sp.params[pi]!, ids));
+    return x.parameters.some((p, pi) => !p.type && !!(p.dotDotDotToken ? sp.rest : sp.params[pi]) && hasTParam((p.dotDotDotToken ? sp.rest! : sp.params[pi]!), ids));
   });
   if (needsArrowParamBind()) {
     if (want && sig.tparams.some((p) => !m.has(p.id))) unify(sig.ret, want, m, ids);
     if (needsArrowParamBind()) {
       args.forEach((a, i) => {
-        if (done[i] || later[i] || isFnExpr(a)) return;
-        const p = sig.params[i]!;
-        if (!open(p)) { checkTo(c, a, unref(subst(p, m)), true); done[i] = true; }
-        else { const t = expr(c, a); unify(unref(p), t.k === "lit" ? STR : t, m, ids); later[i] = t; }
+        const x = argNode(a);
+        if (done[i] || later[i] || isFnExpr(x)) return;
+        const p = paramType(a, i);
+        if (!open(p)) { checkTo(c, x, unref(subst(p, m)), true); done[i] = true; }
+        else { const t = expr(c, x); unify(unref(p), t.k === "lit" ? STR : t, m, ids); later[i] = t; }
       });
     }
   }
@@ -1586,18 +1714,20 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
     if (!inFnParam) unify(sig.ret, want, m, ids);
   }
   args.forEach((a, i) => { // 2: function expressions
-    if (done[i] || later[i] || !isFnExpr(a)) return;
-    const p = unref(subst(sig.params[i]!, m));
-    const t = checkArrow(c, a, p.k === "fn" ? p : undefined, p.k === "fn" && hasTParam(p.ret, ids), ids);
-    unify(unref(sig.params[i]!), t, m, ids);
+    const x = argNode(a);
+    if (done[i] || later[i] || !isFnExpr(x)) return;
+    const rawP = paramType(a, i);
+    const p = unref(subst(rawP, m));
+    const t = checkArrow(c, x, p.k === "fn" ? p : undefined, p.k === "fn" && hasTParam(p.ret, ids), ids);
+    unify(unref(rawP), t, m, ids);
     later[i] = t;
   });
   if (want && sig.tparams.some((p) => !m.has(p.id))) unify(sig.ret, want, m, ids); // 3: the context
   args.forEach((a, i) => { // 4: literals
     if (done[i] || later[i]) return;
-    const p = sig.params[i]!;
-    if (open(p)) { const t = expr(c, a); unify(unref(p), t.k === "lit" ? STR : t, m, ids); later[i] = t; }
-    else { checkTo(c, a, unref(subst(p, m)), true); done[i] = true; }
+    const p = paramType(a, i), x = argNode(a);
+    if (open(p)) { const t = expr(c, x); unify(unref(p), t.k === "lit" ? STR : t, m, ids); later[i] = t; }
+    else { checkTo(c, x, unref(subst(p, m)), true); done[i] = true; }
   });
   const unbound = sig.tparams.filter((p) => !m.has(p.id));
   if (unbound.length) {
@@ -1674,8 +1804,8 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
   args.forEach((a, i) => {
     const t = later[i];
     if (!t || isErr(t)) return;
-    const p = unref(subst(sig.params[i]!, m));
-    if (!assignable(t, p, true)) c.at("E2002", a, `expected '${show(p)}', got '${show(t)}'`);
+    const p = unref(subst(paramType(a, i), m));
+    if (!assignable(t, p, true)) c.at("E2002", argNode(a), `expected '${show(p)}', got '${show(t)}'`);
   });
   for (const { a, t, i } of fnChecks) { // Q189 (b): parameter and return types must match exactly
     const p = unref(subst(sig.params[i]!, m));
@@ -1880,6 +2010,7 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
         if (a.typeParameters?.length) { c.at("E2002", a, "'forAll' callback cannot be generic"); return VOID; }
         if (!a.parameters.length) { c.at("E2002", a, "'forAll' function must have at least one parameter"); return VOID; }
         const sig = checkArrow(c, a, undefined, true);
+        if (sig.rest) { c.at("E2002", a, "'forAll' does not support rest parameters"); return VOID; }
         if (!isErr(sig.ret) && !isBool(sig.ret) && !(sig.ret.k === "prim" && sig.ret.name === "void")) {
           c.at("E2002", a, `'forAll' callback must return 'boolean' or 'void', got '${show(sig.ret)}'`);
           return VOID;
@@ -1918,6 +2049,7 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
       if (sym.layer === "rt" && sym.unsafe) { c.at("E4001", a, `the rt + unsafe function '${sym.name}' cannot be passed to 'fuzzContracts'`, { callerLayer: c.fx.layer, calleeLayer: "rt+unsafe" }); return VOID; }
       if (sym.unsafe) { c.at("E4008", a, `the unsafe function '${sym.name}' cannot be passed to 'fuzzContracts'`, { op: sym.name }); return VOID; }
       if (hasPromise(sym.sig.ret)) { c.at("E2002", a, "'fuzzContracts' does not support async functions or Promise returns"); return VOID; }
+      if (sym.sig.rest) { c.at("E2002", a, "'fuzzContracts' does not support rest parameters"); return VOID; }
       if (!sym.sig.params.length) { c.at("E2002", a, "'fuzzContracts' function must have at least one parameter"); return VOID; }
       if (checkParams(sym.sig.params, () => a)) forAllMeta.set(e, { params: sym.sig.params, checkBool: false });
       return VOID;
@@ -1966,7 +2098,7 @@ function bannedCall(c: Checker, p: ts.PropertyAccessExpression, recv: Type | und
 /** Q134: a contract only observes. Assignments and mutating builtin calls inside it are E6002; user calls are not analysed. */
 function observeOnly(c: Checker, root: Node): void {
   const walk = (n: Node): void => {
-    if (n.kind === K.BinaryExpression && (COMPOUND[(n as ts.BinaryExpression).operatorToken.kind] !== undefined || (n as ts.BinaryExpression).operatorToken.kind === K.EqualsToken)) {
+    if (n.kind === K.BinaryExpression && (COMPOUND[(n as ts.BinaryExpression).operatorToken.kind] !== undefined || (n as ts.BinaryExpression).operatorToken.kind === K.EqualsToken || (n as ts.BinaryExpression).operatorToken.kind === K.QuestionQuestionEqualsToken)) {
       c.at("E6002", n, "a contract cannot assign");
     } else if ((n.kind === K.PrefixUnaryExpression || n.kind === K.PostfixUnaryExpression) && [K.PlusPlusToken, K.MinusMinusToken].includes((n as ts.PrefixUnaryExpression).operator)) {
       c.at("E6002", n, "a contract cannot assign");
@@ -1976,10 +2108,11 @@ function observeOnly(c: Checker, root: Node): void {
     }
     const sig = n.kind === K.CallExpression || n.kind === K.NewExpression ? callSigs.get(n) : undefined;
     (n as ts.CallExpression).arguments?.forEach((a, i) => { // Q175: a contract neither consumes nor mutably borrows
-      const p = sig?.params[i];
+      const p = sig ? (i < sig.params.length ? sig.params[i] : sig.rest ? restElem(sig.rest) : undefined) : undefined;
       if (!p) return;
       const mode = p.k === "gen" && (p.name === "Ref" || p.name === "Mut") ? p.name : undefined;
-      if (mode === "Mut" || (!mode && movesLike(unref(exprTypes.get(a) ?? ERROR)))) c.at("E6002", a, mode ? "a contract cannot pass a Mut borrow" : "a contract cannot move a value");
+      const arg = a.kind === K.SpreadElement ? (a as ts.SpreadElement).expression : a;
+      if (mode === "Mut" || (!mode && movesLike(unref(exprTypes.get(arg) ?? ERROR)))) c.at("E6002", a, mode ? "a contract cannot pass a Mut borrow" : "a contract cannot move a value");
     });
     n.forEachChild(walk);
   };

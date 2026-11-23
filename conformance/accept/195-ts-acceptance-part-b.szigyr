@@ -1,0 +1,51 @@
+// expect: ok
+// stage: 2
+// open-question: Q297
+// open-question: Q298
+// open-question: Q299
+// open-question: Q300
+// open-question: Q301
+// open-question: Q302
+
+type Cfg = { readonly host: string; readonly port: i32 };
+type FnBox = { readonly cb: ((n: i32) => i32) | null };
+
+export function acceptNullishAssign(x: i32 | null, defVal: i32): i32 {
+  x ??= defVal;
+  return x + 1;
+}
+
+export function acceptOptionalIndex(xs: ReadonlyArray<i32> | null, i: usize): i32 | null {
+  return xs?.[i];
+}
+
+export function acceptOptionalCall(
+  fn: ((n: i32) => i32) | null,
+  box: FnBox | null,
+  x: i32,
+): i32 | null {
+  const a = fn?.(x);
+  const b = box?.cb?.(x);
+  return a !== null ? a : b;
+}
+
+export function acceptRestAndSpread(head: string, ...tail: i32[]): f64 {
+  let sum: i32 = 0;
+  for (const x of tail) sum += x;
+  const xs: Array<f64> = [1.0, 2.5];
+  return head.length > 0 ? f64(sum) + Math.max(...xs) : f64(sum);
+}
+
+export function acceptForwardRest(prefix: i32 = 10, ...xs: Array<i32>): i32 {
+  let acc = prefix;
+  for (const x of xs) acc += x;
+  return acc;
+}
+
+export function callForwardRest(xs: Array<i32>): i32 {
+  return acceptForwardRest(1, ...xs) + acceptForwardRest();
+}
+
+export function acceptParamDestruct({ host, port }: Cfg, [a, b]: [i32, i32]): i32 {
+  return host.length > 0 ? port + a + b : port;
+}

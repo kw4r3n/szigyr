@@ -1,0 +1,66 @@
+// expect-output: 42|0|7:7:0|10:0|5:5:1|8:6|ok|15:21
+// stage: 2
+// open-question: Q297
+
+type Box = { v: i32 | null };
+type RtBox = OwnedStruct<{ v: i32 | null }>;
+
+function fillLocal(v: i32 | null, fallback: i32): i32 {
+  let x = v;
+  x ??= fallback;
+  return x + x;
+}
+
+function rtNullish(init: i32 | null, b: Mut<RtBox>): i32 {
+  "use rt";
+  let a: i32 | null = init;
+  const r1 = a ??= 15;
+  a ??= 99;
+  const rv = b.v ??= 21;
+  return a === 15 && r1 === 15 ? rv : -1;
+}
+
+export function main(sys: System): void {
+  let a: i32 | null = null;
+  a ??= 42;
+  const narrowedA: i32 = a;
+
+  let evals: i32 = 0;
+  const bump = (): i32 => {
+    evals += 1;
+    return 99;
+  };
+
+  let b: i32 | null = 7;
+  const rb = b ??= bump();
+  b ??= bump();
+  const narrowedB: i32 = b;
+
+  const box: Box = { v: null };
+  const rBox1 = box.v ??= 10;
+  const rBox2 = box.v ??= bump();
+
+  const arr: Array<i32 | null> = [null, 8];
+  let idxCalls: i32 = 0;
+  const pickIdx = (): usize => {
+    idxCalls += 1;
+    return 0;
+  };
+  const rArr = arr[pickIdx()] ??= 5;
+  const firstVal = arr[0] ?? -1;
+
+  const res = fillLocal(null, 4);
+  const res2 = fillLocal(3, 4);
+  const tag = res === 8 && res2 === 6 && rBox2 === 10 && arr[1] === 8 ? "ok" : "bad";
+
+  const rb1: RtBox = { v: null };
+  const rb2: RtBox = { v: 15 };
+  const rt1 = rtNullish(null, rb1);
+  const rt2 = rtNullish(15, rb2);
+  const rtOut1 = rb2.v ?? -1;
+  const rtOut2 = rb1.v ?? -1;
+
+  sys.log.info(
+    `${narrowedA}|${evals}|${rb}:${narrowedB}:${evals}|${rBox1}:${evals}|${rArr}:${firstVal}:${idxCalls}|${res}:${res2}|${tag}|${rtOut1}:${rt1 === 21 && rt2 === 15 ? rtOut2 : -1}`,
+  );
+}

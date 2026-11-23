@@ -84,7 +84,7 @@ const forms: [string, string, string[]][] = [
   ["import { default as g } (Q009)", "import { default as g } from \"./a.szigyr\";", ["E7001@1:1"]],
   ["export { f as default } (Q009)", "function f(): void {}\nexport { f as default };", ["E1003@2:1"]],
   ["named import and export with aliases", "import { a as b } from \"./a.szigyr\";\nexport { b, b as c };", []],
-  ["optional call", "function f(g: () => void): void { g?.(); }", ["E1000@1:35"]],
+  ["optional call", "function f(g: () => void): void { g?.(); }", []],
   ["empty statement", "function f(): void { ; }", ["E1000@1:22"]],
   ["public method", "class A { public m(): void {} }", ["E1000@1:11"]],
   ["override method", "class A { override m(): void {} }", ["E1000@1:11"]],

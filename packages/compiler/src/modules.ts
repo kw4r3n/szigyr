@@ -17,7 +17,7 @@ export function displayPath(p: string): string {
 }
 import { CAPABILITY_NAMES, RESERVED, builtinType, isGenName } from "./builtins.ts";
 import {
-  ERROR, GEN_ARITY, NULL, VOID, gen, assignable, bindTParams, borrowOk, collectTParams, crossOk, crossTParams, fn, isCopy, isTaggedUnion, same, sendable, hasArenaBuf, hasAuthority, hasCap, hasLayout, field, isNative, keyOk, kindOf, layerOk, promiseIn, structField, tparamHasCap, tparamMayBeAuthority, holdsOwned, ownedDeep, CONTAINERS, newTParam, nonNull, record, result, show, subst, tuple, union,
+  ERROR, GEN_ARITY, NULL, VOID, gen, assignable, bindTParams, borrowOk, collectTParams, crossOk, crossTParams, fn, isCopy, isErr, isTaggedUnion, same, sendable, hasArenaBuf, hasAuthority, hasCap, hasLayout, field, isNative, keyOk, kindOf, layerOk, promiseIn, restElem, structField, tparamHasCap, tparamMayBeAuthority, holdsOwned, ownedDeep, CONTAINERS, newTParam, nonNull, record, result, show, subst, tuple, union, unref,
   type Capability, type ClassSym, type Field, type FnType, type IfaceSym, type TParam, type Type,
   hasLoneSurrogate,
 } from "./types.ts";
@@ -220,6 +220,7 @@ function badStructField(t: Type): Type | null {
     case "tuple": for (const el of t.elems) { const sub = badStructField(el); if (sub) return sub; } return null;
     case "fn":
       for (const p of t.params) { const sub = badStructField(p); if (sub) return sub; }
+      if (t.rest) { const sub = badStructField(t.rest); if (sub) return sub; }
       return badStructField(t.ret);
     default: return null;
   }
@@ -565,16 +566,37 @@ export class Program {
     const tparams = tparamShells(d.typeParameters, owner, allowOwned);
     const e: TypeEnv = { mod: outer.mod, tparams: new Map([...outer.tparams, ...tparams.map((p) => [p.name, p] as const)]), ...(outer.cscope ? { cscope: outer.cscope } : {}) };
     this.constraints(d.typeParameters, tparams, e);
-    const params = d.parameters.map((p) => {
-      if (!isId(p.name)) return ERROR;
-      if (!p.type) { this.rep.at(e.mod, "E2006", p.name, "parameter needs a type annotation"); return ERROR; }
-      return this.typeOf(p.type, e);
-    });
+    const params: Type[] = [];
+    let rest: Type | undefined;
+    for (let i = 0; i < d.parameters.length; i++) {
+      const p = d.parameters[i]!;
+      const okName = isId(p.name) || p.name.kind === K.ObjectBindingPattern || p.name.kind === K.ArrayBindingPattern;
+      if (!okName) { params.push(ERROR); continue; }
+      if (!p.type) {
+        this.rep.at(e.mod, "E2006", p.name, "parameter needs a type annotation");
+        if (p.dotDotDotToken) rest = ERROR; else params.push(ERROR);
+        continue;
+      }
+      const pt = this.typeOf(p.type, e);
+      if (p.dotDotDotToken) {
+        if (i === d.parameters.length - 1) {
+          const u = unref(pt);
+          if (!isErr(u) && !restElem(u)) {
+            this.rep.at(e.mod, "E2002", p.type, `rest parameter must have type 'Array<T>' or 'ReadonlyArray<T>', got '${show(pt)}'`, { kind: "bad-rest-type", actual: show(pt) });
+            rest = ERROR;
+          } else {
+            rest = pt;
+          }
+        }
+      } else {
+        params.push(pt);
+      }
+    }
     let ret: Type = VOID;
     if (d.type) ret = this.typeOf(d.type, e, true);
     else if (name && requireRet) { this.rep.at(e.mod, "E2006", name, "return type annotation is required"); ret = ERROR; }
-    const firstDef = d.parameters.findIndex((p) => !!p.initializer);
-    return { ...fn(params, ret, tparams), ...(firstDef >= 0 ? { min: firstDef } : {}) };
+    const firstDef = d.parameters.findIndex((p) => !p.dotDotDotToken && !!p.initializer);
+    return { ...fn(params, ret, tparams, rest), ...(firstDef >= 0 ? { min: firstDef } : {}) };
   }
 
   /** Resolves `T extends C` / `T extends C1 & C2` into capability bounds or a single interface constraint (SPEC-v1 §3.4). */

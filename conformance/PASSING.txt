@@ -19,6 +19,7 @@ accept/18-test-fakes.szigyr
 accept/19-destructure-spread.szigyr
 accept/193-traps-t015-literal.szigyr
 accept/194-key-equality-and-codec-generics.szigyr
+accept/195-ts-acceptance-part-b.szigyr
 accept/20-template-strings.szigyr
 accept/21-imports
 accept/22-class-across-files
@@ -137,6 +138,8 @@ reject/E1000-reserved-word-package.szigyr
 reject/E1000-reserved-word-protected.szigyr
 reject/E1000-reserved-word-static.szigyr
 reject/E1000-reserved-word-yield.szigyr
+reject/E1000-rest-param-rt.szigyr
+reject/E1000-rest-param-strict.szigyr
 reject/E1000-ring-redeclare.szigyr
 reject/E1000-ringtx-redeclare.szigyr
 reject/E1000-runtime-prefix-field.szigyr
@@ -165,6 +168,7 @@ reject/E1008-default-param.szigyr
 reject/E1008-destructure-default.szigyr
 reject/E1008-optional-param.szigyr
 reject/E1008-optional-property.szigyr
+reject/E1008-param-destructure-default.szigyr
 reject/E1008-tuple-optional.szigyr
 reject/E1009-unsafe-at-file-head.szigyr
 reject/E1009-unsafe-in-function-expression.szigyr
@@ -204,6 +208,7 @@ reject/E2002-await-conditional-null-branch.szigyr
 reject/E2002-bit-compound-i32-ushr.szigyr
 reject/E2002-bit-compound-u32-shr.szigyr
 reject/E2002-bitop-non-numeric-rhs.szigyr
+reject/E2002-call-spread-non-rest.szigyr
 reject/E2002-cast-class-target.szigyr
 reject/E2002-cast-of-result.szigyr
 reject/E2002-cast-type-parameter.szigyr
@@ -289,6 +294,9 @@ reject/E2002-narrow-while-break.szigyr
 reject/E2002-narrowing-captured-assigned-shadowed.szigyr
 reject/E2002-new-map-key-record.szigyr
 reject/E2002-nullable-return-without-narrowing.szigyr
+reject/E2002-nullish-assign-non-null.szigyr
+reject/E2002-optional-index-non-null.szigyr
+reject/E2002-optional-index-write.szigyr
 reject/E2002-promise-all-not-awaited.szigyr
 reject/E2002-promise-array-field.szigyr
 reject/E2002-promise-array-in-variable.szigyr
@@ -460,6 +468,7 @@ reject/E3002-move-into-struct-in-loop.szigyr
 reject/E3002-reassigned-on-one-path-only-in-loop.szigyr
 reject/E3002-result-owned-loop-move.szigyr
 reject/E3003-field-assignment-used-as-value.szigyr
+reject/E3003-param-destructure-partial-owned.szigyr
 reject/E3003-partial-destructure-owned-struct.szigyr
 reject/E3003-partial-move-as-argument.szigyr
 reject/E3003-partial-move-by-return.szigyr
@@ -592,12 +601,14 @@ reject/E3008-slice-of-call-result.szigyr
 reject/E3008-slice-of-chandle-get.szigyr
 reject/E3008-struct-literal-as-ref-arg.szigyr
 reject/E3008-vec-create-as-ref-arg.szigyr
+reject/E4001-call-spread-strict.szigyr
 reject/E4001-cfn-of-strict-function.szigyr
 reject/E4001-file-rt-function-override-strict.szigyr
 reject/E4001-forAll-rt-unsafe.szigyr
 reject/E4001-fs-exists-in-strict.szigyr
 reject/E4001-managed-calls-rt-unsafe.szigyr
 reject/E4001-managed-function-as-fn-arg.szigyr
+reject/E4001-optional-call-strict.szigyr
 reject/E4001-pow-assign-in-strict.szigyr
 reject/E4001-pow-operator-in-rt.szigyr
 reject/E4001-regex-in-strict.szigyr
@@ -633,6 +644,7 @@ reject/E4002-string-param-in-strict.szigyr
 reject/E4002-struct-string-field.szigyr
 reject/E4002-template-literal-local-in-strict.szigyr
 reject/E4002-tuple-in-strict.szigyr
+reject/E4002-tuple-param-destructure-strict.szigyr
 reject/E4002-unknown-param-in-strict.szigyr
 reject/E4002-vec-create-string.szigyr
 reject/E4002-vec-element-owned-struct.szigyr
@@ -951,6 +963,10 @@ run/27-trap-ownedcell-empty.szigyr
 run/270-vec-filled-string-repeat-forall.szigyr
 run/271-vec-filled-oom-trap.szigyr
 run/272-u8-u16-bitwise-and-nested-cell-borrow.szigyr
+run/273-nullish-assign.szigyr
+run/274-optional-index-and-call.szigyr
+run/275-rest-and-call-spread.szigyr
+run/276-param-destructuring.szigyr
 run/28-trap-shift-range.szigyr
 run/29-trap-invariant.szigyr
 run/30-int-no-negative-zero.szigyr

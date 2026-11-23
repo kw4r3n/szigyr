@@ -1,0 +1,7 @@
+// expect: E4002 @ 4:20
+// stage: 2
+// open-question: Q302
+function f([a, b]: [i32, i32]): i32 {
+  "use owned";
+  return a + b;
+}

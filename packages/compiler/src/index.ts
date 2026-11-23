@@ -343,7 +343,7 @@ export function checkMain(decls: Decls, entryFile: string): void {
   const p0 = sig.params[0];
   const retOk = (sig.ret.k === "prim" && sig.ret.name === "void") ||
     (sig.ret.k === "gen" && sig.ret.name === "Promise" && sig.ret.args[0]?.k === "prim" && sig.ret.args[0].name === "void");
-  if (layer !== "managed" || sig.tparams.length !== 0 || sig.params.length !== 1 || p0?.k !== "opaque" || p0.name !== "System" || !retOk) {
+  if (layer !== "managed" || sig.tparams.length !== 0 || sig.params.length !== 1 || !!sig.rest || p0?.k !== "opaque" || p0.name !== "System" || !retOk) {
     throw new Error(`${entryFile}: invalid 'main' (must be managed '(sys: System): void | Promise<void>')`);
   }
 }

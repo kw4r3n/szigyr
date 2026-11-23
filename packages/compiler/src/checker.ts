@@ -3,7 +3,7 @@ import { NodeFlags, SyntaxKind as K, hasMod, isId, isParamProp, type Node, type 
 import { Program, declBindings, legalUnion, type CStructSym, type ClassValueSym, type FnSym, type Layer, type LocalSym, type Module, type ValueSym } from "./modules.ts";
 import { PROMISE_CONTAINERS, assignTarget, checkTo, exprTypes, hasPromise, cond, expr, isLitOnly, localOf, promiseOk, usingInitExprs, type FnArgRef } from "./expr.ts";
 import {
-  ASYNC_DISPOSABLE, AUTHORITIES, DISPOSABLE, ERROR, NEVER, NULL, STR, VOID, assignable, hasAuthority, hasTParam, hasPtr, layerOk, crossOk, ptrTargetOk, field, isBool, isErr, isInt, isNull, isTaggedUnion, kindOf, nonNull, parseExactInt, same, show, subst, bindTParams, unref, union, subUnion,
+  ASYNC_DISPOSABLE, AUTHORITIES, DISPOSABLE, ERROR, NEVER, NULL, STR, VOID, assignable, hasAuthority, hasTParam, hasPtr, layerOk, crossOk, ptrTargetOk, field, isBool, isErr, isInt, isNull, isTaggedUnion, kindOf, nonNull, parseExactInt, restElem, same, show, subst, bindTParams, unref, union, subUnion,
   type Capability, type ClassSym, type FnType, type TParam, type Type,
   hasLoneSurrogate,
 } from "./types.ts";
@@ -265,9 +265,17 @@ export class Checker {
     const d = f.decl;
     const kw = (d.modifiers ?? []).find((m) => m.kind === K.AsyncKeyword);
     if (kw) this.at("E4002", kw, `${f.layer} functions cannot be async`, { layer: f.layer, actual: "async" });
-    d.parameters.forEach((p, i) => { if (p.type) this.layerParamType(f.sig.params[i] ?? ERROR, p.type, f.layer); });
+    let pi = 0;
+    d.parameters.forEach((p) => {
+      const t = p.dotDotDotToken ? f.sig.rest : f.sig.params[pi++];
+      if (p.type) this.layerParamType(t ?? ERROR, p.type, f.layer);
+    });
     if (d.type) this.layerType(f.sig.ret, d.type, f.layer);
-    d.parameters.forEach((p, i) => { const t = f.sig.params[i]; if (p.type && t && t.k !== "fn" && layerOk(t) && !crossOk(t)) this.at("E4002", p.type, `'${show(t)}' cannot cross the managed / C boundary`, { layer: f.layer, actual: show(t) }); });
+    pi = 0;
+    d.parameters.forEach((p) => {
+      const t = p.dotDotDotToken ? f.sig.rest : f.sig.params[pi++];
+      if (p.type && t && t.k !== "fn" && layerOk(t) && !crossOk(t)) this.at("E4002", p.type, `'${show(t)}' cannot cross the managed / C boundary`, { layer: f.layer, actual: show(t) });
+    });
     if (d.type && layerOk(f.sig.ret) && !crossOk(f.sig.ret, true)) this.at("E4002", d.type, `'${show(f.sig.ret)}' cannot cross the managed / C boundary`, { layer: f.layer, actual: show(f.sig.ret) });
   }
   /** Q189 (b): a function type may be written as the parameter type of a strict / rt function (and, recursively,
@@ -277,6 +285,7 @@ export class Checker {
     if (layer === "rt" && hasAuthDeep(t)) this.at("E4006", node, "rt functions cannot take authorities", { layer: "rt", actual: show(t) });
     const f = node.kind === K.FunctionType ? (node as ts.FunctionTypeNode) : undefined;
     t.params.forEach((pt, i) => this.layerParamType(pt, f?.parameters[i]?.type ?? node, layer));
+    if (t.rest) this.layerType(t.rest, f?.parameters.at(-1)?.type ?? node, layer);
     this.layerType(t.ret, f?.type ?? node, layer);
   }
   layerType(t: Type, node: Node, layer: Layer): void {
@@ -460,8 +469,9 @@ export class Checker {
     };
     this.scope = new Scope(nested ? outer.scope : undefined);
     this.narrow = nested ? new Map(outer.narrow) : new Map();
-    d.parameters.forEach((p, i) => {
-      const t = sig.params[i] ?? ERROR;
+    let pi = 0;
+    for (const p of d.parameters) {
+      const t = p.dotDotDotToken ? (sig.rest ?? ERROR) : (sig.params[pi++] ?? ERROR);
       if (p.initializer) {
         if (this.fx.layer !== "managed" && unref(t).k === "fn") {
           this.at("E4003", p.initializer, "a function-typed parameter in strict / rt code cannot have a default value");
@@ -470,7 +480,14 @@ export class Checker {
         }
       }
       if (isId(p.name)) this.declare(p.name, unref(t), { param: true, mutable: true, declared: t });
-    });
+      else if (p.name.kind === K.ObjectBindingPattern) {
+        exprTypes.set(p.name, t);
+        this.destructure(p.name as ts.ObjectBindingPattern, t, true);
+      } else if (p.name.kind === K.ArrayBindingPattern) {
+        exprTypes.set(p.name, t);
+        this.destructureTuple(p.name as ts.ArrayBindingPattern, t, true);
+      }
+    }
     let result: Type = VOID;
     const body = d.body!;
     if (body.kind !== K.Block) {
@@ -709,8 +726,10 @@ export class Checker {
    * nullable. An assignment inside an expression only ends narrowings (`lvalue`), so nothing conditional can leave one behind.
    */
   private assignNarrow(e: ts.Expression): void {
-    if (e.kind !== K.BinaryExpression || (e as ts.BinaryExpression).operatorToken.kind !== K.EqualsToken) return;
+    if (e.kind !== K.BinaryExpression) return;
     const b = e as ts.BinaryExpression;
+    const opk = b.operatorToken.kind;
+    if (opk !== K.EqualsToken && opk !== K.QuestionQuestionEqualsToken) return;
     const l = assignTarget(b.left);
     const s = isId(l) ? this.scope.lookup(l.text) : undefined;
     const inner = s && !s.unstable ? nonNull(s.type) : undefined;
@@ -966,12 +985,12 @@ export class Checker {
         const sym = this.declare(d.name, t, { mutable: mutableDecl });
         if (init && !d.type && t.k === "num" && isLitOnly(init)) this.litLets.set(sym.id, d.name);
         if (cl) this.localConstLits.set(sym.id, cl);
-      } else if (d.name.kind === K.ObjectBindingPattern) this.destructure(d.name as ts.ObjectBindingPattern, t);
+      } else if (d.name.kind === K.ObjectBindingPattern) this.destructure(d.name as ts.ObjectBindingPattern, t, mutableDecl);
       else if (d.name.kind === K.ArrayBindingPattern) this.destructureTuple(d.name as ts.ArrayBindingPattern, t, mutableDecl);
     }
   }
 
-  private destructure(p: ts.ObjectBindingPattern, t0: Type): void {
+  private destructure(p: ts.ObjectBindingPattern, t0: Type, mutableDecl = false): void {
     const t = unref(t0);
     for (const el of p.elements) {
       if (!isId(el.name)) continue;
@@ -982,7 +1001,7 @@ export class Checker {
         if (f) ft = f.type; else this.at("E2002", prop, `no field '${prop.text}'`);
       } else if (t.k !== "error") this.at("E2002", prop, "only records can be destructured");
       exprTypes.set(el.name, ft);
-      this.declare(el.name, ft);
+      this.declare(el.name, ft, { mutable: mutableDecl });
     }
   }
 
@@ -1371,14 +1390,14 @@ function findPtrRef(n: Node): Node | undefined {
 }
 
 function isAssignOp(k: K): boolean {
-  return k === K.EqualsToken || k === K.PlusEqualsToken || k === K.MinusEqualsToken || k === K.AsteriskEqualsToken || k === K.SlashEqualsToken || k === K.PercentEqualsToken || k === K.AsteriskAsteriskEqualsToken ||
+  return k === K.EqualsToken || k === K.QuestionQuestionEqualsToken || k === K.PlusEqualsToken || k === K.MinusEqualsToken || k === K.AsteriskEqualsToken || k === K.SlashEqualsToken || k === K.PercentEqualsToken || k === K.AsteriskAsteriskEqualsToken ||
     k === K.AmpersandEqualsToken || k === K.BarEqualsToken || k === K.CaretEqualsToken || k === K.LessThanLessThanEqualsToken || k === K.GreaterThanGreaterThanEqualsToken || k === K.GreaterThanGreaterThanGreaterThanEqualsToken;
 }
 /** An authority anywhere in `t`, looking through function types too (E4006 for Q189 (b) parameter types). */
 function hasAuthDeep(t: Type): boolean {
   switch (t.k) {
     case "opaque": return (AUTHORITIES as readonly string[]).includes(t.name);
-    case "fn": return t.params.some(hasAuthDeep) || hasAuthDeep(t.ret);
+    case "fn": return t.params.some(hasAuthDeep) || (t.rest ? hasAuthDeep(t.rest) : false) || hasAuthDeep(t.ret);
     case "record": return t.fields.some((f) => hasAuthDeep(f.type));
     case "union": return t.members.some(hasAuthDeep);
     case "tuple": return t.elems.some(hasAuthDeep);
@@ -1419,7 +1438,15 @@ function sameSig(a: FnType, b0: FnType): boolean {
     return (p.constraint && q ? same(p.constraint, subst(q, m)) : !p.constraint && !q) && capsEq(p.caps, b0.tparams[i]!.caps);
   });
   const aMin = a.min ?? a.params.length;
-  return cons && aMin <= b.params.length && a.params.length >= b.params.length && b.params.every((p, i) => same(a.params[i]!, p)) && same(a.ret, b.ret);
+  if (!cons || aMin > b.params.length || !same(a.ret, b.ret)) return false;
+  if (b.rest) {
+    if (!a.rest || !same(a.rest, b.rest) || a.params.length > b.params.length) return false;
+    const bEl = restElem(b.rest)!;
+    return b.params.every((p, i) => same(i < a.params.length ? a.params[i]! : restElem(a.rest!)!, p)) &&
+      (!a.rest || same(restElem(a.rest)!, bEl));
+  }
+  if (!a.rest && a.params.length < b.params.length) return false;
+  return b.params.every((p, i) => same(i < a.params.length ? a.params[i]! : restElem(a.rest!)!, p));
 }
 
 /** Q054 / Q072: types a module-level const may not have. */

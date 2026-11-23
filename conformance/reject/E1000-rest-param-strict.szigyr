@@ -1,0 +1,6 @@
+// expect: E1000 @ 4:12
+// stage: 1
+// open-question: Q300
+function f(...xs: Array<i32>): void {
+  "use owned";
+}

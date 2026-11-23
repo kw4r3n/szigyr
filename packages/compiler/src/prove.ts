@@ -353,10 +353,17 @@ class FnProver {
   initEntry(): State {
     const st: State = { terminated: false, env: new Map(), inexact: new Set(), assumptions: [], modelVars: new Map() };
     for (const p of this.f.decl.parameters) {
-      if (!isId(p.name)) continue;
-      const sym = localOf.get(p.name);
-      if (!sym) continue;
-      this.initLocal(st, sym, sym.name);
+      if (isId(p.name)) {
+        const sym = localOf.get(p.name);
+        if (sym) this.initLocal(st, sym, sym.name);
+      } else if (p.name.kind === K.ObjectBindingPattern || p.name.kind === K.ArrayBindingPattern) {
+        for (const el of (p.name as ts.ObjectBindingPattern | ts.ArrayBindingPattern).elements) {
+          if (el.name && isId(el.name)) {
+            const sym = localOf.get(el.name);
+            if (sym) this.initLocal(st, sym, sym.name);
+          }
+        }
+      }
     }
     const cs = this.contracts.get(this.f)!;
     for (const req of cs.requires) {
@@ -960,6 +967,44 @@ class FnProver {
     const t = this.typeOf(b);
 
     if (k === K.EqualsToken) return this.checkAssign(b, undefined, st);
+    if (k === K.QuestionQuestionEqualsToken) {
+      const left = this.assignTargetNode(b.left);
+      if (left.kind === K.ElementAccessExpression) {
+        const a = left as ts.ElementAccessExpression;
+        const arrVal = await this.checkExpr(a.expression, st);
+        const lenTerm = this.isLenCall(a.expression) ? arrVal : this.containerLen(a.expression, st);
+        const idx = await this.checkExpr(a.argumentExpression, st);
+        this.addObligation("T002", "index in bounds [0, length)", a.argumentExpression, mod, st, `(and (>= ${idx.smt} 0) (< ${idx.smt} ${lenTerm.smt}))`, idx.exact && lenTerm.exact);
+        st.assumptions.push(`(and (>= ${idx.smt} 0) (< ${idx.smt} ${lenTerm.smt}))`);
+        const baseLen = st.assumptions.length;
+        const nnCond = this.fresh("Bool", "nn_q");
+        const nonNullSt = cloneState(st);
+        nonNullSt.assumptions.push(nnCond);
+        const nullSt = cloneState(st);
+        nullSt.assumptions.push(`(not ${nnCond})`);
+        await this.checkExpr(b.right, nullSt);
+        this.joinInto(st, nonNullSt, nullSt, nnCond, baseLen);
+        return { smt: this.freshForType(t, "nullish"), exact: false };
+      }
+      const l = await this.checkExpr(left, st);
+      const nnKey = this.nnKeyOf(left);
+      const hasNn = !!(nnKey && st.env.has(nnKey));
+      const nnCond = hasNn ? st.env.get(nnKey!)! : this.fresh("Bool", "nn_q");
+      const nnExact = hasNn ? !st.inexact.has(nnKey!) : false;
+      const baseLen = st.assumptions.length;
+      const nonNullSt = cloneState(st);
+      nonNullSt.assumptions.push(nnCond);
+      const nullSt = cloneState(st);
+      nullSt.assumptions.push(`(not ${nnCond})`);
+      const r = await this.checkExpr(b.right, nullSt);
+      this.assignPlaceFromExpr(left, b.right, r, nullSt);
+      this.joinInto(st, nonNullSt, nullSt, nnCond, baseLen);
+      const u = unref(t);
+      if (isInt(u) || isBool(u)) {
+        return { smt: `(ite ${nnCond} ${l.smt} ${r.smt})`, exact: nnExact && l.exact && r.exact };
+      }
+      return { smt: this.freshForType(t, "nullish"), exact: false };
+    }
     const comp = ARITH_ASSIGN[k];
     if (comp) return this.checkAssign(b, comp, st);
     if (k === K.SlashEqualsToken || k === K.PercentEqualsToken || BIT_ASSIGN.has(k)) {
