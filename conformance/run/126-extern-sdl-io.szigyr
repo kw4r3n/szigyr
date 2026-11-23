@@ -12,7 +12,7 @@ declare module "c:sdl3:SDL3/SDL.h" {
 }
 import { SDL_malloc, SDL_free, SDL_IOFromMem, SDL_WriteIO, SDL_ReadIO, SDL_CloseIO, SDL_floor } from "c:sdl3:SDL3/SDL.h";
 
-type R = Struct<{ w: usize; g: usize; ok: boolean; f: f64 }>;
+type R = OwnedStruct<{ w: usize; g: usize; ok: boolean; f: f64 }>;
 
 function go(ffi: Ffi): R {
   "use owned";

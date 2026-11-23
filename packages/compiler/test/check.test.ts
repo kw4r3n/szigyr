@@ -193,21 +193,21 @@ it("lists T015 at the member name of Ptr / ConstPtr operations in rt + unsafe fu
 it("slices of two different Struct fields are no T013 site, two slices of one field are (Q190, Q239)", () => {
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-t013-`));
   writeFileSync(join(dir, "main.szigyr"), [
-    "type P = Struct<{ a: Vec<i32>; b: Vec<i32> }>;",
+    "type P = OwnedStruct<{ a: Vec<i32>; b: Vec<i32> }>;",
     "function copy(d: Mut<Slice<i32>>, s: Ref<Slice<i32>>): void {",
     '  "use rt";',
     "  d[0] = s[0];",
     "}",
     "function two(p: Mut<P>): void {",
     '  "use rt";',
-    "  copy(p.a.slice(0, 1), p.b.slice(0, 1));",
-    "  copy(p.a.slice(0, 1), p.a.slice(1, 2));",
-    "  copy(p.a.slice(0, 1), (p.a).slice(1, 2));",
+    "  copy(p.a.borrowSlice(0, 1), p.b.borrowSlice(0, 1));",
+    "  copy(p.a.borrowSlice(0, 1), p.a.borrowSlice(1, 2));",
+    "  copy(p.a.borrowSlice(0, 1), (p.a).borrowSlice(1, 2));",
     "}",
     "",
   ].join("\n"));
   const t013 = rtTrapSites(join(dir, "main.szigyr")).two!.filter((s) => s.code === "T013");
-  expect(t013).toEqual([{ code: "T013", line: 9, col: 29 }, { code: "T013", line: 10, col: 31 }]);
+  expect(t013).toEqual([{ code: "T013", line: 9, col: 35 }, { code: "T013", line: 10, col: 37 }]);
 });
 
 it("determinism checks generic class type arguments across parameters (§7.3)", () => {
@@ -279,12 +279,12 @@ it("enforces explicit capability bounds and intersection constraints (SPEC-v1 §
       "function passOk(a: Alloc): void {",
       "  const v = Vec.create<i32>(a, 1);",
       "  takeOwn(v);",
-      "  takeOwn<Struct<{ x: i32 }>>({ x: 1 });",
+      "  takeOwn<OwnedStruct<{ x: i32 }>>({ x: 1 });",
       "}",
       "function bad(): void {",
       "  takeOwn<i32>(1);",
       '  takeOwn<string>("a");',
-      "  takeOwn<Struct<{ readonly x: i32 }>>({ x: 1 });",
+      "  takeOwn<{ readonly x: i32 }>({ x: 1 });",
       "}",
       "",
     ].join("\n"),
@@ -401,7 +401,7 @@ it("enforces explicit capability bounds and intersection constraints (SPEC-v1 §
       "  using r4 = Resource.own(Vec.create<i32>(alloc, 1), freeVec);",
       "  return r4;",
       "}",
-      "type RtBox = Struct<{ x: i32 }>;",
+      "type RtBox = OwnedStruct<{ x: i32 }>;",
       "function freePtrRt(p: Ptr<u8>): void { 'use rt'; 'use unsafe'; }",
       "function cleanBoxStrict(l: Log, b: RtBox): void { 'use owned'; }",
       "function badRt(l: Log): void {",

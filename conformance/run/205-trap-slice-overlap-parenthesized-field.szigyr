@@ -1,13 +1,13 @@
 // expect-output: start
-// expect-trap: T013 @ 10:33
+// expect-trap: T013 @ 10:39
 // stage: 2
 // open-question: Q239
-type S = Struct<{ a: Vec<i32> }>;
-type P = Struct<{ a: Vec<i32>; s: S }>;
+type S = OwnedStruct<{ a: Vec<i32> }>;
+type P = OwnedStruct<{ a: Vec<i32>; s: S }>;
 function cp(d: Mut<Slice<i32>>, s: Ref<Slice<i32>>): void { "use rt"; d[0] = s[0]; }
 function g(p: Mut<P>): void {
   "use rt";
-  cp((p.s).a.slice(0, 2), p.s.a.slice(1, 3));
+  cp((p.s).a.borrowSlice(0, 2), p.s.a.borrowSlice(1, 3));
 }
 export function main(sys: System): void {
   const a = Vec.create<i32>(sys.alloc, 4); a.push(1); a.push(2); a.push(3);

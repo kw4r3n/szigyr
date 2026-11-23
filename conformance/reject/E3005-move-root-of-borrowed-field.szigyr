@@ -5,7 +5,7 @@ function mk(alloc: Alloc): Vec<f32> {
   "use owned";
   return Vec.create<f32>(alloc, 2);
 }
-type W = Struct<{ a: Vec<f32>; b: Vec<f32> }>;
+type W = OwnedStruct<{ a: Vec<f32>; b: Vec<f32> }>;
 function g(w: W): usize {
   "use owned";
   return w.a.length;

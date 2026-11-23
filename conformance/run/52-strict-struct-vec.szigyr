@@ -5,9 +5,9 @@
 // stage: 2
 // open-question: Q040
 // open-question: Q086
-type V2 = Struct<{ readonly x: f32; readonly y: f32 }>;
-type Body = Struct<{ pos: V2; vel: V2; mass: f32 }>;
-type World = Struct<{ bodies: Vec<V2>; count: u32; readonly tag: i32 }>;
+type V2 = { readonly x: f32; readonly y: f32 };
+type Body = OwnedStruct<{ pos: V2; vel: V2; mass: f32 }>;
+type World = OwnedStruct<{ bodies: Vec<V2>; count: u32; readonly tag: i32 }>;
 
 function makeWorld(alloc: Alloc, n: usize): World {
   "use owned";
@@ -46,7 +46,7 @@ function shift(s: Mut<Slice<V2>>, d: f32): void {
 function bump(w: Mut<World>): void {
   "use owned";
   w.count += 1;
-  shift(w.bodies.slice(1, 3), 10);
+  shift(w.bodies.borrowSlice(1, 3), 10);
   const last = w.bodies.pop();
   if (last !== null) {
     w.bodies.push({ x: last.x * 2, y: last.y });

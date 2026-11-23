@@ -10,7 +10,7 @@
 // expect-output: false
 // expect-output: done
 // stage: 5
-type Tone = Struct<{ rx: RingRx<f64>; phase: f64; freq: f64 }>;
+type Tone = OwnedStruct<{ rx: RingRx<f64>; phase: f64; freq: f64 }>;
 
 function tone(st: Mut<Tone>, out: Mut<Slice<f32>>, frames: usize): void {
   "use rt";

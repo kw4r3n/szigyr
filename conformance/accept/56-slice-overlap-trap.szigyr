@@ -13,12 +13,12 @@ test("slice overlap traps T013, disjoint slices copy", (t: Test) => {
     const alloc = TestAlloc.create();
     const v = Vec.create<f32>(alloc, 4);
     v.push(0); v.push(1); v.push(2); v.push(3);
-    copyInto(v.slice(0, 3), v.slice(2, 4));
+    copyInto(v.borrowSlice(0, 3), v.borrowSlice(2, 4));
   });
   const alloc = TestAlloc.create();
   const v = Vec.create<f32>(alloc, 4);
   v.push(0); v.push(1); v.push(2); v.push(3);
-  copyInto(v.slice(0, 2), v.slice(2, 4));
+  copyInto(v.borrowSlice(0, 2), v.borrowSlice(2, 4));
   t.eq(v[0], 2);
   t.eq(v[1], 3);
 });

@@ -54,7 +54,7 @@ export async function main(sys: System): Promise<void> {
   const wt = sys.fs.writeTextAtomic(\`\${root}/sub/b.txt\`, "hello atomic");
   const buf = Vec.create<u8>(sys.alloc, 3);
   buf.push(10); buf.push(20); buf.push(30);
-  const wb = sys.fs.writeBytesAtomic(\`\${root}/sub/a.bin\`, buf.slice(0, 3));
+  const wb = sys.fs.writeBytesAtomic(\`\${root}/sub/a.bin\`, buf.borrowSlice(0, 3));
   const failWrite = sys.fs.writeTextAtomic(\`\${root}/sub\`, "should fail");
   const st = sys.fs.stat(\`\${root}/sub/a.bin\`);
   const rd = sys.fs.readDir(\`\${root}/sub\`);
@@ -242,7 +242,7 @@ test("fake fs, proc, net kill mutants", async (t: Test) => {
 
   const fp = FakeProc.create();
   t.eq(await runTool(fp, "x"), -1);
-  fp.onRun((req: ProcRequest) => ok({ exitCode: req.args[0] === "x" ? 7 : 1, stdout: "", stderr: "", timedOut: false }));
+  fp.onRun((req: ProcRequest) => Result.ok({ exitCode: req.args[0] === "x" ? 7 : 1, stdout: "", stderr: "", timedOut: false }));
   t.eq(await runTool(fp, "x"), 7);
   t.eq(await runTool(fp, "y"), 1);
 
@@ -342,7 +342,7 @@ export async function main(sys: System): Promise<void> {
   const bProc = await sys.proc.run("ls", []);
   const bNet = await sys.net.serve({ host: "127.0.0.1", port: 0 }, async (_r: HttpServerRequest) => ({ status: 200, headers: [], body: "" }));
   const fp = FakeProc.create();
-  fp.onRun((_r: ProcRequest) => ok({ exitCode: 0, stdout: "ok", stderr: "", timedOut: false }));
+  fp.onRun((_r: ProcRequest) => Result.ok({ exitCode: 0, stdout: "ok", stderr: "", timedOut: false }));
   const pr = await fp.run("echo", []);
   const fn = FakeNet.create();
   const ns = await fn.serve({ host: "127.0.0.1", port: 0 }, async (r: HttpServerRequest) => ({ status: 200, headers: [], body: r.path }));

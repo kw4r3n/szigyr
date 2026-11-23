@@ -1,7 +1,7 @@
 // expect-output: 5 5 6 20
 // stage: 3
 // A `never` call in a struct-valued `??` / `?:` yields a typed zero on the dead path (D140).
-type S = Struct<{ readonly x: i32 }>;
+type S = { readonly x: i32 };
 function orPanic(v: Mut<Vec<S>>): S {
   "use owned";
   return v.pop() ?? panic("missing");
@@ -29,5 +29,5 @@ export function main(sys: System): void {
   v.push({ x: 5 });
   const a = orPanic(v);
   const b = pick(true, { x: 5 });
-  sys.log.info(`${a.x} ${b.x} ${val(resPick(true, ok(6)))} ${hdl(pool)}`);
+  sys.log.info(`${a.x} ${b.x} ${val(resPick(true, Result.ok(6)))} ${hdl(pool)}`);
 }

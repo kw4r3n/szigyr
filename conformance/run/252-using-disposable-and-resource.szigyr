@@ -98,7 +98,7 @@ function testManagedResource(alloc: Alloc, log: Log): void {
 }
 
 type Msg = "s1" | "s2" | "ssw" | "swl" | "se1" | "se2" | "st" | "hit" | "mut-ok" | "mut-bad" | "strict-after-sw" | "strict-early:42:5" | "vec:2" | "unreachable";
-type Box = Struct<{ id: Msg; n: i32 }>;
+type Box = OwnedStruct<{ id: Msg; n: i32 }>;
 
 function logMsg(log: Log, m: Msg): void {
   "use owned";
@@ -166,7 +166,7 @@ function testStrict(log: Log, alloc: Alloc): void {
   rv.borrow().push(20);
 }
 
-type RtBox = Struct<{ d: i32 }>;
+type RtBox = OwnedStruct<{ d: i32 }>;
 
 function cleanRtBox(_b: RtBox): void {
   "use rt";

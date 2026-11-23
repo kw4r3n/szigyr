@@ -44,8 +44,8 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
     const ifaceMixed = checkSrc("interface Foo { readonly x: i32; m(): void; }\n").diags[0]!;
     expect(ifaceMixed).toMatchObject({
       code: "E1000",
-      message: "interface cannot mix fields and methods",
-      data: { kind: "interface-mixed" },
+      message: "interface declares methods only; use 'type Name = { readonly ... }' for record types",
+      data: { kind: "interface-field" },
     });
 
     const forIn = checkSrc("export function f(xs: Array<i32>): void { for (const k in xs) {} }\n").diags[0]!;

@@ -3,5 +3,5 @@
 // open-question: Q222
 export function f(v: Mut<Vec<i32>>): void {
   "use owned";
-  v.slice(0, 4)[0] = 1;
+  v.borrowSlice(0, 4)[0] = 1;
 }

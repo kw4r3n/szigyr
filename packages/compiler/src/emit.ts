@@ -52,12 +52,12 @@ const CMP_MUT: Record<string, string> = { "<": "<=", "<=": "<", ">": ">=", ">=":
 const LOGIC_MUT: Record<string, string> = { "&&": "||", "||": "&&" };
 const numValue = (n: ts.NumericLiteral): number => Number(n.text.replace(/_/g, ""));
 const unwrapParens = (e: ts.Expression): ts.Expression =>
-  e.kind === K.ParenthesizedExpression || e.kind === K.SatisfiesExpression
-    ? unwrapParens((e as ts.ParenthesizedExpression | ts.SatisfiesExpression).expression)
+  e.kind === K.ParenthesizedExpression
+    ? unwrapParens((e as ts.ParenthesizedExpression).expression)
     : e;
 const unwrapParentExpr = (n: Node): { cur: Node; parent: Node | undefined } => {
   let cur: Node = n;
-  while (cur.parent?.kind === K.ParenthesizedExpression || cur.parent?.kind === K.SatisfiesExpression) cur = cur.parent;
+  while (cur.parent?.kind === K.ParenthesizedExpression) cur = cur.parent;
   return { cur, parent: cur.parent };
 };
 const isCaseExpr = (n: Node): boolean => {
@@ -543,7 +543,6 @@ export function emitFile(
   function gen(n: Node): string {
     switch (n.kind) {
       case K.TypeAliasDeclaration: case K.InterfaceDeclaration: case K.ModuleDeclaration: return ""; // ModuleDeclaration: `declare module "c:..."` (§14.1) declares C functions and has no runtime form
-      case K.SatisfiesExpression: return `(${gen((n as ts.SatisfiesExpression).expression)})`;
       case K.NumericLiteral: {
         const nt = numName(n) as NumName | undefined;
         const orig = nt === "f32" ? `${RT}.f32(${splice(n)})` : nt && isInt64(nt) ? `${parseExactInt(n.getText(sf), false)!}n` : splice(n); // Q015
@@ -1016,7 +1015,6 @@ export function emitFile(
       switch (name) {
         case "wrapAdd": case "wrapSub": case "wrapMul": return `${RT}.${name}(${q(t)}, ${args.join(", ")})`;
         case "divTrunc": case "rem": return `${RT}.${name}(${q(t)}, ${args.join(", ")}, ${at(callee)})`;
-        case "ok": case "err": return `${RT}.${name}(${args[0]})`;
         case "panic": case "requires": case "invariant": return `${RT}.${name}(${args[0]}, ${at(callee)})`;
         case "cast": return `${RT}.cast(${args[0]}, ${desc(resultParts(self!)!.ok)})`;
         case "test": return `${RT}.test(${args.join(", ")}, ${q(file)})`;
@@ -1063,6 +1061,7 @@ export function emitFile(
     const ns = recv.kind === K.Identifier && !r0 ? (recv as ts.Identifier).text : undefined;
     if (ns === "Math" && m === "sqrt" && self?.k === "num" && self.name === "f32") return `${RT}.f32(Math.sqrt(${args[0]}))`;
     if (ns === "DetMath") { dmUsed.add(m); return `${dmBinding(m)}(${args.join(", ")})`; } // §12 (Q191): the bundled module, imported below under a hidden name
+    if (ns === "Result" && (m === "ok" || m === "err")) return `${RT}.${m}(${args[0]})`;
     if (ns === "JSON" && m === "parse") return `${RT}.jsonParse(${args[0]}, ${at(p.name)})`; // Q035: a syntax error is an `err`, other exceptions are T006
     if (ns === "JSON" && m === "stringify") return `${RT}.jsonStringify(${args[0]}, ${args.length > 1 ? args[1] : "undefined"}, ${at(p.name)})`;
     if (ns === "JSON" && m === "get") return `${RT}.jsonGet(${args[0]}, ${args[1]})`;
@@ -1085,7 +1084,7 @@ export function emitFile(
       if ((r.name === "Array" || r.name === "ReadonlyArray") && (m === "pop" || m === "find")) return nn(`${RT}.nn(${withArgs([])})`);
       if ((r.name === "Array" || r.name === "ReadonlyArray") && (m === "indexOf" || m === "findIndex")) return nn(`${RT}.idxOrNull(${withArgs([])})`);
       if (r.name === "Map" && m === "get") return nn(`${RT}.nn(${withArgs([])})`);
-      if ((r.name === "Vec" || r.name === "Slice") && m === "slice") return nn(withArgs([at(p.name)]));
+      if ((r.name === "Vec" || r.name === "Slice") && m === "borrowSlice") return nn(withArgs([at(p.name)]));
       if (r.name === "OwnedCell" && (m === "take" || m === "put" || m === "withRef" || m === "withMut")) return nn(withArgs([at(p.name)]));
       if (r.name === "Pool" && (m === "get" || m === "set" || m === "remove")) return nn(withArgs([at(p.name)])); // T011 at the member name (Q188 (a))
       if (r.name === "Arena" && m === "alloc") { const nn2 = self && nonNull(self); const el = nn2?.k === "gen" ? nn2.args[0] : undefined; return nn(withArgs([q(elemDesc(el))])); } // Q188 (b)

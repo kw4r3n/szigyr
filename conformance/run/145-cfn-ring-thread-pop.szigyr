@@ -9,7 +9,7 @@ declare module "c:szcb:szcb.h" {
 }
 import { szcb_start, szcb_join } from "c:szcb:szcb.h";
 
-type State = Struct<{ rx: RingRx<i32>; sum: i32 }>;
+type State = OwnedStruct<{ rx: RingRx<i32>; sum: i32 }>;
 
 function drain(s: Mut<State>): void {
   "use rt";

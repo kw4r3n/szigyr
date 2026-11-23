@@ -3,7 +3,7 @@
 // A local Result<null, i32> inside a strict function body is fine; only the boundary rejects null (Q233, D140).
 function f(flag: boolean): i32 {
   "use owned";
-  const r: Result<null, i32> = flag ? ok(null) : err(3);
+  const r: Result<null, i32> = flag ? Result.ok(null) : Result.err(3);
   return r.kind === "ok" ? 7 : r.error;
 }
 export function main(sys: System): void {

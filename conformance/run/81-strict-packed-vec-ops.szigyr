@@ -4,7 +4,7 @@
 // expect-output: 0 4 3 n 9
 // expect-trap: T002 @ 46:12
 // stage: 2
-type V2 = Struct<{ readonly x: f32; readonly y: i16 }>;
+type V2 = { readonly x: f32; readonly y: i16 };
 type Lv = "lo" | "hi";
 
 function sumY(s: Ref<Slice<V2>>): i32 {
@@ -21,10 +21,10 @@ function fillMid(s: Mut<Slice<V2>>, v: V2): void {
 
 function work(v: Mut<Vec<V2>>): i32 {
   "use owned";
-  fillMid(v.slice(2, 5), { x: 1, y: 7 });
+  fillMid(v.borrowSlice(2, 5), { x: 1, y: 7 });
   const p = v.pop();
   const last: i32 = p === null ? -1 : i32(p.y);
-  return sumY(v.slice(1, 4)) * 100 + last;
+  return sumY(v.borrowSlice(1, 4)) * 100 + last;
 }
 
 function shrink(v: Mut<Vec<V2>>): usize {

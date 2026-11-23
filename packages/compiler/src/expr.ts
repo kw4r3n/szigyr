@@ -49,9 +49,15 @@ const BIT_OPS = new Set<K>([
 ]);
 /** Operands typed from the other side (literals, string literals, null). */
 const deferrable = (e: ts.Expression): boolean => isLitOnly(e) || e.kind === K.StringLiteral || e.kind === K.NullKeyword || e.kind === K.NoSubstitutionTemplateLiteral;
+const isResultCtorCall = (e: ts.Expression): boolean => {
+  if (e.kind !== K.CallExpression) return false;
+  const cal = (e as ts.CallExpression).expression;
+  if (cal.kind !== K.PropertyAccessExpression) return false;
+  const p = cal as ts.PropertyAccessExpression;
+  return isId(p.expression) && p.expression.text === "Result" && (p.name.text === "ok" || p.name.text === "err");
+};
 /** Arguments that need their parameter type before they can be typed (Q030). */
-const ctxSensitive = (e: ts.Expression): boolean => deferrable(e) || e.kind === K.ObjectLiteralExpression || e.kind === K.ArrayLiteralExpression ||
-  (e.kind === K.CallExpression && isId((e as ts.CallExpression).expression) && ["ok", "err"].includes(((e as ts.CallExpression).expression as ts.Identifier).text));
+const ctxSensitive = (e: ts.Expression): boolean => deferrable(e) || e.kind === K.ObjectLiteralExpression || e.kind === K.ArrayLiteralExpression || isResultCtorCall(e);
 const isFnExpr = (e: ts.Expression): e is ts.ArrowFunction | ts.FunctionExpression => e.kind === K.ArrowFunction || e.kind === K.FunctionExpression;
 
 /** The numeric type a literal takes from `want` (also `N | null`). */
@@ -123,12 +129,11 @@ const fnCalleeIds = new WeakSet<Node>();
 export const promiseOk = new WeakSet<Node>();
 const optCall = new WeakSet<Node>();
 /** Q130: these get their Promise type from a sub-expression, which is the one reported. */
-export const PROMISE_CONTAINERS = new Set<K>([K.ObjectLiteralExpression, K.ArrayLiteralExpression, K.ConditionalExpression, K.ParenthesizedExpression, K.BinaryExpression, K.SatisfiesExpression]);
+export const PROMISE_CONTAINERS = new Set<K>([K.ObjectLiteralExpression, K.ArrayLiteralExpression, K.ConditionalExpression, K.ParenthesizedExpression, K.BinaryExpression]);
 /** Q130: an `await` operand may be a conditional expression whose branches (nested conditionals included) are Promise expressions. */
 function allowAwaited(c: Checker, e: Node): void {
   promiseOk.add(e);
   if (e.kind === K.ParenthesizedExpression) allowAwaited(c, (e as ts.ParenthesizedExpression).expression);
-  else if (e.kind === K.SatisfiesExpression) allowAwaited(c, (e as ts.SatisfiesExpression).expression);
   else if (e.kind === K.ConditionalExpression) { allowAwaited(c, (e as ts.ConditionalExpression).whenTrue); allowAwaited(c, (e as ts.ConditionalExpression).whenFalse); }
 }
 /** A Promise, also inside `| null` or as array elements (`xs.map(g)`). Other holders only get one from a reported expression. */
@@ -201,23 +206,9 @@ function exprUnrecorded(c: Checker, e: ts.Expression, want?: Type): Type {
       const w = want && unref(nonNull(want) ?? want);
       return checkArrow(c, e as ts.ArrowFunction, w?.k === "fn" ? w : undefined, false);
     }
-    case K.AsExpression: case K.NonNullExpression:
-      expr(c, (e as ts.AsExpression | ts.NonNullExpression).expression);
+    case K.AsExpression: case K.NonNullExpression: case K.SatisfiesExpression:
+      expr(c, (e as ts.AsExpression | ts.NonNullExpression | ts.SatisfiesExpression).expression);
       return ERROR;
-    case K.SatisfiesExpression: {
-      const s = e as ts.SatisfiesExpression;
-      const target = c.typeOf(s.type);
-      c.walkTypePos(s.type, "local", { unsafe: c.fx.unsafe, cdecl: false });
-      if (c.fx.layer !== "managed") c.layerType(target, s.type, c.fx.layer);
-      if (promiseOk.has(e)) promiseOk.add(s.expression);
-      const actual = expr(c, s.expression, isErr(target) ? want : target);
-      if (!isErr(target) && !isErr(actual) && !assignable(actual, target)) {
-        c.at("E2002", s.expression, `expected '${show(target)}', got '${show(actual)}'`, { expected: show(target), actual: show(actual) });
-        attachConvertFix(c, s.expression, actual, target);
-        return ERROR;
-      }
-      return actual;
-    }
     case K.PostfixUnaryExpression:
       return incDec(c, e as ts.PostfixUnaryExpression);
   }
@@ -305,6 +296,8 @@ function unresolved(c: Checker, id: ts.Identifier): void {
     return;
   }
   if (name === "Resource") { c.at("E2002", id, "'Resource' is a namespace", { name }); return; }
+  if (name === "Result") { c.at("E2002", id, "'Result' is a namespace", { name }); return; }
+  if (name === "ok" || name === "err") { c.at("E2000", id, `unknown name '${name}'; use 'Result.${name}(...)'`, { name }); return; }
   if (NAMESPACES.has(name) && !RESERVED.has(name)) { c.at("E2000", id, `'${name}' can only be used as a member access receiver`, { name }); return; }
   if (BUILTIN_FUNCTIONS.has(name)) { c.at("E2002", id, `builtin '${name}' can only be called`, { name }); return; }
   c.at("E2000", id, `unknown name '${name}'`, { name });
@@ -397,6 +390,10 @@ function reportUnknownBuiltinMember(c: Checker, name: ts.Identifier, t: Type, av
     c.at("E2001", name, `'${recv}' has no member 'at'; use indexing '[i]' and 'length'`, { receiver: recv, member: n, suggestions: ["[i]", "length"] });
     return MERR;
   }
+  if (t.k === "gen" && (t.name === "Vec" || t.name === "Slice") && n === "slice") {
+    c.at("E2001", name, `'${recv}' has no member 'slice'; use 'borrowSlice(a, b)' (returns a borrowed Slice, arg/recv only)`, { receiver: recv, member: n, suggestions: ["borrowSlice"] });
+    return MERR;
+  }
   if (isStr(t)) {
     if (n === "replace") {
       c.at("E2001", name, `'${recv}' has no member 'replace'; use 'replaceAll()'`, { receiver: recv, member: n, suggestions: ["replaceAll"] });
@@ -424,6 +421,14 @@ function member(c: Checker, p: ts.PropertyAccessExpression, inCall: boolean): Me
     else {
       const suggestions = suggestMembers(name.text, ["own", "ownWith"]);
       c.at("E2001", name, `'Resource' has no member '${name.text}'${didYouMean(suggestions)}`, { receiver: "Resource", member: name.text, ...(suggestions.length ? { suggestions } : {}) });
+    }
+    return MERR;
+  }
+  if (isId(recvNode) && recvNode.text === "Result" && !c.scope.lookup("Result") && !c.prog.lookupValue(c.mod, "Result")) {
+    if (name.text === "ok" || name.text === "err") c.at("E2002", name, "a method can only be called");
+    else {
+      const suggestions = suggestMembers(name.text, ["ok", "err"]);
+      c.at("E2001", name, `'Result' has no member '${name.text}'${didYouMean(suggestions)}`, { receiver: "Result", member: name.text, ...(suggestions.length ? { suggestions } : {}) });
     }
     return MERR;
   }
@@ -1271,6 +1276,23 @@ function resourceCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpr
   return { k: "resource", inner: T };
 }
 
+/** `Result.ok(v)` / `Result.err(e)` constructor calls, inferred from contextual `Result<T, E>` (Q037). */
+function resultCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpression, want: Type | undefined): Type {
+  const m = p.name.text;
+  if (m !== "ok" && m !== "err") {
+    const suggestions = suggestMembers(m, ["ok", "err"]);
+    c.at("E2001", p.name, `'Result' has no member '${m}'${didYouMean(suggestions)}`, { receiver: "Result", member: m, ...(suggestions.length ? { suggestions } : {}) });
+    return ERROR;
+  }
+  if (e.typeArguments) { c.at("E2002", p.name, "expects 0 type argument(s)"); return ERROR; }
+  if (e.arguments.length !== 1) { c.at("E2002", p.name, `'Result.${m}' takes 1 argument(s)`); return ERROR; }
+  if (!want) { c.at("E2006", p.name, `cannot infer the Result type of 'Result.${m}'`); return ERROR; }
+  const parts = resultParts(nonNull(want) ?? want);
+  if (!parts) { if (!isErr(want)) c.at("E2002", e, `'Result.${m}(...)' is not a '${show(want)}'`); return ERROR; }
+  checkTo(c, e.arguments[0]!, m === "ok" ? parts.ok : parts.err);
+  return nonNull(want) ?? want;
+}
+
 /** §15.2 (Q200, Q207, Q287): `spawn.isolate<S, R>(f)`. The argument is the *name* of a module-level (imports
  * included), non-generic, managed function `(port: Port<R, S>): void | Promise<void>` or
  * `(port: Port<R, S>, alloc: Alloc): void | Promise<void>`; any other expression or signature is E2011
@@ -1396,6 +1418,7 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
       }
     }
     if (isId(p.expression) && p.expression.text === "Resource" && !c.scope.lookup("Resource") && !c.prog.lookupValue(c.mod, "Resource")) return resourceCall(c, e, p, want);
+    if (isId(p.expression) && p.expression.text === "Result" && !c.scope.lookup("Result") && !c.prog.lookupValue(c.mod, "Result")) return resultCall(c, e, p, want);
     const a0 = e.arguments[0];
     if (a0 && isId(p.expression) && p.expression.text === "Promise" && p.name.text === "all" && isNamespace(c, p.expression)) { // Q130
       if (a0.kind === K.CallExpression) promiseOk.add(a0); // an array made right here, such as `xs.map(g)`; a variable or field holding one is rejected
@@ -1736,14 +1759,6 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
       if (!isInt(lt)) { c.at("E2002", args[0]!, `'${name}' needs an integer type`); return ERROR; }
       if (!same(lt, rt)) { c.at("E2002", args[1]!, `expected '${show(lt)}', got '${show(rt)}'`); return ERROR; }
       return lt;
-    }
-    case "ok": case "err": { // Q037
-      if (!arity(1)) return ERROR;
-      if (!want) { c.at("E2006", callee, `cannot infer the Result type of '${name}'`); return ERROR; }
-      const parts = resultParts(nonNull(want) ?? want);
-      if (!parts) { if (!isErr(want)) c.at("E2002", e, `'${name}(...)' is not a '${show(want)}'`); return ERROR; }
-      checkTo(c, args[0]!, name === "ok" ? parts.ok : parts.err);
-      return nonNull(want) ?? want;
     }
     case "cfn": { // §14.6: the name of a module-level rt function, as a Ptr to it
       c.noteUnsafeOp(callee); // §14.4.4

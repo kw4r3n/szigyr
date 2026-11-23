@@ -1,7 +1,7 @@
 // expect: E3002 @ 10:28
 // stage: 2
 // open-question: Q002
-type Buf = Struct<{ data: Vec<f32>; readonly rate: u32 }>;
+type Buf = OwnedStruct<{ data: Vec<f32>; readonly rate: u32 }>;
 function f(alloc: Alloc, n: usize): void {
   "use owned";
   const a = Vec.create<f32>(alloc, 4);

@@ -1,7 +1,7 @@
 // expect-output: true:42:true:10:84:true:true
 // stage: 3
-type Msg = Struct<{ p: Pool<i32>; h: Handle<i32>; foreignH: Handle<i32>; ar: Arena }>;
-type Reply = Struct<{ p: Pool<i32>; h: Handle<i32>; ar: Arena; workerH: Handle<i32>; ok: boolean; v0: i32 }>;
+type Msg = OwnedStruct<{ p: Pool<i32>; h: Handle<i32>; foreignH: Handle<i32>; ar: Arena }>;
+type Reply = OwnedStruct<{ p: Pool<i32>; h: Handle<i32>; ar: Arena; workerH: Handle<i32>; ok: boolean; v0: i32 }>;
 
 function headI32(s: Ref<Slice<i32>>): i32 {
   "use rt";

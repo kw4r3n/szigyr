@@ -1145,18 +1145,6 @@ export class Checker {
           const d = s as ts.InterfaceDeclaration;
           if (!d.name) break;
           const sym = mod.types.get(d.name.text);
-          if (sym?.k === "rec-iface") {
-            this.fx.tparams = new Map((sym.tparams ?? []).map((p) => [p.name, p]));
-            for (const h of d.heritageClauses ?? []) {
-              for (const ht of h.types) for (const a of ht.typeArguments ?? []) this.walkTypePos(a, "typearg", sig);
-            }
-            for (const m of d.members) {
-              if (m.kind !== K.PropertySignature) continue;
-              const p = m as ts.PropertySignatureDeclaration;
-              if (p.type) this.walkTypePos(p.type, "field", sig);
-            }
-            break;
-          }
           this.fx.tparams = sym?.k === "iface" ? new Map(sym.iface.tparams.map((p) => [p.name, p])) : new Map();
           for (const m of d.members) {
             if (m.kind !== K.MethodSignature) continue;

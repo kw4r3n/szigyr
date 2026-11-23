@@ -3,7 +3,7 @@
 // expect-output: del=5 len=0 has=false
 // stage: 2
 // open-question: Q188
-type Pt = Struct<{ readonly x: f32; readonly y: f32 }>;
+type Pt = { readonly x: f32; readonly y: f32 };
 function put(p: Mut<Pool<Pt>>, x: f32): Handle<Pt> | null {
   "use rt";
   return p.insert({ x: x, y: x * 2 });

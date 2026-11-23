@@ -2,7 +2,7 @@
 // expect-trap: T005 @ 17:3
 // stage: 2
 // open-question: Q002
-type Acc = Struct<{ n: i32; cap: i32 }>;
+type Acc = OwnedStruct<{ n: i32; cap: i32 }>;
 
 function positive(x: i32): i32 {
   "use rt";

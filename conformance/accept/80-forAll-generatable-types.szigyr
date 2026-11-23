@@ -5,8 +5,8 @@ type Shape =
   | { readonly kind: "dot"; readonly x: f64 }
   | { readonly kind: "box"; readonly w: f32; readonly h: f32 };
 type Mode = "fast" | "safe";
-type CopyS = Struct<{ readonly x: f32; readonly y: boolean }>;
-type OwnedS = Struct<{ buf: Vec<i32>; readonly n: usize }>;
+type CopyS = { readonly x: f32; readonly y: boolean };
+type OwnedS = OwnedStruct<{ buf: Vec<i32>; readonly n: usize }>;
 
 test("all generatable types", (t: Test) => {
   forAll((

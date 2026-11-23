@@ -95,7 +95,7 @@ it("run rejects main with wrong signature or non-managed layer with exit 2 (Q061
 
 // D101-D103: the same tests under the JS and the C backend. A trap in C is the same JS trap, `Mut` writes reach the caller,
 // and a Vec grown in C is the same JS object with the new buffer.
-const BOTH = `type Acc = Struct<{ n: i32; total: i32 }>;
+const BOTH = `type Acc = OwnedStruct<{ n: i32; total: i32 }>;
 function addAll(a: Mut<Acc>, s: Ref<Slice<i32>>): void {
   "use rt";
   for (let i: usize = 0; i < s.length; i += 1) {
@@ -115,7 +115,7 @@ test("growth, writes and traps", (t: Test) => {
   t.eq(v.length, 9);
   t.eq(v[8], 8);
   const a: Acc = { n: 0, total: 0 };
-  addAll(a, v.slice(2, 5));
+  addAll(a, v.borrowSlice(2, 5));
   t.eq(a.n, 3);
   t.eq(a.total, 9);
   t.traps("T001", () => {
@@ -152,12 +152,12 @@ it("C traps T006 from the stack bound before the depth limit (Q182, D106)", () =
   const fs = Array.from({ length: 100 }, (_, i) => `readonly f${i}: f64`).join("; ");
   const init = Array.from({ length: 100 }, (_, i) => `f${i}: ${i}`).join(", ");
   // depth 9990 is under the 10000 counter; 800-byte frames exceed an 8 MiB stack only with the stack check
-  writeFileSync(f, `type S = Struct<{ ${fs} }>;\nfunction r(n: usize, s: S): f64 { "use owned"; if (n === 0) { return s.f0; } const t: S = { ...s, f1: s.f1 + 1 }; return r(n - 1, t) + s.f2; }\nexport function main(sys: System): void { const s: S = { ${init} }; sys.log.info(\`\${r(9990, s)}\`); }\n`);
+  writeFileSync(f, `type S = { ${fs} };\nfunction r(n: usize, s: S): f64 { "use owned"; if (n === 0) { return s.f0; } const t: S = { ...s, f1: s.f1 + 1 }; return r(n - 1, t) + s.f2; }\nexport function main(sys: System): void { const s: S = { ${init} }; sys.log.info(\`\${r(9990, s)}\`); }\n`);
   const r = szigyr("run", "--backend=c", f);
   expect(r.out + r.err).toMatch(/T006/);
 });
 
-const EQ = `type V2 = Struct<{ readonly x: f32; readonly y: f32 }>;
+const EQ = `type V2 = { readonly x: f32; readonly y: f32 };
 type Ev = { readonly kind: "move"; readonly to: V2 } | { readonly kind: "stop" };
 function mk(alloc: Alloc): Vec<V2> {
   "use owned";
@@ -381,10 +381,10 @@ it("null strict/rt boundary types work on both backends while non-Native fields 
   const main = `export function main(sys: System): void { sys.log.info("x"); }\n`;
   const okProbes: Record<string, string> = {
     unionNullMember: `type U = { readonly kind: "a"; readonly v: null } | { readonly kind: "b" };\nfunction f(u: U): i32 { "use owned"; return 1; }\n${main}`,
-    structResultNull: `type S = Struct<{ readonly r: Result<null, i32> }>;\nfunction f(s: S): i32 { "use owned"; return 1; }\n${main}`,
+    structResultNull: `type S = { readonly r: Result<null, i32> };\nfunction f(s: S): i32 { "use owned"; return 1; }\n${main}`,
     resultNullParam: `function f(r: Result<null, i32>): i32 { "use owned"; return 1; }\n${main}`,
-    resultNullReturn: `function f(): Result<null, i32> { "use owned"; return ok(null); }\n${main}`,
-    genericNull: `function f<T>(x: T): T { "use owned"; return x; }\nexport function main(sys: System): void { const r = f<Result<null, i32>>(ok(null)); sys.log.info("x"); }\n`,
+    resultNullReturn: `function f(): Result<null, i32> { "use owned"; return Result.ok(null); }\n${main}`,
+    genericNull: `function f<T>(x: T): T { "use owned"; return x; }\nexport function main(sys: System): void { const r = f<Result<null, i32>>(Result.ok(null)); sys.log.info("x"); }\n`,
   };
   for (const [name, src] of Object.entries(okProbes)) {
     const f = join(dir, `${name}.szigyr`);
@@ -394,7 +394,7 @@ it("null strict/rt boundary types work on both backends while non-Native fields 
     expect(r.stdout).toBe("x\n");
   }
   const strFile = join(dir, "structString.szigyr");
-  writeFileSync(strFile, `type S = Struct<{ readonly s: string }>;\nfunction f(s: S): i32 { "use owned"; return 1; }\n${main}`);
+  writeFileSync(strFile, `type S = OwnedStruct<{ readonly s: string }>;\nfunction f(s: S): i32 { "use owned"; return 1; }\n${main}`);
   const r = spawnSync("node", [CLI, "run", "--backend=c", strFile], { encoding: "utf8", env });
   expect(r.status).toBe(1);
   expect(r.stderr).not.toContain("failed:");
@@ -402,7 +402,7 @@ it("null strict/rt boundary types work on both backends while non-Native fields 
 
 // Q240 (a): polymorphic recursion is a check error (E4010); the C backend no longer caps type-argument nesting.
 it("a polymorphically recursive strict function is rejected by check with E4010 (Q240)", () => {
-  const f = tmpFile(`type W<T extends Native> = Struct<{ readonly a: T }>;\nfunction f<T>(x: T, n: i32): i32 { "use owned"; if (n === 0) { return 0; } const p: W<T> = { a: x }; return 1 + f<W<T>>(p, n - 1); }\nexport function main(sys: System): void { sys.log.info(\`\${f<i32>(1, 3)}\`); }\n`);
+  const f = tmpFile(`type W<T extends Native> = OwnedStruct<{ readonly a: T }>;\nfunction f<T>(x: T, n: i32): i32 { "use owned"; if (n === 0) { return 0; } const p: W<T> = { a: x }; return 1 + f<W<T>>(p, n - 1); }\nexport function main(sys: System): void { sys.log.info(\`\${f<i32>(1, 3)}\`); }\n`);
   const r = spawnSync("node", [CLI, "check", "--json", f], { encoding: "utf8" });
   expect(r.status).toBe(1);
   expect(jsonLines(r.stdout)[0].code).toBe("E4010");
@@ -587,7 +587,7 @@ it("--json emits valid JSONL for exit-2 usage/file errors and explain/query/test
   expect(jsonLines(exBad.err)[0]).toMatchObject({ kind: "error", code: "CLI_ERROR" });
 
   const qf = join(dir, "mod.szigyr");
-  writeFileSync(qf, `export type Pt = Struct<{ readonly x: i32; readonly y: i32 }>;
+  writeFileSync(qf, `export type Pt = { readonly x: i32; readonly y: i32 };
 export function add(a: i32, b: i32): i32 {
   "use rt";
   return a + b;

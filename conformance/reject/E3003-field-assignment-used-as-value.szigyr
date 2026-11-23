@@ -1,7 +1,7 @@
 // expect: E3003 @ 16:14
 // stage: 2
 // open-question: Q172
-type W = Struct<{ a: Vec<f32>; b: Vec<f32> }>;
+type W = OwnedStruct<{ a: Vec<f32>; b: Vec<f32> }>;
 function mk(alloc: Alloc): Vec<f32> {
   "use owned";
   return Vec.create<f32>(alloc, 2);

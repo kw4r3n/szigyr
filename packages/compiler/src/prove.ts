@@ -152,9 +152,7 @@ const isStrLitLike = (t: Type): boolean => {
 };
 
 function strip(e: ts.Expression): ts.Expression {
-  while (e.kind === K.ParenthesizedExpression || e.kind === K.SatisfiesExpression) {
-    e = e.kind === K.ParenthesizedExpression ? (e as ts.ParenthesizedExpression).expression : (e as ts.SatisfiesExpression).expression;
-  }
+  while (e.kind === K.ParenthesizedExpression) e = (e as ts.ParenthesizedExpression).expression;
   return e;
 }
 
@@ -565,7 +563,7 @@ class FnProver {
               const alk = this.lengthKeyOf(strip(bc.arguments[0]!));
               if (alk && st.env.has(alk)) return { smt: st.env.get(alk)!, exact: !st.inexact.has(alk) };
             }
-            if (bp.name.text === "slice" && bc.arguments.length === 2 && rt.k === "gen" && (rt.name === "Vec" || rt.name === "Slice")) {
+            if (bp.name.text === "borrowSlice" && bc.arguments.length === 2 && rt.k === "gen" && (rt.name === "Vec" || rt.name === "Slice")) {
               const a = this.evalPureInt(bc.arguments[0]!, st, mod, overrides, trackNonLinear);
               const b = this.evalPureInt(bc.arguments[1]!, st, mod, overrides, trackNonLinear);
               return { smt: `(- ${b.smt} ${a.smt})`, exact: a.exact && b.exact };
@@ -760,7 +758,7 @@ class FnProver {
     if (p.name.text === "filled" && c.arguments.length === 3 && isId(p.expression) && p.expression.text === "Vec" && !localOf.has(p.expression)) {
       return true;
     }
-    if (p.name.text === "slice" && c.arguments.length === 2) {
+    if (p.name.text === "borrowSlice" && c.arguments.length === 2) {
       return recvT.k === "gen" && (recvT.name === "Vec" || recvT.name === "Slice");
     }
     if (p.name.text === "view" && c.arguments.length === 1) {
@@ -1789,7 +1787,7 @@ class FnProver {
         }
         return { smt: this.freshForType(retT, m), exact: false };
       }
-      if (recvT.k === "gen" && (recvT.name === "Vec" || recvT.name === "Slice") && m === "slice" && c.arguments.length === 2) {
+      if (recvT.k === "gen" && (recvT.name === "Vec" || recvT.name === "Slice") && m === "borrowSlice" && c.arguments.length === 2) {
         const lenTerm = this.containerLen(p.expression, st);
         const a = await this.checkExpr(c.arguments[0]!, st);
         const b = await this.checkExpr(c.arguments[1]!, st);

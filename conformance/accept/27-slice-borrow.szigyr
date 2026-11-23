@@ -18,13 +18,13 @@ function zero(s: Mut<Slice<f32>>): void {
 export function halves(v: Ref<Vec<f32>>): f32 {
   "use rt";
   const mid = divTrunc(v.length, 2);
-  return sumSlice(v.slice(0, mid)) + sumSlice(v.slice(mid, v.length));
+  return sumSlice(v.borrowSlice(0, mid)) + sumSlice(v.borrowSlice(mid, v.length));
 }
 
 export function zeroHalf(v: Mut<Vec<f32>>): void {
   "use rt";
   const mid = divTrunc(v.length, 2);
-  zero(v.slice(0, mid));
+  zero(v.borrowSlice(0, mid));
 }
 
 test("slice borrow", (t: Test) => {
@@ -37,5 +37,5 @@ test("slice borrow", (t: Test) => {
   t.eq(v[3], 4);
   const w = Vec.create<f32>(alloc, 2);
   w.push(3); w.push(4);
-  t.eqSlice(v.slice(2, 4), w);
+  t.eqSlice(v.borrowSlice(2, 4), w);
 });

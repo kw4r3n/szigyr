@@ -195,7 +195,7 @@ test("pure path, HTML, percent decoding, query, and numeric helpers", (t: Test) 
   t.eq(parentRelDir("sub/a.txt"), "sub");
   t.eq(parentRelDir("a/b/c.txt"), "a/b");
 
-  t.eq(Url.decodeComponent("sub%2F%E6%97%A5%E6%9C%AC%E8%AA%9E.txt"), ok("sub/日本語.txt"));
+  t.eq(Url.decodeComponent("sub%2F%E6%97%A5%E6%9C%AC%E8%AA%9E.txt"), Result.ok("sub/日本語.txt"));
   t.eq(Url.decodeComponent("%ZZ").kind, "err");
   t.eq(Url.encodeComponent("notes/日本語.txt"), "notes%2F%E6%97%A5%E6%9C%AC%E8%AA%9E.txt");
   t.ok(Url.getQueryParam("", "path") === null);
@@ -395,10 +395,10 @@ test("handleHttpRequest and runSelfCheck cover FakeProc and FakeNet routes and e
   t.eq(badExec.kind, "err");
 
   proc.onRun((req: ProcRequest) => {
-    if (req.program === "fail-cmd") return err({ code: "ENOENT", message: "missing bin" });
-    if (req.program === "perm-cmd") return err({ code: "EACCES", message: "denied" });
-    if (req.timeoutMs !== 2000 && req.timeoutMs !== 500) return err({ code: "EINVAL", message: "bad timeout" });
-    return ok({ exitCode: 0, stdout: `ran:${req.program}:${req.args.join(",")}`, stderr: "", timedOut: false });
+    if (req.program === "fail-cmd") return Result.err({ code: "ENOENT", message: "missing bin" });
+    if (req.program === "perm-cmd") return Result.err({ code: "EACCES", message: "denied" });
+    if (req.timeoutMs !== 2000 && req.timeoutMs !== 500) return Result.err({ code: "EINVAL", message: "bad timeout" });
+    return Result.ok({ exitCode: 0, stdout: `ran:${req.program}:${req.args.join(",")}`, stderr: "", timedOut: false });
   });
 
   t.eq((await runWorkspaceTool(proc, "/ws", "fail-cmd", [], 100)).kind, "err");
@@ -459,17 +459,17 @@ test("handleHttpRequest and runSelfCheck cover FakeProc and FakeNet routes and e
   t.eq((await runSelfCheck(fs, proc, net, alloc, "/ws", "fail-cmd", [])).kind, "err");
 
   const probeNet = FakeNet.create();
-  probeNet.onFetch((_req: HttpClientRequest) => err({ code: "ECONNREFUSED", message: "down" }));
+  probeNet.onFetch((_req: HttpClientRequest) => Result.err({ code: "ECONNREFUSED", message: "down" }));
   t.eq((await probeHealth(probeNet, "http://127.0.0.1:9999")).kind, "err");
-  probeNet.onFetch((_req: HttpClientRequest) => ok({ status: 500, headers: [], body: JSON.stringify<HealthPayload>({ status: "ok", root: "/ws" }) }));
+  probeNet.onFetch((_req: HttpClientRequest) => Result.ok({ status: 500, headers: [], body: JSON.stringify<HealthPayload>({ status: "ok", root: "/ws" }) }));
   const badStatus = await probeHealth(probeNet, "http://127.0.0.1:9999");
   t.eq(badStatus.kind, "err");
   if (badStatus.kind === "err") t.eq(badStatus.error.code, "EIO");
-  probeNet.onFetch((_req: HttpClientRequest) => ok({ status: 200, headers: [], body: "{bad" }));
+  probeNet.onFetch((_req: HttpClientRequest) => Result.ok({ status: 200, headers: [], body: "{bad" }));
   t.eq((await probeHealth(probeNet, "http://127.0.0.1:9999")).kind, "err");
-  probeNet.onFetch((_req: HttpClientRequest) => ok({ status: 200, headers: [], body: "{}" }));
+  probeNet.onFetch((_req: HttpClientRequest) => Result.ok({ status: 200, headers: [], body: "{}" }));
   t.eq((await probeHealth(probeNet, "http://127.0.0.1:9999")).kind, "err");
-  probeNet.onFetch((_req: HttpClientRequest) => ok({ status: 200, headers: [], body: JSON.stringify<HealthPayload>({ status: "ok", root: "/ws" }) }));
+  probeNet.onFetch((_req: HttpClientRequest) => Result.ok({ status: 200, headers: [], body: JSON.stringify<HealthPayload>({ status: "ok", root: "/ws" }) }));
   const hOk = await probeHealth(probeNet, "http://127.0.0.1:9999");
   t.eq(hOk.kind, "ok");
   if (hOk.kind === "ok") t.eq(hOk.value.root, "/ws");

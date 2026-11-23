@@ -1,10 +1,10 @@
 // expect-output: 12 12
 // stage: 3
 // Spreading a smaller or differently-readonly Struct into an object literal copies field by field (D140).
-type A = Struct<{ x: i32 }>;
-type B = Struct<{ x: i32; y: i32 }>;
-type RO = Struct<{ readonly x: i32; readonly y: i32 }>;
-type MU = Struct<{ x: i32; y: i32 }>;
+type A = OwnedStruct<{ x: i32 }>;
+type B = OwnedStruct<{ x: i32; y: i32 }>;
+type RO = { readonly x: i32; readonly y: i32 };
+type MU = OwnedStruct<{ x: i32; y: i32 }>;
 function smaller(): i32 {
   "use owned";
   const a: A = { x: 1 };

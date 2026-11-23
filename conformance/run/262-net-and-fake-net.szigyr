@@ -32,7 +32,7 @@ export async function main(sys: System): Promise<void> {
   const after = await net.fetch(`http://127.0.0.1:${portStr}/after`);
   const afterStr = after.kind === "ok" ? `ok:${after.value.status}` : after.error.code;
 
-  net.onFetch((req: HttpClientRequest) => ok({
+  net.onFetch((req: HttpClientRequest) => Result.ok({
     status: 200,
     headers: [],
     body: `mock:${req.method}:${req.url}`,

@@ -375,7 +375,7 @@ export async function runMicroDawSession(
   autoplay: boolean,
 ): Promise<Result<DawRunSummary, IoError>> {
   const openRes = await display.open({ title: "Szigyr MicroDAW", width, height });
-  if (openRes.kind === "err") return err(openRes.error);
+  if (openRes.kind === "err") return Result.err(openRes.error);
   await using surface = openRes.value;
 
   if (autoplay) {
@@ -550,7 +550,7 @@ export async function runMicroDawSession(
   const finalPeakPct = Math.round(clamp01(f64(curPeak)) * 100);
   const audioOpen = session.isAudioOpen();
   log.info(`microdaw:frames=${frames}:audio=${audioOpen}:step=${lastStep}:peak=${finalPeakPct}`);
-  return ok({ frames, audioOpen, lastStep, peak: curPeak, snapshot: session.snapshot() });
+  return Result.ok({ frames, audioOpen, lastStep, peak: curPeak, snapshot: session.snapshot() });
 }
 
 export async function runMicroDawStudio(

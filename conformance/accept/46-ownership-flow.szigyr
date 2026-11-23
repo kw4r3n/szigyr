@@ -13,7 +13,7 @@ function make(alloc: Alloc): Vec<f32> {
   return Vec.create<f32>(alloc, 2);
 }
 type Op = { readonly kind: "a" } | { readonly kind: "b" };
-type Buf = Struct<{ data: Vec<f32>; readonly rate: u32 }>;
+type Buf = OwnedStruct<{ data: Vec<f32>; readonly rate: u32 }>;
 export function earlyReturn(alloc: Alloc, c: boolean): usize {
   "use owned";
   const a = make(alloc);
@@ -55,7 +55,7 @@ export function caseMoves(alloc: Alloc, op: Op): usize {
 }
 export function sliceRecv(v: Mut<Vec<f32>>): void {
   "use owned";
-  v.slice(0, 1).fill(2);
+  v.borrowSlice(0, 1).fill(2);
 }
 export function wholeMove(b: Buf): usize {
   "use owned";

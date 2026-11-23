@@ -31,7 +31,7 @@ export type ImageStats = {
   readonly fnv64: u64;
 };
 
-export type WorkerJob = Struct<{
+export type WorkerJob = OwnedStruct<{
   pixels: Vec<u8>;
   scratch: Arena;
   width: usize;
@@ -39,7 +39,7 @@ export type WorkerJob = Struct<{
   params: FilterParams;
 }>;
 
-export type WorkerResult = Struct<{
+export type WorkerResult = OwnedStruct<{
   pixels: Vec<u8>;
   scratch: Arena;
   stats: ImageStats;

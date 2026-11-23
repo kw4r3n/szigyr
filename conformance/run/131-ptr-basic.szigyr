@@ -5,7 +5,7 @@ declare module "c:sqlite3:sqlite3.h" {
   function sqlite3_malloc(ffi: Ffi, n: i32): Ptr<void>;
 }
 import { sqlite3_malloc } from "c:sqlite3:sqlite3.h";
-type R = Struct<{ a: i32; b: i32; c: i32; d: i32; e: i32 }>;
+type R = OwnedStruct<{ a: i32; b: i32; c: i32; d: i32; e: i32 }>;
 function fill(s: Mut<Slice<i32>>): void {
   "use rt";
   s.fill(9);

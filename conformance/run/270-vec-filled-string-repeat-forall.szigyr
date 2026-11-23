@@ -1,7 +1,7 @@
 // expect-output: 4:0.5:2.5:3:10:2:-3:1.5:0|true:true:0:3:ababab::0|alpha:42
 // stage: 3
 
-type Pt = Struct<{ readonly x: f64; readonly y: i32 }>;
+type Pt = { readonly x: f64; readonly y: i32 };
 
 function makeFilledF32(alloc: Alloc, n: usize): Vec<f32> {
   "use owned";

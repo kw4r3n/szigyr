@@ -4,7 +4,7 @@
 // expect-output: 1.5:11
 // stage: 3
 type R = { readonly x: f64; readonly y: i32 };
-type S = Struct<{ readonly x: f64; readonly y: i32 }>;
+type S = { readonly x: f64; readonly y: i32 };
 
 function sumS(s: S): f64 {
   "use rt";

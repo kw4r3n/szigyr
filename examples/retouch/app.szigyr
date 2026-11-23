@@ -163,7 +163,7 @@ export async function runRetouchStudio(
     width,
     height,
   });
-  if (openRes.kind === "err") return err(openRes.error);
+  if (openRes.kind === "err") return Result.err(openRes.error);
   await using surface = openRes.value;
   using holder = new SessionHolder(alloc);
 
@@ -269,7 +269,7 @@ export async function runRetouchStudio(
   }
   const finalStats = holder.session.stats();
   log.info(`retouch:frames=${frames}:undo=${holder.session.undoDepth()}:fnv=${finalStats.fnv64}`);
-  return ok(finalStats);
+  return Result.ok(finalStats);
 }
 
 export async function runRetouchApp(

@@ -71,7 +71,7 @@ const dvs = new WeakMap<ArrayBufferLike, DataView>();
 const dvOf = (u: Uint8Array): DataView => { let d = dvs.get(u.buffer); if (!d) dvs.set(u.buffer, d = new DataView(u.buffer, u.byteOffset, u.byteLength)); return d; };
 
 export class Slice<T = unknown> {
-  /** Only Vec.slice and Vec.view construct these. */
+  /** Only Vec.borrowSlice, Vec.view, and Slice.borrowSlice construct these. */
   private buf: Buf<T>;
   private readonly off: number;
   readonly length: number;
@@ -104,7 +104,7 @@ export class Slice<T = unknown> {
     if (this.cod) for (let i = 0; i < this.length; i++) this.set(i, x);
     else (this.buf as T[]).fill(x, this.off, this.off + this.length);
   }
-  slice(start: number, end: number, pos?: Pos): Slice<T> {
+  borrowSlice(start: number, end: number, pos?: Pos): Slice<T> {
     if (!(Number.isInteger(start) && Number.isInteger(end) && start >= 0 && start <= end && end <= this.length))
       trap("T002", `slice ${start}..${end} out of range (length ${this.length})`, pos);
     const span = this.span ? { root: this.span.root, lo: this.span.lo + start * this.span.z, hi: this.span.lo + end * this.span.z, z: this.span.z } : undefined;
@@ -216,7 +216,7 @@ export class Vec<T = unknown> {
     if (this.cod) for (let i = 0; i < this.len; i++) this.set(i, x);
     else (this.buf as T[]).fill(x, 0, this.len);
   }
-  slice(start: number, end: number, pos?: Pos): Slice<T> {
+  borrowSlice(start: number, end: number, pos?: Pos): Slice<T> {
     if (!(Number.isInteger(start) && Number.isInteger(end) && start >= 0 && start <= end && end <= this.len))
       trap("T002", `slice ${start}..${end} out of range (length ${this.len})`, pos);
     return new Slice(this.buf, start, end - start, this.cod, this);

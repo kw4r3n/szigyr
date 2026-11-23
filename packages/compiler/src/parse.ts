@@ -211,6 +211,3 @@ export const isId = (n: Node | undefined): n is Identifier => n?.kind === Syntax
 export const hasMod = (n: Node, k: SyntaxKind): boolean => !!(n as Node & { modifiers?: NodeArray<ModifierLike> }).modifiers?.some((m) => m.kind === k);
 export const isParamProp = (p: ParameterDeclaration): boolean =>
   hasMod(p, SyntaxKind.PrivateKeyword) || hasMod(p, SyntaxKind.PublicKeyword) || hasMod(p, SyntaxKind.ReadonlyKeyword);
-export const isRecordInterface = (d: InterfaceDeclaration): boolean =>
-  !d.members.some((m) => m.kind === SyntaxKind.MethodSignature) &&
-  (d.members.some((m) => m.kind === SyntaxKind.PropertySignature) || !!d.heritageClauses?.length);

@@ -18,13 +18,13 @@ function tmpFile(name: string, src: string): string {
 describe("wasm backend", () => {
   it("matches JS and C on traps T001..T013 and restores shadow stack across repeated traps", async () => {
     const f = tmpFile("traps.szigyr", `
-type S = Struct<{ a: i32; b: f64 }>;
-type Big = Struct<{
+type S = OwnedStruct<{ a: i32; b: f64 }>;
+type Big = {
   readonly f0: f64; readonly f1: f64; readonly f2: f64; readonly f3: f64;
   readonly f4: f64; readonly f5: f64; readonly f6: f64; readonly f7: f64;
   readonly f8: f64; readonly f9: f64; readonly f10: f64; readonly f11: f64;
   readonly f12: f64; readonly f13: f64; readonly f14: f64; readonly f15: f64;
-}>;
+};
 function addI(a: i32, b: i32): i32 { "use rt"; return a + b; }
 function getAt(s: Ref<Slice<i32>>, i: usize): i32 { "use rt"; return s[i]; }
 function toI8(x: f64): i8 { "use rt"; return i8(x); }
@@ -85,7 +85,7 @@ function trapVecIdx(): i32 {
 function trapOvl(): void {
   const v = Vec.create<i32>(TestAlloc.create(), 4);
   v.push(1); v.push(2); v.push(3); v.push(4);
-  ovl(v.slice(0, 3), v.slice(2, 4));
+  ovl(v.borrowSlice(0, 3), v.borrowSlice(2, 4));
 }
 
 test("all traps and repeated deep unwinding", (t: Test) => {
@@ -138,7 +138,7 @@ test("all traps and repeated deep unwinding", (t: Test) => {
 
   it("handles DetMath, Vec growth, Pool, Arena (noteC + cross-type T013), and authority callbacks", async () => {
     const f = tmpFile("features.szigyr", `
-type Item = Struct<{ readonly id: i32; readonly weight: f32; readonly ok: boolean }>;
+type Item = { readonly id: i32; readonly weight: f32; readonly ok: boolean };
 function growPush(v: Mut<Vec<Item>>, n: usize): usize {
   "use owned";
   for (let i: usize = 0; i < n; i += 1) {

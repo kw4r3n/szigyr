@@ -30,8 +30,8 @@ function sumPair(a: Ref<Slice<f32>>, b: Ref<Slice<f32>>): f32 {
 export function main(sys: System): void {
   const v = Vec.create<f32>(sys.alloc, 4);
   v.push(0); v.push(1); v.push(2); v.push(3);
-  sys.log.info(`lens=${probe(v.slice(0, 4), v.slice(2, 2))} ${probe(v.slice(2, 2), v.slice(0, 4))} ${probe(v.slice(2, 2), v.slice(2, 2))}`);
-  sys.log.info(`sum=${sumPair(v.slice(0, 3), v.slice(1, 4))}`);
-  copyInto(v.slice(0, 2), v.slice(2, 4));
+  sys.log.info(`lens=${probe(v.borrowSlice(0, 4), v.borrowSlice(2, 2))} ${probe(v.borrowSlice(2, 2), v.borrowSlice(0, 4))} ${probe(v.borrowSlice(2, 2), v.borrowSlice(2, 2))}`);
+  sys.log.info(`sum=${sumPair(v.borrowSlice(0, 3), v.borrowSlice(1, 4))}`);
+  copyInto(v.borrowSlice(0, 2), v.borrowSlice(2, 4));
   sys.log.info(`after=${v[0]} ${v[1]} ${v[2]} ${v[3]}`);
 }

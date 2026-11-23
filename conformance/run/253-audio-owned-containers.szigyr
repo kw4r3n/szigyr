@@ -4,7 +4,7 @@
 // expect-output: vec:500:1000:false
 // stage: 5
 
-type Delay = Struct<{ buf: Vec<f32>; idx: usize; rx: RingRx<f32>; gain: f32 }>;
+type Delay = OwnedStruct<{ buf: Vec<f32>; idx: usize; rx: RingRx<f32>; gain: f32 }>;
 
 function renderDelay(st: Mut<Delay>, out: Mut<Slice<f32>>, frames: usize): void {
   "use rt";
@@ -21,7 +21,7 @@ function renderDelay(st: Mut<Delay>, out: Mut<Slice<f32>>, frames: usize): void 
   }
 }
 
-type PoolSt = Struct<{ pool: Pool<f32>; h: Handle<f32>; genStep: i32 }>;
+type PoolSt = OwnedStruct<{ pool: Pool<f32>; h: Handle<f32>; genStep: i32 }>;
 
 function renderPool(st: Mut<PoolSt>, out: Mut<Slice<f32>>, frames: usize): void {
   "use rt";
@@ -40,7 +40,7 @@ function renderPool(st: Mut<PoolSt>, out: Mut<Slice<f32>>, frames: usize): void 
   }
 }
 
-type ArenaSt = Struct<{ arena: Arena; step: i32 }>;
+type ArenaSt = OwnedStruct<{ arena: Arena; step: i32 }>;
 
 function firstSample(s: Ref<Slice<f32>>): f32 {
   "use rt";

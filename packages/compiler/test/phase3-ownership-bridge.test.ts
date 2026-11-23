@@ -29,7 +29,7 @@ describe("Phase 3: Result<Owned, E> and OwnedCell.withRef / withMut", () => {
       dir,
       "parity.szigyr",
       [
-        `type BufBox = Struct<{ data: Vec<f32>; n: u32 }>;`,
+        `type BufBox = OwnedStruct<{ data: Vec<f32>; n: u32 }>;`,
         ``,
         `function bumpBox(b: Mut<BufBox>): f32 {`,
         `  "use rt";`,
@@ -45,16 +45,16 @@ describe("Phase 3: Result<Owned, E> and OwnedCell.withRef / withMut", () => {
         ``,
         `function mkBox(alloc: Alloc, okFlag: boolean): Result<BufBox, "bad" | "oom"> {`,
         `  "use owned";`,
-        `  if (!okFlag) return err("bad");`,
+        `  if (!okFlag) return Result.err("bad");`,
         `  const v = Vec.create<f32>(alloc, 2);`,
         `  v.push(2.0);`,
         `  v.push(4.0);`,
-        `  return ok({ data: v, n: 5 });`,
+        `  return Result.ok({ data: v, n: 5 });`,
         `}`,
         ``,
         `function rtTransform(): Result<BufBox, i32> {`,
         `  "use rt";`,
-        `  return err(-7);`,
+        `  return Result.err(-7);`,
         `}`,
         ``,
         `export function main(sys: System): void {`,
@@ -105,35 +105,35 @@ describe("Phase 3: Result<Owned, E> and OwnedCell.withRef / withMut", () => {
     };
 
     // Strict / rt cannot hold managed errors in Result<Owned, E>
-    expectCode("strict-str-err", `export function f(a: Alloc): Result<Vec<f32>, string> { "use owned"; return err("no"); }`, "E4002");
+    expectCode("strict-str-err", `export function f(a: Alloc): Result<Vec<f32>, string> { "use owned"; return Result.err("no"); }`, "E4002");
     expectCode("rt-str-err", `export function f(r: Result<Vec<f32>, string>): i32 { "use rt"; return r.kind === "ok" ? 1 : 0; }`, "E4002");
 
-    // Result<Owned, Native> is still banned as Struct field, Vec/Pool element, audio state, Ptr.box, module const
-    const structResDs = check(writeTmp(dir, "struct-field-res.szigyr", `type S = Struct<{ r: Result<Vec<f32>, i32> }>;`));
+    // Result<Owned, Native> is still banned as OwnedStruct field, Vec/Pool element, audio state, Ptr.box, module const
+    const structResDs = check(writeTmp(dir, "struct-field-res.szigyr", `type S = OwnedStruct<{ r: Result<Vec<f32>, i32> }>;`));
     expect(structResDs.map((d) => d.code)).toContain("E4002");
     expect(structResDs[0]?.message).not.toContain("needs a Native type");
     expect(structResDs[0]?.message).toContain("Result<Owned, E>");
-    expectCode("alias-struct-field-res", `type Box<T extends Native> = Struct<{ x: T }>;\nfunction f(b: Box<Result<Vec<f32>, i32>>): void {}`, "E4002");
+    expectCode("alias-struct-field-res", `type Box<T extends Native> = OwnedStruct<{ x: T }>;\nfunction f(b: Box<Result<Vec<f32>, i32>>): void {}`, "E4002");
     expectCode("vec-elem-res", `export function f(a: Alloc): Vec<Result<Vec<f32>, i32>> { return Vec.create<Result<Vec<f32>, i32>>(a, 1); }`, "E4002");
     expectCode(
       "audio-res",
-      `function rnd(st: Result<Vec<f32>, i32>, out: Mut<Slice<f32>>, n: usize): void { "use rt"; }\nexport async function main(sys: System): Promise<void> { const r = await sys.audio.open<Result<Vec<f32>, i32>>({ sampleRate: 48000, channels: 1 }, err(1), rnd); }`,
+      `function rnd(st: Result<Vec<f32>, i32>, out: Mut<Slice<f32>>, n: usize): void { "use rt"; }\nexport async function main(sys: System): Promise<void> { const r = await sys.audio.open<Result<Vec<f32>, i32>>({ sampleRate: 48000, channels: 1 }, Result.err(1), rnd); }`,
       "E2013",
     );
-    expectCode("ptr-box-res", `export function f(a: Alloc): void { "use owned"; "use unsafe"; const p = Ptr.box<Result<Vec<f32>, i32>>(a, err(1)); }`, "E4007");
-    expectCode("top-const-res", `const R: Result<Vec<f32>, i32> = err(1);`, "E5002");
+    expectCode("ptr-box-res", `export function f(a: Alloc): void { "use owned"; "use unsafe"; const p = Ptr.box<Result<Vec<f32>, i32>>(a, Result.err(1)); }`, "E4007");
+    expectCode("top-const-res", `const R: Result<Vec<f32>, i32> = Result.err(1);`, "E5002");
 
     // E3007 managed containers/closures/classes still reject Result<Owned, E>
-    expectCode("class-field-res", `class C { r: Result<Vec<f32>, string>; constructor() { this.r = err("e"); } }`, "E3007");
+    expectCode("class-field-res", `class C { r: Result<Vec<f32>, string>; constructor() { this.r = Result.err("e"); } }`, "E3007");
     expectCode("param-prop-res", `class C { constructor(readonly r: Result<Vec<f32>, string>) {} }`, "E3007");
-    expectCode("tuple-res", `function f(): [Result<Vec<f32>, string>, i32] { return [err("e"), 0]; }`, "E3007");
-    expectCode("record-res", `type R = { readonly r: Result<Vec<f32>, string> };\nfunction f(): R { return { r: err("e") }; }`, "E3007");
-    expectCode("generic-fn-res", `function id<T>(x: T): T { return x; }\nfunction f(): void { const r: Result<Vec<f32>, string> = id(err("e")); }`, "E3007");
+    expectCode("tuple-res", `function f(): [Result<Vec<f32>, string>, i32] { return [Result.err("e"), 0]; }`, "E3007");
+    expectCode("record-res", `type R = { readonly r: Result<Vec<f32>, string> };\nfunction f(): R { return { r: Result.err("e") }; }`, "E3007");
+    expectCode("generic-fn-res", `function id<T>(x: T): T { return x; }\nfunction f(): void { const r: Result<Vec<f32>, string> = id(Result.err("e")); }`, "E3007");
 
     // E3005 exclusivity
     expectCode(
       "pair-rvalue-aliasing",
-      `function pair(a: Mut<Vec<f32>>, b: Mut<Vec<f32>>): void { "use rt"; }\nfunction f(a: Alloc): void { const r: Result<Vec<f32>, i32> = ok(Vec.create<f32>(a, 1)); if (r.kind === "ok") pair(r.value, r.value); }`,
+      `function pair(a: Mut<Vec<f32>>, b: Mut<Vec<f32>>): void { "use rt"; }\nfunction f(a: Alloc): void { const r: Result<Vec<f32>, i32> = Result.ok(Vec.create<f32>(a, 1)); if (r.kind === "ok") pair(r.value, r.value); }`,
       "E3005",
     );
     expectCode(
@@ -164,13 +164,13 @@ describe("Phase 3: Result<Owned, E> and OwnedCell.withRef / withMut", () => {
         `  if (v === null) return;`,
         `  const alloc = TestAlloc.create();`,
         `  if (v === 0) {`,
-        `    port.send(err("zero"));`,
+        `    port.send(Result.err("zero"));`,
         `    return;`,
         `  }`,
         `  const out = Vec.create<i32>(alloc, 2);`,
         `  out.push(v);`,
         `  out.push(v * 2);`,
-        `  port.send(ok(out));`,
+        `  port.send(Result.ok(out));`,
         `}`,
         ``,
         `function checkResVec(r: Result<Vec<i32>, i32>): boolean {`,
@@ -254,7 +254,7 @@ describe("Phase 3: Result<Owned, E> and OwnedCell.withRef / withMut", () => {
       dir,
       "nested-cell.szigyr",
       [
-        `type BufBox = Struct<{ data: Vec<u8>; tag: u32 }>;`,
+        `type BufBox = OwnedStruct<{ data: Vec<u8>; tag: u32 }>;`,
         ``,
         `function sumPair(a: Ref<BufBox>, b: Ref<BufBox>): u32 {`,
         `  "use rt";`,
@@ -298,10 +298,10 @@ describe("Phase 3: Result<Owned, E> and OwnedCell.withRef / withMut", () => {
       dir,
       "nested-conflict.szigyr",
       [
-        `type NumBox = Struct<{ a: i32; b: i32 }>;`,
+        `type NumBox = OwnedStruct<{ a: i32; b: i32 }>;`,
         `function takeTwo(s: Ref<Slice<i32>>, x: usize): usize { return s.length + x; }`,
         `function badSliceCall(m: Mut<Vec<i32>>, cell: OwnedCell<Vec<i32>>): usize {`,
-        `  return takeTwo(m.slice(0, 2), cell.withRef((_r): usize => { m.push(1); return 0; }));`,
+        `  return takeTwo(m.borrowSlice(0, 2), cell.withRef((_r): usize => { m.push(1); return 0; }));`,
         `}`,
         `function badAssignRhs(s: Mut<NumBox>, cell: OwnedCell<Vec<i32>>): void {`,
         `  s.a = cell.withRef((_r): i32 => { s.a = 2; return 1; });`,
@@ -327,7 +327,7 @@ describe("Phase 3: Result<Owned, E> and OwnedCell.withRef / withMut", () => {
       dir,
       "empty-cell.szigyr",
       [
-        `type BufBox = Struct<{ data: Vec<u8>; tag: u32 }>;`,
+        `type BufBox = OwnedStruct<{ data: Vec<u8>; tag: u32 }>;`,
         `export function main(sys: System): void {`,
         `  const c1 = OwnedCell.empty<BufBox>();`,
         `  const c2: OwnedCell<Vec<u8>> = OwnedCell.empty();`,

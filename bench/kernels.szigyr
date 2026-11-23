@@ -1,6 +1,6 @@
 // Benchmark kernels (ROADMAP stage 2). bench/hand.c holds the same kernels in hand-written C.
 // Each line of output: <kernel> <mean ms per call over REPS calls> <checksum>. Clock.nowMs has 1 ms resolution, so calls are timed together.
-type P = Struct<{ readonly x: f32; readonly y: f32; readonly vx: f32; readonly vy: f32 }>;
+type P = { readonly x: f32; readonly y: f32; readonly vx: f32; readonly vy: f32 };
 
 function dot(a: Ref<Slice<f32>>, b: Ref<Slice<f32>>): f32 {
   "use rt";

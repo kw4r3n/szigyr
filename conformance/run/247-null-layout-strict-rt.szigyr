@@ -12,8 +12,8 @@ function checkNullEq(): boolean {
 
 function unitRes(okFlag: boolean): Result<null, i32> {
   "use rt";
-  if (okFlag) return ok(null);
-  return err(7);
+  if (okFlag) return Result.ok(null);
+  return Result.err(7);
 }
 
 function nullId<T>(x: T): T {
@@ -44,8 +44,8 @@ function nullContainers(alloc: Alloc): { readonly len: usize; readonly poolOk: b
   const popped = pair.rx.pop();
   const ringOk = pushed && popped === null;
   const vr = Vec.create<Result<null, i32>>(alloc, 2);
-  vr.push(ok(null));
-  vr.push(err(9));
+  vr.push(Result.ok(null));
+  vr.push(Result.err(9));
   const r0 = vr[0];
   const r1 = vr[1];
   const resOk = vPopOk && r0.kind === "ok" && r0.value === null && r1.kind === "err" && r1.error === 9;

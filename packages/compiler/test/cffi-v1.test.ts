@@ -149,7 +149,7 @@ function shadowed(CF_NEG: i32): i32 {
   "use unsafe";
   return CF_NEG;
 }
-type Out = Struct<{ neg: i32; hexOk: boolean; flt: f64; b: boolean; en: u32; ext: u32; sz: usize; sh: i32 }>;
+type Out = OwnedStruct<{ neg: i32; hexOk: boolean; flt: f64; b: boolean; en: u32; ext: u32; sz: usize; sh: i32 }>;
 function gather(): Out {
   "use owned";
   "use unsafe";
@@ -244,7 +244,7 @@ export function makePair(ffi: Ffi, first: i32, second: i32): CHandle<Pair> {
   return CHandle.create(g.take().cast<Pair>());
 }
 
-type R = Struct<{
+type R = OwnedStruct<{
   s0: i32;
   s1First: i32;
   s1Tag: u32;
@@ -368,7 +368,7 @@ export function main(sys: System): void {
       // Safe code barriers for CStruct
       ["declare module \"c:cffiv1:cffiv1.h\" { type Pair = CStruct<{ first: i32 }>; }\nimport { Pair } from \"c:cffiv1:cffiv1.h\";\nfunction bad(p: Pair): i32 { \"use owned\"; return p.first; }", "E4008"],
       ["declare module \"c:cffiv1:cffiv1.h\" { type Pair = CStruct<{ first: i32 }>; }\nimport { Pair } from \"c:cffiv1:cffiv1.h\";\nfunction mk(): Pair { \"use owned\"; \"use unsafe\"; return { first: 1 }; }\nexport function caller(): i32 { \"use owned\"; return mk().first; }", "E4008"],
-      ["declare module \"c:cffiv1:cffiv1.h\" { type Pair = CStruct<{ first: i32 }>; }\nimport { Pair } from \"c:cffiv1:cffiv1.h\";\ntype Wrap = Struct<{ p: Pair }>;", "E4008"],
+      ["declare module \"c:cffiv1:cffiv1.h\" { type Pair = CStruct<{ first: i32 }>; }\nimport { Pair } from \"c:cffiv1:cffiv1.h\";\ntype Wrap = OwnedStruct<{ p: Pair }>;", "E4008"],
       // Ptr.null / Ptr.sizeOf errors
       ["function f(): Ptr<i32> { \"use owned\"; return Ptr.null<i32>(); }", "E4008"],
       ["function f(): Ptr<string> { \"use owned\"; \"use unsafe\"; return Ptr.null<string>(); }", "E4007"],
@@ -393,7 +393,7 @@ declare module "c:cffiv1:cffiv1.h" {
 }
 import { cf_tag, cf_tag_first } from "c:cffiv1:cffiv1.h";
 
-type TagInfo = Struct<{ sz: usize; first: i32; byte0: u8 }>;
+type TagInfo = OwnedStruct<{ sz: usize; first: i32; byte0: u8 }>;
 function probeTag(ffi: Ffi): TagInfo {
   "use owned";
   "use unsafe";

@@ -34,12 +34,12 @@ declare module "c:sdl3:SDL3/SDL.h" {
 import { SDL_INIT_AUDIO, SDL_AUDIO_F32, SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, SDL_AudioSpec, SDL_Init, SDL_Quit, SDL_Delay, SDL_malloc, SDL_free, SDL_OpenAudioDeviceStream, SDL_ResumeAudioStreamDevice, SDL_DestroyAudioStream, SDL_PutAudioStreamData } from "c:sdl3:SDL3/SDL.h";
 
 // One parameter change, sent from managed to the callback over the ring.
-type Param = Struct<{ readonly freq: f64; readonly gain: f64 }>;
+type Param = { readonly freq: f64; readonly gain: f64 };
 
 // Everything the callback needs, boxed behind one pointer (Q209): the ring's
 // receiving end, the C scratch buffer, and the oscillator state. The buffer
 // is 4096 frames of stereo f32 (32768 bytes); the stream is 48000 Hz.
-type AudioState = Struct<{
+type AudioState = OwnedStruct<{
   rx: RingRx<Param>;
   buf: CHandle<f32>;
   phase: f64;
@@ -50,7 +50,7 @@ type AudioState = Struct<{
 // The box pointer crosses managed code as a CHandle<void>: the state holds
 // a CHandle itself, so it cannot sit inside CHandle (14.5). It is still a
 // genuine C heap pointer; stop() casts it back in unsafe code.
-type Session = Struct<{
+type Session = OwnedStruct<{
   state: CHandle<void>;
   stream: CHandle<CType<"SDL_AudioStream">>;
 }>;

@@ -1,6 +1,6 @@
 // expect-output: 1.5 -2 3
 // stage: 2
-type V2 = Struct<{ readonly x: f32; readonly y: f32 }>;
+type V2 = { readonly x: f32; readonly y: f32 };
 const ORIGIN: V2 = { x: 1.5, y: -2 };
 const STEP: u8 = 3;
 

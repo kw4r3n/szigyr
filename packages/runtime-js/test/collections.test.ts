@@ -79,21 +79,21 @@ describe("Slice", () => {
   const mk = () => { const v = Vec.create<number>(null, 8, "i32"); for (let i = 0; i < 6; i++) v.push(i * i); return v; };
   it("is a view of the same buffer", () => {
     const v = mk();
-    const s = v.slice(1, 4);
+    const s = v.borrowSlice(1, 4);
     s.set(0, 100);
     s.fill(7);
     expect([0, 1, 2, 3, 4, 5].map((i) => v.get(i))).toEqual([0, 7, 7, 7, 16, 25]);
-    expect(s.slice(1, 3).get(0)).toBe(7);
+    expect(s.borrowSlice(1, 3).get(0)).toBe(7);
   });
   it("range rules: start <= end <= length", () => {
     const v = mk();
-    expect(v.slice(0, 6).length).toBe(6);
-    expect(v.slice(6, 6).length).toBe(0);
-    expect(code(() => v.slice(0, 7, pos))).toBe("T002");
-    expect(code(() => v.slice(4, 3))).toBe("T002");
-    expect(code(() => v.slice(-1, 3))).toBe("T002");
-    const s = v.slice(2, 4);
-    expect(code(() => s.slice(0, 3))).toBe("T002");
+    expect(v.borrowSlice(0, 6).length).toBe(6);
+    expect(v.borrowSlice(6, 6).length).toBe(0);
+    expect(code(() => v.borrowSlice(0, 7, pos))).toBe("T002");
+    expect(code(() => v.borrowSlice(4, 3))).toBe("T002");
+    expect(code(() => v.borrowSlice(-1, 3))).toBe("T002");
+    const s = v.borrowSlice(2, 4);
+    expect(code(() => s.borrowSlice(0, 3))).toBe("T002");
     expect(code(() => s.get(2))).toBe("T002");
     expect(code(() => s.set(2, 1))).toBe("T002");
   });
@@ -102,7 +102,7 @@ describe("Slice", () => {
     expect(v.view().length).toBe(6);
     const o = Vec.create<boolean>(null, 2);
     o.push(false); o.push(false);
-    o.slice(1, 2).fill(true);
+    o.borrowSlice(1, 2).fill(true);
     expect([o.get(0), o.get(1)]).toEqual([false, true]);
   });
 });

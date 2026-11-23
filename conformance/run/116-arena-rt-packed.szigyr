@@ -2,8 +2,8 @@
 // expect-output: via-vec=9 holder=9
 // stage: 2
 // open-question: Q188
-type Pt = Struct<{ readonly x: f32; readonly y: f32 }>;
-type Holder = Struct<{ b: ArenaBuf<f32>; tag: u32 }>;
+type Pt = { readonly x: f32; readonly y: f32 };
+type Holder = OwnedStruct<{ b: ArenaBuf<f32>; tag: u32 }>;
 
 function setPts(s: Mut<Slice<Pt>>): void {
   "use rt";

@@ -8,7 +8,7 @@ function wraps(a: i32, b: i32, c: u32, d: u8): Ints {
   return { x: wrapMul(a, b), y: wrapMul(c, 3), z: wrapMul(d, d) };
 }
 
-type Ints = Struct<{ readonly x: i32; readonly y: u32; readonly z: u8 }>;
+type Ints = { readonly x: i32; readonly y: u32; readonly z: u8 };
 
 function divs(m: i32): Ints {
   "use rt";

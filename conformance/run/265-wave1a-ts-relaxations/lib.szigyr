@@ -20,7 +20,7 @@ export class Counter {
 
 export function mulScale(x: i32): i32 {
   "use rt";
-  return x * SCALE + (1 satisfies i32);
+  return x * SCALE + i32(1);
 }
 
 export function pickFirst<T extends Native & Copy>(a: T, b: T, first: boolean): T {

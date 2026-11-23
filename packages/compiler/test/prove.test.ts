@@ -118,7 +118,7 @@ describe("Stage 6 SMT prover & release check elimination", () => {
   it("proves strict/rt numeric kernels (dot, saxpy, prefix, stencil, particles) and eliminates bounds checks in release emitC", async () => {
     const { dir, cacheFile } = makeTmp();
     const src = `
-type P = Struct<{ readonly x: f32; readonly y: f32; readonly vx: f32; readonly vy: f32 }>;
+type P = { readonly x: f32; readonly y: f32; readonly vx: f32; readonly vy: f32 };
 
 function dotInner(a: Ref<Slice<f32>>, b: Ref<Slice<f32>>): f32 {
   "use rt";
@@ -277,7 +277,7 @@ export function sliceCastShiftDivRem(
   requires(sh < 32);
   requires(d !== 0);
   const first = u8(k);
-  const sft = u32(firstByte(s.slice(a, b))) << sh;
+  const sft = u32(firstByte(s.borrowSlice(a, b))) << sh;
   const q = rem(d, -1); // T007 only (rem(MIN, -1) never traps T001)
   const one: u32 = 1;
   const ten: u32 = 10;
@@ -1033,7 +1033,7 @@ export function entryFn(b: u8): i32 {
   it("proves Struct field loop invariants with bounded havoc and parametric generic rt functions", async () => {
     const { dir, cacheFile } = makeTmp("szigyr-struct-gen-");
     const src = `
-type SynthState = Struct<{
+type SynthState = OwnedStruct<{
   active: boolean;
   history: Vec<f32>;
   histIdx: usize;
@@ -1103,8 +1103,8 @@ export function main(sys: System): void {
     // #5 (bool join) + #6 (mutated struct/vec bound) + #7 (property overwrite & Mut havoc) + #8 (switch fallthrough + inexact) + #9 (tagged union & closure expose)
     const { dir, cacheFile } = makeTmp("szigyr-soundness-");
     const soundnessFile = writeTmpFile(dir, "sound.szigyr", `
-type Box = Struct<{ v: i32 }>;
-type Outer = Struct<{ sub: Box; arr: Vec<i32>; n: i32 }>;
+type Box = OwnedStruct<{ v: i32 }>;
+type Outer = OwnedStruct<{ sub: Box; arr: Vec<i32>; n: i32 }>;
 type Variant = { readonly kind: "a"; readonly x: u8 } | { readonly kind: "b"; readonly x: i32 };
 
 function mutateBox(b: Mut<Box>): void {
@@ -1223,7 +1223,7 @@ export function callPrivViaClosure(): i32 {
     expect([...pSound.proved.provedPrivateRequires].map((f) => f.name)).not.toContain("privReq");
 
     // #9c & #9d: type alias change invalidates cache; header shifts preserve cache hit & refresh anchor ranges + cleared div
-    const cacheSrc = (capType: string, padLines = "") => `${padLines}type Lim = Struct<{ readonly n: ${capType} }>;
+    const cacheSrc = (capType: string, padLines = "") => `${padLines}type Lim = { readonly n: ${capType} };
 export function safeGet(l: Lim, s: Ref<Slice<i32>>, y: u8): i32 {
   "use rt";
   requires(s.length >= 256 && y > 0);

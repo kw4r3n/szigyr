@@ -1,7 +1,7 @@
 // expect: ok
 // stage: 3
 type Stream = CHandle<CType<"SDL_AudioStream">>;
-type Holder = Struct<{ stream: Stream; readonly n: i32 }>;
+type Holder = OwnedStruct<{ stream: Stream; readonly n: i32 }>;
 
 function getRaw(h: Stream): Ptr<CType<"SDL_AudioStream">> {
   "use owned";

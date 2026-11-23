@@ -1,4 +1,4 @@
-// expect: E3005 @ 16:20
+// expect: E3005 @ 16:26
 // stage: 2
 // open-question: Q170
 function wn(v: Mut<Vec<f32>>): usize {
@@ -13,5 +13,5 @@ function ws(s: Mut<Slice<f32>>): void {
 function f(alloc: Alloc): void {
   "use owned";
   const a = Vec.create<f32>(alloc, 2);
-  ws(a.slice(0, wn(a)));
+  ws(a.borrowSlice(0, wn(a)));
 }

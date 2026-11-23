@@ -3,11 +3,11 @@
 // open-question: Q043
 // open-question: Q086
 // open-question: Q181
-type V2 = Struct<{ readonly x: f32; readonly y: f32 }>;
-type Pair<T extends Copy & Native> = Struct<{ readonly a: T; readonly b: T }>;
-type Buf = Struct<{ data: Vec<f32>; n: u32 }>;
-type Holder = Struct<{ inner: Buf; p: V2 }>;
-type Line = Struct<{ readonly from: V2; readonly to: V2 }>;
+type V2 = { readonly x: f32; readonly y: f32 };
+type Pair<T extends Copy & Native> = { readonly a: T; readonly b: T };
+type Buf = OwnedStruct<{ data: Vec<f32>; n: u32 }>;
+type Holder = OwnedStruct<{ inner: Buf; p: V2 }>;
+type Line = { readonly from: V2; readonly to: V2 };
 
 function sumPair(p: Pair<i32>): i32 {
   "use rt";
@@ -43,7 +43,7 @@ function points(v: Mut<Vec<V2>>): f32 {
 
 function half(x: i32): Result<i32, i32> {
   "use rt";
-  return rem(x, 2) === 0 ? ok(divTrunc(x, 2)) : err(x);
+  return rem(x, 2) === 0 ? Result.ok(divTrunc(x, 2)) : Result.err(x);
 }
 
 function maybe(a: Alloc): Vec<i32 | null> {
@@ -62,11 +62,11 @@ function mk<T extends Copy & Native>(a: Alloc, x: T): Vec<T> {
 
 function partOf(s: Mut<Slice<f32>>): void {
   "use rt";
-  s.slice(0, 1).fill(1);
+  s.borrowSlice(0, 1).fill(1);
 }
 
 function cellOfNumber(): f64 {
-  const c = OwnedCell.create<Struct<{ x: f64 }>>({ x: 1 });
+  const c = OwnedCell.create<OwnedStruct<{ x: f64 }>>({ x: 1 });
   return c.take().x;
 }
 
@@ -76,6 +76,6 @@ export function main(sys: System): void {
   const s = firstPoint(h);
   const v = mk<f32>(sys.alloc, 1);
   partOf(v);
-  partOf(v.slice(0, 1));
+  partOf(v.borrowSlice(0, 1));
   sys.log.info(`${s} ${sumPair({ a: 1, b: 2 })} ${cellOfNumber()} ${v.length}`);
 }

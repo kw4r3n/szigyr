@@ -115,7 +115,7 @@ export function zlibCrc32(ffi: Ffi, src: Ref<Slice<u8>>): u32 {
   while (off < src.length) {
     const leftBytes = src.length - off;
     const n: usize = leftBytes < chunkCap ? leftBytes : chunkCap;
-    copySlice(p.slice(n), src.slice(off, off + n));
+    copySlice(p.slice(n), src.borrowSlice(off, off + n));
     acc = crc32(ffi, acc, p, u32(n));
     off += n;
   }
@@ -131,19 +131,19 @@ export function gzipDecompressInto(
   "use owned";
   "use unsafe";
   dst.clear();
-  if (src.length === 0) return err("invalid-stream");
+  if (src.length === 0) return Result.err("invalid-stream");
 
   const outCap: usize = 65536;
   using inRes = Resource.ownWith(calloc(ffi, 1, src.length), ffi, freePtr);
   using outRes = Resource.ownWith(calloc(ffi, 1, outCap), ffi, freePtr);
-  if (inRes.get().isNull() || outRes.get().isNull()) return err("oom");
+  if (inRes.get().isNull() || outRes.get().isNull()) return Result.err("oom");
 
   const inPtr = inRes.get().cast<u8>();
   const outPtr = outRes.get().cast<u8>();
   copySlice(inPtr.slice(src.length), src);
 
   using rawStrm = Resource.ownWith(calloc(ffi, 1, Ptr.sizeOf<z_stream>()), ffi, freePtr);
-  if (rawStrm.get().isNull()) return err("oom");
+  if (rawStrm.get().isNull()) return Result.err("oom");
 
   const initRc = inflateInit2_(
     ffi,
@@ -152,7 +152,7 @@ export function gzipDecompressInto(
     zlibVersion(ffi),
     i32(Ptr.sizeOf<z_stream>()),
   );
-  if (initRc !== Z_OK) return err("zlib-error");
+  if (initRc !== Z_OK) return Result.err("zlib-error");
 
   using strmRes = Resource.ownWith(rawStrm.take().cast<z_stream>(), ffi, closeInflate);
   const strmPtr = strmRes.get();
@@ -164,21 +164,21 @@ export function gzipDecompressInto(
     const rc = inflate(ffi, strmPtr, Z_NO_FLUSH);
     const st = strmPtr.read();
     const got: usize = outCap - usize(st.avail_out);
-    if (got > maxBytes || total > maxBytes - got) return err("too-large");
+    if (got > maxBytes || total > maxBytes - got) return Result.err("too-large");
     if (got > 0) {
       appendSlice(dst, outPtr.slice(got));
       total += got;
     }
     if (rc === Z_STREAM_END) {
-      if (st.avail_in === 0) return ok(total);
-      if (inflateReset(ffi, strmPtr) !== Z_OK) return err("invalid-stream");
+      if (st.avail_in === 0) return Result.ok(total);
+      if (inflateReset(ffi, strmPtr) !== Z_OK) return Result.err("invalid-stream");
       continue;
     }
     if (rc === Z_OK) {
-      if (got === 0 && st.avail_in === 0) return err("invalid-stream");
+      if (got === 0 && st.avail_in === 0) return Result.err("invalid-stream");
       continue;
     }
-    return err("invalid-stream");
+    return Result.err("invalid-stream");
   }
 }
 
@@ -191,7 +191,7 @@ export function gzipCompressInto(
   "use owned";
   "use unsafe";
   if (level !== Z_DEFAULT_COMPRESSION && (level < 1 || level > 9)) {
-    return err("invalid-level");
+    return Result.err("invalid-level");
   }
   dst.clear();
 
@@ -199,14 +199,14 @@ export function gzipCompressInto(
   const outCap: usize = 65536;
   using inRes = Resource.ownWith(calloc(ffi, 1, inCap), ffi, freePtr);
   using outRes = Resource.ownWith(calloc(ffi, 1, outCap), ffi, freePtr);
-  if (inRes.get().isNull() || outRes.get().isNull()) return err("oom");
+  if (inRes.get().isNull() || outRes.get().isNull()) return Result.err("oom");
 
   const inPtr = inRes.get().cast<u8>();
   const outPtr = outRes.get().cast<u8>();
   if (src.length > 0) copySlice(inPtr.slice(src.length), src);
 
   using rawStrm = Resource.ownWith(calloc(ffi, 1, Ptr.sizeOf<z_stream>()), ffi, freePtr);
-  if (rawStrm.get().isNull()) return err("oom");
+  if (rawStrm.get().isNull()) return Result.err("oom");
 
   const initRc = deflateInit2_(
     ffi,
@@ -219,7 +219,7 @@ export function gzipCompressInto(
     zlibVersion(ffi),
     i32(Ptr.sizeOf<z_stream>()),
   );
-  if (initRc !== Z_OK) return err("zlib-error");
+  if (initRc !== Z_OK) return Result.err("zlib-error");
 
   using strmRes = Resource.ownWith(rawStrm.take().cast<z_stream>(), ffi, closeDeflate);
   const strmPtr = strmRes.get();
@@ -235,8 +235,8 @@ export function gzipCompressInto(
       appendSlice(dst, outPtr.slice(got));
       total += got;
     }
-    if (rc === Z_STREAM_END) return ok(total);
+    if (rc === Z_STREAM_END) return Result.ok(total);
     if (rc === Z_OK && got > 0) continue;
-    return err("zlib-error");
+    return Result.err("zlib-error");
   }
 }

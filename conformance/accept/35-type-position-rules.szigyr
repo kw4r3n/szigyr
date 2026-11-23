@@ -13,8 +13,8 @@ type MaybeShape = Shape | null;
 type Color = "red" | "green" | null;
 type Opt<T> = T | null;
 type Row = { readonly id: u32; readonly name: string | null; readonly tags: Array<string> };
-type P2 = Struct<{ readonly x: f32; readonly y: f32 }>;
-type Body = Struct<{ readonly pos: P2; pts: Vec<P2>; ok: boolean }>;
+type P2 = { readonly x: f32; readonly y: f32 };
+type Body = OwnedStruct<{ readonly pos: P2; pts: Vec<P2>; ok: boolean }>;
 
 interface Scored {
   score(): f64;

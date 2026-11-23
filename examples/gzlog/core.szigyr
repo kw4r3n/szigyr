@@ -245,7 +245,7 @@ function joinDirPath(dir: string, name: string): string {
 
 function walkDir(fs: Fs, dir: string, out: Array<string>): Result<null, IoError> {
   const rd = fs.readDir(dir);
-  if (rd.kind === "err") return err(rd.error);
+  if (rd.kind === "err") return Result.err(rd.error);
   for (const ent of rd.value) {
     const full = joinDirPath(dir, ent.name);
     if (ent.kind === "file") {
@@ -255,18 +255,18 @@ function walkDir(fs: Fs, dir: string, out: Array<string>): Result<null, IoError>
       if (sub.kind === "err") return sub;
     }
   }
-  return ok(null);
+  return Result.ok(null);
 }
 
 export function collectFiles(fs: Fs, target: string): Result<Array<string>, IoError> {
   const st = fs.stat(target);
-  if (st.kind === "err") return err(st.error);
-  if (st.value.kind === "file") return ok([target]);
-  if (st.value.kind !== "dir") return err({ code: "EINVAL", message: "target is not a regular file or directory" });
+  if (st.kind === "err") return Result.err(st.error);
+  if (st.value.kind === "file") return Result.ok([target]);
+  if (st.value.kind !== "dir") return Result.err({ code: "EINVAL", message: "target is not a regular file or directory" });
   const out: Array<string> = [];
   const walked = walkDir(fs, target, out);
-  if (walked.kind === "err") return err(walked.error);
-  return ok(out);
+  if (walked.kind === "err") return Result.err(walked.error);
+  return Result.ok(out);
 }
 
 function codecErrorMessage(e: CodecError): string {
@@ -289,16 +289,16 @@ function loadLogPayload(
 ): Result<LoadedPayload, string> {
   const raw = Vec.create<u8>(alloc, 64);
   const rd = fs.readBytes(path, raw);
-  if (rd.kind === "err") return err(`${rd.error.code}:${rd.error.message}`);
+  if (rd.kind === "err") return Result.err(`${rd.error.code}:${rd.error.message}`);
   const gzipped = isGzipMagic(raw);
   if (gzipped) {
     const dec = codec.decompressInto(raw, out, maxBytes);
-    if (dec.kind === "err") return err(`${path}: ${codecErrorMessage(dec.error)}`);
+    if (dec.kind === "err") return Result.err(`${path}: ${codecErrorMessage(dec.error)}`);
   } else {
     out.clear();
     appendSlice(out, raw);
   }
-  return ok({ gzipped, rawBytes: raw.length, crc32: formatHex32(codec.crc32(out)) });
+  return Result.ok({ gzipped, rawBytes: raw.length, crc32: formatHex32(codec.crc32(out)) });
 }
 
 function analyzeOneFile(
@@ -310,9 +310,9 @@ function analyzeOneFile(
   buf: Mut<Vec<u8>>,
 ): Result<FileStatsReport, string> {
   const loaded = loadLogPayload(fs, alloc, codec, path, maxBytes, buf);
-  if (loaded.kind === "err") return err(loaded.error);
+  if (loaded.kind === "err") return Result.err(loaded.error);
   const st = scanLogBytes(buf);
-  return ok({
+  return Result.ok({
     path,
     gzipped: loaded.value.gzipped,
     rawBytes: loaded.value.rawBytes,
@@ -342,13 +342,13 @@ function grepOneFile(
   spans: Mut<Vec<LineSpan>>,
 ): Result<boolean, string> {
   const loaded = loadLogPayload(fs, alloc, codec, path, maxBytes, buf);
-  if (loaded.kind === "err") return err(loaded.error);
+  if (loaded.kind === "err") return Result.err(loaded.error);
   indexLinesByLevel(buf, wantLevel, spans);
   for (let k: usize = 0; k < spans.length; k += 1) {
     const sp = spans[k];
-    const lineText = String.decodeUtf8Lossy(buf.slice(sp.start, sp.end));
+    const lineText = String.decodeUtf8Lossy(buf.borrowSlice(sp.start, sp.end));
     if (re.test(lineText)) {
-      if (matches.length >= limit) return ok(true);
+      if (matches.length >= limit) return Result.ok(true);
       matches.push({
         path,
         lineNo: sp.lineNo,
@@ -357,7 +357,7 @@ function grepOneFile(
       });
     }
   }
-  return ok(false);
+  return Result.ok(false);
 }
 
 function cmdStats(
@@ -368,7 +368,7 @@ function cmdStats(
   maxBytes: usize,
 ): Result<StatsOutput, string> {
   const filesRes = collectFiles(fs, target);
-  if (filesRes.kind === "err") return err(`${filesRes.error.code}:${filesRes.error.message}`);
+  if (filesRes.kind === "err") return Result.err(`${filesRes.error.code}:${filesRes.error.message}`);
   const reports: Array<FileStatsReport> = [];
   let totalRawBytes: usize = 0;
   let totalBytes: usize = 0;
@@ -382,7 +382,7 @@ function cmdStats(
 
   for (const p of filesRes.value) {
     const rep = analyzeOneFile(fs, alloc, codec, p, maxBytes, buf);
-    if (rep.kind === "err") return err(rep.error);
+    if (rep.kind === "err") return Result.err(rep.error);
     const r = rep.value;
     totalRawBytes += r.rawBytes;
     totalBytes += r.bytes;
@@ -394,7 +394,7 @@ function cmdStats(
     others += r.others;
     reports.push(r);
   }
-  return ok({
+  return Result.ok({
     fileCount: reports.length,
     totalRawBytes,
     totalBytes,
@@ -420,11 +420,11 @@ function cmdGrep(
   maxBytes: usize,
 ): Result<GrepOutput, string> {
   const reRes = ignoreCase ? RegExp.compile(pattern, "i") : RegExp.compile(pattern);
-  if (reRes.kind === "err") return err(`invalid pattern: ${reRes.error.message}`);
+  if (reRes.kind === "err") return Result.err(`invalid pattern: ${reRes.error.message}`);
   const re = reRes.value;
 
   const filesRes = collectFiles(fs, target);
-  if (filesRes.kind === "err") return err(`${filesRes.error.code}:${filesRes.error.message}`);
+  if (filesRes.kind === "err") return Result.err(`${filesRes.error.code}:${filesRes.error.message}`);
 
   const matches: Array<GrepMatch> = [];
   const buf = Vec.create<u8>(alloc, 256);
@@ -434,14 +434,14 @@ function cmdGrep(
 
   for (const p of filesRes.value) {
     const gr = grepOneFile(fs, alloc, codec, p, level, maxBytes, re, limit, matches, buf, spans);
-    if (gr.kind === "err") return err(gr.error);
+    if (gr.kind === "err") return Result.err(gr.error);
     filesScanned += 1;
     if (gr.value) {
       truncated = true;
       break;
     }
   }
-  return ok({
+  return Result.ok({
     pattern,
     filesScanned,
     matchCount: matches.length,
@@ -460,13 +460,13 @@ function cmdPack(
 ): Result<PackOutput, string> {
   const raw = Vec.create<u8>(alloc, 256);
   const rd = fs.readBytes(src, raw);
-  if (rd.kind === "err") return err(`${rd.error.code}:${rd.error.message}`);
+  if (rd.kind === "err") return Result.err(`${rd.error.code}:${rd.error.message}`);
   const gz = Vec.create<u8>(alloc, 256);
   const cp = codec.compressInto(raw, gz, level);
-  if (cp.kind === "err") return err(`${src}: ${codecErrorMessage(cp.error)}`);
+  if (cp.kind === "err") return Result.err(`${src}: ${codecErrorMessage(cp.error)}`);
   const wr = fs.writeBytesAtomic(dst, gz);
-  if (wr.kind === "err") return err(`${wr.error.code}:${wr.error.message}`);
-  return ok({
+  if (wr.kind === "err") return Result.err(`${wr.error.code}:${wr.error.message}`);
+  return Result.ok({
     src,
     dst,
     level,
@@ -486,14 +486,14 @@ function cmdUnpack(
 ): Result<UnpackOutput, string> {
   const gz = Vec.create<u8>(alloc, 256);
   const rd = fs.readBytes(src, gz);
-  if (rd.kind === "err") return err(`${rd.error.code}:${rd.error.message}`);
-  if (!isGzipMagic(gz)) return err(`${src}: not a gzip file`);
+  if (rd.kind === "err") return Result.err(`${rd.error.code}:${rd.error.message}`);
+  if (!isGzipMagic(gz)) return Result.err(`${src}: not a gzip file`);
   const plain = Vec.create<u8>(alloc, 256);
   const dec = codec.decompressInto(gz, plain, maxBytes);
-  if (dec.kind === "err") return err(`${src}: ${codecErrorMessage(dec.error)}`);
+  if (dec.kind === "err") return Result.err(`${src}: ${codecErrorMessage(dec.error)}`);
   const wr = fs.writeBytesAtomic(dst, plain);
-  if (wr.kind === "err") return err(`${wr.error.code}:${wr.error.message}`);
-  return ok({
+  if (wr.kind === "err") return Result.err(`${wr.error.code}:${wr.error.message}`);
+  return Result.ok({
     src,
     dst,
     gzipBytes: gz.length,
@@ -608,22 +608,22 @@ class FakeGzipCodec implements GzipCodec {
 
   decompressInto(src: Ref<Slice<u8>>, dst: Mut<Vec<u8>>, maxBytes: usize): Result<usize, CodecError> {
     dst.clear();
-    if (this.forcedErr !== null) return err(this.forcedErr);
-    if (!isGzipMagic(src)) return err("invalid-stream");
+    if (this.forcedErr !== null) return Result.err(this.forcedErr);
+    if (!isGzipMagic(src)) return Result.err("invalid-stream");
     const outLen: usize = src.length - 2;
-    if (outLen > maxBytes) return err("too-large");
-    appendSlice(dst, src.slice(2, src.length));
-    return ok(outLen);
+    if (outLen > maxBytes) return Result.err("too-large");
+    appendSlice(dst, src.borrowSlice(2, src.length));
+    return Result.ok(outLen);
   }
 
   compressInto(src: Ref<Slice<u8>>, dst: Mut<Vec<u8>>, level: i32): Result<usize, CodecError> {
     dst.clear();
-    if (this.forcedErr !== null) return err(this.forcedErr);
-    if (level < 1 || level > 9) return err("invalid-level");
+    if (this.forcedErr !== null) return Result.err(this.forcedErr);
+    if (level < 1 || level > 9) return Result.err("invalid-level");
     dst.push(0x1f);
     dst.push(0x8b);
     appendSlice(dst, src);
-    return ok(dst.length);
+    return Result.ok(dst.length);
   }
 
   crc32(src: Ref<Slice<u8>>): u32 {
@@ -760,20 +760,20 @@ test("FakeGzipCodec direct edge cases and boundary conditions", (t: Test) => {
   String.encodeUtf8("ab\nc", src);
 
   const gz = Vec.filled<u8>(alloc, 3, 99);
-  t.eq(codec.compressInto(src, gz, 0), err("invalid-level"));
-  t.eq(codec.compressInto(src, gz, 10), err("invalid-level"));
-  t.eq(codec.compressInto(src, gz, 9), ok(usize(6)));
+  t.eq(codec.compressInto(src, gz, 0), Result.err("invalid-level"));
+  t.eq(codec.compressInto(src, gz, 10), Result.err("invalid-level"));
+  t.eq(codec.compressInto(src, gz, 9), Result.ok(usize(6)));
   const cRes = codec.compressInto(src, gz, 1);
-  t.eq(cRes, ok(usize(6)));
+  t.eq(cRes, Result.ok(usize(6)));
   t.eq(gz.length, usize(6));
   t.eq(gz[0], u8(0x1f));
   t.eq(gz[1], u8(0x8b));
 
   const out = Vec.create<u8>(alloc, 8);
-  t.eq(codec.decompressInto(gz, out, 4), ok(usize(4)));
+  t.eq(codec.decompressInto(gz, out, 4), Result.ok(usize(4)));
   t.eq(out.length, usize(4));
-  t.eq(codec.decompressInto(gz, out, 3), err("too-large"));
-  t.eq(codec.decompressInto(src, out, 10), err("invalid-stream"));
+  t.eq(codec.decompressInto(gz, out, 3), Result.err("too-large"));
+  t.eq(codec.decompressInto(src, out, 10), Result.err("invalid-stream"));
 
   const empty = Vec.create<u8>(alloc, 0);
   t.eq(codec.crc32(empty), u32(0));

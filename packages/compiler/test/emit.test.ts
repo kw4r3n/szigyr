@@ -491,7 +491,7 @@ describe("Batch D: using trap unwinding & AudioStream AsyncDisposable", () => {
   it("unwinds nested Resource.ownWith cleanups in LIFO order on trap across js, c, and wasm", async () => {
     const main = project({
       "main.szigyr": `type Tag = "a" | "b";
-type Item = Struct<{ id: Tag; n: i32 }>;
+type Item = OwnedStruct<{ id: Tag; n: i32 }>;
 function freeItem(log: Log, it: Item): void {
   "use owned";
   log.info(it.id);
@@ -646,7 +646,7 @@ test("traps on out-of-range casts and 32-bit overflows", (t: Test) => {
     // 1) === null / null === expr side effects & inner-cleanup trap still unwinds outer using and keeps first trap (JS, C, Wasm)
     const strictNullAndDefer = project({
       "main.szigyr": `type Msg = "clean:1" | "clean:2";
-type Tag = Struct<{ id: i32 }>;
+type Tag = OwnedStruct<{ id: i32 }>;
 function logMsg(log: Log, m: Msg): void {
   "use owned";
   log.info(m);

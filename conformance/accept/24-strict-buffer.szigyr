@@ -3,7 +3,7 @@
 // open-question: Q040
 // open-question: Q047
 // A-3: strict。所有権の移動と Struct
-type Buffer = Struct<{ data: Vec<f32>; readonly rate: u32 }>;
+type Buffer = OwnedStruct<{ data: Vec<f32>; readonly rate: u32 }>;
 
 export function makeBuffer(alloc: Alloc, n: usize, rate: u32): Buffer {
   "use owned";

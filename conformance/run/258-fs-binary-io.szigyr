@@ -19,7 +19,7 @@ export function main(sys: System): void {
   src.push(30);
   src.push(40);
 
-  const w1 = fs.writeBytes("slice.bin", src.slice(1, 4));
+  const w1 = fs.writeBytes("slice.bin", src.borrowSlice(1, 4));
   const dst = Vec.create<u8>(sys.alloc, 4);
   dst.push(1);
   dst.push(2);

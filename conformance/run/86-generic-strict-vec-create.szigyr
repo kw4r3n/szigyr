@@ -2,7 +2,7 @@
 // expect-output: 1 false -1 7 1 false
 // stage: 2
 // Generic strict functions that create and return Vec<T> are monomorphized in C (D100, D104).
-type P = Struct<{ readonly x: i32; readonly y: u8 }>;
+type P = { readonly x: i32; readonly y: u8 };
 type U = { readonly kind: "a"; readonly n: i16 } | { readonly kind: "b" };
 function mk<T extends Copy & Native>(a: Alloc, x: T, n: usize): Vec<T> { "use owned"; const v = Vec.create<T>(a, 1); for (let i: usize = 0; i < n; i += 1) v.push(x); return v; }
 function mk2<T extends Copy & Native>(a: Alloc, x: T): Vec<T> { "use owned"; const v = mk<T>(a, x, 3); v.push(x); return v; }

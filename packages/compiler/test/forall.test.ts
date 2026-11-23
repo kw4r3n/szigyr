@@ -139,7 +139,7 @@ test("callee T004 inside requires is counterexample", (t: Test) => {
   it("freshly allocates Mut<Vec> / Mut<Slice> / Mut<Struct> per trial and agrees under --backend=both", async () => {
     const main = project({
       "main.szigyr": `
-type Box = Struct<{ x: i32; buf: Vec<i32> }>;
+type Box = OwnedStruct<{ x: i32; buf: Vec<i32> }>;
 
 function pushAndSet(v: Mut<Vec<i32>>, s: Mut<Slice<i32>>, b: Mut<Box>): void {
   "use owned";
@@ -196,7 +196,7 @@ test("ensures fails", (t: Test) => {
   it("shrinking respects leading requires and handles Vec<Struct>, Result, Map, Set, and recursive fn-expr", async () => {
     const main = project({
       "main.szigyr": `
-type Pair = Struct<{ readonly a: i32; readonly b: boolean }>;
+type Pair = { readonly a: i32; readonly b: boolean };
 
 function sumPairs(v: Ref<Slice<Pair>>): i32 {
   "use rt";

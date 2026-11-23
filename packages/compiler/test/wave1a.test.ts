@@ -209,7 +209,7 @@ describe("Wave 1-A TS syntax relaxations", () => {
     expect(badDiags).toMatchObject([{ code: "E2002", data: { kind: "type-only", name: "Box" } }]);
   });
 
-  it("supports prove, mutate, and queryFile with satisfies, ns.CONST, ns.fn, and re-exports", async () => {
+  it("supports prove, mutate, and queryFile with type annotations, ns.CONST, ns.fn, and re-exports, and rejects satisfies", async () => {
     const { dir, entry } = makeProject({
       "defs.szigyr": [
         `export const LIMIT: i32 = 100;`,
@@ -232,8 +232,8 @@ describe("Wave 1-A TS syntax relaxations", () => {
         `  "use owned";`,
         `  requires(x >= 0 && x <= r.LIMIT);`,
         `  requires(y >= 0 && y <= r.LIMIT);`,
-        `  const v = r.clampAdd(x, y) satisfies i32;`,
-        `  return v + (1 satisfies i32);`,
+        `  const v: i32 = r.clampAdd(x, y);`,
+        `  return v + i32(1);`,
         `}`,
         `test("sumPair", (t: Test) => {`,
         `  t.eq(sumPair(10, 20), 31);`,
@@ -242,6 +242,11 @@ describe("Wave 1-A TS syntax relaxations", () => {
         ``,
       ].join("\n"),
     });
+
+    const badSat = makeProject({
+      "main.szigyr": `export function f(): i32 { return 1 satisfies i32; }\n`,
+    });
+    expect(check(badSat.entry)).toMatchObject([{ code: "E1000" }]);
 
     const pRes = await prove(entry, { cache: false, cacheFile: join(dir, "prove.json") });
     expect(pRes.diagnostics).toEqual([]);

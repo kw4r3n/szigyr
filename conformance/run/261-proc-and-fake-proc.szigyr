@@ -13,11 +13,11 @@ export async function main(sys: System): Promise<void> {
 
   fp.onRun((req: ProcRequest) => {
     if (req.program === "deny") {
-      return err({ code: "EACCES", message: "denied" });
+      return Result.err({ code: "EACCES", message: "denied" });
     }
     const tout = req.timeoutMs ?? 0;
     const sin = req.stdin ?? "";
-    return ok({
+    return Result.ok({
       exitCode: 0,
       stdout: `${req.program}:${req.args.join(",")}:${sin}:${tout}`,
       stderr: "",

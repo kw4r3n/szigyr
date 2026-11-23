@@ -19,7 +19,7 @@ export async function main(sys: System): Promise<void> {
   buf.push(0);
   buf.push(0);
   fillBytes(buf);
-  const wb = fs.writeBytesAtomic("/a/b/a.bin", buf.slice(0, 3));
+  const wb = fs.writeBytesAtomic("/a/b/a.bin", buf.borrowSlice(0, 3));
   const stRes = fs.stat("/a/b/a.bin");
   let statStr = "err";
   if (stRes.kind === "ok") {

@@ -168,7 +168,7 @@ export class MicroDawSession {
 
   async startAudio(audio: Audio): Promise<Result<null, IoError>> {
     const curStream = this.stream;
-    if (curStream !== null && curStream.isOpen()) return ok(null);
+    if (curStream !== null && curStream.isOpen()) return Result.ok(null);
     const { tx: cmdTx, rx: cmdRx } = Ring.create<SynthCmd>(this.alloc, 128);
     const { tx: telTx, rx: telRx } = Ring.create<SynthTelemetry>(this.alloc, 64);
     // szigyr-equivalent[if -> true]: cells always hold a valid Ring endpoint between constructors/starts
@@ -180,10 +180,10 @@ export class MicroDawSession {
 
     const state = createInitialSynthState(this.alloc, cmdRx, telTx);
     const opened = await audio.open({ sampleRate: 48000, channels: 2 }, state, renderAudio);
-    if (opened.kind === "err") return err(opened.error);
+    if (opened.kind === "err") return Result.err(opened.error);
     this.stream = opened.value;
     this.pushAllParams();
-    return ok(null);
+    return Result.ok(null);
   }
 
   async stopAudio(): Promise<void> {

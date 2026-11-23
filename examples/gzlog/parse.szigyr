@@ -5,7 +5,7 @@ export const LEVEL_WARN: u8 = 3;
 export const LEVEL_ERROR: u8 = 4;
 export const LEVEL_ANY: u8 = 255;
 
-export type LogStats = Struct<{
+export type LogStats = {
   readonly bytes: usize;
   readonly lines: usize;
   readonly errors: usize;
@@ -14,14 +14,14 @@ export type LogStats = Struct<{
   readonly debugs: usize;
   readonly others: usize;
   readonly maxLineBytes: usize;
-}>;
+};
 
-export type LineSpan = Struct<{
+export type LineSpan = {
   readonly lineNo: usize;
   readonly start: usize;
   readonly end: usize;
   readonly level: u8;
-}>;
+};
 
 export function isGzipMagic(data: Ref<Slice<u8>>): boolean {
   "use rt";

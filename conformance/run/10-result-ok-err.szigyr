@@ -10,9 +10,9 @@
 function parseDigit(c: string): Result<i32, string> {
   const code: u16 = c.charCodeAt(0);
   if (code >= 48 && code <= 57) {
-    return ok(i32(code) - 48);
+    return Result.ok(i32(code) - 48);
   }
-  return err(`bad digit ${c}`);
+  return Result.err(`bad digit ${c}`);
 }
 
 function sumDigits(s: string): Result<i32, string> {
@@ -20,11 +20,11 @@ function sumDigits(s: string): Result<i32, string> {
   for (let i: usize = 0; i < s.length; i += 1) {
     const r = parseDigit(s.slice(i, i + 1));
     if (r.kind === "err") {
-      return err(r.error);
+      return Result.err(r.error);
     }
     total += r.value;
   }
-  return ok(total);
+  return Result.ok(total);
 }
 
 function describe(r: Result<i32, string>): string {

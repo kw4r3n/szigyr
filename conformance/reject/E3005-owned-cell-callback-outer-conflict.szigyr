@@ -2,7 +2,7 @@
 // stage: 3
 function takeTwo(s: Ref<Slice<i32>>, x: usize): usize { return s.length + x; }
 function f(m: Mut<Vec<i32>>, cell: OwnedCell<Vec<i32>>): usize {
-  return takeTwo(m.slice(0, 2), cell.withRef((_r): usize => {
+  return takeTwo(m.borrowSlice(0, 2), cell.withRef((_r): usize => {
     m.push(1);
     return 0;
   }));

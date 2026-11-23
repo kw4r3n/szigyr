@@ -1,7 +1,7 @@
 // expect: E3007 @ 5:28
 // stage: 3
 function f(alloc: Alloc): boolean {
-  const r: Result<Vec<f32>, string> = ok(Vec.create<f32>(alloc, 1));
+  const r: Result<Vec<f32>, string> = Result.ok(Vec.create<f32>(alloc, 1));
   const g = (): boolean => r.kind === "ok";
   return g();
 }

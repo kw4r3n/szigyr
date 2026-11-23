@@ -60,7 +60,7 @@ ${rest}
 /** Joins the armed fixture thread and returns "runs n v0 v1": bump's runs, then what the fixture got back. */
 async function readCell(): Promise<string> {
   const r = await run(project({ "main.szigyr": withDecl("function szcb_join(ffi: Ffi): void;", "szcb_join") + `
-type S = Struct<{ runs: i32; n: i32; v0: i32; v1: i32 }>;
+type S = OwnedStruct<{ runs: i32; n: i32; v0: i32; v1: i32 }>;
 function read(ffi: Ffi): S {
   "use owned";
   "use unsafe";
@@ -108,7 +108,7 @@ export function main(sys: System): void {
     expect(ra.trap?.code).toBe("T001"); // bump's second call overflowed; delivered as run3 returned (§15.4 (1))
 
     const b = project({ "main.szigyr": HEAD + `
-type S = Struct<{ runs: i32; n: i32; v0: i32; v1: i32; v2: i32 }>;
+type S = OwnedStruct<{ runs: i32; n: i32; v0: i32; v1: i32; v2: i32 }>;
 function read(ffi: Ffi): S {
   "use owned";
   "use unsafe";

@@ -3,5 +3,5 @@
 // open-question: Q013
 function f(v: Ref<Vec<f32>>): void {
   "use rt";
-  const w = v.slice(0, 2);
+  const w = v.borrowSlice(0, 2);
 }

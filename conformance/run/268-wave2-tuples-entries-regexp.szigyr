@@ -21,10 +21,12 @@ function sumRo(xs: readonly i32[]): i32 {
 export function main(sys: System): void {
   const ro: RoPair = [7, "seven"];
   const [swS, swN] = swapPair(ro);
-  let [lx, ly] = [i32(10), i32(20)] satisfies [i32, i32];
+  const p1: [i32, i32] = [10, 20];
+  let [lx, ly] = p1;
   lx += 1;
   ly += 2;
-  const [, holeVal] = [i32(1), "hole"] satisfies [i32, string];
+  const p2: [i32, string] = [1, "hole"];
+  const [, holeVal] = p2;
   const tri: [i32, i32, i32] = [3, 4, 5];
   const idx: usize = 2;
   const dynEl = tri[idx];

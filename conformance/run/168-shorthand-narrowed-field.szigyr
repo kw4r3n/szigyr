@@ -1,6 +1,6 @@
 // expect-output: 5 6 -1
 // stage: 2
-type W = Struct<{ h: Handle<f32>; n: i32 }>;
+type W = OwnedStruct<{ h: Handle<f32>; n: i32 }>;
 function f(p: Mut<Pool<f32>>, n: i32): i32 {
   "use rt";
   const h = p.insert(1);

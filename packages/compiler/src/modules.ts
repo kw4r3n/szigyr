@@ -3,7 +3,7 @@
 import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { Diagnostic } from "./diagnostics.ts";
-import { NodeFlags, SyntaxKind as K, hasMod, isId, isParamProp, isRecordInterface, type Node, type ParsedFile, type ts } from "./parse.ts";
+import { NodeFlags, SyntaxKind as K, hasMod, isId, isParamProp, type Node, type ParsedFile, type ts } from "./parse.ts";
 /** The absolute path with symlinks resolved, so one file reached through two names is one module (Q253). A path that does not exist stays as resolved (E7001). */
 export function canonPath(...p: string[]): string {
   const r = resolve(...p);
@@ -44,7 +44,6 @@ export type ValueSym = FnSym | ConstSym | ClassValueSym | CFnSym | CConstSym | {
 
 export type TypeSym =
   | { k: "alias"; decl: ts.TypeAliasDeclaration; mod: Module; tparams?: TParam[]; body?: Type; busy?: boolean }
-  | { k: "rec-iface"; decl: ts.InterfaceDeclaration; mod: Module; tparams?: TParam[]; body?: Type; busy?: boolean }
   | { k: "class"; cls: ClassSym; mod: Module }
   | { k: "iface"; iface: IfaceSym; decl: ts.InterfaceDeclaration; mod: Module }
   | CStructSym
@@ -227,8 +226,8 @@ function badStructField(t: Type): Type | null {
 
 const structFieldMsg = (t: Type): string =>
   isNative(t)
-    ? `a Struct field cannot hold '${show(t)}' (owned unions such as Result<Owned, E> and Slice are not allowed in Struct fields)`
-    : `a Struct field needs a Native type, not '${show(t)}'`;
+    ? `an OwnedStruct field cannot hold '${show(t)}' (owned unions such as Result<Owned, E> and Slice are not allowed in OwnedStruct fields)`
+    : `an OwnedStruct field needs a Native type, not '${show(t)}'`;
 
 /** The program's symbol tables, built in two passes: shells, then signatures (needs all type names). */
 export class Program {
@@ -398,8 +397,7 @@ export class Program {
         case K.InterfaceDeclaration: {
           const d = s as ts.InterfaceDeclaration;
           if (!d.name) break;
-          if (isRecordInterface(d)) mod.types.set(d.name.text, { k: "rec-iface", decl: d, mod });
-          else mod.types.set(d.name.text, { k: "iface", decl: d, mod, iface: { name: d.name.text, tparams: tparamShells(d.typeParameters, "managed"), methods: new Map() } });
+          mod.types.set(d.name.text, { k: "iface", decl: d, mod, iface: { name: d.name.text, tparams: tparamShells(d.typeParameters, "managed"), methods: new Map() } });
           break;
         }
         case K.ClassDeclaration: {
@@ -428,7 +426,7 @@ export class Program {
   /** Constraints of class and interface type parameters, so that every `Box<X>` reference can be checked (§3.2). */
   private classIfaceConstraints(mod: Module): void {
     for (const t of mod.types.values()) {
-      if (t.k === "error" || t.mod !== mod || t.k === "alias" || t.k === "rec-iface" || t.k === "cstruct") continue;
+      if (t.k === "error" || t.mod !== mod || t.k === "alias" || t.k === "cstruct") continue;
       const [decl, ps] = t.k === "iface" ? [t.decl, t.iface.tparams] : [t.cls.decl, t.cls.tparams];
       this.constraints(decl.typeParameters, ps, { mod, tparams: new Map(ps.map((p) => [p.name, p])) });
     }
@@ -479,7 +477,6 @@ export class Program {
     for (const t of mod.types.values()) {
       if (t.k === "error" || t.mod !== mod || t.k === "cstruct") continue;
       if (t.k === "alias") this.aliasBody(t);
-      else if (t.k === "rec-iface") this.recIfaceBody(t);
       else if (t.k === "iface") {
         const e = env(t.iface.tparams);
         for (const m of t.decl.members) {
@@ -628,73 +625,6 @@ export class Program {
     const e: TypeEnv = { mod: a.mod, tparams: new Map(a.tparams.map((p) => [p.name, p])) };
     this.constraints(a.decl.typeParameters, a.tparams, e);
     a.body = this.typeOf(a.decl.type, e);
-    a.busy = false;
-    return a.body;
-  }
-
-  recIfaceBody(a: Extract<TypeSym, { k: "rec-iface" }>): Type {
-    if (a.body) return a.body;
-    if (a.busy) {
-      this.rep.at(a.mod, "E2002", a.decl.name, `cyclic interface '${a.decl.name.text}'`, { kind: "cyclic-interface", name: a.decl.name.text });
-      return ERROR;
-    }
-    a.busy = true;
-    a.tparams ??= tparamShells(a.decl.typeParameters, "managed", true);
-    const e: TypeEnv = { mod: a.mod, tparams: new Map(a.tparams.map((p) => [p.name, p])) };
-    this.constraints(a.decl.typeParameters, a.tparams, e);
-    const inherited = new Map<string, Field>();
-    for (const h of a.decl.heritageClauses ?? []) {
-      if (h.token !== K.ExtendsKeyword) continue;
-      for (const ht of h.types) {
-        const exp = ht.expression;
-        let bt: Type = ERROR;
-        if (isId(exp)) bt = this.typeRef(exp, ht.typeArguments, ht, e);
-        else if (exp.kind === K.PropertyAccessExpression && isId((exp as ts.PropertyAccessExpression).expression) && isId((exp as ts.PropertyAccessExpression).name)) {
-          const pa = exp as ts.PropertyAccessExpression;
-          bt = this.qualifiedTypeRef(pa.expression as ts.Identifier, pa.name as ts.Identifier, ht.typeArguments, ht, e);
-        }
-        if (bt.k === "error") continue;
-        if (bt.k !== "record") {
-          this.rep.at(a.mod, "E2002", ht, `interface can only extend a field-only interface or record type, not '${show(bt)}'`, { kind: "interface-extends-target", actual: show(bt) });
-          continue;
-        }
-        if (bt.struct && !isCopy(bt)) {
-          this.rep.at(a.mod, "E2002", ht, `interface cannot extend owned Struct type '${show(bt)}'`, { kind: "interface-extends-struct", actual: show(bt) });
-          continue;
-        }
-        for (const f of bt.fields) {
-          const prev = inherited.get(f.name);
-          if (prev) {
-            if (prev.readonly !== f.readonly || !same(prev.type, f.type)) {
-              this.rep.at(a.mod, "E2002", ht, `inherited field '${f.name}' has conflicting definitions`, { kind: "interface-field-conflict", field: f.name });
-            }
-          } else {
-            inherited.set(f.name, f);
-          }
-        }
-      }
-    }
-    const own = new Map<string, Field>();
-    for (const m of a.decl.members) {
-      if (m.kind !== K.PropertySignature) continue;
-      const p = m as ts.PropertySignatureDeclaration;
-      if (!isId(p.name)) continue;
-      if (!p.type) {
-        this.rep.at(a.mod, "E2006", p.name, "property needs a type annotation", { kind: "missing-annotation" });
-      }
-      const ft = p.type ? this.typeOf(p.type, e) : ERROR;
-      const ro = hasMod(p, K.ReadonlyKeyword);
-      const prev = inherited.get(p.name.text);
-      if (prev) {
-        const ok = prev.readonly === ro && (ft.k === "error" || prev.type.k === "error" || assignable(ft, prev.type));
-        if (!ok) {
-          this.rep.at(a.mod, "E2002", p.name, `field '${p.name.text}' conflicts with inherited definition`, { kind: "interface-field-conflict", field: p.name.text });
-        }
-      }
-      own.set(p.name.text, { name: p.name.text, type: ft, readonly: ro });
-    }
-    const merged = new Map<string, Field>([...inherited, ...own]);
-    a.body = record([...merged.values()], false);
     a.busy = false;
     return a.body;
   }
@@ -911,9 +841,8 @@ export class Program {
     if (sym.k === "error") return ERROR;
     if (sym.k === "cstruct") return arity(0) ? sym.type : ERROR;
     if (sym.k === "alias" && sym.busy) { this.rep.at(e.mod, "E2002", whole, `type alias '${name}' refers to itself`); return ERROR; } // Q085
-    if (sym.k === "rec-iface" && sym.busy) { this.rep.at(e.mod, "E2002", whole, `cyclic interface '${name}'`, { kind: "cyclic-interface", name }); return ERROR; }
-    const body = sym.k === "alias" ? this.aliasBody(sym) : sym.k === "rec-iface" ? this.recIfaceBody(sym) : undefined;
-    const ps = sym.k === "alias" || sym.k === "rec-iface" ? sym.tparams! : sym.k === "class" ? sym.cls.tparams : sym.iface.tparams;
+    const body = sym.k === "alias" ? this.aliasBody(sym) : undefined;
+    const ps = sym.k === "alias" ? sym.tparams! : sym.k === "class" ? sym.cls.tparams : sym.iface.tparams;
     if (!arity(ps.length)) return ERROR;
     const bad = ps.findIndex((p, i) => p.constraint && args[i]!.k !== "error" && !assignable(args[i]!, subst(p.constraint, bindTParams(ps, args))));
     if (bad >= 0) { this.rep.at(e.mod, "E2002", argNodes![bad]!, `type argument does not implement '${show(ps[bad]!.constraint!)}'`); return ERROR; }
@@ -945,7 +874,7 @@ export class Program {
 
   typeRef(id: ts.Identifier, argNodes: ts.NodeArray<ts.TypeNode> | undefined, whole: Node, e: TypeEnv): Type {
     const name = id.text;
-    const args = (argNodes ?? []).map((a) => (name === "Struct" || name === "CStruct" ? ERROR : this.typeOf(a, e, name === "Promise" || name === "Ptr" || name === "ConstPtr" || name === "CHandle"))); // `Promise<void>` (Q028); `Ptr<void>` (§14.4)
+    const args = (argNodes ?? []).map((a) => (name === "OwnedStruct" || name === "CStruct" ? ERROR : this.typeOf(a, e, name === "Promise" || name === "Ptr" || name === "ConstPtr" || name === "CHandle"))); // `Promise<void>` (Q028); `Ptr<void>` (§14.4)
     const arity = (n: number): boolean => {
       if (args.length === n) return true;
       this.rep.at(e.mod, "E2002", whole, `'${name}' takes ${n} type argument(s)`);
@@ -955,9 +884,9 @@ export class Program {
     if (tp) return arity(0) ? { k: "tparam", p: tp } : ERROR;
     const sym = e.cscope?.get(name) ?? this.lookupType(e.mod, name);
     if (sym) return this.instantiateTypeSym(sym, name, argNodes, args, whole, e);
-    if (name === "Struct") {
+    if (name === "OwnedStruct") {
       const a = argNodes?.[0];
-      if (argNodes?.length !== 1 || a!.kind !== K.TypeLiteral) { this.rep.at(e.mod, "E2002", whole, "Struct takes one record type literal"); return ERROR; }
+      if (argNodes?.length !== 1 || a!.kind !== K.TypeLiteral) { this.rep.at(e.mod, "E2002", whole, "OwnedStruct takes one record type literal"); return ERROR; }
       return this.recordOf(a as ts.TypeLiteralNode, e, true);
     }
     if (name === "CStruct") {
@@ -1016,6 +945,10 @@ export class Program {
     }
     const b = !RESERVED.has(name) ? builtinType(name) : undefined;
     if (b) return arity(0) ? b : ERROR;
+    if (name === "Struct") {
+      this.rep.at(e.mod, "E2000", id, `'Struct' was replaced; use '{ readonly ... }' for Copy records or 'OwnedStruct<{ ... }>' for Owned/mutable native structs`, { name });
+      return ERROR;
+    }
     this.rep.at(e.mod, "E2000", id, `unknown type '${name}'`, { name });
     return ERROR;
   }

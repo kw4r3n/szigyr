@@ -1,6 +1,6 @@
 // expect: E3005 @ 12:27
 // stage: 3
-type S = Struct<{ x: i32 }>;
+type S = OwnedStruct<{ x: i32 }>;
 function both(s: Ref<S>, t: S): i32 {
   "use owned";
   return 0;

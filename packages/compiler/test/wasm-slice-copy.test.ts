@@ -63,10 +63,10 @@ export function xorSlice(s: Mut<Slice<u8>>, val: u8): u8 {
     const xorSlice = api[fnKey] as (s: rt.Slice<number>, val: number) => number;
     let sum = 0;
     for (let k = 0; k < 200; k++) {
-      sum = xorSlice(vec.slice(16_000_000, 16_000_016), 0x0f);
+      sum = xorSlice(vec.borrowSlice(16_000_000, 16_000_016), 0x0f);
     }
     // 200 is even, so XORing with 0x0f twice returns original bytes; xor 201st time to mutate.
-    sum = xorSlice(vec.slice(16_000_000, 16_000_016), 0x0f);
+    sum = xorSlice(vec.borrowSlice(16_000_000, 16_000_016), 0x0f);
     expect(sum).toBe(16); // (1..16) ^ 0x0f xored together == 16
     expect(vec.get(16_000_000 - 1)).toBe(0xaa);
     for (let i = 0; i < 16; i++) expect(vec.get(16_000_000 + i)).toBe((i + 1) ^ 0x0f);
@@ -157,9 +157,9 @@ export function main(sys: System): void {
   // Overlapping Ref slices + disjoint Mut slices + empty slices
   const v = Vec.create<u8>(sys.alloc, 1024);
   for (let i = 0; i < 16; i += 1) v.push(u8(i + 1));
-  const refSum = sumRefPair(v.slice(2, 6), v.slice(4, 8)); // (3+4+5+6) + (5+6+7+8) = 44
-  swapMutPair(v.slice(0, 4), v.slice(12, 16)); // swap [1] and [13]
-  const emptySum = sumRefPair(v.slice(0, 0), v.slice(5, 5));
+  const refSum = sumRefPair(v.borrowSlice(2, 6), v.borrowSlice(4, 8)); // (3+4+5+6) + (5+6+7+8) = 44
+  swapMutPair(v.borrowSlice(0, 4), v.borrowSlice(12, 16)); // swap [1] and [13]
+  const emptySum = sumRefPair(v.borrowSlice(0, 0), v.borrowSlice(5, 5));
   sys.log.info(\`\${refSum},\${v[0]},\${v[12]},\${emptySum}\`);
 
   // Vec small len in larger cap, plus grow beyond initial cap
@@ -198,7 +198,7 @@ function copyFirst(dst: Mut<Slice<u8>>, src: Ref<Slice<u8>>): void {
 export function main(sys: System): void {
   const v = Vec.create<u8>(sys.alloc, 32);
   for (let i = 0; i < 8; i += 1) v.push(u8(i));
-  copyFirst(v.slice(1, 5), v.slice(3, 7));
+  copyFirst(v.borrowSlice(1, 5), v.borrowSlice(3, 7));
 }
 `);
     const res = await run(f, { backend: "wasm" });

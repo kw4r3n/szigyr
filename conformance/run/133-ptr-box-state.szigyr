@@ -1,8 +1,8 @@
 // expect-output: 42 3
 // stage: 3
 // backend: c
-type State = Struct<{ rx: RingRx<i32>; readonly tag: i32; h: CHandle<i32> }>;
-type R = Struct<{ a: i32; b: i32 }>;
+type State = OwnedStruct<{ rx: RingRx<i32>; readonly tag: i32; h: CHandle<i32> }>;
+type R = OwnedStruct<{ a: i32; b: i32 }>;
 function useState(s: Mut<State>): i32 {
   "use rt";
   const v = s.rx.pop();

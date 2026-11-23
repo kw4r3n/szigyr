@@ -111,7 +111,7 @@ export function validLiterals(): i64 {
 
   it("matches across js, c, and wasm backends for 64-bit arithmetic, containers, layout, conversions, and traps", async () => {
     const f = writeMod(`
-type Packed64 = Struct<{ readonly tag: u8; readonly lo: i64; readonly hi: u64 }>;
+type Packed64 = { readonly tag: u8; readonly lo: i64; readonly hi: u64 };
 
 function readAt1(s: Ref<Slice<i64>>): i64 {
   "use rt";

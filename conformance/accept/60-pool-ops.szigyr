@@ -2,8 +2,8 @@
 // stage: 2
 // open-question: Q188
 // open-question: Q213
-type Slot = Struct<{ readonly h: Handle<f32>; readonly tag: u32 }>;
-type Bag = Struct<{ pool: Pool<f32>; n: u32 }>;
+type Slot = { readonly h: Handle<f32>; readonly tag: u32 };
+type Bag = OwnedStruct<{ pool: Pool<f32>; n: u32 }>;
 
 export function make(alloc: Alloc, cap: usize): Pool<f32> {
   "use owned";

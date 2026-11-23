@@ -272,11 +272,11 @@ loadScan();
 function scanSingleFile(fs: Fs, root: string, rel: string, buf: Mut<Vec<u8>>): Result<FileReport, IoError> {
   const full = joinPath(root, rel);
   const st = fs.stat(full);
-  if (st.kind === "err") return err(st.error);
+  if (st.kind === "err") return Result.err(st.error);
   const rb = fs.readBytes(full, buf);
-  if (rb.kind === "err") return err(rb.error);
+  if (rb.kind === "err") return Result.err(rb.error);
   const m = scanBytes(buf);
-  return ok({
+  return Result.ok({
     path: rel,
     bytes: m.bytes,
     newlines: m.newlines,
@@ -298,7 +298,7 @@ function walkScanDir(
 ): Result<null, IoError> {
   const dirPath = relDir.length === 0 ? root : joinPath(root, relDir);
   const rd = fs.readDir(dirPath);
-  if (rd.kind === "err") return err(rd.error);
+  if (rd.kind === "err") return Result.err(rd.error);
   for (const entry of rd.value) {
     if (entry.name.startsWith(".")) continue;
     const rel = relDir.length === 0 ? entry.name : `${relDir}/${entry.name}`;
@@ -307,18 +307,18 @@ function walkScanDir(
       if (sub.kind === "err") return sub;
     } else if (entry.kind === "file") {
       const rep = scanSingleFile(fs, root, rel, buf);
-      if (rep.kind === "err") return err(rep.error);
+      if (rep.kind === "err") return Result.err(rep.error);
       out.push(rep.value);
     }
   }
-  return ok(null);
+  return Result.ok(null);
 }
 
 export function scanWorkspace(fs: Fs, alloc: Alloc, root: string): Result<ScanSummary, IoError> {
   const files: Array<FileReport> = [];
   const buf = Vec.create<u8>(alloc, 0);
   const walked = walkScanDir(fs, root, "", buf, files);
-  if (walked.kind === "err") return err(walked.error);
+  if (walked.kind === "err") return Result.err(walked.error);
   let totalBytes: usize = 0;
   let totalNewlines: usize = 0;
   let binaryCount: usize = 0;
@@ -327,7 +327,7 @@ export function scanWorkspace(fs: Fs, alloc: Alloc, root: string): Result<ScanSu
     totalNewlines += f.newlines;
     if (f.binary) binaryCount += 1;
   }
-  return ok({
+  return Result.ok({
     root,
     fileCount: files.length,
     totalBytes,
@@ -339,7 +339,7 @@ export function scanWorkspace(fs: Fs, alloc: Alloc, root: string): Result<ScanSu
 
 export function readWorkspaceFile(fs: Fs, root: string, relPath: string): Result<string, IoError> {
   const rel = normalizeRelPath(relPath);
-  if (rel === null) return err({ code: "EINVAL", message: `invalid relative path: ${relPath}` });
+  if (rel === null) return Result.err({ code: "EINVAL", message: `invalid relative path: ${relPath}` });
   return fs.readText(joinPath(root, rel));
 }
 
@@ -351,11 +351,11 @@ export function saveWorkspaceFile(
   content: string,
 ): Result<SaveResult, IoError> {
   const rel = normalizeRelPath(relPath);
-  if (rel === null) return err({ code: "EINVAL", message: `invalid relative path: ${relPath}` });
+  if (rel === null) return Result.err({ code: "EINVAL", message: `invalid relative path: ${relPath}` });
   const parent = parentRelDir(rel);
   if (parent !== null) {
     const mk = fs.mkdir(joinPath(root, parent));
-    if (mk.kind === "err") return err(mk.error);
+    if (mk.kind === "err") return Result.err(mk.error);
   }
   const full = joinPath(root, rel);
   const bak = `${full}.bak`;
@@ -363,18 +363,18 @@ export function saveWorkspaceFile(
   if (fs.exists(full)) {
     const prevBuf = Vec.create<u8>(alloc, 0);
     const pr = fs.readBytes(full, prevBuf);
-    if (pr.kind === "err") return err(pr.error);
+    if (pr.kind === "err") return Result.err(pr.error);
     const wb = fs.writeBytesAtomic(bak, prevBuf);
-    if (wb.kind === "err") return err(wb.error);
+    if (wb.kind === "err") return Result.err(wb.error);
     backedUp = true;
   }
   const wt = fs.writeTextAtomic(full, content);
-  if (wt.kind === "err") return err(wt.error);
+  if (wt.kind === "err") return Result.err(wt.error);
   const buf = Vec.create<u8>(alloc, 0);
   const rb = fs.readBytes(full, buf);
-  if (rb.kind === "err") return err(rb.error);
+  if (rb.kind === "err") return Result.err(rb.error);
   const m = scanBytes(buf);
-  return ok({ path: rel, backedUp, bytes: m.bytes, newlines: m.newlines, fnv64: `${m.fnv64}` });
+  return Result.ok({ path: rel, backedUp, bytes: m.bytes, newlines: m.newlines, fnv64: `${m.fnv64}` });
 }
 
 export function snapshotFileBytes(
@@ -386,23 +386,23 @@ export function snapshotFileBytes(
 ): Result<usize, IoError> {
   const sRel = normalizeRelPath(srcRel);
   const dRel = normalizeRelPath(dstRel);
-  if (sRel === null || dRel === null) return err({ code: "EINVAL", message: "invalid snapshot path" });
+  if (sRel === null || dRel === null) return Result.err({ code: "EINVAL", message: "invalid snapshot path" });
   const parent = parentRelDir(dRel);
   if (parent !== null) {
     const mk = fs.mkdir(joinPath(root, parent));
-    if (mk.kind === "err") return err(mk.error);
+    if (mk.kind === "err") return Result.err(mk.error);
   }
   const buf = Vec.create<u8>(alloc, 0);
   const rb = fs.readBytes(joinPath(root, sRel), buf);
-  if (rb.kind === "err") return err(rb.error);
+  if (rb.kind === "err") return Result.err(rb.error);
   const wb = fs.writeBytesAtomic(joinPath(root, dRel), buf);
-  if (wb.kind === "err") return err(wb.error);
-  return ok(rb.value);
+  if (wb.kind === "err") return Result.err(wb.error);
+  return Result.ok(rb.value);
 }
 
 export function deleteWorkspaceFile(fs: Fs, root: string, relPath: string): Result<null, IoError> {
   const rel = normalizeRelPath(relPath);
-  if (rel === null) return err({ code: "EINVAL", message: `invalid relative path: ${relPath}` });
+  if (rel === null) return Result.err({ code: "EINVAL", message: `invalid relative path: ${relPath}` });
   return fs.remove(joinPath(root, rel));
 }
 
@@ -419,8 +419,8 @@ export async function runWorkspaceTool(
     stdin: null,
     timeoutMs,
   });
-  if (res.kind === "err") return err(res.error);
-  return ok({
+  if (res.kind === "err") return Result.err(res.error);
+  return Result.ok({
     program,
     exitCode: res.value.exitCode,
     stdout: res.value.stdout,
@@ -449,8 +449,8 @@ function ioErrorStatus(code: string): u16 {
 
 function parseJsonBody(raw: string): Result<unknown, HttpServerResponse> {
   const p = JSON.parse(raw);
-  if (p.kind === "err") return err(errorJson(400, "EINVAL", `invalid json: ${p.error.message}`));
-  return ok(p.value);
+  if (p.kind === "err") return Result.err(errorJson(400, "EINVAL", `invalid json: ${p.error.message}`));
+  return Result.ok(p.value);
 }
 
 export async function handleHttpRequest(
@@ -527,19 +527,19 @@ export async function handleHttpRequest(
 }
 
 function expectOk200(step: string, r: Result<HttpResponse, IoError>): Result<HttpResponse, IoError> {
-  if (r.kind === "err") return err({ code: r.error.code, message: `${step}: ${r.error.message}` });
-  if (r.value.status !== 200) return err({ code: "EIO", message: `${step}: status ${r.value.status}` });
-  return ok(r.value);
+  if (r.kind === "err") return Result.err({ code: r.error.code, message: `${step}: ${r.error.message}` });
+  if (r.value.status !== 200) return Result.err({ code: "EIO", message: `${step}: status ${r.value.status}` });
+  return Result.ok(r.value);
 }
 
 export async function probeHealth(net: Net, baseUrl: string): Promise<Result<HealthPayload, IoError>> {
   const checked = expectOk200("health", await net.fetch(`${baseUrl}/api/health`));
-  if (checked.kind === "err") return err(checked.error);
+  if (checked.kind === "err") return Result.err(checked.error);
   const parsed = JSON.parse(checked.value.body);
-  if (parsed.kind === "err") return err({ code: "EINVAL", message: parsed.error.message });
+  if (parsed.kind === "err") return Result.err({ code: "EINVAL", message: parsed.error.message });
   const decoded = cast<HealthPayload>(parsed.value);
-  if (decoded.kind === "err") return err({ code: "EINVAL", message: decoded.error.message });
-  return ok(decoded.value);
+  if (decoded.kind === "err") return Result.err({ code: "EINVAL", message: decoded.error.message });
+  return Result.ok(decoded.value);
 }
 
 export async function runSelfCheck(
@@ -554,7 +554,7 @@ export async function runSelfCheck(
   const srvRes = await net.serve({ host: "127.0.0.1", port: 0 }, (req: HttpServerRequest) =>
     handleHttpRequest(fs, proc, alloc, root, req)
   );
-  if (srvRes.kind === "err") return err(srvRes.error);
+  if (srvRes.kind === "err") return Result.err(srvRes.error);
   await using srv = srvRes.value;
   const base = `http://${srv.host}:${srv.port}`;
 
@@ -579,7 +579,7 @@ export async function runSelfCheck(
       ? await net.fetch(`${base}${step.path}`)
       : await net.fetch(`${base}${step.path}`, { method: step.method, headers: [], body: step.body, timeoutMs: null });
     const checked = expectOk200(step.label, rawRes);
-    if (checked.kind === "err") return err(checked.error);
+    if (checked.kind === "err") return Result.err(checked.error);
     if (step.label === "snapshot") snapBody = checked.value.body;
     if (step.label === "scan") scanBody = checked.value.body;
     if (step.label === "run") runBody = checked.value.body;
@@ -587,10 +587,10 @@ export async function runSelfCheck(
 
   const parsedScan = JSON.parse(scanBody);
   const parsedRun = JSON.parse(runBody);
-  if (parsedScan.kind !== "ok" || parsedRun.kind !== "ok") return err({ code: "EIO", message: "invalid selfcheck json" });
+  if (parsedScan.kind !== "ok" || parsedRun.kind !== "ok") return Result.err({ code: "EIO", message: "invalid selfcheck json" });
   const scanVal = cast<ScanSummary>(parsedScan.value);
   const runVal = cast<RunCommandResult>(parsedRun.value);
-  if (scanVal.kind !== "ok" || runVal.kind !== "ok") return err({ code: "EIO", message: "invalid selfcheck payload" });
+  if (scanVal.kind !== "ok" || runVal.kind !== "ok") return Result.err({ code: "EIO", message: "invalid selfcheck payload" });
 
-  return ok(`selfcheck:ok:files=${scanVal.value.fileCount}:saved=true:snap=${snapBody}:run=${runVal.value.exitCode}:${runVal.value.stdout.trim()}`);
+  return Result.ok(`selfcheck:ok:files=${scanVal.value.fileCount}:saved=true:snap=${snapBody}:run=${runVal.value.exitCode}:${runVal.value.stdout.trim()}`);
 }

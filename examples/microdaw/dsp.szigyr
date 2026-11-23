@@ -18,21 +18,21 @@ export const CMD_SET_STEP: u8 = 8;
 export const CMD_TRIGGER_NOTE: u8 = 9;
 export const CMD_RESET_SEQ: u8 = 10;
 
-export type SynthCmd = Struct<{
+export type SynthCmd = {
   readonly kind: u8;
   readonly a: u8;
   readonly b: u8;
   readonly f: f32;
-}>;
+};
 
-export type SynthTelemetry = Struct<{
+export type SynthTelemetry = {
   readonly step: u8;
   readonly playing: u8;
   readonly activeVoices: u8;
   readonly peak: f32;
-}>;
+};
 
-export type Voice = Struct<{
+export type Voice = {
   readonly active: u8;
   readonly stage: u8;
   readonly note: u8;
@@ -41,14 +41,14 @@ export type Voice = Struct<{
   readonly freq: f64;
   readonly env: f32;
   readonly vel: f32;
-}>;
+};
 
-export type StepCell = Struct<{
+export type StepCell = {
   readonly note: u8;
   readonly vel: f32;
-}>;
+};
 
-export type SynthState = Struct<{
+export type SynthState = OwnedStruct<{
   cmdRx: RingRx<SynthCmd>;
   telTx: RingTx<SynthTelemetry>;
   voices: Vec<Voice>;

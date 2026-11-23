@@ -40,9 +40,9 @@ export function main(sys: System): void {
   const v = Vec.create<i32>(sys.alloc, 8);
   fillSquares(v, 6);
   sys.log.info(`len=${v.length} sum=${sum(v)}`);
-  scaleInPlace(v.slice(1, 4), 10);
+  scaleInPlace(v.borrowSlice(1, 4), 10);
   sys.log.info(`${v[0]} ${v[1]} ${v[2]} ${v[3]} ${v[4]} ${v[5]}`);
-  sys.log.info(`part=${sum(v.slice(2, 5))}`);
+  sys.log.info(`part=${sum(v.borrowSlice(2, 5))}`);
   sys.log.info(`pop=${showI(v.pop())} len=${v.length}`);
   v.fill(7);
   sys.log.info(`sum=${sum(v)}`);

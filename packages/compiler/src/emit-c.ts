@@ -49,7 +49,7 @@ const cfields = (t: Extract<Type, { k: "record" }>): Field[] => [...t.fields].so
 const umembers = (u: Extract<Type, { k: "union" }>): Type[] => [...u.members].sort((a, b) => byName(kindOf(a)!, kindOf(b)!));
 /** The key of a C type: `show` of the type in C order. */
 function canon(t: Type): Type {
-  if (t.k === "record") return { ...t, struct: isCopyValueRecord(t) ? false : t.struct, fields: cfields(t).map((f) => ({ ...f, type: canon(f.type) })) };
+  if (t.k === "record") return { ...t, fields: cfields(t).map((f) => ({ ...f, type: canon(f.type) })) };
   if (t.k === "union") { const ms = [...t.members]; return { ...t, members: (isTaggedUnion(t) ? umembers(t) : ms.sort((a, b) => byName(show(a), show(b)))).map(canon) }; }
   if (t.k === "gen") return { ...t, args: t.args.map(canon) };
   return t;
@@ -959,7 +959,6 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
 
     exVoid(e: ts.Expression): void {
       if (e.kind === K.ParenthesizedExpression) { this.exVoid((e as ts.ParenthesizedExpression).expression); return; }
-      if (e.kind === K.SatisfiesExpression) { this.exVoid((e as ts.SatisfiesExpression).expression); return; }
       const t = exprTypes.get(e);
       if (t && t.k === "prim" && (t.name === "void" || t.name === "never")) {
         if (e.kind === K.ConditionalExpression) { // `c ? f() : g()` of void calls: the chosen branch as a statement
@@ -978,7 +977,6 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
     ex(e: ts.Expression): string {
       switch (e.kind) {
         case K.ParenthesizedExpression: return this.ex((e as ts.ParenthesizedExpression).expression);
-        case K.SatisfiesExpression: return this.ex((e as ts.SatisfiesExpression).expression);
         case K.NumericLiteral: return this.lit(e as ts.NumericLiteral, false, this.typeOf(e));
         case K.TrueKeyword: return "true";
         case K.StringLiteral: case K.NoSubstitutionTemplateLiteral: return `((int32_t)${litId((e as ts.StringLiteral).text)})`; // Q043: a `kind` value
@@ -1275,7 +1273,6 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
     /** An lvalue: a local, or a field path from one (`s.a.b`, `(*u_m).x`). `read`: narrowed locals read as their narrowed type. */
     place(e: ts.Expression, read = false): string {
       if (e.kind === K.ParenthesizedExpression) return this.place((e as ts.ParenthesizedExpression).expression, read);
-      if (e.kind === K.SatisfiesExpression) return this.place((e as ts.SatisfiesExpression).expression, read);
       if (e.kind === K.Identifier) { const l = this.lookup((e as ts.Identifier).text); if (l) return read ? this.narrow(l.c, l.t, this.typeOf(e)) : l.c; }
       if (e.kind === K.PropertyAccessExpression) {
         const p = e as ts.PropertyAccessExpression;
@@ -1465,12 +1462,6 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
               return this.t(t, trampoline(fn, this.where), e);
             }
             case "panic": this.emit(`sz_trap(6, ${this.pos(callee)});`); return stmt ? undefined : "0";
-            case "ok": case "err": { // Result (Q043): a member of the union
-              if (t.k !== "union" || !isTaggedUnion(t)) throw this.no(e, `'${name}' of type ${show(t)}`);
-              const v = this.ex(e.arguments[0]!), i = memberOf(t, name), mt = umembers(t)[i] as Extract<Type, { k: "record" }>;
-              const f = mt.fields.find((x) => x.name !== "kind")!;
-              return this.t(t, `((${ctype(t, this.where)}){ .m${i} = { .f_kind = ${litId(name)}, .f_${f.name} = ${this.conv(v, this.typeOf(e.arguments[0]!), f.type)} } })`, e);
-            }
           }
           const cbi = this.f.decl.parameters.findIndex((p, k) => unref(this.i.params[k]!).k === "fn" && p.name.kind === K.Identifier && (p.name as ts.Identifier).text === name);
           if (cbi >= 0) { // Q189 (b): a call through a function-typed parameter
@@ -1507,6 +1498,12 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
           const a0 = this.ex(e.arguments[0]!);
           const F: Record<string, string> = { isFinite: "sz_isfinite", isNaN: "sz_isnan", isInteger: "sz_isint" };
           if (F[m]) return this.t(t, `${F[m]}((double)${a0})`, e);
+        }
+        if (ns === "Result" && (m === "ok" || m === "err")) { // Result (Q043): a member of the union
+          if (t.k !== "union" || !isTaggedUnion(t)) throw this.no(e, `'Result.${m}' of type ${show(t)}`);
+          const v = this.ex(e.arguments[0]!), i = memberOf(t, m), mt = umembers(t)[i] as Extract<Type, { k: "record" }>;
+          const f = mt.fields.find((x) => x.name !== "kind")!;
+          return this.t(t, `((${ctype(t, this.where)}){ .m${i} = { .f_kind = ${litId(m)}, .f_${f.name} = ${this.conv(v, this.typeOf(e.arguments[0]!), f.type)} } })`, e);
         }
         if (ns === "DetMath") { // §12 (Q191): a direct call of the bundled module's rt function
           const dm = prog.mods.find((x) => x.pf.path === DETMATH_PATH);
@@ -1784,7 +1781,7 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
             this.emit(`for (uint32_t k = 0; k < ${s.len}; k++) ${el.st(s.data, "k", x)}`);
             return stmt ? undefined : "0";
           }
-          case "slice": {
+          case "borrowSlice": {
             const base = s.vec ? `sz_vslice(${s.vec})` : s.slice!;
             const a = this.ex(e.arguments[0]!), b = this.ex(e.arguments[1]!);
             const subExpr = this.isProved(p.name)
@@ -1827,7 +1824,7 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
       }
       const callee = inst(fn, fn.sig.tparams.length ? targs : [], fnArgs, this.where, e.arguments.length);
       const args = e.arguments.map((a0, i) => {
-        let a = a0; while (a.kind === K.ParenthesizedExpression || a.kind === K.SatisfiesExpression) a = a.kind === K.ParenthesizedExpression ? (a as ts.ParenthesizedExpression).expression : (a as ts.SatisfiesExpression).expression; // D157: `f((p.borrow()))` is the same borrowed argument
+        let a = a0; while (a.kind === K.ParenthesizedExpression) a = (a as ts.ParenthesizedExpression).expression; // D157: `f((p.borrow()))` is the same borrowed argument
         const pt = callee.params[i]!, inner = unref(pt), mode = borrowMode(pt);
         if (inner.k === "fn") return ""; // Q189 (b): no runtime value (the slot keeps argument indices aligned)
         if (a.kind === K.CallExpression && (a as ts.CallExpression).expression.kind === K.PropertyAccessExpression) {

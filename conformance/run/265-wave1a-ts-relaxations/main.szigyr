@@ -16,7 +16,7 @@ class MyGreeter implements tb.Greeter {
 
 function useStrictNs(x: i32): i32 {
   "use owned";
-  const p = { x: b.FACTOR, y: 20 } satisfies Pair;
+  const p: Pair = { x: b.FACTOR, y: 20 };
   const picked = b.pickFirst<i32>(p.x, p.y, true);
   return b.mulScale(x) + b.applyRt(1, b.mulScale) + picked;
 }
@@ -32,9 +32,10 @@ export function main(sys: System): void {
   const c = new b.Counter(b.Counter.BASE);
   const cv = c.inc(8);
   const g = new MyGreeter();
-  const r = { kind: "ok", value: 40 } satisfies Result<i32, string>;
-  const p2 = { x: r.value, y: 2 } satisfies tb.Pair;
-  const ab = "a" satisfies AB;
+  const r: Result<i32, string> = Result.ok(40);
+  const rv = r.kind === "ok" ? r.value : 0;
+  const p2: tb.Pair = { x: rv, y: 2 };
+  const ab: AB = "a";
   const strictVal = useStrictNs(2);
   sys.log.info(`${total + sFixed}:${cv}:${g.greet()}:${p2.x + p2.y}:${b.FACTOR}:${ab}:${strictVal}`);
 }

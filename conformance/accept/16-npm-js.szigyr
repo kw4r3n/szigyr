@@ -9,13 +9,13 @@ import { parse } from "npm:yaml";
 export function names(js: Js, text: string): Result<Array<string>, string> {
   const doc = js.call(parse, [js.encode<string>(text)]);
   if (doc.kind === "err") {
-    return err(doc.error.message);
+    return Result.err(doc.error.message);
   }
   const out = js.decode<Array<string>>(doc.value);
   if (out.kind === "err") {
-    return err(out.error.message);
+    return Result.err(out.error.message);
   }
-  return ok(out.value);
+  return Result.ok(out.value);
 }
 
 export function field(js: Js, obj: JsRef, key: string): Result<JsRef, JsError> {

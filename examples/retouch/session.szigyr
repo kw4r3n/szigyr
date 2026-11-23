@@ -18,7 +18,7 @@ import {
 export function parsePreset(raw: string): Result<RetouchPreset, CastError> {
   const parsed = JSON.parse(raw);
   if (parsed.kind === "err") {
-    return err({ code: parsed.error.code, message: parsed.error.message });
+    return Result.err({ code: parsed.error.code, message: parsed.error.message });
   }
   return cast<RetouchPreset>(parsed.value);
 }
@@ -158,18 +158,18 @@ export class RetouchSession implements Disposable {
     const t0 = clock.nowMs();
     const text = fs.readText(path);
     if (text.kind === "err") {
-      return err(text.error);
+      return Result.err(text.error);
     }
     const parsed = parsePreset(text.value);
     if (parsed.kind === "err") {
-      return err({ code: parsed.error.code, message: parsed.error.message });
+      return Result.err({ code: parsed.error.code, message: parsed.error.message });
     }
     if (!this.applyPreset(alloc, parsed.value)) {
-      return err({ code: "EINVAL", message: "scratch arena too small for preset" });
+      return Result.err({ code: "EINVAL", message: "scratch arena too small for preset" });
     }
     const elapsed = clock.nowMs() - t0;
     log.info(`applied preset ${parsed.value.name} in ${elapsed}ms`);
-    return ok(this.stats());
+    return Result.ok(this.stats());
   }
 
   async runFrequencyInWorker(
@@ -187,17 +187,17 @@ export class RetouchSession implements Disposable {
     if (reply === null) {
       this.current.put(snap); // szigyr-equivalent: frequencyWorker always sends a reply when sent a job
       this.scratch.put(Arena.create(alloc, scratchBytesFor(this.width, this.height, this.maxRadius))); // szigyr-equivalent: frequencyWorker always sends a reply when sent a job
-      return err({ code: "EIO", message: "worker closed without reply" });
+      return Result.err({ code: "EIO", message: "worker closed without reply" });
     }
     const { pixels: outBuf, scratch: outAr, stats, ok: okFlag } = reply;
     this.current.put(outBuf);
     this.scratch.put(outAr);
     if (!okFlag) {
-      return err({ code: "EINVAL", message: "scratch arena too small for frequency pass" });
+      return Result.err({ code: "EINVAL", message: "scratch arena too small for frequency pass" });
     }
     this.undoStack.push(OwnedCell.create<Vec<u8>>(snap));
     this.clearRedo();
-    return ok(stats);
+    return Result.ok(stats);
   }
 
   dispose(): void {

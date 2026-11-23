@@ -1,9 +1,9 @@
 // expect: ok
 // stage: 2
 // open-question: Q190
-type Pair = Struct<{ a: Vec<f32>; b: Vec<f32> }>;
-type Inner = Struct<{ x: Vec<f32>; y: Vec<f32> }>;
-type Outer = Struct<{ inner: Inner; other: Vec<f32> }>;
+type Pair = OwnedStruct<{ a: Vec<f32>; b: Vec<f32> }>;
+type Inner = OwnedStruct<{ x: Vec<f32>; y: Vec<f32> }>;
+type Outer = OwnedStruct<{ inner: Inner; other: Vec<f32> }>;
 
 function copyV(dst: Mut<Vec<f32>>, src: Ref<Vec<f32>>): void {
   "use owned";

@@ -1,7 +1,7 @@
 // expect-output: 5
 // stage: 3
 // backend: c
-type S = Struct<{ x: i32 }>;
+type S = OwnedStruct<{ x: i32 }>;
 function take(s: S): i32 {
   "use owned";
   return s.x;

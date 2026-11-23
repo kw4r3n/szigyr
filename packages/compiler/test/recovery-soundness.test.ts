@@ -120,28 +120,28 @@ export function useAll(f: Fakes): f64 {
 });
 
 describe("borrowOk soundness (isOwnedCap)", () => {
-  it("rejects Ref/Mut of readonly Struct with T extends Native (E2002)", () => {
+  it("rejects Ref/Mut of readonly record with T extends Native (E2002)", () => {
     const dsRef = checkSrc(`
-function bad<T extends Native>(r: Ref<Struct<{ readonly x: T }>>): void {
+function bad<T extends Native>(r: Ref<{ readonly x: T }>): void {
   "use owned";
 }
 `);
     expect(dsRef.map((d) => d.code)).toContain("E2002");
 
     const dsMut = checkSrc(`
-function bad<T extends Native>(r: Mut<Struct<{ readonly x: T }>>): void {
+function bad<T extends Native>(r: Mut<{ readonly x: T }>): void {
   "use owned";
 }
 `);
     expect(dsMut.map((d) => d.code)).toContain("E2002");
   });
 
-  it("accepts Ref/Mut of readonly Struct with T extends Owned and mutable Struct with T extends Native", () => {
+  it("accepts Ref/Mut of OwnedStruct with T extends Owned or mutable T extends Native", () => {
     const ds = checkSrc(`
-function okOwned<T extends Owned>(r: Ref<Struct<{ readonly x: T }>>): void {
+function okOwned<T extends Owned>(r: Ref<OwnedStruct<{ readonly x: T }>>): void {
   "use owned";
 }
-function okMutField<T extends Native>(r: Ref<Struct<{ x: T }>>, m: Mut<Struct<{ x: T }>>): void {
+function okMutField<T extends Native>(r: Ref<OwnedStruct<{ x: T }>>, m: Mut<OwnedStruct<{ x: T }>>): void {
   "use owned";
 }
 `);
@@ -211,9 +211,9 @@ function badArr(xs: Array<Vec<i32>>): void {}
 });
 
 describe("strict generic Native equivalence", () => {
-  it("rejects wrap(sys.alloc) returning Struct<{ readonly a: T }> with E4002 (requiredCap: Native)", () => {
+  it("rejects wrap(sys.alloc) returning OwnedStruct<{ readonly a: T }> with E4002 (requiredCap: Native)", () => {
     const ds = checkSrc(`
-function wrap<T>(x: T): Struct<{ readonly a: T }> { "use owned"; return { a: x }; }
+function wrap<T>(x: T): OwnedStruct<{ readonly a: T }> { "use owned"; return { a: x }; }
 export function main(sys: System): void {
   const _w = wrap(sys.alloc);
 }
@@ -333,7 +333,7 @@ test("port eq", (t: Test) => {
 
   it("rejects partial destructuring of owned Struct when any owned field is omitted while allowing Copy omissions", () => {
     const twoOwned = checkSrc(`
-type Pair = Struct<{ a: Vec<i32>; b: Vec<i32> }>;
+type Pair = OwnedStruct<{ a: Vec<i32>; b: Vec<i32> }>;
 function f(alloc: Alloc): usize {
   "use owned";
   const s: Pair = { a: Vec.create<i32>(alloc, 1), b: Vec.create<i32>(alloc, 2) };
@@ -345,7 +345,7 @@ function f(alloc: Alloc): usize {
     expect(twoOwned[0]?.data).toEqual({ field: "b", fields: ["b"] });
 
     const onlyCopy = checkSrc(`
-type Meta = Struct<{ id: i32; a: Vec<i32> }>;
+type Meta = OwnedStruct<{ id: i32; a: Vec<i32> }>;
 function f(alloc: Alloc): i32 {
   "use owned";
   const s: Meta = { id: 7, a: Vec.create<i32>(alloc, 1) };
@@ -365,7 +365,7 @@ function f(alloc: Alloc): boolean {
     expect(rvalueRing.map((d) => d.code)).toEqual(["E3003"]);
 
     const omitCopyOk = checkSrc(`
-type Meta = Struct<{ a: Vec<i32>; id: i32 }>;
+type Meta = OwnedStruct<{ a: Vec<i32>; id: i32 }>;
 function okUse(alloc: Alloc): usize {
   "use owned";
   const s: Meta = { a: Vec.create<i32>(alloc, 1), id: 7 };
@@ -376,7 +376,7 @@ function okUse(alloc: Alloc): usize {
     expect(omitCopyOk).toEqual([]);
 
     const useAfterOmit = checkSrc(`
-type Meta = Struct<{ a: Vec<i32>; id: i32 }>;
+type Meta = OwnedStruct<{ a: Vec<i32>; id: i32 }>;
 function badReuse(alloc: Alloc): i32 {
   "use owned";
   const s: Meta = { a: Vec.create<i32>(alloc, 1), id: 7 };
@@ -387,7 +387,7 @@ function badReuse(alloc: Alloc): i32 {
     expect(useAfterOmit.map((d) => d.code)).toEqual(["E3001"]);
 
     const borrowReadCopyOk = checkSrc(`
-type Meta = Struct<{ a: Vec<i32>; id: i32 }>;
+type Meta = OwnedStruct<{ a: Vec<i32>; id: i32 }>;
 function peekId(s: Ref<Meta>): i32 {
   "use owned";
   const { id } = s;
@@ -397,7 +397,7 @@ function peekId(s: Ref<Meta>): i32 {
     expect(borrowReadCopyOk).toEqual([]);
 
     const borrowMoveErr = checkSrc(`
-type Pair = Struct<{ a: Vec<i32>; b: Vec<i32> }>;
+type Pair = OwnedStruct<{ a: Vec<i32>; b: Vec<i32> }>;
 function badBorrow(s: Ref<Pair>): usize {
   "use owned";
   const { a } = s;
@@ -409,7 +409,7 @@ function badBorrow(s: Ref<Pair>): usize {
 
   it("allows disjoint field assignment LHS with sibling Mut borrow, keeps overlapping E3005/E3001, and infers Resource.ownWith ctx", () => {
     const disjointOk = checkSrc(`
-type St = Struct<{ rx: RingRx<f32>; gain: f32 }>;
+type St = OwnedStruct<{ rx: RingRx<f32>; gain: f32 }>;
 function drainGain(rx: Mut<RingRx<f32>>, g: f32): f32 {
   "use rt";
   const next = rx.pop();
@@ -425,7 +425,7 @@ function step(st: Mut<St>): void {
     expect(disjointOk).toEqual([]);
 
     const conflictWhole = checkSrc(`
-type St = Struct<{ rx: RingRx<f32>; gain: f32 }>;
+type St = OwnedStruct<{ rx: RingRx<f32>; gain: f32 }>;
 function mutateWhole(st: Mut<St>): f32 { "use rt"; return st.gain; }
 function consumeWhole(st: St): f32 { "use owned"; return st.gain; }
 function badMutWhole(st: Mut<St>): void {
@@ -444,7 +444,7 @@ function badMoveWhole(alloc: Alloc): void {
     expect(conflictWhole[0]?.message).toContain("enclosing borrow or assignment");
 
     const sameField = checkSrc(`
-type Pair = Struct<{ a: Vec<i32>; b: Vec<i32> }>;
+type Pair = OwnedStruct<{ a: Vec<i32>; b: Vec<i32> }>;
 function mutA(a: Mut<Vec<i32>>, alloc: Alloc): Vec<i32> {
   "use owned";
   a.push(1);
@@ -469,7 +469,7 @@ function make(alloc: Alloc): usize {
     expect(ownWithCtxInfer).toEqual([]);
 
     const ownBackwardsClean = checkSrc(`
-type Pair = Struct<{ tx: RingTx<i32>; tag: u16 }>;
+type Pair = OwnedStruct<{ tx: RingTx<i32>; tag: u16 }>;
 function dropTag(p: Pair): void { "use owned"; }
 function dropTagWith(c: i32, p: Pair): void { "use owned"; }
 function makeOk(alloc: Alloc): u16 {

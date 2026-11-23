@@ -2,7 +2,7 @@
 // expect-output: 4 3 2
 // stage: 2
 // Vecs made in a managed generic function (a plain array in JS, D100) reach C as Slices and as Vecs (D105).
-type P = Struct<{ readonly a: i32; readonly on: boolean }>;
+type P = { readonly a: i32; readonly on: boolean };
 function mk<T extends Copy & Native>(alloc: Alloc, a: T, b: T): Vec<T> {
   const v = Vec.create<T>(alloc, 2);
   v.push(a);
@@ -33,9 +33,9 @@ function lenOf(v: Ref<Vec<P>>): usize {
 }
 export function main(sys: System): void {
   const v = mk<f32>(sys.alloc, 0.5, 2);
-  bump(v.slice(1, 3));
-  sys.log.info(`${sum(v.slice(0, 2))} ${v[2]} ${sum(v)}`);
+  bump(v.borrowSlice(1, 3));
+  sys.log.info(`${sum(v.borrowSlice(0, 2))} ${v[2]} ${sum(v)}`);
   const ps = mk<P>(sys.alloc, { a: 1, on: true }, { a: 2, on: false });
   const qs = mk<P>(sys.alloc, { a: 1, on: true }, { a: 2, on: true });
-  sys.log.info(`${count(ps.slice(0, 3), ps.slice(1, 3)) + 1} ${lenOf(qs)} ${count(qs.slice(1, 2), qs.slice(2, 2))}`);
+  sys.log.info(`${count(ps.borrowSlice(0, 3), ps.borrowSlice(1, 3)) + 1} ${lenOf(qs)} ${count(qs.borrowSlice(1, 2), qs.borrowSlice(2, 2))}`);
 }

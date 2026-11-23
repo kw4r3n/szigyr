@@ -12,5 +12,5 @@ function first(s: Ref<Slice<f32>>): f32 {
 }
 function f(alloc: Alloc): f32 {
   "use owned";
-  return first(make(alloc).slice(0, 1));
+  return first(make(alloc).borrowSlice(0, 1));
 }

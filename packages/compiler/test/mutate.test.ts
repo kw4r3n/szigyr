@@ -513,8 +513,8 @@ test("only positive", (t: Test) => {
     expect(ifFalse!.witness!.mutant).toBe(-1);
   });
 
-  it("detects witness differences in Mut<Slice<T>> and Mut<Struct<...>> parameters", async () => {
-    const src = `type Acc = Struct<{ total: i32 }>;
+  it("detects witness differences in Mut<Slice<T>> and Mut<OwnedStruct<...>> parameters", async () => {
+    const src = `type Acc = OwnedStruct<{ total: i32 }>;
 function addToAcc(a: Mut<Acc>, s: Ref<Slice<i32>>, apply: boolean): void {
   "use rt";
   if (apply) {

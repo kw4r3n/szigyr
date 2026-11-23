@@ -39,8 +39,8 @@ function estimateFreq(left: Float32Array, from: number, to: number): number {
 describe("Audio & Clock.sleep frontend, FakeAudio 3-backend parity & mutate", () => {
   it("FakeAudio + Ring + DetMath + Copy state are bit-identical across js, c, and wasm, including trap catching", async () => {
     const p = tmpFile("fake-parity.szigyr", `
-type Cmd = Struct<{ readonly freq: f64; readonly gain: f64 }>;
-type State = Struct<{ rx: RingRx<Cmd>; phase: f64; freq: f64; gain: f64 }>;
+type Cmd = { readonly freq: f64; readonly gain: f64 };
+type State = OwnedStruct<{ rx: RingRx<Cmd>; phase: f64; freq: f64; gain: f64 }>;
 
 function synth(st: Mut<State>, out: Mut<Slice<f32>>, frames: usize): void {
   "use rt";
@@ -125,7 +125,7 @@ test("copy state render & oob trap isolation", async (t: Test) => {
       ["wrong-sig", "E2013", `function cb(st: i32, out: Mut<Slice<f32>>, f: usize): void { "use rt"; }\nexport async function main(sys: System): Promise<void> { const _ = await sys.audio.open({ sampleRate: 48000, channels: 1 }, 1.0, cb); }`],
       ["string-state", "E2013", `function cb(st: f64, out: Mut<Slice<f32>>, f: usize): void { "use rt"; }\nexport async function main(sys: System): Promise<void> { const _ = await sys.audio.open({ sampleRate: 48000, channels: 1 }, "no", cb); }`],
       ["ptr-in-ring", "E2013", `function cb(st: RingRx<Ptr<u8>>, out: Mut<Slice<f32>>, f: usize): void { "use rt"; "use unsafe"; }\nexport async function main(sys: System): Promise<void> { const { tx: _tx, rx } = Ring.create<Ptr<u8>>(sys.alloc, 4); const _ = await sys.audio.open({ sampleRate: 48000, channels: 1 }, rx, cb); }`],
-      ["move-state", "E3001", `type S = Struct<{ p: f64 }>;\nfunction cb(st: Mut<S>, out: Mut<Slice<f32>>, f: usize): void { "use rt"; }\nexport async function main(sys: System): Promise<void> { const s: S = { p: 0 }; const _ = await sys.audio.open({ sampleRate: 48000, channels: 1 }, s, cb); sys.log.info(\`\${s.p}\`); }`],
+      ["move-state", "E3001", `type S = OwnedStruct<{ p: f64 }>;\nfunction cb(st: Mut<S>, out: Mut<Slice<f32>>, f: usize): void { "use rt"; }\nexport async function main(sys: System): Promise<void> { const s: S = { p: 0 }; const _ = await sys.audio.open({ sampleRate: 48000, channels: 1 }, s, cb); sys.log.info(\`\${s.p}\`); }`],
       ["move-vec-state", "E3001", `function cb(st: Mut<Vec<f32>>, out: Mut<Slice<f32>>, f: usize): void { "use rt"; }\nexport async function main(sys: System): Promise<void> { const v = Vec.create<f32>(sys.alloc, 4); const _ = await sys.audio.open({ sampleRate: 48000, channels: 1 }, v, cb); sys.log.info(\`\${v.length}\`); }`],
       ["arenabuf-state", "E2013", `function cb(st: ArenaBuf<f32>, out: Mut<Slice<f32>>, f: usize): void { "use rt"; }\nexport async function main(sys: System): Promise<void> { const a = Arena.create(sys.alloc, 64); const b = a.alloc<f32>(2, f32(0)); if (b !== null) { const _ = await sys.audio.open({ sampleRate: 48000, channels: 1 }, b, cb); } }`],
       ["sleep-strict", "E4001", `function bad(c: Clock): void { "use owned"; const p = c.sleep(1); }`],
@@ -141,7 +141,7 @@ test("copy state render & oob trap isolation", async (t: Test) => {
 
   it("szigyr mutate works on tests using FakeAudio and rt callback", async () => {
     const p = tmpFile("mutate-audio.szigyr", `
-type St = Struct<{ buf: Vec<f32>; rx: RingRx<f32>; gain: f32 }>;
+type St = OwnedStruct<{ buf: Vec<f32>; rx: RingRx<f32>; gain: f32 }>;
 function gainStep(st: Mut<St>, out: Mut<Slice<f32>>, frames: usize): void {
   "use rt";
   let g = st.rx.pop();
@@ -226,7 +226,7 @@ describe.skipIf(!hasSdl3())("portable audio demo & traps with SDL3 disk driver",
 
     it(`surfaces callback traps and silences output on ${backend} backend`, async () => {
       const p = tmpFile(`trap-${backend}.szigyr`, `
-type St = Struct<{ count: i32 }>;
+type St = OwnedStruct<{ count: i32 }>;
 function renderTrap(st: Mut<St>, out: Mut<Slice<f32>>, frames: usize): void {
   "use rt";
   if (st.count >= 1) {

@@ -2,7 +2,7 @@
 // expect-trap: T004 @ 9:3
 // stage: 2
 // open-question: Q002
-type Range = Struct<{ readonly lo: u32; readonly hi: u32 }>;
+type Range = { readonly lo: u32; readonly hi: u32 };
 
 function width(r: Range): u32 {
   "use rt";

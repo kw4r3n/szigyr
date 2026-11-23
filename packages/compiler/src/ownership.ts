@@ -33,9 +33,7 @@ export const sliceGroups = new WeakMap<Node, SliceGroupEntry[][]>();
 interface Frame { loop: boolean; depth: number; breaks: State[]; continues: State[]; moves: { sym: LocalSym; node: Node }[] }
 
 const strip = (e: ts.Expression): ts.Expression => {
-  while (e.kind === K.ParenthesizedExpression || e.kind === K.SatisfiesExpression) {
-    e = e.kind === K.ParenthesizedExpression ? (e as ts.ParenthesizedExpression).expression : (e as ts.SatisfiesExpression).expression;
-  }
+  while (e.kind === K.ParenthesizedExpression) e = (e as ts.ParenthesizedExpression).expression;
   return e;
 };
 const genName = (t: Type | undefined): string | undefined => { const u = t && unref(t); return u?.k === "gen" ? u.name : undefined; };
@@ -126,7 +124,6 @@ class Flow {
   private markAwaited(e: Node): void {
     this.awaited.add(e);
     if (e.kind === K.ParenthesizedExpression) this.markAwaited((e as ts.ParenthesizedExpression).expression);
-    else if (e.kind === K.SatisfiesExpression) this.markAwaited((e as ts.SatisfiesExpression).expression);
     else if (e.kind === K.ConditionalExpression) { const cd = e as ts.ConditionalExpression; this.markAwaited(cd.whenTrue); this.markAwaited(cd.whenFalse); }
   }
   readonly m: ModuleCheck;
@@ -685,7 +682,7 @@ class Flow {
   private borrow(e: ts.Expression, mode: "ref" | "mut", member?: ts.Identifier, arg = -1): Use | undefined {
     const r = this.placeOf(e, undefined, !member);
     if (!r) {
-      if (!member) this.m.at("E3008", strip(e), "a borrowed argument must be a variable, a field path or 'v.slice(a, b)'", { kind: "invalid-borrow-place" });
+      if (!member) this.m.at("E3008", strip(e), "a borrowed argument must be a variable, a field path or 'v.borrowSlice(a, b)'", { kind: "invalid-borrow-place" });
       else if (mode === "mut" && this.isReadOnly(e)) this.m.at("E3006", member, "cannot mutate through a Ref", { kind: "readonly-ref" });
       this.place(e, !member); // a `slice` here is still in a borrowing position (Q013)
       return undefined;

@@ -7,5 +7,5 @@ function fill(s: Mut<Slice<i32>>): void {
 export function f(cp: ConstPtr<i32>): void {
   "use owned";
   "use unsafe";
-  fill(cp.slice(4).slice(0, 2));
+  fill(cp.slice(4).borrowSlice(0, 2));
 }

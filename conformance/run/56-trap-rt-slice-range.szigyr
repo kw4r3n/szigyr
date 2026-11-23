@@ -13,7 +13,7 @@ function sum(s: Ref<Slice<i32>>): i32 {
 
 function tail(s: Ref<Slice<i32>>, from: usize): i32 {
   "use rt";
-  return sum(s.slice(from, s.length + 1));
+  return sum(s.borrowSlice(from, s.length + 1));
 }
 
 export function main(sys: System): void {

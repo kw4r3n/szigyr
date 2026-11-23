@@ -1,7 +1,7 @@
 // expect: E4010 @ 9:14
 // stage: 2
 // open-question: Q240
-type W<T extends Native> = Struct<{ readonly a: T }>;
+type W<T extends Native> = OwnedStruct<{ readonly a: T }>;
 function f<T>(x: T, n: i32): i32 {
   "use owned";
   if (n === 0) { return 0; }

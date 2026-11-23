@@ -6,5 +6,5 @@ function f(src: Ref<Vec<f32>>, dst: Mut<Slice<f32>>): void {
 }
 function g(v: Mut<Vec<f32>>): void {
   "use rt";
-  f(v, v.slice(0, 2));
+  f(v, v.borrowSlice(0, 2));
 }

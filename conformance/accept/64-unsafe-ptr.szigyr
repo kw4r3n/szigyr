@@ -9,7 +9,7 @@ declare module "c:zlib:zlib.h" {
 import { SDL_malloc } from "c:sdl3:SDL3/SDL.h";
 import { crc32 } from "c:zlib:zlib.h";
 
-type State = Struct<{ readonly phase: f32 }>;
+type State = { readonly phase: f32 };
 
 function readFirst(s: Ref<Slice<i32>>): i32 {
   "use rt";

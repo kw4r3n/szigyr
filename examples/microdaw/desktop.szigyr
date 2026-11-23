@@ -138,21 +138,21 @@ function openWebView(
   "use owned";
   "use unsafe";
   if (gtk_init_check(ffi, Ptr.null<i32>(), Ptr.null<Ptr<Ptr<CType<"char">>>>()) === 0) {
-    return err("no-display");
+    return Result.err("no-display");
   }
   using cTitle = Resource.ownWith(toCString(ffi, titleBytes), ffi, freeCString);
   using cUrl = Resource.ownWith(toCString(ffi, urlBytes), ffi, freeCString);
-  if (cTitle.get().isNull() || cUrl.get().isNull()) return err("oom");
+  if (cTitle.get().isNull() || cUrl.get().isNull()) return Result.err("oom");
 
   const winPtr = gtk_window_new(ffi, GTK_WINDOW_TOPLEVEL);
-  if (winPtr.isNull()) return err("oom");
+  if (winPtr.isNull()) return Result.err("oom");
   g_object_ref(ffi, winPtr.cast<void>());
 
   const viewPtr = webkit_web_view_new(ffi);
   if (viewPtr.isNull()) {
     gtk_widget_destroy(ffi, winPtr);
     g_object_unref(ffi, winPtr.cast<void>());
-    return err("oom");
+    return Result.err("oom");
   }
 
   gtk_window_set_title(ffi, winPtr.cast<CType<"GtkWindow">>(), cTitle.get());
@@ -168,7 +168,7 @@ function openWebView(
   webkit_web_view_load_uri(ffi, viewPtr.cast<CType<"WebKitWebView">>(), cUrl.get());
   gtk_widget_show_all(ffi, winPtr);
   pumpGtkEvents(ffi);
-  return ok(CHandle.create<CType<"GtkWidget">>(winPtr));
+  return Result.ok(CHandle.create<CType<"GtkWidget">>(winPtr));
 }
 
 function pumpWebView(ffi: Ffi, win: Ref<CHandle<CType<"GtkWidget">>>): boolean {

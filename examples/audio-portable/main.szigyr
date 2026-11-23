@@ -1,9 +1,9 @@
 // Portable audio demo (ROADMAP stage 5, SPEC §15.5): safe `Audio` capability + `Clock.sleep` + `Ring` + `DetMath`.
 // Compiles and runs across `--backend=js`, `--backend=c`, `--backend=wasm`, and in browsers (Wasm + AudioWorklet).
 // Runs identically under `szigyr run examples/audio-portable/main.szigyr [--backend=js|c|wasm]`.
-type Param = Struct<{ readonly freq: f64; readonly gain: f64 }>;
+type Param = { readonly freq: f64; readonly gain: f64 };
 
-type AudioState = Struct<{
+type AudioState = OwnedStruct<{
   rx: RingRx<Param>;
   phase: f64;
   freq: f64;

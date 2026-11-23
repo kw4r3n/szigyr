@@ -5,7 +5,7 @@ declare module "c:szcb:szcb_names.h" {
   function szcb_names_call(ffi: Ffi, f: Ptr<(x: i32) => i32>, x: i32): i32;
 }
 import { szcb_names_call } from "c:szcb:szcb_names.h";
-type P = Struct<{ readonly x: i32; readonly y: i32 }>;
+type P = { readonly x: i32; readonly y: i32 };
 type R = { readonly kind: "a"; readonly x: i32 } | { readonly kind: "b"; readonly y: i32 };
 function f(ffi: Ffi, alloc: Alloc, n: i32): i32 {
   "use owned";

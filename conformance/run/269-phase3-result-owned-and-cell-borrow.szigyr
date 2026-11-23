@@ -1,7 +1,7 @@
 // expect-output: 60:3:2:EINVAL:bad:1|4:8:7:42|8:3:3:3:4:12:13:17:18:16:9:true
 // stage: 3
 
-type BufBox = Struct<{ data: Vec<f32>; n: u32 }>;
+type BufBox = OwnedStruct<{ data: Vec<f32>; n: u32 }>;
 type BoxErr = "oom" | "bad";
 
 function sumSliceRt(s: Ref<Slice<f32>>): f32 {
@@ -15,11 +15,11 @@ function sumSliceRt(s: Ref<Slice<f32>>): f32 {
 
 function buildStrictBox(alloc: Alloc, okFlag: boolean): Result<BufBox, BoxErr> {
   "use owned";
-  if (!okFlag) return err("oom");
+  if (!okFlag) return Result.err("oom");
   const data = Vec.create<f32>(alloc, 4);
   data.push(1.5);
   data.push(2.5);
-  return ok({ data, n: 2 });
+  return Result.ok({ data, n: 2 });
 }
 
 function passThroughStrict(r: Result<BufBox, BoxErr>): Result<BufBox, BoxErr> {
@@ -41,16 +41,16 @@ function readBoxRefRt(b: Ref<BufBox>): u32 {
 }
 
 function makeVecResult(alloc: Alloc, okFlag: boolean): Result<Vec<f32>, IoError> {
-  if (!okFlag) return err({ code: "EINVAL", message: "bad" });
+  if (!okFlag) return Result.err({ code: "EINVAL", message: "bad" });
   const v = Vec.create<f32>(alloc, 4);
   v.push(10);
   v.push(20);
-  return ok(v);
+  return Result.ok(v);
 }
 
 function makeErrOwned(alloc: Alloc, okFlag: boolean): Result<i32, Vec<f32>> {
-  if (okFlag) return ok(42);
-  return err(Vec.create<f32>(alloc, 2));
+  if (okFlag) return Result.ok(42);
+  return Result.err(Vec.create<f32>(alloc, 2));
 }
 
 function readNonEmptyCellLen(c: OwnedCell<Vec<u8>>): usize {
@@ -133,7 +133,7 @@ export function main(sys: System): void {
     for (let i: usize = 0; i < v.length; i += 1) {
       copy.push(v[i]);
     }
-    return ok(copy);
+    return Result.ok(copy);
   });
   if (ctxRes.kind === "err") panic("unexpected copy err");
   const copiedLen = ctxRes.value.length;

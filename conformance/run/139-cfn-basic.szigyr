@@ -8,7 +8,7 @@ declare module "c:szcb:szcb.h" {
 }
 import { szcb_call, szcb_thread } from "c:szcb:szcb.h";
 
-type R = Struct<{ a: i32; b: i32 }>;
+type R = OwnedStruct<{ a: i32; b: i32 }>;
 
 function twice(ud: Ptr<void>, x: i32): i32 {
   "use rt";

@@ -24,7 +24,7 @@ export function makeSpec(ffi: Ffi): CHandle<SDL_AudioSpec> {
   return CHandle.create(g.take().cast<SDL_AudioSpec>());
 }
 
-type Info = Struct<{ okFmt: boolean; ch: i32; freq: i32; okNil: boolean; okSz: boolean }>;
+type Info = OwnedStruct<{ okFmt: boolean; ch: i32; freq: i32; okNil: boolean; okSz: boolean }>;
 
 function inspectAndFree(ffi: Ffi, h: CHandle<SDL_AudioSpec>): Info {
   "use owned";

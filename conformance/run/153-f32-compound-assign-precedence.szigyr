@@ -2,7 +2,7 @@
 // expect-output: strict 18
 // stage: 2
 type R = { x: f32 };
-type S = Struct<{ x: f32 }>;
+type S = OwnedStruct<{ x: f32 }>;
 
 function strictF32(alloc: Alloc, c: boolean): f32 {
   "use owned";

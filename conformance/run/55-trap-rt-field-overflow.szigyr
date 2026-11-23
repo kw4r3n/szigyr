@@ -2,7 +2,7 @@
 // expect-trap: T001 @ 9:11
 // stage: 2
 // open-question: Q002
-type Gauge = Struct<{ level: i8; readonly step: i8 }>;
+type Gauge = OwnedStruct<{ level: i8; readonly step: i8 }>;
 
 function raise(g: Mut<Gauge>): void {
   "use rt";

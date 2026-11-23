@@ -2,8 +2,8 @@
 // stage: 2
 // open-question: Q188
 // open-question: Q214
-type Cell = Struct<{ readonly b: ArenaBuf<f32>; readonly tag: u32 }>;
-type Box = Struct<{ arena: Arena; n: u32 }>;
+type Cell = { readonly b: ArenaBuf<f32>; readonly tag: u32 };
+type Box = OwnedStruct<{ arena: Arena; n: u32 }>;
 
 export function make(alloc: Alloc, bytes: usize): Arena {
   "use owned";
@@ -58,7 +58,7 @@ export function fillDirect(a: Mut<Arena>, b: ArenaBuf<f32>, x: f32): void {
 
 export function tailSum(a: Ref<Arena>, b: ArenaBuf<f32>): f32 {
   "use rt";
-  return readSum(a.view(b).slice(1, 2));
+  return readSum(a.view(b).borrowSlice(1, 2));
 }
 
 export function wipe(a: Mut<Arena>): void {

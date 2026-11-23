@@ -1,7 +1,7 @@
 // expect: ok
 // stage: 3
-type Point = Struct<{ x: i32; y: i32 }>;
-type Bag = Struct<{ items: Vec<i32>; n: i32 }>;
+type Point = OwnedStruct<{ x: i32; y: i32 }>;
+type Bag = OwnedStruct<{ items: Vec<i32>; n: i32 }>;
 type Note = { readonly text: string; readonly n: i32 };
 type Shape = { readonly kind: "circle"; readonly r: f64 } | { readonly kind: "rect"; readonly w: f64; readonly h: f64 };
 type Entry = (port: Port<i32, i32>) => void;

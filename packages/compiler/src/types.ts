@@ -184,7 +184,7 @@ export function same(a: Type, b: Type): boolean {
     case "num": return b.k === "num" && a.name === b.name;
     case "lit": return b.k === "lit" && a.value === b.value;
     case "record":
-      return b.k === "record" && (a.struct === b.struct || (isCopyValueRecord(a) && isCopyValueRecord(b))) && sameFields(a.fields, b.fields);
+      return b.k === "record" && a.struct === b.struct && sameFields(a.fields, b.fields);
     case "union": return b.k === "union" && a.members.length === b.members.length && a.members.every((m) => b.members.some((n) => same(m, n)));
     case "fn": return b.k === "fn" && a.params.length === b.params.length && a.params.every((p, i) => same(p, b.params[i]!)) && same(a.ret, b.ret);
     case "class": return b.k === "class" && a.cls === b.cls && sameArgs(a.args, b.args);
@@ -328,32 +328,32 @@ export function tparamMayBeAuthority(p: TParam): boolean {
     !tparamHasCap(p, "Copy") && !tparamHasCap(p, "Owned") && !tparamHasCap(p, "Send") && !tparamHasCap(p, "Key") && !tparamHasCap(p, "Codec");
 }
 
-/** Copy types (SPEC-v1 §3.3 / §3.4): numbers, boolean, null, string, Copy Structs, unions of Copy types, all-readonly records of Copy types. */
+/** Copy types (SPEC-v1 §3.3 / §3.4): numbers, boolean, null, string, unions of Copy types, all-readonly records of Copy types (never OwnedStruct). */
 export function isCopy(t: Type): boolean {
   switch (t.k) {
     case "num": case "lit": return true;
     case "gen": return t.name === "Handle" || t.name === "ArenaBuf" || t.name === "Ptr" || t.name === "ConstPtr"; // Q188: a handle is three u32s, an ArenaBuf four; §14.4: raw pointers are Copy
     case "prim": return t.name === "boolean" || t.name === "null" || t.name === "string";
-    case "record": return t.fields.every((f) => f.readonly && isCopy(f.type));
+    case "record": return !t.struct && t.fields.every((f) => f.readonly && isCopy(f.type));
     case "tuple": return t.elems.every(isCopy);
     case "union": return t.members.every(isCopy);
     case "tparam": return tparamHasCap(t.p, "Copy");
     default: return false;
   }
 }
-/** Owned types (§5.1): non-Copy Structs and native owned containers. */
-export const isOwned = (t: Type): boolean => (t.k === "gen" && (t.name === "Vec" || t.name === "Pool" || t.name === "Arena" || t.name === "CHandle" || t.name === "RingTx" || t.name === "RingRx")) || (t.k === "record" && t.struct && !isCopy(t)); // CHandle: §14.5
+/** Owned types (§5.1): OwnedStruct and native owned containers. */
+export const isOwned = (t: Type): boolean => (t.k === "gen" && (t.name === "Vec" || t.name === "Pool" || t.name === "Arena" || t.name === "CHandle" || t.name === "RingTx" || t.name === "RingRx")) || (t.k === "record" && t.struct); // CHandle: §14.5
 /** Types satisfying explicit `Owned` capability (always move-only). */
 export function isOwnedCap(t: Type): boolean {
   if (t.k === "error") return true;
   if (t.k === "tparam") return tparamHasCap(t.p, "Owned");
   if (t.k === "gen") return t.name === "Vec" || t.name === "Pool" || t.name === "Arena" || t.name === "CHandle" || t.name === "RingTx" || t.name === "RingRx";
-  if (t.k === "record" && t.struct) return t.fields.some((f) => !f.readonly || isOwnedCap(f.type));
+  if (t.k === "record" && t.struct) return true;
   return false;
 }
-/** True when a record has all-readonly Native & Copy fields, where `{ readonly ... }` and `Struct<{ readonly ... }>` normalize to the same type (SPEC-v1 §3.3). */
+/** True when a record has all-readonly Native & Copy fields (not OwnedStruct). */
 export const isCopyValueRecord = (t: Extract<Type, { k: "record" }>): boolean =>
-  t.fields.every((f) => f.readonly && isCopy(f.type) && layerOk(f.type));
+  !t.struct && t.fields.every((f) => f.readonly && isCopy(f.type) && layerOk(f.type));
 
 /** Q174: an owned value (directly, in a union, or in a record / Struct field). */
 export const holdsOwned = (t: Type): boolean =>
@@ -434,7 +434,7 @@ export function show(t: Type): string {
     case "error": return "<error>";
     case "prim": case "num": case "opaque": case "ns": return t.name;
     case "lit": return JSON.stringify(t.value);
-    case "record": return `${t.struct ? "Struct<" : ""}{ ${t.fields.map((f) => `${f.readonly ? "readonly " : ""}${f.name}: ${show(f.type)}`).join("; ")} }${t.struct ? ">" : ""}`;
+    case "record": return `${t.struct ? "OwnedStruct<" : ""}{ ${t.fields.map((f) => `${f.readonly ? "readonly " : ""}${f.name}: ${show(f.type)}`).join("; ")} }${t.struct ? ">" : ""}`;
     case "union": return t.members.map(show).join(" | ");
     case "fn": return `(${t.params.map(show).join(", ")}) => ${show(t.ret)}`;
     case "class": return t.cls.name + (t.args.length ? `<${t.args.map(show).join(", ")}>` : "");
@@ -462,7 +462,7 @@ export function castable(t: Type): boolean {
     case "error": case "num": case "lit": return true;
     case "tparam": return tparamHasCap(t.p, "Codec");
     case "prim": return t.name === "boolean" || t.name === "string" || t.name === "null";
-    case "record": return (!t.struct || t.fields.every((f) => f.readonly)) && t.fields.every((f) => castable(f.type));
+    case "record": return !t.struct && t.fields.every((f) => castable(f.type));
     case "union": return t.members.every(castable);
     case "tuple": return t.elems.every(castable);
     case "gen": return (t.name === "Array" || t.name === "ReadonlyArray") && castable(t.args[0]!);

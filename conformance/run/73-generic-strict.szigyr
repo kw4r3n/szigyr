@@ -2,7 +2,7 @@
 // expect-output: 2.5 3
 // expect-output: 3 1
 // stage: 2
-type Pair<T extends Native> = Struct<{ readonly a: T; readonly b: T }>;
+type Pair<T extends Native> = OwnedStruct<{ readonly a: T; readonly b: T }>;
 
 function fillWith<T extends Copy & Native>(v: Mut<Vec<T>>, x: T, n: usize): void {
   "use owned";

@@ -179,7 +179,7 @@ function resolveDefinition(
   const defOfType = (sym: TypeSym | undefined): LspLocation | null => {
     if (!sym) return null;
     switch (sym.k) {
-      case "alias": case "rec-iface": case "iface": case "cstruct": return locOf(sym.mod, sym.decl.name);
+      case "alias": case "iface": case "cstruct": return locOf(sym.mod, sym.decl.name);
       case "class": return locOf(sym.mod, sym.cls.decl.name ?? sym.cls.decl);
       default: return null;
     }

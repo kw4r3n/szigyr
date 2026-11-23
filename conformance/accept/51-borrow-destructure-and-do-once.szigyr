@@ -1,6 +1,6 @@
 // expect: ok
 // stage: 2
-type Buf = Struct<{ data: Vec<f32>; readonly rate: u32 }>;
+type Buf = OwnedStruct<{ data: Vec<f32>; readonly rate: u32 }>;
 function eat(v: Vec<f32>): usize {
   "use owned";
   return v.length;

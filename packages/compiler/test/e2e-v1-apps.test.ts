@@ -147,9 +147,9 @@ const dspPath = join(appADir, "dsp.szigyr");
 const appAMainPath = join(appADir, "main.szigyr");
 const appASnapPath = join(appADir, "snapshot.szigyr");
 
-writeFileSync(dspPath, `export type EffectCmd = Struct<{ readonly freq: f64; readonly drive: f64; readonly mix: f64 }>;
+writeFileSync(dspPath, `export type EffectCmd = { readonly freq: f64; readonly drive: f64; readonly mix: f64 };
 
-export type DelayState = Struct<{
+export type DelayState = OwnedStruct<{
   buf: Vec<f32>;
   idx: usize;
   phase: f64;
@@ -513,7 +513,7 @@ export class RunAudit implements Disposable, Labeler {
   }
 }
 
-export type Job = Struct<{ weights: Vec<f64>; values: Vec<f64> }>;
+export type Job = OwnedStruct<{ weights: Vec<f64>; values: Vec<f64> }>;
 
 export function weightedSum(job: Ref<Job>): f64 {
   "use owned";

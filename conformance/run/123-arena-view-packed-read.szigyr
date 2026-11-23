@@ -1,6 +1,6 @@
 // expect-output: 3 2 104.5 10 14 41 42 3 27 2
 // stage: 2
-type P = Struct<{ readonly id: u8; readonly w: f64; readonly on: boolean }>;
+type P = { readonly id: u8; readonly w: f64; readonly on: boolean };
 type Ev = { readonly kind: "move"; readonly n: u16 } | { readonly kind: "stop" };
 type Lv = "lo" | "hi";
 
@@ -14,7 +14,7 @@ function countTrue(s: Ref<Slice<boolean>>): i32 {
 }
 
 function tailCount(s: Ref<Slice<boolean>>): i32 {
-  return countTrue(s.slice(1, 3));
+  return countTrue(s.borrowSlice(1, 3));
 }
 
 function countHi(s: Ref<Slice<Lv>>): i32 {

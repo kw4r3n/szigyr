@@ -9,7 +9,7 @@
 // open-question: Q027
 // open-question: Q059
 // open-question: Q047
-type V2 = Struct<{ readonly x: f32; readonly y: f32 }>;
+type V2 = { readonly x: f32; readonly y: f32 };
 
 function add(a: V2, b: V2): V2 {
   "use rt";

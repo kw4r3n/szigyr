@@ -1,6 +1,6 @@
 // expect: ok
 // stage: 5
-type OscState = Struct<{ phase: f64; freq: f64; rx: RingRx<f64> }>;
+type OscState = OwnedStruct<{ phase: f64; freq: f64; rx: RingRx<f64> }>;
 
 function renderOwned(st: Mut<OscState>, out: Mut<Slice<f32>>, frames: usize): void {
   "use rt";

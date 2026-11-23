@@ -53,7 +53,7 @@ it("documents every builtin global name in SPEC and keeps BUILTIN_NAMES complete
   const expected = new Set<string>([
     ...SPEC_RESERVED,
     "boolean", "string", "number", "null", "void", "unknown", "never",
-    "Result", "Struct", "RingPair", "JsError", "CastError", "IoError", "AudioConfig", "DisplayConfig", "DisplayColor", "DisplayEvent",
+    "Result", "OwnedStruct", "RingPair", "JsError", "CastError", "IoError", "AudioConfig", "DisplayConfig", "DisplayColor", "DisplayEvent",
     "DirEntry", "FileStat", "EnvVar", "ProcOptions", "ProcOutput", "ProcRequest",
     "HttpHeader", "HttpRequestInit", "HttpResponse", "HttpServerConfig", "HttpServerRequest", "HttpServerResponse", "HttpBody", "HttpServerRawResponse", "HttpClientRequest", "QueryParam",
     "RegExpMatch", "Resource", "Disposable", "AsyncDisposable", "CStruct",
@@ -118,7 +118,7 @@ it("treats a reserved §13 name exactly like a builtin name in every declaration
     return check(f).map((d) => `${d.code}@${d.range.start.line}`).join(",");
   };
   for (const [form, src] of Object.entries(forms)) {
-    const want = codes(src("ok"));
+    const want = codes(src("panic"));
     for (const n of SPEC_RESERVED) expect(codes(src(n)), `${form} ${n}`).toBe(want);
   }
 }, 60_000);
@@ -128,3 +128,24 @@ it("registers forAll as a builtin function rather than reserved (§12, §16.1)",
   expect(SPEC_RESERVED).not.toContain("forAll");
   expect(BUILTIN_NAMES.has("forAll")).toBe(true);
 });
+
+it("enforces Group A TS-divergence cleanups (Result.ok/err, method-only interface, no satisfies, borrowSlice, OwnedStruct)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "szigyr-group-a-"));
+  const checkSrc = (name: string, src: string) => {
+    const f = join(dir, name);
+    writeFileSync(f, src);
+    return check(f);
+  };
+  expect(checkSrc("free-ok-err.szigyr", `export function f(ok: i32, err: string): i32 { const r: Result<i32, string> = ok > 0 ? Result.ok(ok) : Result.err(err); return r.kind === "ok" ? r.value : 0; }\n`)).toEqual([]);
+  const hint = (src: string, file: string) => checkSrc(file, src).map((d) => `${d.code}:${d.message}`);
+  expect(hint(`export function f(): void { const x = ok(1); }\n`, "unbound-ok.szigyr")[0]).toMatch(/^E2000:.*Result\.ok/);
+  expect(hint(`export function f(): void { const x = err("a"); }\n`, "unbound-err.szigyr")[0]).toMatch(/^E2000:.*Result\.err/);
+  expect(hint(`export type R = Struct<{ readonly x: i32 }>;\n`, "unbound-struct.szigyr")[0]).toMatch(/^E2000:.*OwnedStruct/);
+  expect(hint(`interface R { x: i32; }\n`, "iface-prop.szigyr")[0]).toMatch(/^E1000:/);
+  expect(hint(`interface A { m(): void; }\ninterface B extends A {}\n`, "iface-ext.szigyr")[0]).toMatch(/^E1000:/);
+  expect(hint(`export function f(): i32 { return 1 satisfies i32; }\n`, "satisfies.szigyr")[0]).toMatch(/^E1000:/);
+  expect(hint(`function take(s: Ref<Slice<i32>>): usize { return s.length; }\nexport function f(a: Alloc): usize { const v = Vec.create<i32>(a, 4); return take(v.slice(0, 1)); }\n`, "vec-slice.szigyr")[0]).toMatch(/^E2001:.*borrowSlice/);
+  expect(hint(`function take(s: Ref<Slice<i32>>): usize { return s.slice(0, 1).length; }\n`, "slice-slice.szigyr")[0]).toMatch(/^E2001:.*borrowSlice/);
+  const ownedRec = checkSrc("owned-struct.szigyr", `type Box = OwnedStruct<{ readonly x: i32 }>;\nfunction consume(b: Box): i32 { return b.x; }\nexport function f(): i32 { const b: Box = { x: 1 }; consume(b); return b.x; }\nexport function bad(u: unknown): Result<Box, CastError> { return cast<Box>(u); }\n`);
+  expect(ownedRec.map((d) => d.code)).toEqual(["E2002", "E3001"]);
+}, 60_000);

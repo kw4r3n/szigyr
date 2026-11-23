@@ -6,7 +6,7 @@
 // open-question: Q043
 // open-question: Q090
 type Op = { readonly kind: "add"; readonly n: i32 } | { readonly kind: "mul"; readonly n: i32 };
-type Flag = Struct<{ readonly on: boolean; readonly level: u8 }>;
+type Flag = { readonly on: boolean; readonly level: u8 };
 
 function apply(acc: i32, op: Op): i32 {
   "use rt";
@@ -18,8 +18,8 @@ function apply(acc: i32, op: Op): i32 {
 
 function checkedHalf(x: i32): Result<i32, i32> {
   "use rt";
-  if (rem(x, 2) !== 0) return err(x);
-  return ok(divTrunc(x, 2));
+  if (rem(x, 2) !== 0) return Result.err(x);
+  return Result.ok(divTrunc(x, 2));
 }
 
 function firstNeg(s: Ref<Slice<i32>>): i32 | null {
@@ -67,7 +67,7 @@ export function main(sys: System): void {
   v.push(4);
   v.push(-5);
   v.push(-2);
-  sys.log.info(`${showN(firstNeg(v))} ${showN(firstNeg(v.slice(0, 1)))}`);
+  sys.log.info(`${showN(firstNeg(v))} ${showN(firstNeg(v.borrowSlice(0, 1)))}`);
   const fs = flags(sys.alloc);
   sys.log.info(`${count(fs, 100)} ${fs.length} ${fs[4].level}`);
 }

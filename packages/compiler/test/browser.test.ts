@@ -296,7 +296,7 @@ describe.skipIf(!pw)("real Chromium browser verification (Playwright)", () => {
     const outDir = mkdtempSync(join(tmpdir(), "szigyr-pw-trap-out-"));
     const entry = join(srcDir, "main.szigyr");
     writeFileSync(entry, [
-      `type St = Struct<{ n: i32 }>;`,
+      `type St = OwnedStruct<{ n: i32 }>;`,
       `function cb(st: Mut<St>, out: Mut<Slice<f32>>, frames: usize): void {`,
       `  "use rt";`,
       `  if (st.n >= 1) {`,

@@ -2,7 +2,7 @@
 // expect-output: strict 99 100 8 9
 // stage: 3
 // Parenthesized assignment targets are unwrapped like the checkers do (Q133, D140).
-type P = Struct<{ x: i32 }>;
+type P = OwnedStruct<{ x: i32 }>;
 type R = { x: i32 };
 function strictFn(v: Mut<Vec<i32>>, p: Mut<P>): void {
   "use owned";

@@ -1,7 +1,7 @@
 // expect: ok
 // stage: 3
 // open-question: Q199
-type Chan = Struct<{ tx: RingTx<f32>; rx: RingRx<f32> }>;
+type Chan = OwnedStruct<{ tx: RingTx<f32>; rx: RingRx<f32> }>;
 
 export function make(alloc: Alloc, cap: usize): RingPair<i32> {
   return Ring.create<i32>(alloc, cap);

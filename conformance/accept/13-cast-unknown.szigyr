@@ -7,7 +7,7 @@ type Config = { readonly name: string; readonly retries: u32; readonly tags: Arr
 export function load(text: string): Result<Config, CastError> {
   const p = JSON.parse(text);
   if (p.kind === "err") {
-    return err(p.error);
+    return Result.err(p.error);
   }
   return cast<Config>(p.value);
 }

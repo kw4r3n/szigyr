@@ -1,6 +1,6 @@
 // expect: ok
 // stage: 3
-type State = Struct<{ rx: RingRx<i32>; readonly tag: i32; h: CHandle<i32> }>;
+type State = OwnedStruct<{ rx: RingRx<i32>; readonly tag: i32; h: CHandle<i32> }>;
 function useState(s: Mut<State>): i32 {
   "use rt";
   const v = s.rx.pop();

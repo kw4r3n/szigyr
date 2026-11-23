@@ -3,7 +3,7 @@
 // expect-output: 8.699999809265137 10 7 3
 // stage: 2
 // open-question: Q040
-type Acc = Struct<{ total: f32; count: u32; hist: Vec<u32> }>;
+type Acc = OwnedStruct<{ total: f32; count: u32; hist: Vec<u32> }>;
 
 function fill(v: Mut<Vec<f32>>, n: u32): void {
   "use owned";
@@ -33,7 +33,7 @@ export function main(sys: System): void {
   const v = Vec.create<f32>(sys.alloc, 1);
   fill(v, 10);
   sys.log.info(`${v.length} ${v[9]}`);
-  scale(v.slice(2, 6), 4);
+  scale(v.borrowSlice(2, 6), 4);
   sys.log.info(`${v[1]} ${v[2]} ${v[5]} ${v[6]}`);
   const hist = Vec.create<u32>(sys.alloc, 2);
   hist.push(0);

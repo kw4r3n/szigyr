@@ -1,40 +1,42 @@
 // expect-output: 6:6:ok(42):err(bad):hi:5:2:{"x":3,"y":4}|14:19:13|15:25:6:7:7:9:37:25:8:31|14:19:10:13:17:hi
 // stage: 2
-interface Vec2 {
+type Vec2 = {
   readonly x: i32;
   readonly y: i32;
-}
-interface Vec3 extends Vec2 {
+};
+type Vec3 = {
+  readonly x: i32;
+  readonly y: i32;
   readonly z: i32;
-}
-interface EventBase {
-  readonly kind: string;
-  readonly id: i32;
-}
-interface EventTime extends EventBase {
-  readonly ts: i32;
-}
-interface EventOk extends EventBase, EventTime {
+};
+type EventOk = {
   readonly kind: "ok";
+  readonly id: i32;
+  readonly ts: i32;
   readonly val: i32;
-}
-interface EventErr extends EventBase {
+};
+type EventErr = {
   readonly kind: "err";
+  readonly id: i32;
   readonly msg: string;
-}
+};
 type Ev = EventOk | EventErr;
 
 type Header = { readonly ver: i32 };
-interface Packet extends Header, Vec2 {}
+type Packet = {
+  readonly ver: i32;
+  readonly x: i32;
+  readonly y: i32;
+};
 
-interface Boxed<T> {
+type Boxed<T> = {
   readonly label: string;
   readonly item: T;
-}
+};
 
-interface CounterRec {
+type CounterRec = {
   count: i32;
-}
+};
 
 function rtSumVec3(v: Vec3): i32 {
   "use rt";
@@ -62,7 +64,7 @@ function rtPick<T extends Copy & Native>(a: T, flag: boolean = true, b: T = a): 
   return flag ? a : b;
 }
 
-type Acc = Struct<{ total: i32 }>;
+type Acc = OwnedStruct<{ total: i32 }>;
 function strictBump(acc: Mut<Acc>, step: i32 = 5, scale: i32 = 1): void {
   "use owned";
   acc.total += step * scale;

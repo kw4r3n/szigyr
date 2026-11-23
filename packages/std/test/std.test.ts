@@ -84,7 +84,7 @@ describe("fakes", () => {
 
     const src = Vec.create<number>(ALLOC, 4, "u8");
     src.push(1); src.push(2); src.push(3); src.push(4);
-    expect(fs.writeBytes("/slice", src.slice(1, 3))).toEqual({ kind: "ok", value: null });
+    expect(fs.writeBytes("/slice", src.borrowSlice(1, 3))).toEqual({ kind: "ok", value: null });
     src.set(1, 255); // copy isolation
     expect(fs.readBytes("/slice", dst)).toEqual({ kind: "ok", value: 2 });
     expect([dst.length, dst.get(0), dst.get(1)]).toEqual([2, 2, 3]);
@@ -94,7 +94,7 @@ describe("fakes", () => {
     expect(fs.exists("/a/b")).toBe(true);
     expect(fs.exists("/missing")).toBe(false);
     expect(fs.writeTextAtomic("/a/b/z.txt", "hi")).toEqual({ kind: "ok", value: null });
-    expect(fs.writeBytesAtomic("/a/b/a.bin", src.slice(0, 2))).toEqual({ kind: "ok", value: null });
+    expect(fs.writeBytesAtomic("/a/b/a.bin", src.borrowSlice(0, 2))).toEqual({ kind: "ok", value: null });
     const st = fs.stat("/a/b/a.bin");
     expect(st.kind).toBe("ok");
     if (st.kind === "ok") {
@@ -323,16 +323,16 @@ describe("node authorities", () => {
     expect(nodeFs.readBytes(bp, dst)).toEqual({ kind: "ok", value: 256 });
     expect(dst.length).toBe(256);
     for (let i = 0; i < 256; i++) expect(dst.get(i)).toBe(i);
-    expect(nodeFs.readBytes(bp, src.slice(0, 10) as never)).toBeDefined(); // keep slice test below:
+    expect(nodeFs.readBytes(bp, src.borrowSlice(0, 10) as never)).toBeDefined(); // keep slice test below:
     const sOut = Vec.create<number>(ALLOC, 4, "u8");
-    expect(nodeFs.writeBytes(join(dir, "sub.bin"), src.slice(10, 14))).toEqual({ kind: "ok", value: null });
+    expect(nodeFs.writeBytes(join(dir, "sub.bin"), src.borrowSlice(10, 14))).toEqual({ kind: "ok", value: null });
     expect(nodeFs.readBytes(join(dir, "sub.bin"), sOut)).toEqual({ kind: "ok", value: 4 });
     expect([sOut.get(0), sOut.get(1), sOut.get(2), sOut.get(3)]).toEqual([10, 11, 12, 13]);
 
     expect(nodeFs.mkdir(join(dir, "nested/sub"))).toEqual({ kind: "ok", value: null });
     expect(nodeFs.exists(join(dir, "nested/sub"))).toBe(true);
     expect(nodeFs.writeTextAtomic(join(dir, "nested/sub/b.txt"), "atomic")).toEqual({ kind: "ok", value: null });
-    expect(nodeFs.writeBytesAtomic(join(dir, "nested/sub/a.bin"), src.slice(0, 3))).toEqual({ kind: "ok", value: null });
+    expect(nodeFs.writeBytesAtomic(join(dir, "nested/sub/a.bin"), src.borrowSlice(0, 3))).toEqual({ kind: "ok", value: null });
     expect(nodeFs.writeTextAtomic(join(dir, "nested"), "bad").kind).toBe("err"); // EISDIR
     expect(readdirSync(dir).some((e) => e.startsWith(".sztmp-"))).toBe(false);
     const st = nodeFs.stat(join(dir, "nested/sub/a.bin"));
