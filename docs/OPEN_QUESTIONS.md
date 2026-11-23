@@ -1936,3 +1936,51 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
   - (a) レコード / `OwnedStruct` / `CStruct`（および `Ref<OwnedStruct>` / `Mut<OwnedStruct>`）のオブジェクト分割代入は全層（JS / C / Wasm 一致）、タプルの配列分割代入は `managed` で許可する（`strict` / `rt` のタプル注釈は `E4002`）。パターンの型注釈は必須（`E2006`、コンテキスト付きアロー関数を除く）。パターン内の既定値 `{ a = 1 }` は `E1008`、ネストや残余要素は `E1000` を維持し、引数全体への `= {...}` 既定値と後続既定引数からの束縛名参照は許可する。`OwnedStruct` 値渡しで `Owned` フィールドを省略すると `E3003`、`Ref`/`Mut` から `Owned` フィールドを取り出すと `E3004` とする（`Copy` フィールドのみの読み取りは許可）。
   - (b) `managed` 限定またはトップレベル `function` のみ許可する。
 - 既定案: (a)。
+
+### Q303 論理代入演算子 `x ||= v` / `x &&= v` の解禁要否
+- 関連: §4、§3.5、Q297
+- 状況: 設計評価の指示 B は `boolean` に対する `x ||= v` / `x &&= v` の解禁を挙げていたが、既存テスト `conformance/reject/E1000-logical-assign.szigyr`（`expect: E1000 @ 4:5`）が `x ||= true;` を `E1000` として固定しており、停止条件（既存 conformance 期待変更禁止）により今回は見送った。
+- 選択肢:
+  - (a) 既存の禁止（`E1000`）を維持し、`x = x || v` / `x = x && v` への明示書き換え（`fix` / `explain`）を提供する。
+  - (b) `conformance/reject/E1000-logical-assign.szigyr` を更新して解禁する（`boolean` 左辺のみ、左辺 1 回評価・短絡評価、全層対応）。
+- 既定案: (b)（オーナー承認を得てテスト更新した上で解禁）。
+
+### Q304 ラベルおよびラベルつき `break` / `continue` の解禁要否
+- 関連: §3.5、§4
+- 状況: 多重ループ脱出に用いられる `outer: for (...) { break outer; }` は JS/C/Wasm いずれにも写像可能だが、既存テスト `conformance/reject/E1000-label.szigyr`（`expect: E1000 @ 6:3`）が `outer: while (...)` を `E1000` として固定しているため停止条件により見送った（ループ専用ラベルであれば健全性上の障害はない）。
+- 選択肢:
+  - (a) `E1000` 禁止を維持する。
+  - (b) `conformance/reject/E1000-label.szigyr` を更新し、ループ文に対するラベル（シャドーイング禁止・ループ外ラベルやブロックラベルは引き続き拒否）を全層で解禁する。
+- 既定案: (b)（オーナー承認後にテスト更新して解禁）。
+
+### Q305 `String(x)` 関数形式変換の解禁要否
+- 関連: §5、§13、`docs/STDLIB.md`
+- 状況: 設計評価の実測 `probe-ts` では `String(n)` の使用例があり、`number.toString()` と並んで要望があるが、既存テスト `conformance/reject/E2000-bare-namespace-call.szigyr`（`expect: E2000 @ 5:10`）が `return String(x);` を組み込み名前空間 `String` の裸呼び出し禁止（`E2000`）として固定しているため停止条件により見送った。また現在 `String` は名前空間（`String.encodeUtf8` / `fromCodePoint`）かつ型キーワードでもある。
+- 選択肢:
+  - (a) `String(x)` の禁止を維持し、診断で `${x}` テンプレート文字列または `.toString()` を案内する。
+  - (b) `conformance/reject/E2000-bare-namespace-call.szigyr` を更新し、`managed` 専用で `string | number | boolean` 引数の `String(x)` 呼び出しを許可する（`Math` / `Result` 等の非呼び出し名前空間とは独立）。
+- 既定案: (b)（`toString()` / `${x}` で代替可能だが TS 初見通過率向上のためオーナー承認次第解禁）。
+
+### Q306 理由未記載または managed 層に不整合な禁止 TS 項目群の扱い
+- 関連: §3.5、D181、`docs/Szigyr-design-v0.md:161-164`
+- 状況: D181 の分類で「理由なし」または「固定レイアウト理由が `managed` には当てはまらない」として残った項目（`enum`、`instanceof`、`managed` の `class extends`・getter/setter、再帰する `interface`、構造的部分型）。今回は実装しない。
+- 選択肢:
+  - (a) 現状維持（文字列リテラル union、tagged union、`interface implements` 等で代替し、診断・`explain` で案内を補強）。
+  - (b) `managed` 専用の表現力拡張として、安全で曖昧さのない一部（例: `readonly` getter、非互換性のない再帰 `interface`、あるいは安全な `enum`）から段階的に検討・解禁する。
+- 既定案: (a) を短期基準とし、オーナー判断で必要な項目のみ個別設計。
+
+### Q307 `satisfies` 演算子の削除経緯と再評価
+- 関連: §3.5、D181、D182
+- 状況: `0125a76`（2026-11-22）で JS/C/Wasm/prove/mutate 対応付きで一旦解禁されたが、`1ca7365`（2026-11-24 Group A）でコミット本文なしに再禁止（`E1000-satisfies.szigyr` 追加）された。リポジトリ内に再禁止理由の記録はない（型注釈 `const x: T = e` と二重の書き方を避ける設計意図と推測される）。今回は実装を変えない。
+- 選択肢:
+  - (a) 型注釈一本化のため `E1000` 禁止（`use a type annotation instead`）を正式仕様として確定する。
+  - (b) TS 互換（リテラル型・精密型を保ったまま形状検査する用途）を重視し再解禁を検討する。
+- 既定案: (a) 維持または (b) をオーナー判断に委ねる（当面は理由未確定の現状維持）。
+
+### Q308 `docs/SPEC.md:100` の `Pure` 表記と `query deterministic` の呼称不整合
+- 関連: §7、`docs/STDLIB.md`、D182
+- 状況: `517a3f0`（Group B）で CLI/API/LSP/MCP 出力の `pure` フラグは `deterministic`（`QuerySymbol.deterministic` / `deterministic: true`）へ改名されたが、`docs/SPEC.md:100` の箇条書き見出しのみ `**Pure**` のまま残っている。
+- 選択肢:
+  - (a) `docs/SPEC.md:100` の見出しを `**Deterministic**`（または `**Deterministic (query deterministic)**`）へ合わせて統一する。
+  - (b) `docs/SPEC.md:100` を現状維持する。
+- 既定案: (a)。
