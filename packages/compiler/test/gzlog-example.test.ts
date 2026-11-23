@@ -63,7 +63,7 @@ describe("examples/gzlog portable core & SMT kernels", () => {
       expect(qParse.symbols.find((s) => s.name === fnName)).toMatchObject({
         kind: "function",
         layer: "rt",
-        pure: true,
+        deterministic: true,
         mutatable: true,
       });
     }
@@ -71,7 +71,7 @@ describe("examples/gzlog portable core & SMT kernels", () => {
       expect(qParse.symbols.find((s) => s.name === fnName)).toMatchObject({
         kind: "function",
         layer: "strict",
-        pure: true,
+        deterministic: true,
         mutatable: true,
       });
     }

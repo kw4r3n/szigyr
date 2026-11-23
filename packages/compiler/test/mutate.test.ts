@@ -909,7 +909,7 @@ function addComm(a: i32, b: i32): i32 {
   return a + b;
 }
 test("forAll kills mutants in named and inline property tests", (t: Test) => {
-  forAll(absSafe);
+  fuzzContracts(absSafe);
   forAll((a: i32, b: i32): boolean => {
     requires(a >= -1000 && a <= 1000 && b >= -1000 && b <= 1000);
     return addComm(a, b) === addComm(b, a);
@@ -920,7 +920,7 @@ test("forAll kills mutants in named and inline property tests", (t: Test) => {
     const res = await mutate(file, { cache: false, cacheFile });
     expect(res.diagnostics).toEqual([]);
     expect(res.baselineFailure).toBeNull();
-    // absSafe's `if (x < 0) -> false` must be killed by `forAll(absSafe)` via `ensures((r) => r >= 0)`!
+    // absSafe's `if (x < 0) -> false` must be killed by `fuzzContracts(absSafe)` via `ensures((r) => r >= 0)`!
     const absIfFalse = res.mutants.find((m) => m.fn === "absSafe" && m.op === "if -> false");
     expect(absIfFalse).toBeDefined();
     expect(absIfFalse!.status).toBe("killed");

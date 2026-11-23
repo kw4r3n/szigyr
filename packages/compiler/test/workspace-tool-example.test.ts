@@ -87,7 +87,7 @@ describe("examples/workspace-tool real-app dogfood verification", () => {
     expect(qScan.symbols.find((s) => s.name === "scanBytes")).toMatchObject({
       kind: "function",
       layer: "rt",
-      pure: true,
+      deterministic: true,
       mutatable: true,
     });
 
@@ -97,7 +97,7 @@ describe("examples/workspace-tool real-app dogfood verification", () => {
       expect(qCore.symbols.find((s) => s.name === fnName)).toMatchObject({
         kind: "function",
         layer: "managed",
-        pure: false,
+        deterministic: false,
         mutatable: true,
       });
     }
@@ -107,7 +107,7 @@ describe("examples/workspace-tool real-app dogfood verification", () => {
     expect(qMain.symbols.find((s) => s.name === "main")).toMatchObject({
       kind: "function",
       layer: "managed",
-      pure: false,
+      deterministic: false,
       mutatable: false,
     });
   });

@@ -13,7 +13,7 @@ test("stripped in run", (t: Test) => {
     requires(b >= -1000 && b <= 1000);
     t.eq(addStrict(a, b), addStrict(b, a));
   });
-  forAll(addStrict);
+  fuzzContracts(addStrict);
 });
 
 export function main(sys: System): void {

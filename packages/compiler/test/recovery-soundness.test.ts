@@ -363,6 +363,21 @@ function f(alloc: Alloc): boolean {
 }
 `);
     expect(rvalueRing.map((d) => d.code)).toEqual(["E3003"]);
+    expect(rvalueRing[0]?.message).toContain("const { rx, tx } = ...");
+
+    const memberMoveRing = checkSrc(`
+function takeTx(tx: RingTx<i32>): boolean {
+  "use owned";
+  return tx.push(1);
+}
+function f(alloc: Alloc): boolean {
+  "use owned";
+  const pair = Ring.create<i32>(alloc, 4);
+  return takeTx(pair.tx);
+}
+`);
+    expect(memberMoveRing.map((d) => d.code)).toEqual(["E3003"]);
+    expect(memberMoveRing[0]?.message).toContain("const { rx, tx } = pair");
 
     const omitCopyOk = checkSrc(`
 type Meta = OwnedStruct<{ a: Vec<i32>; id: i32 }>;

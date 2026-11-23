@@ -323,11 +323,11 @@ describe("resident incremental checker, --watch mode, and stdio MCP server", () 
     const chkAfterOverlay = await rpc({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "szigyr_check", arguments: { file } } });
     expect(chkAfterOverlay.result.structuredContent.ok).toBe(true);
 
-    // szigyr_query (ok flag, class ctor/implements/fields, interface methods, strict+unsafe pure: false)
+    // szigyr_query (ok flag, class ctor/implements/fields, interface methods, strict+unsafe deterministic: false)
     const qry = await rpc({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "szigyr_query", arguments: { file } } });
     expect(qry.result.structuredContent.ok).toBe(true);
     expect(qry.result.structuredContent.symbols.find((s: Record<string, unknown>) => s.name === "add")).toMatchObject({
-      kind: "function", layer: "rt", pure: true, mutatable: true,
+      kind: "function", layer: "rt", deterministic: true, mutatable: true,
     });
     const qryErr = await rpc({
       jsonrpc: "2.0", id: 70, method: "tools/call",
@@ -368,7 +368,7 @@ describe("resident incremental checker, --watch mode, and stdio MCP server", () 
       ],
     });
     expect(richSyms.find((s) => s.name === "rawNull")).toMatchObject({
-      kind: "function", layer: "strict", unsafe: true, pure: false, mutatable: false,
+      kind: "function", layer: "strict", unsafe: true, deterministic: false, mutatable: false,
     });
 
     // szigyr_explain

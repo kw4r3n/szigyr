@@ -66,7 +66,7 @@ const TOOLS = [
   },
   {
     name: "szigyr_query",
-    description: "Inspect declared symbols, resolved types, layers, capabilities, Purity/Mutatable flags, and rt trap sites for a .szigyr file.",
+    description: "Inspect declared symbols, resolved types, layers, capabilities, deterministic/mutatable flags, and rt trap sites for a .szigyr file.",
     inputSchema: {
       type: "object",
       properties: {

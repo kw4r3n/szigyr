@@ -1,0 +1,6 @@
+// expect: E2002 @ 5:10
+// stage: 4
+function pred(x: i32): boolean { return x > 0; }
+test("t", (t: Test) => {
+  forAll(pred);
+});

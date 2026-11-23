@@ -1018,7 +1018,7 @@ export function emitFile(
         case "panic": case "requires": case "invariant": return `${RT}.${name}(${args[0]}, ${at(callee)})`;
         case "cast": return `${RT}.cast(${args[0]}, ${desc(resultParts(self!)!.ok)})`;
         case "test": return `${RT}.test(${args.join(", ")}, ${q(file)})`;
-        case "forAll": {
+        case "forAll": case "fuzzContracts": {
           const meta = forAllMeta.get(e)!;
           const descs = `[${meta.params.map((p) => emitGenDesc(genDescOf(p))).join(", ")}]`;
           const pre = meta.checkBool ? emitPreFn(unwrapParens(e.arguments[0]!) as ts.ArrowFunction | ts.FunctionExpression) : undefined;

@@ -716,7 +716,7 @@ describe("E2E real v1 multi-module app validation", () => {
         kind: "symbol",
         symbolKind: "function",
         layer: "rt",
-        pure: true,
+        deterministic: true,
         exported: true,
       });
       expect(syms.find((s) => s.name === "renderEffect")).toMatchObject({

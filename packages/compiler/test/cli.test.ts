@@ -620,17 +620,17 @@ test("forAll fail", (t: Test) => {
   const syms = jsonLines(qRes.out);
   expect(syms.find((s) => s.name === "Pt")).toMatchObject({ kind: "symbol", symbolKind: "type", caps: expect.arrayContaining(["Native", "Copy", "Send", "Codec"]) });
   expect(syms.find((s) => s.name === "add")).toMatchObject({
-    kind: "symbol", symbolKind: "function", layer: "rt", pure: true, mutatable: true, exported: true,
+    kind: "symbol", symbolKind: "function", layer: "rt", deterministic: true, mutatable: true, exported: true,
     rtTrapSites: expect.arrayContaining([expect.objectContaining({ code: "T001" })]),
   });
   expect(syms.find((s) => s.name === "useLogAlloc")).toMatchObject({
-    kind: "symbol", symbolKind: "function", layer: "managed", pure: false, mutatable: true, exported: true,
+    kind: "symbol", symbolKind: "function", layer: "managed", deterministic: false, mutatable: true, exported: true,
   });
   expect(syms.find((s) => s.name === "useSys")).toMatchObject({
-    kind: "symbol", symbolKind: "function", layer: "managed", pure: false, mutatable: false, exported: true,
+    kind: "symbol", symbolKind: "function", layer: "managed", deterministic: false, mutatable: false, exported: true,
   });
   expect(syms.find((s) => s.name === "Counter.inc")).toMatchObject({
-    kind: "symbol", symbolKind: "method", layer: "managed", pure: true, mutatable: true, exported: true,
+    kind: "symbol", symbolKind: "method", layer: "managed", deterministic: true, mutatable: true, exported: true,
   });
 
   const tRes = szigyr("test", "--json", qf);

@@ -107,8 +107,8 @@ it("answers which functions are deterministic (§7.3, Q062)", () => {
   });
   expect(check(file).map((d) => d.code)).toEqual(["E6002"]);
   const q = queryFile(file);
-  expect(q.symbols.find((s) => s.name === "retJs")).toMatchObject({ pure: false, mutatable: false });
-  expect(q.symbols.find((s) => s.name === "retFake")).toMatchObject({ pure: false, mutatable: true });
+  expect(q.symbols.find((s) => s.name === "retJs")).toMatchObject({ deterministic: false, mutatable: false });
+  expect(q.symbols.find((s) => s.name === "retFake")).toMatchObject({ deterministic: false, mutatable: true });
 });
 
 // Forms: [name, source, expected sorted "code line:col" list]

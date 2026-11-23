@@ -241,7 +241,7 @@ export function main(sys: System): void {
         position: { line: 0, character: 16 }, // `scale`
       });
       expect(pHoverLib.result.contents.value).toContain("layer: `rt`");
-      expect(pHoverLib.result.contents.value).toContain("pure: `true`");
+      expect(pHoverLib.result.contents.value).toContain("deterministic: `true`");
       expect(pHoverLib.result.range).toEqual({
         start: { line: 0, character: 16 },
         end: { line: 0, character: 21 },

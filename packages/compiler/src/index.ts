@@ -437,7 +437,7 @@ export interface QuerySymbol {
   readonly type: string;
   readonly layer?: Layer;
   readonly unsafe?: boolean;
-  readonly pure?: boolean;
+  readonly deterministic?: boolean;
   readonly mutatable?: boolean;
   readonly caps?: readonly string[];
   readonly rtTrapSites?: readonly TrapSite[];
@@ -482,7 +482,7 @@ export function queryFile(entryFile: string, parser?: Parser, analysis?: Analysi
       type: show(f.sig),
       layer: f.layer,
       unsafe: f.unsafe,
-      pure: isDeterministic(f.sig, f.unsafe),
+      deterministic: isDeterministic(f.sig, f.unsafe),
       mutatable: isMutatable(f.sig, f.unsafe),
       ...(f.layer === "rt" && traps ? { rtTrapSites: traps[f.name] ?? [] } : {}),
       range: rangeOf(f.decl),
@@ -496,7 +496,7 @@ export function queryFile(entryFile: string, parser?: Parser, analysis?: Analysi
         exported: exportedSet.has(name),
         type: show(sym.sig),
         unsafe: true,
-        pure: false,
+        deterministic: false,
         mutatable: false,
         range: rangeOf(sym.decl),
       });
@@ -550,7 +550,7 @@ export function queryFile(entryFile: string, parser?: Parser, analysis?: Analysi
           type: show(m.sig),
           layer: "managed",
           unsafe: false,
-          pure: isDeterministic(m.sig, false, extra),
+          deterministic: isDeterministic(m.sig, false, extra),
           mutatable: isMutatable(m.sig, false, extra),
           range: rangeOf(m.node),
         });

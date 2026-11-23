@@ -25,9 +25,9 @@ test("forAll accept forms", (t: Test) => {
     requires(x >= 0 && y >= 0);
     t.ok(x >= 0 && y >= 0);
   });
-  forAll(addOne);
-  forAll(strictDouble);
-  forAll(rtCheck);
+  fuzzContracts(addOne);
+  fuzzContracts(strictDouble);
+  fuzzContracts(rtCheck);
   if (true) {
     forAll((b: boolean) => b || !b);
   }

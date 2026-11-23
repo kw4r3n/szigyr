@@ -123,10 +123,13 @@ it("treats a reserved §13 name exactly like a builtin name in every declaration
   }
 }, 60_000);
 
-it("registers forAll as a builtin function rather than reserved (§12, §16.1)", () => {
+it("registers forAll and fuzzContracts as builtin functions rather than reserved (§12, §16.1)", () => {
   expect(BUILTIN_FUNCTIONS.has("forAll")).toBe(true);
+  expect(BUILTIN_FUNCTIONS.has("fuzzContracts")).toBe(true);
   expect(SPEC_RESERVED).not.toContain("forAll");
+  expect(SPEC_RESERVED).not.toContain("fuzzContracts");
   expect(BUILTIN_NAMES.has("forAll")).toBe(true);
+  expect(BUILTIN_NAMES.has("fuzzContracts")).toBe(true);
 });
 
 it("enforces Group A TS-divergence cleanups (Result.ok/err, field-only interface, no satisfies, borrowSlice, OwnedStruct)", () => {

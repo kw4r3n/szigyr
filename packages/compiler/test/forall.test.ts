@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { runTestFile } from "../src/index.ts";
+import { check, runTestFile } from "../src/index.ts";
 import { main as cliMain } from "../src/cli.ts";
 
 function project(files: Record<string, string>): string {
@@ -31,8 +31,8 @@ test("pass inline and named", (t: Test) => {
     requires(x > -2147483648);
     t.ok(absVal(x) >= 0);
   });
-  forAll(absVal);
-  forAll(isPositive); // named boolean returning false is NOT a failure
+  fuzzContracts(absVal);
+  fuzzContracts(isPositive); // fuzzContracts checks contracts/traps only; return value is ignored
 });
 
 test("fail inline boolean false shrinks to 0", (t: Test) => {
@@ -108,15 +108,15 @@ function reqCallsCallee(x: i32): i32 {
 }
 
 test("recursive T004 is counterexample", (t: Test) => {
-  forAll(recWithReq);
+  fuzzContracts(recWithReq);
 });
 
 test("callee T004 is counterexample", (t: Test) => {
-  forAll(callsCallee);
+  fuzzContracts(callsCallee);
 });
 
 test("callee T004 inside requires is counterexample", (t: Test) => {
-  forAll(reqCallsCallee);
+  fuzzContracts(reqCallsCallee);
 });
 `,
     });
@@ -181,7 +181,7 @@ function badInc(x: i32): i32 {
 }
 
 test("ensures fails", (t: Test) => {
-  forAll(badInc);
+  fuzzContracts(badInc);
 });
 `,
     });
@@ -260,7 +260,7 @@ function usePos(x: i32): i32 {
 }
 
 test("generic rt helper in requires works on C and JS", (t: Test) => {
-  forAll(usePos);
+  fuzzContracts(usePos);
 });
 
 test("-0 counterexample formats distinctively", (t: Test) => {
@@ -306,7 +306,7 @@ test("vec min length requires", (t: Test) => {
 });
 
 test("named strict fn with vec min length requires", (t: Test) => {
-  forAll(firstThreeSum);
+  fuzzContracts(firstThreeSum);
 });
 `,
     });
@@ -319,5 +319,45 @@ test("named strict fn with vec min length requires", (t: Test) => {
         ["named strict fn with vec min length requires", true],
       ]);
     }
+  });
+
+  it("rejects passing named functions to forAll and inline arrows to fuzzContracts with clear redirect hints", () => {
+    const f1 = project({
+      "main.szigyr": `
+function isPositive(x: i32): boolean { return x > 0; }
+function absVal(x: i32): i32 { return x < 0 ? wrapAdd(x, 0) : x; }
+test("bad", (t: Test) => {
+  forAll(isPositive);
+  forAll(absVal);
+  fuzzContracts((x: i32): boolean => x === x);
+});
+`,
+    });
+    const ds1 = check(f1);
+    expect(ds1.map((d) => d.code)).toEqual(["E2002", "E2002", "E2002"]);
+    expect(ds1[0]!.message).toContain("(...) => isPositive(...)");
+    expect(ds1[0]!.message).toContain("fuzzContracts(isPositive)");
+    expect(ds1[1]!.message).toContain("fuzzContracts(absVal)");
+    expect(ds1[2]!.message).toContain("forAll((...) => ...)");
+
+    const f2 = project({
+      "main.szigyr": `
+function absVal(x: i32): i32 { return x; }
+fuzzContracts(absVal);
+`,
+    });
+    expect(check(f2).map((d) => d.code)).toEqual(["E6004"]);
+
+    const f3 = project({
+      "main.szigyr": `
+function absVal(x: i32): i32 { return x; }
+test("bad", (t: Test) => {
+  forAll((x: i32): void => {
+    requires(fuzzContracts(absVal));
+  });
+});
+`,
+    });
+    expect(check(f3).map((d) => d.code)).toEqual(["E6002"]);
   });
 });

@@ -159,7 +159,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         if (x0.kind === K.StringLiteral && (x0 as ts.StringLiteral).text === UNSAFE_DIRECTIVE) { at("E1009", x0, `'${UNSAFE_DIRECTIVE}' at module level`, { directive: UNSAFE_DIRECTIVE }); break; }
         const c = calleeName(s);
         if (c?.name === "test") allowedCalls.add(c.call);
-        else if (c?.name !== "forAll") { e1000(s, "this statement at module level", { kind: "module-statement" }); break; }
+        else if (c?.name !== "forAll" && c?.name !== "fuzzContracts") { e1000(s, "this statement at module level", { kind: "module-statement" }); break; }
         stmt(s);
         break;
       }
@@ -865,7 +865,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         else {
           if (isId(callee) && CONTRACTS.has(callee.text) && !allowedCalls.has(c)) at("E6001", callee, `'${callee.text}' is not allowed here`, { contract: callee.text });
           if (isId(callee) && callee.text === "test" && !allowedCalls.has(c)) at("E6003", callee, "'test' must be at module level", { kind: "misplaced-test" });
-          if (isId(callee) && callee.text === "forAll" && !fc.inTest) at("E6004", callee, "'forAll' must be inside a top-level 'test' callback", { kind: "misplaced-forAll" });
+          if (isId(callee) && (callee.text === "forAll" || callee.text === "fuzzContracts") && !fc.inTest) at("E6004", callee, `'${callee.text}' must be inside a top-level 'test' callback`, { kind: "misplaced-forAll" });
           expr(callee);
         }
         for (const t of c.typeArguments ?? []) type(t);

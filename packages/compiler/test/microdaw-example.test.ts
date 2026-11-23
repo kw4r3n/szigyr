@@ -136,7 +136,7 @@ const pw = findPlaywright();
 const canWebKit = hasWebKitGtkAndXvfb();
 
 describe("examples/microdaw compiler, proof, parity, and mutation verification", () => {
-  it("passes check and exposes expected layers, pure flags, and mutatable metadata", () => {
+  it("passes check and exposes expected layers, deterministic flags, and mutatable metadata", () => {
     expect(check(ENGINE_SZIGYR)).toEqual([]);
     expect(check(DESKTOP_CORE_SZIGYR)).toEqual([]);
 
@@ -146,7 +146,7 @@ describe("examples/microdaw compiler, proof, parity, and mutation verification",
       expect(qDsp.symbols.find((s) => s.name === fn)).toMatchObject({
         kind: "function",
         layer: "rt",
-        pure: true,
+        deterministic: true,
         mutatable: true,
       });
     }
@@ -154,14 +154,14 @@ describe("examples/microdaw compiler, proof, parity, and mutation verification",
       expect(qDsp.symbols.find((s) => s.name === fn)).toMatchObject({
         kind: "function",
         layer: "rt",
-        pure: false,
+        deterministic: false,
         mutatable: true,
       });
     }
     expect(qDsp.symbols.find((s) => s.name === "createInitialSynthState")).toMatchObject({
       kind: "function",
       layer: "strict",
-      pure: false,
+      deterministic: false,
       mutatable: true,
     });
 
@@ -170,13 +170,13 @@ describe("examples/microdaw compiler, proof, parity, and mutation verification",
     expect(qEng.symbols.find((s) => s.name === "presetSteps")).toMatchObject({
       kind: "function",
       layer: "managed",
-      pure: true,
+      deterministic: true,
       mutatable: true,
     });
     expect(qEng.symbols.find((s) => s.name === "renderOfflinePreview")).toMatchObject({
       kind: "function",
       layer: "managed",
-      pure: false,
+      deterministic: false,
       mutatable: true,
     });
 
@@ -186,14 +186,14 @@ describe("examples/microdaw compiler, proof, parity, and mutation verification",
       expect(qDc.symbols.find((s) => s.name === fn)).toMatchObject({
         kind: "function",
         layer: "managed",
-        pure: true,
+        deterministic: true,
         mutatable: true,
       });
     }
     expect(qDc.symbols.find((s) => s.name === "handleDesktopRequest")).toMatchObject({
       kind: "function",
       layer: "managed",
-      pure: false,
+      deterministic: false,
       mutatable: true,
     });
   });

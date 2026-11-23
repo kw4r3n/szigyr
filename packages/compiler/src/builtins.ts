@@ -21,7 +21,7 @@ export const GLOBAL_AUTHORITIES = new Set([
 /** Namespace objects (Q034). */
 export const NAMESPACES = new Set(["Math", "Number", "JSON", "Url", "String", "Promise", "Vec", "Pool", "Arena", "Ring", "OwnedCell", "RegExp", "FakeClock", "SeededRandom", "MemoryLog", "FakeFs", "FakeSpawn", "FakeAudio", "FakeDisplay", "FakeNet", "FakeProc", "TestAlloc", "DetMath", "Ptr", "CHandle"]);
 /** Builtin functions handled by the checker (§12). */
-export const BUILTIN_FUNCTIONS = new Set([...NUM_NAMES, "wrapAdd", "wrapSub", "wrapMul", "divTrunc", "rem", "panic", "cast", "requires", "ensures", "invariant", "test", "forAll", "cfn"]);
+export const BUILTIN_FUNCTIONS = new Set([...NUM_NAMES, "wrapAdd", "wrapSub", "wrapMul", "divTrunc", "rem", "panic", "cast", "requires", "ensures", "invariant", "test", "forAll", "fuzzContracts", "cfn"]);
 /** §13: the identifier-like names it reserves (declaring or referencing one is E1000 / E2000, Q231). */
 export const SPEC_RESERVED = ["bigint", "undefined", "FixedArray", "Rc", "Weak", "decreases"];
 /** §12 global names, §13 reserved names; declaring any of them is E1000 (Q010, Q231). The tables here plus the names only the resolver and §7.1 know. */

@@ -77,7 +77,7 @@ function formatSymbolHover(sym: QuerySymbol): string {
   const meta: string[] = [];
   if (sym.layer) meta.push(`layer: \`${sym.layer}\``);
   if (sym.unsafe) meta.push("unsafe");
-  if (sym.pure !== undefined) meta.push(`pure: \`${sym.pure}\``);
+  if (sym.deterministic !== undefined) meta.push(`deterministic: \`${sym.deterministic}\``);
   if (sym.mutatable !== undefined) meta.push(`mutatable: \`${sym.mutatable}\``);
   if (sym.caps?.length) meta.push(`caps: ${sym.caps.map((c) => `\`${c}\``).join(", ")}`);
   const parts = [`\`\`\`ts\n${head}\n\`\`\``];

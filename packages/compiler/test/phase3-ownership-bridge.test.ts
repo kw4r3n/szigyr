@@ -218,7 +218,7 @@ describe("Phase 3: Result<Owned, E> and OwnedCell.withRef / withMut", () => {
         `  t.traps("T008", () => { cell.withMut((m) => m.length); });`,
         ``,
         `  // forAll on Result<Vec<i32>, i32>`,
-        `  forAll(checkResVec);`,
+        `  forAll((r: Result<Vec<i32>, i32>): boolean => checkResVec(r));`,
         `});`,
         ``,
         `test("Port carrying Result<Owned, string>", async (t: Test) => {`,

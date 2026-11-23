@@ -116,7 +116,7 @@ describe("examples/microdaw/app.szigyr pure-Szigyr Display + Audio DAW", () => {
     expect(check(APP_SZIGYR)).toEqual([]);
     const q = queryFile(APP_SZIGYR);
     expect(q.diagnostics).toEqual([]);
-    expect(q.symbols.find((s) => s.name === "parseDawArgs")).toMatchObject({ pure: true, mutatable: true });
+    expect(q.symbols.find((s) => s.name === "parseDawArgs")).toMatchObject({ deterministic: true, mutatable: true });
 
     const names: string[][] = [];
     for (const backend of ["js", "c", "wasm"] as const) {

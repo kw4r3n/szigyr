@@ -232,11 +232,13 @@ reject/E2002-forAll-bad-return-arrow.szigyr
 reject/E2002-forAll-generic-arrow.szigyr
 reject/E2002-forAll-generic-named.szigyr
 reject/E2002-forAll-local-fn.szigyr
+reject/E2002-forAll-named-fn.szigyr
 reject/E2002-forAll-named-zero-params.szigyr
 reject/E2002-forAll-not-fn.szigyr
 reject/E2002-forAll-promise-named.szigyr
 reject/E2002-forAll-type-args.szigyr
 reject/E2002-forAll-zero-params.szigyr
+reject/E2002-fuzzContracts-arrow.szigyr
 reject/E2002-generic-class-key-instantiation.szigyr
 reject/E2002-generic-map-key-through-type-parameter.szigyr
 reject/E2002-generic-set-element-record.szigyr

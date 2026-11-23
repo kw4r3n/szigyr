@@ -290,7 +290,7 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
           } else {
             const tags = [
               sym.layer ? `${sym.layer}${sym.unsafe ? ",unsafe" : ""}` : "",
-              sym.pure !== undefined ? `pure=${sym.pure}` : "",
+              sym.deterministic !== undefined ? `deterministic=${sym.deterministic}` : "",
               sym.mutatable !== undefined ? `mutatable=${sym.mutatable}` : "",
               sym.caps?.length ? `caps=${sym.caps.join(",")}` : "",
               sym.implements?.length ? `implements=${sym.implements.join(",")}` : "",

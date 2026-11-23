@@ -325,10 +325,11 @@ class Flow {
           const omitted = srcType.fields.filter((f) => !bound.has(f.name) && movesLike(f.type));
           if (omitted.length > 0) {
             const names = omitted.map((f) => f.name);
+            const allOwned = srcType.fields.filter((f) => movesLike(f.type)).map((f) => f.name);
             this.m.at(
               "E3003",
               p,
-              `cannot partially destructure owned struct; bind remaining owned field(s): ${names.map((n) => `'${n}'`).join(", ")}`,
+              `cannot partially destructure owned struct; bind remaining owned field(s): ${names.map((n) => `'${n}'`).join(", ")} (e.g. 'const { ${allOwned.join(", ")} } = ...')`,
               { field: names[0]!, fields: names },
             );
           }
@@ -373,7 +374,15 @@ class Flow {
         }
         if (this.resBorrowCall(strip(p.expression))) this.place(p.expression);
         else this.ex(p.expression, "read");
-        if (ctx !== "read" && movesLike(pt)) this.m.at("E3003", p, `cannot move the field '${p.name.text}' out of its struct; destructure the whole value`, { field: p.name.text });
+        if (ctx !== "read" && movesLike(pt)) {
+          const ownedFields = bt.k === "record" ? bt.fields.filter((f) => movesLike(f.type)).map((f) => f.name) : [];
+          const srcNode = strip(p.expression);
+          const srcName = isId(srcNode) ? srcNode.text : "...";
+          const hint = ownedFields.length
+            ? `destructure every owned field (e.g. 'const { ${ownedFields.join(", ")} } = ${srcName}')`
+            : "destructure the whole value";
+          this.m.at("E3003", p, `cannot move the field '${p.name.text}' out of its struct; ${hint}`, { field: p.name.text });
+        }
         return;
       }
       case K.ElementAccessExpression: {

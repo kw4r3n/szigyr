@@ -98,14 +98,14 @@ describe("examples/retouch real-app dogfood verification", () => {
     const qKernels = queryFile(KERNELS_SZIGYR);
     expect(qKernels.diagnostics).toEqual([]);
     const passSym = qKernels.symbols.find((s) => s.name === "frequencySeparatePass");
-    expect(passSym).toMatchObject({ kind: "function", layer: "rt", pure: true, mutatable: true });
+    expect(passSym).toMatchObject({ kind: "function", layer: "rt", deterministic: true, mutatable: true });
     const strokeSym = qKernels.symbols.find((s) => s.name === "applyBrushStroke");
-    expect(strokeSym).toMatchObject({ kind: "function", layer: "rt", pure: true, mutatable: true });
+    expect(strokeSym).toMatchObject({ kind: "function", layer: "rt", deterministic: true, mutatable: true });
 
     const qMain = queryFile(MAIN_SZIGYR);
     expect(qMain.diagnostics).toEqual([]);
     const mainSym = qMain.symbols.find((s) => s.name === "main");
-    expect(mainSym).toMatchObject({ kind: "function", layer: "managed", pure: false, mutatable: false });
+    expect(mainSym).toMatchObject({ kind: "function", layer: "managed", deterministic: false, mutatable: false });
   });
 
   it("passes all colocated unit and forAll tests identically across js, c, and wasm", async () => {
@@ -312,7 +312,7 @@ describe("examples/retouch real-app dogfood verification", () => {
       expect(qry.result.structuredContent.ok).toBe(true);
       expect(qry.result.structuredContent.symbols.find((s: Record<string, unknown>) => s.name === "clampU8")).toMatchObject({
         layer: "rt",
-        pure: true,
+        deterministic: true,
         mutatable: true,
       });
 
