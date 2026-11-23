@@ -70,9 +70,9 @@ stdio JSON-RPC 2.0 MCP サーバとして起動します（未リンクの場合
 
 既存アプリを `.szigyr` へ書き換える場合も、AI エージェントには作業前に `szigyr://spec`（または [`docs/SPEC.md`](docs/SPEC.md)）と `szigyr://builtins` を参照させると仕様に沿ったコードを生成できます。
 
-## エディタ向け `szigyr lsp`
+## エディタ向け `szigyr lsp` / VS Code 拡張
 
-`Content-Length` フレーム対応の stdio Language Server Protocol サーバです（診断 `publishDiagnostics`・型/シンボル `hover`・`quickfix` `codeAction`・`documentSymbol`・未保存マルチファイルバッファ対応）。
+`Content-Length` フレーム対応の stdio Language Server Protocol サーバです（診断 `publishDiagnostics`・型/シンボル `hover`・定義ジャンプ `definition`・`quickfix` `codeAction`・`documentSymbol`・未保存マルチファイルバッファ対応）。閲覧向けの最小ゼロ依存 VS Code 拡張を [`editors/vscode/`](editors/vscode) に同梱しています。
 
 ```json
 {

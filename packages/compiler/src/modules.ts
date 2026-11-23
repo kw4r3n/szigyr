@@ -36,7 +36,7 @@ export interface ConstSym { k: "const"; decl: ts.VariableDeclaration; mod: Modul
 export interface ClassValueSym { k: "class"; cls: ClassSym; mod: Module }
 /** `declared`: the annotated type before Ref / Mut are read through (contracts, Q056). */
 export interface LocalSym {
-  k: "local"; id: number; name: string; type: Type; declared: Type; mutable: boolean; param: boolean; fnDepth: number;
+  k: "local"; id: number; name: string; decl?: ts.Identifier; type: Type; declared: Type; mutable: boolean; param: boolean; fnDepth: number;
   /** Captured by a nested function and assigned after its declaration: never narrowed (Q122). */
   unstable?: boolean;
 }

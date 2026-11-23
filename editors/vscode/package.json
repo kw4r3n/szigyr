@@ -1,0 +1,65 @@
+{
+  "name": "szigyr-vscode",
+  "displayName": "Szigyr",
+  "description": "Syntax highlighting, diagnostics, hover, and go-to-definition for Szigyr (.szigyr) via szigyr lsp.",
+  "version": "0.1.0",
+  "publisher": "szigyr",
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:szigyr"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "szigyr",
+        "aliases": [
+          "Szigyr",
+          "szigyr"
+        ],
+        "extensions": [
+          ".szigyr"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "szigyr",
+        "scopeName": "source.szigyr",
+        "path": "./syntaxes/szigyr.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Szigyr",
+      "properties": {
+        "szigyr.lsp.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the built-in szigyr lsp client for diagnostics, hover, definition, symbols, and quick fixes."
+        },
+        "szigyr.lsp.command": {
+          "type": "string",
+          "default": "",
+          "description": "Path or command to launch szigyr (leave empty to auto-detect workspace cli.ts or szigyr on PATH)."
+        },
+        "szigyr.lsp.args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "lsp"
+          ],
+          "description": "Arguments passed after the szigyr command."
+        }
+      }
+    }
+  }
+}

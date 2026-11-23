@@ -108,7 +108,7 @@ export class Checker {
 
   // ---- symbols
   declare(name: ts.Identifier, type: Type, opts: { mutable?: boolean; param?: boolean; declared?: Type } = {}): LocalSym {
-    const sym: LocalSym = { k: "local", id: ++localId, name: name.text, type, declared: opts.declared ?? type, mutable: !!opts.mutable, param: !!opts.param, fnDepth: this.fx.depth };
+    const sym: LocalSym = { k: "local", id: ++localId, name: name.text, decl: name, type, declared: opts.declared ?? type, mutable: !!opts.mutable, param: !!opts.param, fnDepth: this.fx.depth };
     if (this.unstable.has(name)) sym.unstable = true;
     this.scope.vars.set(name.text, sym);
     localOf.set(name, sym);

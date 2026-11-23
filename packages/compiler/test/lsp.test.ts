@@ -159,6 +159,7 @@ export function main(sys: System): void {
       const init = await lsp.request("initialize", { processId: null, rootUri: pathToFileURL(dir).href, capabilities: {} }, true);
       expect(init.result.serverInfo.name).toBe("szigyr");
       expect(init.result.capabilities.hoverProvider).toBe(true);
+      expect(init.result.capabilities.definitionProvider).toBe(true);
       expect(init.result.capabilities.documentSymbolProvider).toBe(true);
       lsp.notify("initialized", {});
 
@@ -269,6 +270,91 @@ export function main(sys: System): void {
 
       const exitCode = await lsp.shutdownAndExit();
       expect(exitCode).toBe(0);
+    } finally {
+      if (lsp.proc.exitCode === null) lsp.proc.kill();
+    }
+  }, 60_000);
+
+  it("resolves textDocument/definition across locals, params, imports, namespaces, types, interfaces, and class members", async () => {
+    const dir = makeTmp("szigyr-lsp-def-");
+    const typesPath = join(dir, "types.szigyr");
+    const libPath = join(dir, "lib.szigyr");
+    const mainPath = join(dir, "main.szigyr");
+    const typesUri = pathToFileURL(typesPath).href;
+    const libUri = pathToFileURL(libPath).href;
+    const mainUri = pathToFileURL(mainPath).href;
+
+    const typesSrc = [
+      `export interface Greeter { greet(): i32; }`,
+      `export type NumBox = { readonly n: i32 };`,
+      `export class Box implements Greeter {`,
+      `  readonly val: i32;`,
+      `  constructor(val: i32) { this.val = val; }`,
+      `  greet(): i32 { return this.val; }`,
+      `}`,
+      ``,
+    ].join("\n");
+    const libSrc = [
+      `export { type NumBox } from "./types.szigyr";`,
+      `export function scale(x: i32): i32 {`,
+      `  "use rt";`,
+      `  return x * 2;`,
+      `}`,
+      ``,
+    ].join("\n");
+    const mainSrc = [
+      `import { scale } from "./lib.szigyr";`,
+      `import * as ns from "./lib.szigyr";`,
+      `import { Box, type NumBox } from "./types.szigyr";`,
+      `export function main(sys: System): void {`,
+      `  const v: i32 = scale(3);`,
+      `  const b = new Box(ns.scale(v));`,
+      `  const nb: NumBox = { n: b.greet() + b.val };`,
+      `  sys.log.info(\`\${nb.n}\`);`,
+      `}`,
+      ``,
+    ].join("\n");
+    writeFileSync(typesPath, typesSrc);
+    writeFileSync(libPath, libSrc);
+    writeFileSync(mainPath, mainSrc);
+
+    const lsp = new LspClient(dir);
+    try {
+      await lsp.request("initialize", { processId: null, rootUri: pathToFileURL(dir).href, capabilities: {} });
+      lsp.notify("initialized", {});
+      const pMainDiag = lsp.waitForDiagnostics(mainUri);
+      lsp.notify("textDocument/didOpen", { textDocument: { uri: mainUri, languageId: "szigyr", version: 1, text: mainSrc } });
+      expect(await pMainDiag).toEqual([]);
+
+      const defAt = async (uri: string, line: number, character: number) =>
+        (await lsp.request("textDocument/definition", { textDocument: { uri }, position: { line, character } })).result;
+
+      // Import specifier `scale` and module specifier `"./lib.szigyr"`
+      expect(await defAt(mainUri, 0, 10)).toEqual({ uri: libUri, range: { start: { line: 1, character: 16 }, end: { line: 1, character: 21 } } });
+      expect(await defAt(mainUri, 0, 25)).toEqual({ uri: libUri, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } } });
+
+      // Cross-file call `scale(3)` and namespace call `ns.scale(v)` + `ns`
+      expect(await defAt(mainUri, 4, 18)).toEqual({ uri: libUri, range: { start: { line: 1, character: 16 }, end: { line: 1, character: 21 } } });
+      expect(await defAt(mainUri, 5, 24)).toEqual({ uri: libUri, range: { start: { line: 1, character: 16 }, end: { line: 1, character: 21 } } });
+      expect(await defAt(mainUri, 5, 21)).toEqual({ uri: libUri, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } } });
+
+      // Local variable `v` usage -> `const v` decl
+      expect(await defAt(mainUri, 5, 29)).toEqual({ uri: mainUri, range: { start: { line: 4, character: 8 }, end: { line: 4, character: 9 } } });
+
+      // Class constructor, method `b.greet()`, field `b.val`, and re-exported type `NumBox`
+      expect(await defAt(mainUri, 5, 17)).toEqual({ uri: typesUri, range: { start: { line: 2, character: 13 }, end: { line: 2, character: 16 } } });
+      expect(await defAt(mainUri, 6, 29)).toEqual({ uri: typesUri, range: { start: { line: 5, character: 2 }, end: { line: 5, character: 7 } } });
+      expect(await defAt(mainUri, 6, 41)).toEqual({ uri: typesUri, range: { start: { line: 3, character: 11 }, end: { line: 3, character: 14 } } });
+      expect(await defAt(mainUri, 6, 13)).toEqual({ uri: typesUri, range: { start: { line: 1, character: 12 }, end: { line: 1, character: 18 } } });
+
+      // Parameter `x` and `implements Greeter` inside lib.szigyr / types.szigyr
+      expect(await defAt(libUri, 3, 9)).toEqual({ uri: libUri, range: { start: { line: 1, character: 22 }, end: { line: 1, character: 23 } } });
+      expect(await defAt(typesUri, 2, 29)).toEqual({ uri: typesUri, range: { start: { line: 0, character: 17 }, end: { line: 0, character: 24 } } });
+
+      // Out-of-line column returns null rather than jumping to a later line
+      expect(await defAt(mainUri, 0, 500)).toBeNull();
+
+      expect(await lsp.shutdownAndExit()).toBe(0);
     } finally {
       if (lsp.proc.exitCode === null) lsp.proc.kill();
     }

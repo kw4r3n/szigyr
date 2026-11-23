@@ -1,16 +1,16 @@
 // Minimal stdio LSP server (`szigyr lsp`) backed by the resident incremental compiler session.
 import { realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Diagnostic, Position, Range } from "./diagnostics.ts";
-import { exprTypes } from "./expr.ts";
+import { callFns, exprTypes, localOf } from "./expr.ts";
 import {
   analyze, check, CLI_NAME, createParser, queryFile,
   type Parser, type QuerySymbol,
 } from "./index.ts";
-import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts";
-import { canonPath } from "./modules.ts";
-import { hasCap, show, type Capability, type Type } from "./types.ts";
+import { SyntaxKind as K, isId, type Node, type ParsedFile, type ts } from "./parse.ts";
+import { canonPath, type Module, type Program as Decls, type TypeSym, type ValueSym } from "./modules.ts";
+import { hasCap, nonNull, show, unref, type Capability, type ClassSym, type Type } from "./types.ts";
 
 export interface LspOptions {
   readonly input?: NodeJS.ReadableStream;
@@ -143,6 +143,150 @@ function paramHoverType(narrow: Node, decls: ReturnType<typeof analyze>["decls"]
   return undefined;
 }
 
+interface LspLocation {
+  readonly uri: string;
+  readonly range: LspRange;
+}
+
+function offsetInLine(pf: ParsedFile, line1: number, col1: number): number | undefined {
+  if (line1 < 1 || col1 < 1) return undefined;
+  const off = pf.offsetOf(line1, col1);
+  if (off === undefined || off > pf.sourceFile.text.length) return undefined;
+  return pf.position(off).line === line1 ? off : undefined;
+}
+
+function resolveDefinition(
+  decls: Decls,
+  mod: Module,
+  narrow: Node,
+  docUriOf: (path: string) => string,
+): LspLocation | null {
+  const locOf = (m: Module, n: Node): LspLocation => ({
+    uri: docUriOf(m.pf.path),
+    range: {
+      start: toLspPos(m.pf.position(n.getStart(m.sf))),
+      end: toLspPos(m.pf.position(n.end)),
+    },
+  });
+  const fileStart = (m: Module): LspLocation => ({
+    uri: docUriOf(m.pf.path),
+    range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+  });
+  const defOfValue = (sym: ValueSym | undefined, localMod: Module): LspLocation | null => {
+    if (!sym) return null;
+    switch (sym.k) {
+      case "fn": case "cfn": return locOf(sym.mod, sym.decl.name ?? sym.decl);
+      case "cconst": return locOf(sym.mod, sym.decl.name);
+      case "const": return locOf(sym.mod, sym.bind?.name ?? sym.decl.name);
+      case "class": return locOf(sym.mod, sym.cls.decl.name ?? sym.cls.decl);
+      case "local": return sym.decl ? locOf(localMod, sym.decl) : null;
+      default: return null;
+    }
+  };
+  const defOfType = (sym: TypeSym | undefined): LspLocation | null => {
+    if (!sym) return null;
+    switch (sym.k) {
+      case "alias": case "rec-iface": case "iface": case "cstruct": return locOf(sym.mod, sym.decl.name);
+      case "class": return locOf(sym.mod, sym.cls.decl.name ?? sym.cls.decl);
+      default: return null;
+    }
+  };
+  const defOfClassMember = (cls: ClassSym, memberName: string): LspLocation | null => {
+    const clsMod = decls.mods.find((m) => m.sf === cls.decl.getSourceFile());
+    if (!clsMod) return null;
+    const entry = cls.methods.get(memberName) ?? cls.fields.get(memberName);
+    if (!entry) return null;
+    const target = (entry.node as { name?: Node }).name ?? entry.node;
+    return locOf(clsMod, target);
+  };
+
+  const p = narrow.parent;
+  if (
+    narrow.kind === K.StringLiteral
+    && p
+    && (p.kind === K.ImportDeclaration || p.kind === K.ExportDeclaration)
+    && (p as ts.ImportDeclaration | ts.ExportDeclaration).moduleSpecifier === narrow
+  ) {
+    const spec = (narrow as ts.StringLiteral).text;
+    const targetCanon = canonPath(dirname(mod.pf.path), spec);
+    const targetMod = decls.mods.find((m) => m.pf.path === targetCanon);
+    return targetMod ? fileStart(targetMod) : null;
+  }
+
+  if (!isId(narrow)) return null;
+
+  if (p?.kind === K.ImportSpecifier) {
+    const ispec = p as ts.ImportSpecifier;
+    if (ispec.name === narrow || ispec.propertyName === narrow) {
+      const imp = mod.imports.get(ispec.name.text);
+      if (!imp) return null;
+      return defOfValue(decls.lookupExportedValue(imp.mod, imp.name), imp.mod)
+        ?? defOfType(decls.lookupExportedType(imp.mod, imp.name));
+    }
+  }
+  if (p?.kind === K.NamespaceImport && (p as ts.NamespaceImport).name === narrow) {
+    const ns = mod.nsImports.get(narrow.text);
+    return ns ? fileStart(ns.mod) : null;
+  }
+  if (p?.kind === K.ExportSpecifier) {
+    const espec = p as ts.ExportSpecifier;
+    if (espec.name === narrow || espec.propertyName === narrow) {
+      const exp = mod.exports.get(espec.name.text);
+      if (exp?.k === "reexport") {
+        return defOfValue(decls.lookupExportedValue(exp.mod, exp.name), exp.mod)
+          ?? defOfType(decls.lookupExportedType(exp.mod, exp.name));
+      }
+      if (exp?.k === "local") {
+        return defOfValue(decls.lookupValue(mod, exp.local), mod)
+          ?? defOfType(decls.lookupType(mod, exp.local));
+      }
+    }
+  }
+  if (p?.kind === K.QualifiedName) {
+    const qn = p as ts.QualifiedName;
+    if (isId(qn.left)) {
+      const ns = mod.nsImports.get(qn.left.text);
+      if (ns) {
+        if (qn.left === narrow) return fileStart(ns.mod);
+        if (qn.right === narrow) return defOfType(decls.lookupExportedType(ns.mod, qn.right.text));
+      }
+    }
+  }
+  if (
+    (p?.kind === K.TypeReference && (p as ts.TypeReferenceNode).typeName === narrow)
+    || (p?.kind === K.ExpressionWithTypeArguments && (p as ts.ExpressionWithTypeArguments).expression === narrow)
+  ) {
+    return defOfType(decls.lookupType(mod, narrow.text));
+  }
+  if (p?.kind === K.PropertyAccessExpression && (p as ts.PropertyAccessExpression).name === narrow) {
+    const pa = p as ts.PropertyAccessExpression;
+    if (isId(pa.expression)) {
+      const ns = mod.nsImports.get(pa.expression.text);
+      if (ns) {
+        return defOfValue(decls.lookupExportedValue(ns.mod, narrow.text), ns.mod)
+          ?? defOfType(decls.lookupExportedType(ns.mod, narrow.text));
+      }
+      const vs = decls.lookupValue(mod, pa.expression.text);
+      if (vs?.k === "class") return defOfClassMember(vs.cls, narrow.text);
+    }
+    const recvT = exprTypes.get(pa.expression);
+    const u = recvT ? unref(nonNull(unref(recvT)) ?? unref(recvT)) : undefined;
+    if (u?.k === "class") return defOfClassMember(u.cls, narrow.text);
+    const callNode = pa.parent?.kind === K.CallExpression && (pa.parent as ts.CallExpression).expression === pa ? pa.parent : undefined;
+    const cf = callNode ? callFns.get(callNode) : undefined;
+    return cf ? defOfValue(cf, cf.mod) : null;
+  }
+
+  const locSym = localOf.get(narrow);
+  if (locSym) return defOfValue(locSym, mod);
+
+  const ns = mod.nsImports.get(narrow.text);
+  if (ns) return fileStart(ns.mod);
+
+  return defOfValue(decls.lookupValue(mod, narrow.text), mod)
+    ?? defOfType(decls.lookupType(mod, narrow.text));
+}
+
 const SYMBOL_KIND: Record<QuerySymbol["kind"], number> = {
   function: 12,
   cfn: 12,
@@ -208,6 +352,7 @@ export async function serveLsp(opts: LspOptions = {}): Promise<number> {
           capabilities: {
             textDocumentSync: { openClose: true, change: 1, save: { includeText: false } },
             hoverProvider: true,
+            definitionProvider: true,
             codeActionProvider: { codeActionKinds: ["quickfix"] },
             documentSymbolProvider: true,
           },
@@ -269,6 +414,22 @@ export async function serveLsp(opts: LspOptions = {}): Promise<number> {
           cur = cur.parent;
         }
         return null;
+      }
+      case "textDocument/definition": {
+        const td = params?.textDocument as { uri?: string } | undefined;
+        const pos = params?.position as LspPos | undefined;
+        const loc = typeof td?.uri === "string" ? uriToPath(td.uri) : undefined;
+        if (!loc || !pos) return null;
+        const a = analyze(loc.path, parser);
+        if (!a.decls) return null;
+        const pf = a.files.find((f) => canonPath(f.path) === loc.canon);
+        const mod = pf ? a.decls.mods.find((m) => m.pf.path === pf.path) : undefined;
+        if (!pf || !mod) return null;
+        const off = offsetInLine(pf, pos.line + 1, pos.character + 1);
+        if (off === undefined) return null;
+        const narrow = findNarrowest(pf.sourceFile, pf.sourceFile, off);
+        if (!narrow) return null;
+        return resolveDefinition(a.decls, mod, narrow, (p) => openDocs.get(canonPath(p))?.uri ?? pathToFileURL(p).href);
       }
       case "textDocument/codeAction": {
         const td = params?.textDocument as { uri?: string } | undefined;

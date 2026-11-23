@@ -1,0 +1,214 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Szigyr",
+  "scopeName": "source.szigyr",
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#directives"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#regex"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#builtins"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#constants"
+    },
+    {
+      "include": "#functions"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.equivalent.szigyr",
+          "match": "//\\s*szigyr-equivalent(?:\\[[^\\]]*\\])?:.*$"
+        },
+        {
+          "name": "comment.line.double-slash.szigyr",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.szigyr",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "directives": {
+      "patterns": [
+        {
+          "name": "keyword.other.directive.szigyr",
+          "match": "(['\"])use (?:rt|owned|unsafe)\\1"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.szigyr",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.szigyr",
+              "match": "\\\\(?:[bfnrtv'\"\\\\0]|x[0-9A-Fa-f]{2}|u\\{[0-9A-Fa-f]+\\}|u[0-9A-Fa-f]{4})"
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.single.szigyr",
+          "begin": "'",
+          "end": "'",
+          "patterns": [
+            {
+              "name": "constant.character.escape.szigyr",
+              "match": "\\\\(?:[bfnrtv'\"\\\\0]|x[0-9A-Fa-f]{2}|u\\{[0-9A-Fa-f]+\\}|u[0-9A-Fa-f]{4})"
+            }
+          ]
+        },
+        {
+          "name": "string.template.szigyr",
+          "begin": "`",
+          "end": "`",
+          "patterns": [
+            {
+              "name": "constant.character.escape.szigyr",
+              "match": "\\\\(?:[bfnrtv'\"\\\\`0$]|x[0-9A-Fa-f]{2}|u\\{[0-9A-Fa-f]+\\}|u[0-9A-Fa-f]{4})"
+            },
+            {
+              "name": "meta.template.expression.szigyr",
+              "begin": "\\$\\{",
+              "beginCaptures": {
+                "0": {
+                  "name": "punctuation.definition.template-expression.begin.szigyr"
+                }
+              },
+              "end": "\\}",
+              "endCaptures": {
+                "0": {
+                  "name": "punctuation.definition.template-expression.end.szigyr"
+                }
+              },
+              "patterns": [
+                {
+                  "include": "$self"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "regex": {
+      "patterns": [
+        {
+          "name": "string.regexp.szigyr",
+          "match": "(?<=[=(,\\[!&|?:;]|return\\s)/((?:\\\\.|\\[(?:\\\\.|[^\\]\\r\\n])*\\]|[^/\\\\\\r\\n])+)/([imsu]*)"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.szigyr",
+          "match": "\\b(?:await|break|case|continue|default|do|else|export|for|from|if|import|of|return|switch|using|while)\\b"
+        },
+        {
+          "name": "storage.type.szigyr",
+          "match": "\\b(?:class|const|declare|extends|function|interface|let|module|type)\\b"
+        },
+        {
+          "name": "storage.modifier.szigyr",
+          "match": "\\b(?:async|implements|private|public|readonly|static)\\b"
+        },
+        {
+          "name": "keyword.operator.expression.szigyr",
+          "match": "\\b(?:new|satisfies)\\b"
+        }
+      ]
+    },
+    "builtins": {
+      "patterns": [
+        {
+          "name": "support.type.primitive.szigyr",
+          "match": "\\b(?:i8|i16|i32|i64|u8|u16|u32|u64|usize|f32|f64|boolean|number|string|void|unknown|never)\\b"
+        },
+        {
+          "name": "support.type.builtin.szigyr",
+          "match": "\\b(?:Struct|CStruct|CType|Vec|Slice|Pool|Handle|Arena|ArenaBuf|RingTx|RingRx|Ref|Mut|OwnedCell|Resource|Port|Ptr|ConstPtr|CHandle|Result|Array|ReadonlyArray|Map|Set|Promise|RegExp|RegExpMatch|IoError|CastError|JsError|JsRef|DirEntry|FileStat|EnvVar|ProcOptions|ProcOutput|ProcRequest|HttpHeader|HttpRequestInit|HttpResponse|HttpServerConfig|HttpServerRequest|HttpServerResponse|HttpBody|HttpServerRawResponse|HttpClientRequest|HttpServer|QueryParam|AudioConfig|AudioStream|DisplayConfig|DisplayColor|DisplayEvent|DisplaySurface|Disposable|AsyncDisposable|Test)\\b"
+        },
+        {
+          "name": "support.type.capability.szigyr",
+          "match": "\\b(?:Native|Copy|Owned|Send|Key|Codec|System|Alloc|Fs|Clock|Random|Log|Js|Ffi|Spawn|Audio|Display|Net|Proc)\\b"
+        },
+        {
+          "name": "support.function.contract.szigyr",
+          "match": "\\b(?:requires|ensures|invariant|test|forAll)\\b"
+        },
+        {
+          "name": "support.function.builtin.szigyr",
+          "match": "\\b(?:ok|err|panic|cast|cfn|wrapAdd|wrapSub|wrapMul|divTrunc|rem)\\b"
+        },
+        {
+          "name": "support.class.namespace.szigyr",
+          "match": "\\b(?:Math|DetMath|Number|JSON|Url|String|Ring|FakeClock|SeededRandom|MemoryLog|FakeFs|FakeSpawn|FakeAudio|FakeDisplay|FakeNet|FakeProc|TestAlloc)\\b"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.szigyr",
+          "match": "\\b0[xX][0-9A-Fa-f_]+\\b"
+        },
+        {
+          "name": "constant.numeric.binary.szigyr",
+          "match": "\\b0[bB][01_]+\\b"
+        },
+        {
+          "name": "constant.numeric.octal.szigyr",
+          "match": "\\b0[oO][0-7_]+\\b"
+        },
+        {
+          "name": "constant.numeric.decimal.szigyr",
+          "match": "\\b(?:[0-9][0-9_]*(?:\\.[0-9_]+)?|\\.[0-9_]+)(?:[eE][+-]?[0-9_]+)?\\b"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.szigyr",
+          "match": "\\b(?:true|false|null)\\b"
+        },
+        {
+          "name": "variable.language.this.szigyr",
+          "match": "\\bthis\\b"
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "name": "entity.name.function.szigyr",
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=(?:<[^;{}()]*>\\s*)?\\()"
+        }
+      ]
+    }
+  }
+}
