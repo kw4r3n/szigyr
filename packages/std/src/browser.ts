@@ -172,48 +172,52 @@ export function createBrowserAudio(opts: BrowserAudioOptions): Audio {
       };
 
       const stateWire = packState(state);
-      const node = new AudioWorkletNode(ctx, "szigyr-audio-processor", {
-        numberOfInputs: 0,
-        numberOfOutputs: 1,
-        outputChannelCount: [channels],
-        processorOptions: { wasmBytes: opts.wasmBytes, wasmMeta: opts.wasmMeta, cbId: cb.id, channels, stateWire },
-      });
+      let node: AudioWorkletNode | undefined;
+      try {
+        node = new AudioWorkletNode(ctx, "szigyr-audio-processor", {
+          numberOfInputs: 0,
+          numberOfOutputs: 1,
+          outputChannelCount: [channels],
+          processorOptions: { wasmBytes: opts.wasmBytes, wasmMeta: opts.wasmMeta, cbId: cb.id, channels, stateWire },
+        });
 
-      for (const shared of fallbackRings.values()) {
-        shared.onPush = (bytes: Uint8Array) => {
-          for (const [rid, sh] of fallbackRings) {
-            if (sh === shared) {
-              try { node.port.postMessage({ k: "r", i: rid, b: bytes }, [bytes.buffer]); } catch { /* closing */ }
-              break;
+        for (const shared of fallbackRings.values()) {
+          shared.onPush = (bytes: Uint8Array) => {
+            for (const [rid, sh] of fallbackRings) {
+              if (sh === shared) {
+                try { node!.port.postMessage({ k: "r", i: rid, b: bytes }, [bytes.buffer]); } catch { /* closing */ }
+                break;
+              }
             }
+          };
+        }
+
+        let readyRes!: () => void;
+        let readyRej!: (e: Error) => void;
+        const readyP = new Promise<void>((res, rej) => { readyRes = res; readyRej = rej; });
+        node.onprocessorerror = () => readyRej(new Error("AudioWorklet processor error"));
+        node.port.onmessage = (ev: MessageEvent) => {
+          const m = ev.data as Record<string, unknown>;
+          if (!m || typeof m !== "object") return;
+          if (m.k === "ready") readyRes();
+          else if (m.k === "error") readyRej(new Error(String(m.message ?? "worklet init error")));
+          else if (m.k === "r") {
+            const sh = fallbackRings.get(m.i as number);
+            if (sh) ringPushRaw(sh, new Uint8Array(m.b as ArrayBuffer));
+          } else if (m.k === "trap") {
+            noteIsolateTrap({ code: String(m.code), ...(m.file ? { file: String(m.file), line: Number(m.line), col: Number(m.col) } : {}) });
           }
         };
-      }
 
-      let readyRes!: () => void;
-      let readyRej!: (e: Error) => void;
-      const readyP = new Promise<void>((res, rej) => { readyRes = res; readyRej = rej; });
-      node.port.onmessage = (ev: MessageEvent) => {
-        const m = ev.data as Record<string, unknown>;
-        if (!m || typeof m !== "object") return;
-        if (m.k === "ready") readyRes();
-        else if (m.k === "error") readyRej(new Error(String(m.message ?? "worklet init error")));
-        else if (m.k === "r") {
-          const sh = fallbackRings.get(m.i as number);
-          if (sh) ringPushRaw(sh, new Uint8Array(m.b as ArrayBuffer));
-        } else if (m.k === "trap") {
-          noteIsolateTrap({ code: String(m.code), ...(m.file ? { file: String(m.file), line: Number(m.line), col: Number(m.col) } : {}) });
-        }
-      };
-
-      try {
         await readyP;
         await opts.onNode?.(node, ctx);
         node.connect(ctx.destination);
       } catch (e) {
         for (const sh of fallbackRings.values()) sh.onPush = undefined;
-        try { node.port.postMessage({ k: "close" }); } catch { /* ignored */ }
-        try { node.disconnect(); } catch { /* ignored */ }
+        if (node) {
+          try { node.port.postMessage({ k: "close" }); } catch { /* ignored */ }
+          try { node.disconnect(); } catch { /* ignored */ }
+        }
         await cleanup();
         return err({ code: "EIO", message: e instanceof Error ? e.message : String(e) });
       }

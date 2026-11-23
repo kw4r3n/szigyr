@@ -178,7 +178,15 @@ function wrap(path: string, sf: SourceFile, syntaxErrors: SyntaxError[]): Parsed
     },
     offsetOf(line, col) {
       const ls = sf.getLineStarts();
-      return line >= 1 && line <= ls.length ? ls[line - 1]! + col - 1 : undefined;
+      if (line < 1 || line > ls.length || col < 1) return undefined;
+      const start = ls[line - 1]!;
+      let end = line < ls.length ? ls[line]! : sf.text.length;
+      if (line < ls.length) {
+        if (end > start && sf.text.charCodeAt(end - 1) === 10) end--;
+        if (end > start && sf.text.charCodeAt(end - 1) === 13) end--;
+      }
+      const off = start + col - 1;
+      return off <= end ? off : undefined;
     },
     isTokenStart(offset) {
       if (!starts) {

@@ -1,9 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { nodeProc } from "../../std/src/index.ts";
 import { main as cliMain } from "../src/cli.ts";
 import { check, CLI_NAME, mutate, run, type Diagnostic } from "../src/index.ts";
 
@@ -632,5 +634,45 @@ export async function bad(net: Net): Promise<Result<HttpServer, IoError>> {
 }
 `);
     expect(check(rtErrFile).some((d) => d.code === "E4001")).toBe(true);
+  });
+
+  it("cleans up Net servers on non-trap JS exceptions in run() and enforces Proc timeout clamp and output cap (#14, #15)", async () => {
+    const dir = makeTmp("proc-cleanup");
+    const pkgDir = join(dir, "node_modules", "async-boom");
+    mkdirSync(pkgDir, { recursive: true });
+    writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name: "async-boom", type: "module", main: "index.mjs" }));
+    writeFileSync(join(pkgDir, "index.mjs"), `export function fireUnhandled() { void Promise.reject(new Error("async-non-trap-boom")); }\n`);
+
+    const portFile = join(dir, "port.txt");
+    const appFile = join(dir, "app.szigyr");
+    writeFileSync(appFile, `
+import { fireUnhandled } from "npm:async-boom";
+export async function main(sys: System): Promise<void> {
+  const s = await sys.net.serve({ host: "127.0.0.1", port: 0 }, async (_r: HttpServerRequest) => ({ status: 200, headers: [], body: "ok" }));
+  if (s.kind !== "ok") return;
+  sys.fs.writeText(${JSON.stringify(portFile)}, \`\${s.value.port}\`);
+  sys.js.call(fireUnhandled, []);
+  await sys.clock.sleep(20);
+}
+`);
+    await expect(run(appFile)).rejects.toThrow("async-non-trap-boom");
+    const boundPort = Number(readFileSync(portFile, "utf8").trim());
+    expect(boundPort).toBeGreaterThan(0);
+    await expect(new Promise<void>((res, rej) => {
+      const sock = createConnection({ host: "127.0.0.1", port: boundPort }, () => { sock.destroy(); res(); });
+      sock.on("error", rej);
+    })).rejects.toThrow();
+
+    // #15: timeoutMs > 2^31-1 does not overflow 32-bit timer into immediate 1ms SIGKILL
+    const okRes = await nodeProc.run(process.execPath, ["-e", "setTimeout(() => console.log('alive'), 30)"], {
+      cwd: null, env: [], stdin: null, timeoutMs: 3_000_000_000,
+    });
+    expect(okRes).toEqual({ kind: "ok", value: { exitCode: 0, stdout: "alive\n", stderr: "", timedOut: false } });
+
+    // #15: Proc output exceeding 16 MiB aborts with EFBIG instead of unbounded buffering
+    const bigRes = await nodeProc.run(process.execPath, ["-e", "process.stdout.write(Buffer.alloc(17 * 1024 * 1024, 97))"], {
+      cwd: null, env: [], stdin: null, timeoutMs: 10_000,
+    });
+    expect(bigRes).toEqual({ kind: "err", error: { code: "EFBIG", message: expect.stringContaining("exceeded") } });
   });
 });

@@ -23,7 +23,8 @@ function wasmCommand(): [string, string[]] {
   if (wasmCc) {
     const [cmd = "clang", ...args] = splitFlags(wasmCc);
     const hasTarget = args.some((a) => a === "-target" || a.startsWith("-target=") || a === "--target" || a.startsWith("--target="));
-    return [cmd, hasTarget ? args : ["--target=wasm32", ...args]];
+    if (hasTarget) return [cmd, args];
+    return [cmd, cmd === "zig" && args[0] === "cc" ? [...args, "-target", "wasm32-freestanding"] : [...args, "--target=wasm32"]];
   }
   return ["clang", ["--target=wasm32"]];
 }
@@ -63,15 +64,18 @@ export function compileWasm(c: string): Uint8Array {
 
   const out = join(dir, `${hash}.wasm`);
   if (existsSync(out)) {
-    touch(out);
-    const bytes = new Uint8Array(readFileSync(out));
-    compiled.set(hash, bytes);
-    return bytes;
+    try {
+      touch(out);
+      const bytes = new Uint8Array(readFileSync(out));
+      compiled.set(hash, bytes);
+      return bytes;
+    } catch { /* raced with prune; recompile */ }
   }
 
   const tmp = `${out}.${process.pid}.${threadId}.tmp`, src = `${tmp}.c`, wasmTmp = `${tmp}.wasm`;
   writeFileSync(src, c);
   let ok = false;
+  let bytes: Uint8Array;
   try {
     try {
       execFileSync(cc, [...ccArgs, ...WASM_CFLAGS, src, "-o", wasmTmp], { stdio: ["ignore", "ignore", "pipe"] });
@@ -81,6 +85,7 @@ export function compileWasm(c: string): Uint8Array {
         execFileSync("zig", ["cc", "-target", "wasm32-freestanding", ...WASM_CFLAGS, src, "-o", wasmTmp], { stdio: ["ignore", "ignore", "pipe"] });
       } else throw e;
     }
+    bytes = new Uint8Array(readFileSync(wasmTmp));
     renameSync(wasmTmp, out);
     ok = true;
   } catch (e) {
@@ -93,7 +98,6 @@ export function compileWasm(c: string): Uint8Array {
     if (!ok) rmSync(wasmTmp, { force: true });
   }
   prune(dir, `${hash}.wasm`);
-  const bytes = new Uint8Array(readFileSync(out));
   compiled.set(hash, bytes);
   return bytes;
 }

@@ -5,7 +5,10 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { check, mutate, run, runTestFile, type Backend } from "../src/index.ts";
+import { analyze, check, mutate, run, runTestFile, type Backend } from "../src/index.ts";
+import { emitC } from "../src/emit-c.ts";
+import { loadNative } from "../src/native.ts";
+import * as rt from "../../runtime-js/src/index.ts";
 
 function hasSdl3(): boolean {
   try {
@@ -285,4 +288,24 @@ export async function main(sys: System): Promise<void> {
     expect(r.diagnostics).toEqual([]);
     expect(r.trap).toBeNull();
   }, 60000);
+
+  it("throws clean SZ_INTERNAL error instead of longjmp before setjmp on bad sz_audio_fake_render args (#17)", () => {
+    const p = tmpFile("fake-render-bad.szigyr", `
+function step(amp: f32, out: Mut<Slice<f32>>, frames: usize): void {
+  "use rt";
+  for (let i: usize = 0; i < frames; i += 1) out[i] = amp;
+}
+export async function main(sys: System): Promise<void> {
+  const r = await sys.audio.open({ sampleRate: 48000, channels: 1 }, f32(0.1), step);
+  if (r.kind === "ok") await r.value.close();
+}
+`);
+    const a = analyze(p);
+    expect(a.diagnostics).toEqual([]);
+    const c = emitC(a.decls!, "native")!;
+    const native = loadNative(c.c, rt.NATIVE_HOST, c.pkgs);
+    const renderKey = Object.keys(native).find((k) => k.startsWith("sz_audio_fake_render_"))!;
+    expect(renderKey).toBeDefined();
+    expect(() => native[renderKey]!(null, new Float32Array(4), 4)).toThrow(/napi_get_value_external|bad audio render args/);
+  });
 });

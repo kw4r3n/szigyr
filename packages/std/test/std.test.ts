@@ -3,6 +3,7 @@ import { createConnection } from "node:net";
 import { describe, expect, it } from "vitest";
 import { Arena, Trap, Vec, panic, requires, setForeignTrapCheck, stopFakeIsolates, takeIsolateTrap, type Pos } from "../../runtime-js/src/index.ts";
 import { ALLOC, FakeAudio, FakeClock, FakeDisplay, FakeFs, FakeNet, FakeProc, FakeSpawn, MemoryLog, SeededRandom, TestAlloc, createSystem, nodeFs, nodeJs, nodeNet, runMain } from "../src/index.ts";
+import { createBrowserAudio } from "../src/browser.ts";
 import { mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -627,6 +628,50 @@ describe("FakeDisplay", () => {
     await s.present();
     expect(d.presentCount()).toBe(2);
     expect(s.pollEvents()).toEqual([]);
+  });
+
+  it("createBrowserAudio closes owned AudioContext when AudioWorkletNode ctor throws or processor errors (#14)", async () => {
+    const g = globalThis as Record<string, unknown>;
+    const prevCtx = g.AudioContext;
+    const prevNode = g.AudioWorkletNode;
+    let ctxClosed = 0;
+    let throwInCtor = true;
+    class FakeCtx {
+      state = "running";
+      destination = {};
+      audioWorklet = { addModule: async () => {} };
+      async close() {
+        ctxClosed++;
+        this.state = "closed";
+      }
+      async resume() {}
+    }
+    class FakeWorkletNode {
+      port = { onmessage: null as ((ev: MessageEvent) => void) | null, postMessage() {} };
+      onprocessorerror: (() => void) | null = null;
+      constructor() {
+        if (throwInCtor) throw new Error("worklet ctor boom");
+        queueMicrotask(() => this.onprocessorerror?.());
+      }
+      connect() {}
+      disconnect() {}
+    }
+    g.AudioContext = FakeCtx;
+    g.AudioWorkletNode = FakeWorkletNode;
+    try {
+      const audio = createBrowserAudio({ wasmBytes: new Uint8Array(), wasmMeta: { files: [], poss: [], lits: [], fns: {} }, workletUrl: "data:text/javascript," });
+      const r1 = await audio.open({ sampleRate: 48000, channels: 2 }, null, { id: 0, fn: () => {} });
+      expect(r1).toEqual({ kind: "err", error: { code: "EIO", message: "worklet ctor boom" } });
+      expect(ctxClosed).toBe(1);
+
+      throwInCtor = false;
+      const r2 = await audio.open({ sampleRate: 48000, channels: 2 }, null, { id: 0, fn: () => {} });
+      expect(r2).toEqual({ kind: "err", error: { code: "EIO", message: "AudioWorklet processor error" } });
+      expect(ctxClosed).toBe(2);
+    } finally {
+      if (prevCtx === undefined) delete g.AudioContext; else g.AudioContext = prevCtx;
+      if (prevNode === undefined) delete g.AudioWorkletNode; else g.AudioWorkletNode = prevNode;
+    }
   });
 });
 

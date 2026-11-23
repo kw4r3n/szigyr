@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -568,5 +568,52 @@ describe("resident incremental checker, --watch mode, and stdio MCP server", () 
     expect(subLines[2]!.result.structuredContent).toMatchObject({ ok: true, results: [{ name: "noisy npm isolated", ok: true }] });
     expect(subLines[3]!.id).toBe(4);
     expect(subLines[3]!.result.structuredContent).toMatchObject({ ok: true, stdout: "ran\n" });
+
+    // #16: worker timeout kills child process group (no orphaned grandchild)
+    if (process.platform !== "win32") {
+      const pidFile = join(dir, "grandchild.pid");
+      const spawnWaitFile = join(dir, "spawn-wait.szigyr");
+      writeFileSync(spawnWaitFile, [
+        `export async function main(sys: System): Promise<void> {`,
+        `  await sys.proc.run(${JSON.stringify(process.execPath)}, [`,
+        `    "-e",`,
+        `    ${JSON.stringify(`require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`)},`,
+        `  ]);`,
+        `}`,
+      ].join("\n"));
+      const mcpIn2 = new PassThrough();
+      const mcpOut2 = new PassThrough();
+      const rl2 = createInterface({ input: mcpOut2 });
+      const it2 = rl2[Symbol.asyncIterator]();
+      const p2 = serveMcp({ input: mcpIn2, output: mcpOut2 });
+      mcpIn2.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "szigyr_run", arguments: { file: spawnWaitFile, backend: "js", timeoutMs: 600 } } })}\n`);
+      const toResp = JSON.parse((await it2.next()).value!) as Record<string, any>;
+      expect(toResp.result.structuredContent).toMatchObject({ ok: false, timedOut: true });
+      if (existsSync(pidFile)) {
+        const gpid = Number(readFileSync(pidFile, "utf8").trim());
+        expect(gpid).toBeGreaterThan(0);
+        await new Promise((r) => setTimeout(r, 100));
+        let alive = true;
+        try { process.kill(gpid, 0); } catch { alive = false; }
+        if (alive) { try { process.kill(gpid, "SIGKILL"); } catch { /* ignore */ } }
+        expect(alive).toBe(false);
+      }
+      mcpIn2.end();
+      rl2.close();
+      expect(await p2).toBe(0);
+    }
+
+    // #16: oversized MCP line rejects with -32600 instead of unbounded line buffering
+    const bigIn = new PassThrough();
+    const bigOut = new PassThrough();
+    const bigRl = createInterface({ input: bigOut });
+    const bigIt = bigRl[Symbol.asyncIterator]();
+    const bigP = serveMcp({ input: bigIn, output: bigOut });
+    bigIn.write(`{"jsonrpc":"2.0","id":1,"method":"${"a".repeat(16 * 1024 * 1024 + 64)}"}\n`);
+    const errLine = JSON.parse((await bigIt.next()).value!) as Record<string, any>;
+    expect(errLine.error.code).toBe(-32600);
+    bigIn.end();
+    bigRl.close();
+    expect(await bigP).toBe(0);
   }, 60000);
 });

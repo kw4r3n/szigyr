@@ -351,10 +351,71 @@ export function main(sys: System): void {
       expect(await defAt(libUri, 3, 9)).toEqual({ uri: libUri, range: { start: { line: 1, character: 22 }, end: { line: 1, character: 23 } } });
       expect(await defAt(typesUri, 2, 29)).toEqual({ uri: typesUri, range: { start: { line: 0, character: 17 }, end: { line: 0, character: 24 } } });
 
-      // Out-of-line column returns null rather than jumping to a later line
+      // Out-of-line column returns null rather than jumping to a later line (both definition & hover)
       expect(await defAt(mainUri, 0, 500)).toBeNull();
+      expect((await lsp.request("textDocument/hover", { textDocument: { uri: mainUri }, position: { line: 0, character: 500 } })).result).toBeNull();
 
       expect(await lsp.shutdownAndExit()).toBe(0);
+    } finally {
+      if (lsp.proc.exitCode === null) lsp.proc.kill();
+    }
+  }, 60_000);
+
+  it("avoids refreshing unrelated open docs on didChange, does not cache unopened codeAction, and rejects oversized frames (#16)", async () => {
+    const dir = makeTmp("szigyr-lsp-hard-");
+    const libPath = join(dir, "lib.szigyr");
+    const mainPath = join(dir, "main.szigyr");
+    const otherPath = join(dir, "other.szigyr");
+    const unopenedPath = join(dir, "unopened.szigyr");
+    const libUri = pathToFileURL(libPath).href;
+    const mainUri = pathToFileURL(mainPath).href;
+    const otherUri = pathToFileURL(otherPath).href;
+    const unopenedUri = pathToFileURL(unopenedPath).href;
+
+    const libSrc = `export function f(x: i32): i32 { return x + 1; }\n`;
+    const mainSrc = `import { f } from "./lib.szigyr";\nexport function g(): i32 { return f(1); }\n`;
+    const otherSrc = `export function h(): i32 { return 7; }\n`;
+    writeFileSync(libPath, libSrc);
+    writeFileSync(mainPath, mainSrc);
+    writeFileSync(otherPath, otherSrc);
+    writeFileSync(unopenedPath, `export function u(): i32 {\n  var x: i32 = 1;\n  return x;\n}\n`);
+
+    const lsp = new LspClient(dir);
+    try {
+      await lsp.request("initialize", { processId: null, rootUri: pathToFileURL(dir).href, capabilities: {} });
+      lsp.notify("initialized", {});
+
+      for (const [uri, text] of [[libUri, libSrc], [mainUri, mainSrc], [otherUri, otherSrc]] as const) {
+        const p = lsp.waitForDiagnostics(uri);
+        lsp.notify("textDocument/didOpen", { textDocument: { uri, languageId: "szigyr", version: 1, text } });
+        expect(await p).toEqual([]);
+      }
+
+      // Edit lib.szigyr -> only lib & main should republish (NOT unrelated other.szigyr)
+      const pLib = lsp.waitForDiagnostics(libUri);
+      const pMain = lsp.waitForDiagnostics(mainUri);
+      lsp.notify("textDocument/didChange", {
+        textDocument: { uri: libUri, version: 2 },
+        contentChanges: [{ text: `export function f(x: string): string { return x; }\n` }],
+      });
+      await pLib;
+      expect((await pMain).some((d) => d.code === "E2002")).toBe(true);
+
+      // codeAction on unopened file returns quickfix without emitting publishDiagnostics
+      const ca = await lsp.request("textDocument/codeAction", {
+        textDocument: { uri: unopenedUri },
+        range: { start: { line: 1, character: 2 }, end: { line: 1, character: 5 } },
+        context: { diagnostics: [] },
+      });
+      expect(ca.result.length).toBeGreaterThanOrEqual(1);
+      // Confirm via a subsequent hover roundtrip that neither otherUri nor unopenedUri received spurious diagnostics
+      await lsp.request("textDocument/hover", { textDocument: { uri: otherUri }, position: { line: 0, character: 16 } });
+      await expect(lsp.waitFor((m) => m.method === "textDocument/publishDiagnostics" && (m.params?.uri === otherUri || m.params?.uri === unopenedUri), 150)).rejects.toThrow(/timeout/);
+
+      // Oversized Content-Length shuts down framing loop cleanly instead of buffering/OOMing
+      lsp.proc.stdin!.write("Content-Length: 33554432\r\n\r\n");
+      const code = await new Promise<number>((res) => lsp.proc.once("close", (c) => res(c ?? -1)));
+      expect(code).toBe(0);
     } finally {
       if (lsp.proc.exitCode === null) lsp.proc.kill();
     }

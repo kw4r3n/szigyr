@@ -365,16 +365,21 @@ async function runNow(entryFile: string, backend?: Backend, analysis?: Analysis,
   let v: unknown;
   const finish = (): void => { v ??= native?.sz_finish!() ?? null; };
   const m = main as (sys: unknown) => unknown;
-  const r = await runMain((sys) => {
-    let p: unknown;
-    try { p = m(sys); } catch (e) { finish(); throw e; }
-    if (p instanceof Promise) return p.finally(finish);
+  let r: Awaited<ReturnType<typeof runMain>>;
+  try {
+    r = await runMain((sys) => {
+      let p: unknown;
+      try { p = m(sys); } catch (e) { finish(); throw e; }
+      if (p instanceof Promise) return p.finally(finish);
+      finish();
+      return p as void;
+    }, { args: args ?? [] });
+  } finally {
     finish();
-    return p as void;
-  }, { args: args ?? [] });
-  rt.stopFakeIsolates();
-  stopNodeProcs();
-  await Promise.all([rt.stopIsolates(), stopAudioStreams(), stopNodeDisplays(), stopNodeNetServers()]); // Q207, §15.5, Q279, Q295: main ending stops isolates, audio streams, display surfaces, HTTP servers, and child processes
+    rt.stopFakeIsolates();
+    stopNodeProcs();
+    await Promise.all([rt.stopIsolates(), stopAudioStreams(), stopNodeDisplays(), stopNodeNetServers()]); // Q207, §15.5, Q279, Q295: main ending stops isolates, audio streams, display surfaces, HTTP servers, and child processes
+  }
   // §15.4 (3): an isolate record may have landed after main trapped (stopIsolates lets messages land), so it does not beat main's own.
   const t = rt.takeIsolateTrap();
   const c = Array.isArray(v) ? { code: `T${String(v[0]).padStart(3, "0")}`, file: v[1] as string, line: v[2] as number, col: v[3] as number } : null;
@@ -394,15 +399,15 @@ async function runTestFileNow(entryFile: string, opts: TestOptions = {}): Promis
   const e4009 = opts.backend !== "c" ? cOnlyDiagnostic(a.files, a.unsafeOps ?? []) : undefined; // §14.7
   if (e4009) return { diagnostics: [e4009], results: [] };
   rt.clearTests();
-  await loadChecked(a.files, entryFile, opts.all ? "all" : true, a.decls, opts.backend, opts.skipTestFiles);
   try {
+    await loadChecked(a.files, entryFile, opts.all ? "all" : true, a.decls, opts.backend, opts.skipTestFiles);
     const total = rt.registeredTestCount();
     const rawResults = await rt.runTests(opts.filter);
     const results = opts.all ? rawResults : rawResults.map(({ file: _f, ...rest }) => rest);
     const skipped = total - results.length;
     return { diagnostics: [], results, ...(skipped > 0 ? { skipped } : {}) };
   } finally {
-    rt.stopFakeIsolates(); stopNodeProcs(); await Promise.all([stopAudioStreams(), stopNodeDisplays(), stopNodeNetServers()]); rt.clearTests();
+    rt.stopFakeIsolates(); stopNodeProcs(); await Promise.all([rt.stopIsolates(), stopAudioStreams(), stopNodeDisplays(), stopNodeNetServers()]); rt.clearTests();
   }
 }
 
@@ -456,8 +461,8 @@ function capsOf(t: Type): string[] {
 }
 
 /** Static symbol/type/capability/layer/rt-trap query over the entry file. */
-export function queryFile(entryFile: string, parser?: Parser): QueryResult {
-  const a = analyze(entryFile, parser);
+export function queryFile(entryFile: string, parser?: Parser, analysis?: Analysis): QueryResult {
+  const a = analysis ?? analyze(entryFile, parser);
   const entryPath = canonPath(entryFile);
   const file = displayPath(entryPath);
   const decls = a.decls;

@@ -291,7 +291,7 @@ export function bundleNpmImports(
         depSpecs.push(reqSpec);
         depIndex.set(reqSpec, idx);
         const varName = `__dep${idx}`;
-        if (dep.modKind === "cjs" || dep.modKind === "json") {
+        if (dep.modKind === "cjs" || dep.modKind === "json" || dep.modKind === "builtin") {
           header.push(`import ${varName} from ${JSON.stringify(dep.targetSpec)};`);
           depEntries.push(`${JSON.stringify(reqSpec)}: ${varName}`);
         } else {
@@ -383,7 +383,7 @@ export function bundleNpmImports(
             const tmp = `__cjs${cjsTmp++}`;
             return `import ${tmp} from ${JSON.stringify(dep.targetSpec)};\nexport const ${nsMatch[1]} = ${tmp}${semi}`;
           }
-          return full;
+          throw new CliError(`npm bundler: 'export * from ${JSON.stringify(reqSpec)}' from ${dep.modKind} module is not supported (in ${origLabel})`);
         }
         if (trimmed.startsWith("{")) {
           const tmp = `__cjs${cjsTmp++}`;

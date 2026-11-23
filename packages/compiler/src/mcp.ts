@@ -3,7 +3,6 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
-import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { BUILTIN_FUNCTIONS, CAPABILITY_NAMES, NAMESPACES, SPEC_RESERVED, genMembers, nsMembers, opaqueMembers, stringMembers, type Member } from "./builtins.ts";
 import { analyze, check, CLI_NAME, createParser, displayPath, explainCode, mutate, prove, queryFile, run, runTestFile, shutdownSmt, type Backend, type Parser } from "./index.ts";
@@ -281,6 +280,58 @@ async function handleWorker(req: WorkerReq, parser: Parser): Promise<[unknown, b
   }
 }
 
+const MAX_WORKER_STDERR = 64 * 1024;
+const MAX_MCP_LINE_BYTES = 16 * 1024 * 1024;
+
+function killWorker(child: ChildProcess, sig: NodeJS.Signals): void {
+  if (process.platform !== "win32" && child.pid) {
+    try { process.kill(-child.pid, sig); return; } catch { /* fall through to direct kill */ }
+  }
+  try { child.kill(sig); } catch { /* ignored */ }
+}
+
+async function* readMcpLines(input: NodeJS.ReadableStream, signal: AbortSignal): AsyncGenerator<{ ok: true; line: string } | { ok: false }> {
+  let chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of input as AsyncIterable<Buffer | string>) {
+    if (signal.aborted) return;
+    const piece = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
+    let start = 0;
+    while (start < piece.length) {
+      const nl = piece.indexOf(0x0a, start);
+      if (nl < 0) {
+        const rem = piece.length - start;
+        if (total + rem > MAX_MCP_LINE_BYTES) {
+          chunks = []; total = 0;
+          yield { ok: false };
+          return;
+        }
+        chunks.push(start === 0 ? piece : piece.subarray(start));
+        total += rem;
+        break;
+      }
+      const segLen = nl - start;
+      if (total + segLen > MAX_MCP_LINE_BYTES) {
+        chunks = []; total = 0;
+        yield { ok: false };
+        return;
+      }
+      chunks.push(piece.subarray(start, nl));
+      const buf = chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks, total + segLen);
+      chunks = [];
+      total = 0;
+      const line = buf.toString("utf8").trim();
+      if (line) yield { ok: true, line };
+      start = nl + 1;
+    }
+  }
+  if (!signal.aborted && total > 0) {
+    const buf = chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks, total);
+    const line = buf.toString("utf8").trim();
+    if (line) yield { ok: true, line };
+  }
+}
+
 class McpWorker {
   private child: ChildProcess | null = null;
   private nextId = 1;
@@ -303,10 +354,14 @@ class McpWorker {
     if (this.child) return this.child;
     const child = spawn(process.execPath, [fileURLToPath(new URL("./mcp.ts", import.meta.url))], {
       stdio: ["ignore", "pipe", "pipe", "ipc"],
+      detached: process.platform !== "win32",
       env: { ...process.env, SZIGYR_MCP_WORKER: "1" },
     });
     child.stdout?.resume(); // discard child/native stdout so JSON-RPC transport is never corrupted
-    child.stderr?.on("data", (d) => { if (this.child === child) this.stderr += d.toString("utf8"); });
+    child.stderr?.on("data", (d) => {
+      if (this.child !== child || this.stderr.length >= MAX_WORKER_STDERR) return;
+      this.stderr += d.toString("utf8").slice(0, MAX_WORKER_STDERR - this.stderr.length);
+    });
     child.on("message", (msg: WorkerReply) => {
       if (this.child !== child) return;
       const cur = this.pending;
@@ -347,7 +402,7 @@ class McpWorker {
         if (this.pending?.id !== id) return;
         this.pending = undefined;
         if (this.child === child) this.child = null;
-        try { child.kill("SIGKILL"); } catch { /* ignored */ }
+        killWorker(child, "SIGKILL");
         resolvePromise(okTool({ ok: false, file: req.file, error: `timed out after ${timeoutMs}ms`, timedOut: true }, true));
       }, timeoutMs);
       this.pending = { id, file: req.file, resolve: resolvePromise, timer };
@@ -378,18 +433,18 @@ class McpWorker {
       };
       child.once("close", finish);
       const killTimer = setTimeout(() => {
-        try { child.kill("SIGTERM"); } catch { /* ignored */ }
+        killWorker(child, "SIGTERM");
         setTimeout(() => {
-          try { child.kill("SIGKILL"); } catch { /* ignored */ }
+          killWorker(child, "SIGKILL");
           finish();
         }, 200).unref();
       }, 1000);
       killTimer.unref();
       try {
         if (child.connected) child.send({ shutdown: true } satisfies WorkerMsg);
-        else child.kill("SIGTERM");
+        else killWorker(child, "SIGTERM");
       } catch {
-        try { child.kill("SIGTERM"); } catch { /* ignored */ }
+        killWorker(child, "SIGTERM");
       }
     });
   }
@@ -603,15 +658,24 @@ export async function serveMcp(opts: McpOptions = {}): Promise<number> {
     throw new RpcError(-32602, `unknown tool '${name}'`);
   };
 
-  const rl = createInterface({ input, crlfDelay: Infinity });
-  const closeRl = (): void => { rl.close(); };
-  process.on("SIGINT", closeRl);
-  process.on("SIGTERM", closeRl);
+  const ac = new AbortController();
+  const closeInput = (): void => {
+    ac.abort();
+    input.pause();
+    if ("destroy" in input && typeof (input as { destroy?: () => void }).destroy === "function") {
+      (input as { destroy: () => void }).destroy();
+    }
+  };
+  process.on("SIGINT", closeInput);
+  process.on("SIGTERM", closeInput);
 
   try {
-    for await (const raw of rl) {
-      const line = raw.trim();
-      if (!line) continue;
+    for await (const item of readMcpLines(input, ac.signal)) {
+      if (!item.ok) {
+        send({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid Request: line exceeds size limit" } });
+        break;
+      }
+      const line = item.line;
       let msg: Record<string, unknown>;
       try {
         const parsed = JSON.parse(line);
@@ -667,9 +731,8 @@ export async function serveMcp(opts: McpOptions = {}): Promise<number> {
     }
   } finally {
     await worker.close();
-    process.off("SIGINT", closeRl);
-    process.off("SIGTERM", closeRl);
-    rl.close();
+    process.off("SIGINT", closeInput);
+    process.off("SIGTERM", closeInput);
     if (ownParser) parser.close();
   }
   return 0;

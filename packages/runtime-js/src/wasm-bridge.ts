@@ -90,8 +90,9 @@ function createBridge(meta: WasmMeta, host: WasmHost): {
   const cstr = (ptr: number): string => {
     syncMem();
     const start = ptr >>> 0;
+    if (start >= curU8.length) return "";
     let end = start;
-    while (curU8[end] !== 0) end++;
+    while (end < curU8.length && curU8[end] !== 0) end++;
     return decodeUtf8(curU8.subarray(start, end));
   };
 
@@ -507,8 +508,8 @@ function createBridge(meta: WasmMeta, host: WasmHost): {
             for (const sPin of f.slicePins) {
               if (sPin.byteLen > 0) new Uint8Array(sPin.ab, sPin.byteOff, sPin.byteLen).set(curU8.subarray(sPin.ptr, sPin.ptr + sPin.byteLen));
             }
-            for (const ptr of f.allocs) exp.sz_dealloc(ptr);
           } finally {
+            for (const ptr of f.allocs) { try { exp.sz_dealloc(ptr); } catch { /* best-effort unwind */ } }
             exp.sz_set_depth(savedDepth);
             frames.pop();
           }
@@ -527,11 +528,14 @@ function createBridge(meta: WasmMeta, host: WasmHost): {
         const savedDepth = exp.sz_get_depth(), savedSp = sp.value as number;
         frames.push(f); exp.sz_set_depth(0);
         try { return runWithDefers(fn); } finally {
-          sp.value = savedSp;
-          exp.sz_sync_frame(v0, p0, a0);
-          for (const ptr of f.allocs) exp.sz_dealloc(ptr);
-          exp.sz_set_depth(savedDepth);
-          frames.pop();
+          try {
+            sp.value = savedSp;
+            exp.sz_sync_frame(v0, p0, a0);
+          } finally {
+            for (const ptr of f.allocs) { try { exp.sz_dealloc(ptr); } catch { /* best-effort unwind */ } }
+            exp.sz_set_depth(savedDepth);
+            frames.pop();
+          }
         }
       };
       (api as Record<string, unknown>)[`sz_audio_${id}`] = {

@@ -189,6 +189,42 @@ describe("node target builder & CLI", () => {
     const loaded = await loadedMod.load();
     expect(loaded.exports.addMul(6, 7)).toBe(43);
 
+    // #14: loaded.run() resets C state (done/ready) and isolateCause across sequential invocations
+    const reRunFile = join(srcDir, "rerun.szigyr");
+    writeFileSync(reRunFile, [
+      `function divRt(x: i32): i32 { "use rt"; return divTrunc(42, x); }`,
+      `async function isoEcho(port: Port<i32, i32>): Promise<void> {`,
+      `  const v = await port.recv();`,
+      `  if (v !== null) port.send(divRt(v));`,
+      `}`,
+      `export async function main(sys: System): Promise<void> {`,
+      `  const args = sys.proc.args();`,
+      `  if (args.length > 0 && args[0] === "trap") {`,
+      `    divRt(0);`,
+      `    return;`,
+      `  }`,
+      `  const p = sys.spawn.isolate<i32, i32>(isoEcho);`,
+      `  p.send(1);`,
+      `  const r = await p.recv();`,
+      `  p.close();`,
+      `  sys.log.info(\`ok:\${r ?? -1}\`);`,
+      `}`,
+    ].join("\n"));
+    const reRunOut = mkdtempSync(join(tmpdir(), "szigyr-bnode-rerun-"));
+    const builtReRun = buildNode(reRunFile, { outDir: reRunOut, mode: "lib", backend: "c" });
+    expect(builtReRun.diagnostics).toEqual([]);
+    const reMod = await import(pathToFileURL(join(reRunOut, "app.js")).href) as {
+      load: () => Promise<{ run: (fn?: unknown, opts?: { args?: string[] }) => Promise<{ stdout: string; trap: { code: string } | null; exitCode: number }> }>;
+    };
+    const reLoaded = await reMod.load();
+    const rTrap = await reLoaded.run(undefined, { args: ["trap"] });
+    expect(rTrap.trap?.code).toBe("T007");
+    expect(rTrap.exitCode).toBe(3);
+    const rOk = await reLoaded.run(undefined, { args: ["ok"] });
+    expect(rOk.trap).toBeNull();
+    expect(rOk.exitCode).toBe(0);
+    expect(rOk.stdout).toBe("ok:42\n");
+
     const appFile = join(srcDir, "app.szigyr");
     writeFileSync(appFile, `function mul(a: i32, b: i32): i32 { "use rt"; return a * b; }\nexport function main(sys: System): void { sys.log.info(\`v=\${mul(6, 7)}\`); }\n`);
 

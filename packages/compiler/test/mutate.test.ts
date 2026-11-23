@@ -1313,4 +1313,54 @@ test("dec", (t: Test) => {
     expect(sum(rev)).toEqual(sum(one));
     expect(sum(two)).toMatchObject({ targets: 2, survived: 0 });
   });
+
+  it("keeps astCursor aligned for cache keys when skipping preceding C-only tests (#17)", async () => {
+    const { file, cacheFile } = tmpFile("conly-cursor.szigyr", `
+function cHelper(): boolean {
+  "use owned";
+  "use unsafe";
+  const p = Ptr.null<u8>();
+  return p.isNull();
+}
+function addTen(x: i32): i32 {
+  return x + 10;
+}
+test("c only first", (t: Test) => {
+  t.ok(cHelper());
+});
+test("js second", (t: Test) => {
+  t.eq(addTen(1), 11);
+});
+`);
+    const r1 = await mutate(file, { cache: true, cacheFile });
+    expect(r1.diagnostics).toEqual([]);
+    expect(r1.baselineFailure).toBeNull();
+    expect(r1.summary.cached).toBe(0);
+    expect(r1.mutants.length).toBeGreaterThan(0);
+
+    const r2 = await mutate(file, { cache: true, cacheFile });
+    expect(r2.summary.cached).toBe(r1.mutants.length);
+
+    // Edit ONLY the JS test after the skipped C-only test: must invalidate cache key cleanly
+    writeFileSync(file, `
+function cHelper(): boolean {
+  "use owned";
+  "use unsafe";
+  const p = Ptr.null<u8>();
+  return p.isNull();
+}
+function addTen(x: i32): i32 {
+  return x + 10;
+}
+test("c only first", (t: Test) => {
+  t.ok(cHelper());
+});
+test("js second", (t: Test) => {
+  t.eq(addTen(1), 11);
+  t.eq(addTen(2), 12);
+});
+`);
+    const r3 = await mutate(file, { cache: true, cacheFile });
+    expect(r3.summary.cached).toBe(0);
+  });
 });

@@ -138,15 +138,31 @@ export function createNodeProc(argv?: readonly string[]): Proc {
           activeProcs.delete(child);
           if (timer !== undefined) { clearTimeout(timer); timer = undefined; }
         };
+        const MAX_PROC_OUTPUT_BYTES = 16 * 1024 * 1024;
         const outChunks: Buffer[] = [];
         const errChunks: Buffer[] = [];
-        child.stdout?.on("data", (c: Buffer) => outChunks.push(c));
-        child.stderr?.on("data", (c: Buffer) => errChunks.push(c));
-        if (options?.timeoutMs != null && options.timeoutMs > 0) {
+        let totalBytes = 0;
+        const onOutChunk = (dst: Buffer[]) => (c: Buffer): void => {
+          if (settled) return;
+          totalBytes += c.length;
+          if (totalBytes > MAX_PROC_OUTPUT_BYTES) {
+            settled = true;
+            outChunks.length = 0;
+            errChunks.length = 0;
+            cleanup();
+            try { child.kill("SIGKILL"); } catch { /* ignore */ }
+            resolve(err({ code: "EFBIG", message: `process output exceeded ${MAX_PROC_OUTPUT_BYTES} bytes` }));
+            return;
+          }
+          dst.push(c);
+        };
+        child.stdout?.on("data", onOutChunk(outChunks));
+        child.stderr?.on("data", onOutChunk(errChunks));
+        if (options?.timeoutMs != null && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0) {
           timer = setTimeout(() => {
             timedOut = true;
             try { child.kill("SIGKILL"); } catch { /* ignore */ }
-          }, options.timeoutMs);
+          }, Math.min(2_147_483_647, options.timeoutMs));
         }
         child.on("error", (e) => {
           if (settled) return;

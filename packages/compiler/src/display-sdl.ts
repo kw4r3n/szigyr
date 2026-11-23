@@ -75,16 +75,27 @@ static bool load_sdl(const char **ec, const char **em) {
   sdl.ok = 1; return true;
 }
 
-typedef struct {
+#define SZ_EVQ_CAP 256
+typedef struct sz_surf {
   void *win, *ren, *tex;
   uint32_t win_id;
   int tex_w, tex_h;
   _Atomic int closed;
+  struct sz_surf *next;
+  sz_ev evq[SZ_EVQ_CAP];
+  uint32_t ev_head, ev_len;
 } sz_surf;
+
+static sz_surf *surf_head = 0;
 
 static void quit_if_idle(void) { sdl.QuitSubSystem(0x20u); if (!sdl.WasInit(0)) sdl.Quit(); }
 static void destroy_surf(sz_surf *s) {
   if (!atomic_exchange(&s->closed, 1)) {
+    sz_surf **cur = &surf_head;
+    while (*cur) {
+      if (*cur == s) { *cur = s->next; s->next = 0; break; }
+      cur = &(*cur)->next;
+    }
     if (s->tex) { sdl.DestroyTexture(s->tex); s->tex = 0; }
     if (s->ren) { sdl.DestroyRenderer(s->ren); s->ren = 0; }
     if (s->win) { sdl.DestroyWindow(s->win); s->win = 0; }
@@ -142,7 +153,9 @@ static napi_value n_open(napi_env env, napi_callback_info info) {
   if (sdl.SetRenderVSync) (void)sdl.SetRenderVSync(ren, 1);
   sdl.SetRenderDrawBlendMode(ren, 1u);
   sz_surf *s = calloc(1, sizeof *s);
+  if (!s) { sdl.DestroyRenderer(ren); sdl.DestroyWindow(win); quit_if_idle(); return err_obj(env, "ENOMEM", "out of memory"); }
   s->win = win; s->ren = ren; s->win_id = sdl.GetWindowID(win);
+  s->next = surf_head; surf_head = s;
   napi_value ext; napi_create_external(env, s, fin_surf, 0, &ext);
   return ext;
 }
@@ -229,12 +242,51 @@ static napi_value n_present(napi_env env, napi_callback_info info) {
   sz_surf *s = get_surf(env, argv[0]); if (s) sdl.RenderPresent(s->ren);
   return 0;
 }
+static uint32_t ev_win_id(const sz_ev *ev) {
+  switch (ev->type) {
+    case 0x210u: return ev->c.win;
+    case 0x400u: return ev->m.win;
+    case 0x401u: case 0x402u: return ev->b.win;
+    case 0x403u: return ev->w.win;
+    case 0x300u: case 0x301u: return ev->k.win;
+    default: return 0;
+  }
+}
+static void evq_push(sz_surf *t, const sz_ev *ev) {
+  if (t->ev_len == SZ_EVQ_CAP) {
+    t->ev_head = (t->ev_head + 1u) % SZ_EVQ_CAP;
+    t->ev_len--;
+  }
+  uint32_t tail = (t->ev_head + t->ev_len) % SZ_EVQ_CAP;
+  t->evq[tail] = *ev;
+  t->ev_len++;
+}
+static void pump_events(void) {
+  sz_ev ev;
+  for (int n = 0; n < 1024 && sdl.PollEvent(&ev); n++) {
+    if (ev.type == 0x100u) {
+      for (sz_surf *p = surf_head; p; p = p->next) {
+        if (!atomic_load(&p->closed)) evq_push(p, &ev);
+      }
+      continue;
+    }
+    uint32_t wid = ev_win_id(&ev);
+    if (!wid) continue;
+    for (sz_surf *p = surf_head; p; p = p->next) {
+      if (!atomic_load(&p->closed) && p->win_id == wid) { evq_push(p, &ev); break; }
+    }
+  }
+}
 static napi_value n_poll(napi_env env, napi_callback_info info) {
   size_t argc = 1; napi_value argv[1]; napi_get_cb_info(env, info, &argc, argv, 0, 0);
   napi_value arr; napi_create_array(env, &arr);
   sz_surf *s = get_surf(env, argv[0]); if (!s) return arr;
-  uint32_t idx = 0; sz_ev ev;
-  for (int n = 0; n < 256 && sdl.PollEvent(&ev); n++) {
+  pump_events();
+  uint32_t idx = 0;
+  for (int n = 0; n < SZ_EVQ_CAP && s->ev_len > 0; n++) {
+    sz_ev ev = s->evq[s->ev_head];
+    s->ev_head = (s->ev_head + 1u) % SZ_EVQ_CAP;
+    s->ev_len--;
     napi_value o = 0;
     if (ev.type == 0x100u || (ev.type == 0x210u && ev.c.win == s->win_id)) {
       napi_create_object(env, &o); set_str(env, o, "kind", "close");

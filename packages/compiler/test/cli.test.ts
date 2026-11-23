@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { expect, it } from "vitest";
 import { check, createParser } from "../src/index.ts";
 import { CLI_NAME } from "../src/names.ts";
@@ -741,4 +742,22 @@ it("hardens c:/CType/Cflags/npm:/timeout boundaries and applies colliding multi-
   const okTs = join(dir, "ok.szigyr");
   writeFileSync(okTs, `export function id(x: i32): i32 { "use rt"; return x; }\n`);
   expect(szigyr("prove", "--timeout=999999999999", okTs).code).toBe(2);
+
+  // #15: CJS require("events") preserves callable constructor and ESM `export * from <cjs>` fails explicitly
+  const evPkg = join(dir, "node_modules", "evpkg");
+  mkdirSync(evPkg, { recursive: true });
+  writeFileSync(join(evPkg, "package.json"), JSON.stringify({ name: "evpkg", main: "index.cjs" }));
+  writeFileSync(join(evPkg, "index.cjs"), `const EventEmitter = require("events"); module.exports = { make() { const e = new EventEmitter(); e.on("x", () => {}); return typeof e.emit; } };\n`);
+  const evDist = join(dir, "ev-dist");
+  const evBundle = bundleNpmImports([{ fromFile: appFile, spec: "npm:evpkg" }], evDist, { allowNodeBuiltins: true });
+  const evRel = evBundle.entries.get("npm:evpkg")!;
+  const evMod = await import(pathToFileURL(join(evDist, evRel)).href) as { default: { make: () => string } };
+  expect(evMod.default.make()).toBe("function");
+
+  const starPkg = join(dir, "node_modules", "starpkg");
+  mkdirSync(starPkg, { recursive: true });
+  writeFileSync(join(starPkg, "package.json"), JSON.stringify({ name: "starpkg", type: "module", main: "index.mjs" }));
+  writeFileSync(join(starPkg, "dep.cjs"), `module.exports = { a: 1 };\n`);
+  writeFileSync(join(starPkg, "index.mjs"), `export * from "./dep.cjs";\n`);
+  expect(() => bundleNpmImports([{ fromFile: appFile, spec: "npm:starpkg" }], join(dir, "star-dist"), { allowNodeBuiltins: true })).toThrow(/not supported/);
 });

@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -203,5 +203,44 @@ export function main(sys: System): void {
 `);
     const res = await run(f, { backend: "wasm" });
     expect(res.trap?.code).toBe("T013");
+  });
+
+  it.skipIf(process.platform === "win32")("places --target=wasm32 after wrapper args when SZIGYR_WASM_CC is composite (#15)", () => {
+    const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-wasm-cc-`));
+    const wrap = join(dir, "wrap-cc.sh");
+    writeFileSync(wrap, `#!/bin/sh
+if [ "$1" != "clang" ]; then
+  echo "expected clang first, got $1" >&2
+  exit 1
+fi
+exec "$@"
+`);
+    chmodSync(wrap, 0o755);
+    const prev = process.env.SZIGYR_WASM_CC;
+    process.env.SZIGYR_WASM_CC = `${wrap} clang`;
+    try {
+      const f = tmpFile("wrap-test.szigyr", `export function sq(x: i32): i32 { "use rt"; return x * x + 17; }\n`);
+      const a = analyze(f);
+      expect(a.diagnostics).toEqual([]);
+      const c = emitC(a.decls!, "wasm")!;
+      const bytes = compileWasm(c.c);
+      expect(bytes.subarray(0, 4)).toEqual(new Uint8Array([0, 0x61, 0x73, 0x6d]));
+    } finally {
+      if (prev === undefined) delete process.env.SZIGYR_WASM_CC;
+      else process.env.SZIGYR_WASM_CC = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("bounds cstr() at the end of linear memory without looping on missing NUL (#17)", () => {
+    const f = tmpFile("cstr-bound.szigyr", `export function id(x: i32): i32 { "use rt"; return x; }\n`);
+    const a = analyze(f);
+    expect(a.diagnostics).toEqual([]);
+    const c = emitC(a.decls!, "wasm")!;
+    const patchedC = `${c.c}\n__attribute__((export_name("w_bad_cstr"))) void w_bad_cstr(void) {\n  uintptr_t end = (uintptr_t)__builtin_wasm_memory_size(0) * 65536u;\n  volatile unsigned char *p = (volatile unsigned char *)(end - 4u);\n  p[0] = 'X'; p[1] = 'Y'; p[2] = 'Z'; p[3] = 'W';\n  sz_fail((const char *)p);\n}\n`;
+    const bytes = compileWasm(patchedC);
+    const meta = { ...c.meta!, fns: { ...c.meta!.fns, bad_cstr: { nargs: 0, isVoid: true } } };
+    const api = rt.instantiateWasm(bytes as BufferSource, meta, rt.NATIVE_HOST);
+    expect(() => api.bad_cstr!()).toThrow("XYZW");
   });
 });

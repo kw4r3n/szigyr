@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Diagnostic, Position, Range } from "./diagnostics.ts";
 import { callFns, exprTypes, localOf } from "./expr.ts";
 import {
-  analyze, check, CLI_NAME, createParser, queryFile,
+  analyze, CLI_NAME, createParser, queryFile,
   type Parser, type QuerySymbol,
 } from "./index.ts";
 import { SyntaxKind as K, isId, type Node, type ParsedFile, type ts } from "./parse.ts";
@@ -146,13 +146,6 @@ function paramHoverType(narrow: Node, decls: ReturnType<typeof analyze>["decls"]
 interface LspLocation {
   readonly uri: string;
   readonly range: LspRange;
-}
-
-function offsetInLine(pf: ParsedFile, line1: number, col1: number): number | undefined {
-  if (line1 < 1 || col1 < 1) return undefined;
-  const off = pf.offsetOf(line1, col1);
-  if (off === undefined || off > pf.sourceFile.text.length) return undefined;
-  return pf.position(off).line === line1 ? off : undefined;
 }
 
 function resolveDefinition(
@@ -306,6 +299,7 @@ export async function serveLsp(opts: LspOptions = {}): Promise<number> {
 
   const openDocs = new Map<string, { uri: string; path: string }>();
   const diagCache = new Map<string, { raw: Diagnostic[]; lsp: LspDiag[] }>();
+  const depsByDoc = new Map<string, { deps: Set<string>; hasMissingDep: boolean }>();
 
   let shutdownRequested = false;
   let exitCode: number | undefined;
@@ -319,10 +313,11 @@ export async function serveLsp(opts: LspOptions = {}): Promise<number> {
     output.write(Buffer.concat([header, body]));
   };
 
-  const publishFor = (doc: { uri: string; path: string }, canon: string): void => {
-    const all = check(doc.path, parser);
+  const computeDiags = (docPath: string, canon: string) => {
+    const a = analyze(docPath, parser);
+    const all = [...a.diagnostics, ...(a.warnings ?? [])];
     const mine = all.filter((d) => {
-      try { return canonPath(d.file) === canon; } catch { return resolve(d.file) === doc.path; }
+      try { return canonPath(d.file) === canon; } catch { return resolve(d.file) === docPath; }
     });
     const lsp: LspDiag[] = mine.map((d) => ({
       range: toLspRange(d.range),
@@ -331,17 +326,34 @@ export async function serveLsp(opts: LspOptions = {}): Promise<number> {
       source: CLI_NAME,
       message: d.message,
     }));
-    diagCache.set(canon, { raw: mine, lsp });
-    send({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: { uri: doc.uri, diagnostics: lsp } });
+    return {
+      raw: mine,
+      lsp,
+      deps: new Set(a.files.map((f) => canonPath(f.path))),
+      hasMissingDep: all.some((d) => d.code === "E7001"),
+    };
   };
 
-  const refreshOpenDocs = (priorityCanon?: string): void => {
-    if (priorityCanon) {
-      const first = openDocs.get(priorityCanon);
-      if (first) publishFor(first, priorityCanon);
+  const publishFor = (doc: { uri: string; path: string }, canon: string): { raw: Diagnostic[]; lsp: LspDiag[] } => {
+    const res = computeDiags(doc.path, canon);
+    depsByDoc.set(canon, { deps: res.deps, hasMissingDep: res.hasMissingDep });
+    const entry = { raw: res.raw, lsp: res.lsp };
+    diagCache.set(canon, entry);
+    send({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: { uri: doc.uri, diagnostics: res.lsp } });
+    return entry;
+  };
+
+  const refreshOpenDocs = (changedCanon?: string): void => {
+    if (changedCanon) {
+      const first = openDocs.get(changedCanon);
+      if (first) publishFor(first, changedCanon);
     }
     for (const [canon, doc] of openDocs) {
-      if (canon !== priorityCanon) publishFor(doc, canon);
+      if (canon === changedCanon) continue;
+      const depInfo = depsByDoc.get(canon);
+      if (!changedCanon || !depInfo || depInfo.hasMissingDep || depInfo.deps.has(changedCanon)) {
+        publishFor(doc, canon);
+      }
     }
   };
 
@@ -376,7 +388,7 @@ export async function serveLsp(opts: LspOptions = {}): Promise<number> {
         const narrow = findNarrowest(pf.sourceFile, pf.sourceFile, off);
         if (!narrow) return null;
 
-        const q = queryFile(loc.path, parser);
+        const q = queryFile(loc.path, parser, a);
         const sym = symbolAtDeclName(narrow, pf.sourceFile, q.symbols, line1);
         if (sym) {
           return {
@@ -425,7 +437,7 @@ export async function serveLsp(opts: LspOptions = {}): Promise<number> {
         const pf = a.files.find((f) => canonPath(f.path) === loc.canon);
         const mod = pf ? a.decls.mods.find((m) => m.pf.path === pf.path) : undefined;
         if (!pf || !mod) return null;
-        const off = offsetInLine(pf, pos.line + 1, pos.character + 1);
+        const off = pf.offsetOf(pos.line + 1, pos.character + 1);
         if (off === undefined) return null;
         const narrow = findNarrowest(pf.sourceFile, pf.sourceFile, off);
         if (!narrow) return null;
@@ -437,10 +449,10 @@ export async function serveLsp(opts: LspOptions = {}): Promise<number> {
         const uri = td?.uri;
         const loc = typeof uri === "string" ? uriToPath(uri) : undefined;
         if (!loc || !uri || !reqRange) return [];
-        const doc = openDocs.get(loc.canon) ?? { uri, path: loc.path };
-        if (!diagCache.has(loc.canon)) publishFor(doc, loc.canon);
-        const cached = diagCache.get(loc.canon);
-        if (!cached) return [];
+        const openDoc = openDocs.get(loc.canon);
+        const cached = openDoc
+          ? (diagCache.get(loc.canon) ?? publishFor(openDoc, loc.canon))
+          : computeDiags(loc.path, loc.canon);
         const actions: unknown[] = [];
         for (let i = 0; i < cached.raw.length; i++) {
           const raw = cached.raw[i]!;
@@ -537,9 +549,10 @@ export async function serveLsp(opts: LspOptions = {}): Promise<number> {
       const existing = openDocs.get(loc.canon);
       openDocs.delete(loc.canon);
       diagCache.delete(loc.canon);
+      depsByDoc.delete(loc.canon);
       parser.clearOverlay?.(loc.path);
       send({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: { uri: existing?.uri ?? td!.uri!, diagnostics: [] } });
-      refreshOpenDocs();
+      refreshOpenDocs(loc.canon);
       return;
     }
     if (method === "exit") {
@@ -555,6 +568,8 @@ export async function serveLsp(opts: LspOptions = {}): Promise<number> {
     input.off("data", onData);
     input.off("end", onEnd);
     input.off("close", onEnd);
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
     input.pause();
     if ("unref" in input && typeof (input as { unref?: () => void }).unref === "function") {
       (input as { unref: () => void }).unref();
@@ -563,8 +578,22 @@ export async function serveLsp(opts: LspOptions = {}): Promise<number> {
     resolveDone(exitCode ?? (shutdownRequested ? 0 : 0));
   };
 
-  let buf = Buffer.alloc(0);
+  const MAX_LSP_HEADER_BYTES = 16 * 1024;
+  const MAX_LSP_BODY_BYTES = 16 * 1024 * 1024;
+  let chunks: Buffer[] = [];
+  let buffered = 0;
+  let expectedLen: number | null = null;
   let queue: Promise<void> = Promise.resolve();
+  const takeBuf = (): Buffer => {
+    const out = chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks, buffered);
+    chunks = [];
+    buffered = 0;
+    return out;
+  };
+  const pushRest = (rest: Buffer): void => {
+    chunks = rest.length > 0 ? [rest] : [];
+    buffered = rest.length;
+  };
 
   const dispatchMessage = (raw: string): void => {
     let msg: Record<string, unknown>;
@@ -593,22 +622,36 @@ export async function serveLsp(opts: LspOptions = {}): Promise<number> {
   };
 
   const onData = (chunk: Buffer | string): void => {
+    if (closed) return;
     const piece = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
-    buf = Buffer.concat([buf, piece]);
-    while (true) {
-      const sep = buf.indexOf("\r\n\r\n");
-      if (sep < 0) break;
-      const header = buf.subarray(0, sep).toString("ascii");
-      const m = /content-length:\s*(\d+)/i.exec(header);
-      if (!m) {
-        buf = buf.subarray(sep + 4);
-        continue;
+    if (piece.length > 0) {
+      chunks.push(piece);
+      buffered += piece.length;
+    }
+    while (!closed) {
+      if (expectedLen === null) {
+        if (buffered < 4) break;
+        const buf = takeBuf();
+        const sep = buf.indexOf("\r\n\r\n");
+        if (sep < 0) {
+          if (buf.length > MAX_LSP_HEADER_BYTES) { finish(); return; }
+          pushRest(buf);
+          break;
+        }
+        if (sep > MAX_LSP_HEADER_BYTES) { finish(); return; }
+        const header = buf.subarray(0, sep).toString("ascii");
+        pushRest(buf.subarray(sep + 4));
+        const m = /(?:^|\r\n)content-length:\s*(\d+)\b/i.exec(header);
+        if (!m) continue;
+        const len = Number(m[1]);
+        if (!Number.isSafeInteger(len) || len < 0 || len > MAX_LSP_BODY_BYTES) { finish(); return; }
+        expectedLen = len;
       }
-      const len = Number(m[1]);
-      const bodyStart = sep + 4;
-      if (buf.length < bodyStart + len) break;
-      const body = buf.subarray(bodyStart, bodyStart + len).toString("utf8");
-      buf = buf.subarray(bodyStart + len);
+      if (buffered < expectedLen) break;
+      const buf = takeBuf();
+      const body = buf.subarray(0, expectedLen).toString("utf8");
+      pushRest(buf.subarray(expectedLen));
+      expectedLen = null;
       queue = queue.then(() => { if (!closed) dispatchMessage(body); });
     }
   };
@@ -616,10 +659,15 @@ export async function serveLsp(opts: LspOptions = {}): Promise<number> {
   const onEnd = (): void => {
     void queue.finally(finish);
   };
+  const onSignal = (): void => {
+    finish();
+  };
 
   input.on("data", onData);
   input.on("end", onEnd);
   input.on("close", onEnd);
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
   return await doneP;
 }
 

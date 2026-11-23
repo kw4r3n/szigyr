@@ -13,6 +13,14 @@ it("parses in-memory sources: AST, positions, syntax errors, token starts", () =
   expect(ok.isTokenStart(ok.offsetOf(1, 5)!)).toBe(true); // `a`
   expect(ok.isTokenStart(ok.offsetOf(1, 6)!)).toBe(false); // space
   expect(ok.offsetOf(99, 1)).toBeUndefined();
+  expect(ok.offsetOf(1, 0)).toBeUndefined();
+  expect(ok.offsetOf(1, 11)).toBe(10); // EOL before `\n`
+  expect(ok.offsetOf(1, 12)).toBeUndefined(); // past LF does not jump to line 2
+  const crlf = parseSources({ "/m/crlf.ts": "ab\r\ncd" }).get("/m/crlf.ts")!;
+  expect(crlf.offsetOf(1, 3)).toBe(2); // EOL before `\r\n`
+  expect(crlf.offsetOf(1, 4)).toBeUndefined(); // past CRLF does not jump to line 2
+  expect(crlf.offsetOf(2, 3)).toBe(6); // EOF on last line
+  expect(crlf.offsetOf(2, 4)).toBeUndefined();
   const bad = r.get("/m/bad.ts")!;
   expect(bad.syntaxErrors[0]).toMatchObject({ start: 8, code: 1109 });
 });

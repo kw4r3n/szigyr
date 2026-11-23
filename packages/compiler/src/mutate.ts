@@ -412,6 +412,9 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
   const skippedTests: string[] = [];
   for (let i = 0; i < registeredTests.length; i++) {
     const t = registeredTests[i]!;
+    const curIdx = astCursor.get(t.file) ?? 0;
+    astCursor.set(t.file, curIdx + 1);
+    const ta = testAstsByFile.get(t.file)?.[curIdx];
     const out = await runOneTest(t.fn, 0, Infinity, true);
     if (!out.ok) {
       if (out.kind === "conly") {
@@ -425,9 +428,6 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
         summary: emptySummary,
       };
     }
-    const curIdx = astCursor.get(t.file) ?? 0;
-    astCursor.set(t.file, curIdx + 1);
-    const ta = testAstsByFile.get(t.file)?.[curIdx];
     activeTests.push({ name: t.name, mod: ta?.mod ?? entryMod, source: ta?.source ?? "", node: ta?.node ?? entryMod.sf, fn: t.fn, steps: mutState.steps, durationMs: out.durationMs, reached: new Set(mutState.reached), reachedMutants: new Set(mutState.reachedMutants) });
   }
 

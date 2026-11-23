@@ -244,6 +244,33 @@ export async function main(sys: System): Promise<void> {
       env: { ...process.env, SDL_VIDEODRIVER: "dummy" },
     });
     expect(stdout).toBe(refOut);
+
+    // #14: multiple simultaneous SDL display surfaces poll and close cleanly
+    process.env.SDL_VIDEODRIVER = "dummy";
+    try {
+      const dual = await runSrc(`
+export async function main(sys: System): Promise<void> {
+  const r1 = await sys.display.open({ title: "W1", width: 32, height: 24 });
+  const r2 = await sys.display.open({ title: "W2", width: 32, height: 24 });
+  if (r1.kind !== "ok" || r2.kind !== "ok") return;
+  await using s1 = r1.value;
+  await using s2 = r2.value;
+  s1.clear({ r: 10, g: 20, b: 30, a: 255 });
+  s2.fillRect(2, 2, 4, 4, { r: 200, g: 100, b: 50, a: 255 });
+  await s1.present();
+  await s2.present();
+  const _e1 = s1.pollEvents();
+  const _e2 = s2.pollEvents();
+  sys.log.info(\`dual=\${s1.isOpen()}:\${s2.isOpen()}\`);
+}
+`, "c");
+      expect(dual.diagnostics).toEqual([]);
+      expect(dual.trap).toBeNull();
+      expect(dual.stdout).toBe("dual=true:true\n");
+    } finally {
+      if (prevDrv === undefined) delete process.env.SDL_VIDEODRIVER;
+      else process.env.SDL_VIDEODRIVER = prevDrv;
+    }
   }, 120_000);
 
   const pw = findPlaywright();

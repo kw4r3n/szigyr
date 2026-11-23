@@ -12,9 +12,16 @@ import { INT_RANGE, I64_MIN, isBool, isErr, type Type } from "./types.ts";
 
 interface ProbeRes { ok: boolean; stderr: string }
 
+const MAX_PKG_CACHE = 256;
+const MAX_PROBE_CACHE = 512;
 const pkgKnown = new Map<string, boolean>();
 const pkgFlags = new Map<string, string[]>();
 const probeCache = new Map<string, ProbeRes>();
+
+function cacheSet<V>(cache: Map<string, V>, max: number, key: string, val: V): void {
+  if (!cache.has(key) && cache.size >= max) cache.delete(cache.keys().next().value!);
+  cache.set(key, val);
+}
 
 /** D160: the environment pkg-config answers from is part of the cache key (the caches live as long as the process, and the environment can change in it). */
 const pkgEnv = (pkg: string): string => ["PKG_CONFIG_PATH", "PKG_CONFIG_LIBDIR", "PKG_CONFIG_SYSROOT_DIR"].map((k) => process.env[k] ?? "").join("\0") + `\0${pkg}`;
@@ -25,7 +32,7 @@ function pkgExists(pkg: string): boolean {
   let ok = pkgKnown.get(k);
   if (ok === undefined) {
     try { execFileSync("pkg-config", ["--exists", "--", pkg], { stdio: "ignore" }); ok = true; } catch { ok = false; }
-    pkgKnown.set(k, ok);
+    cacheSet(pkgKnown, MAX_PKG_CACHE, k, ok);
   }
   return ok;
 }
@@ -37,7 +44,7 @@ function cflagsOf(pkg: string): string[] {
   if (flags === undefined) {
     try { flags = sanitizeCflags(splitFlags(execFileSync("pkg-config", ["--cflags", "--", pkg], { encoding: "utf8" }))); }
     catch { flags = []; }
-    pkgFlags.set(k, flags);
+    cacheSet(pkgFlags, MAX_PKG_CACHE, k, flags);
   }
   return flags;
 }
@@ -54,7 +61,7 @@ function probe(source: string, cflags: string[]): ProbeRes {
       const raw = String((e as { stderr?: string }).stderr ?? "").trim();
       res = { ok: false, stderr: raw.length > 1500 ? raw.slice(0, 1500) : raw };
     }
-    probeCache.set(key, res);
+    cacheSet(probeCache, MAX_PROBE_CACHE, key, res);
   }
   return res;
 }
