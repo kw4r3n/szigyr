@@ -1,14 +1,61 @@
 import {
-  Port, Slice, asTrap, err, noteIsolateTrap, ok, readU8Slice, registerFakeIsolate, replaceU8Vec, trap,
+  Port, Slice, asTrap, cast, err, isTrap, noteIsolateTrap, ok, readU8Slice, registerFakeIsolate, replaceU8Vec, trap,
   type Channel, type Envelope, type ForeignTrap, type Pos, type Result, type Vec,
 } from "../../runtime-js/src/index.ts";
 import {
   ALLOC, type Alloc, type Audio, type AudioCallbackSpec, type AudioConfig, type AudioStream, type Clock, type DirEntry,
   type Display, type DisplayColor, type DisplayConfig, type DisplayEvent, type DisplaySurface,
   type FileStat, type Fs, type FsEntryKind, type HttpClientRequest, type HttpHeader, type HttpRequestInit, type HttpResponse,
-  type HttpServer, type HttpServerConfig, type HttpServerRawResponse, type HttpServerRequest, type HttpServerResponse, type IoError, type Log, type Net,
+  type HttpServer, type HttpServerConfig, type HttpServerRawResponse, type HttpServerRequest, type HttpServerResponse, type IoError, type Js, type JsError, type JsRef, type Log, type Net,
   type Proc, type ProcOptions, type ProcOutput, type ProcRequest, type Random, type Spawn,
 } from "./types.ts";
+
+/** Q059: info -> stdout, warn / error -> stderr, each message + "\n", no prefix. */
+export function createLog(
+  stdout: (s: string) => void = (m) => console.log(m.replace(/\n$/, "")),
+  stderr: (s: string) => void = (m) => console.error(m.replace(/\n$/, "")),
+): Log {
+  return { info: (m) => stdout(m + "\n"), warn: (m) => stderr(m + "\n"), error: (m) => stderr(m + "\n") };
+}
+
+export const hostClock: Clock = {
+  nowMs: () => Date.now(),
+  sleep: (ms) => {
+    const d = Number.isFinite(ms) && ms > 0 ? Math.min(ms, 2147483647) : 0;
+    return new Promise((r) => setTimeout(r, d));
+  },
+};
+
+export const hostRandom: Random = {
+  nextF64: () => Math.random(),
+  nextU32: () => Math.floor(Math.random() * 2 ** 32),
+};
+
+const jsError = (e: unknown): JsError => ({ code: e instanceof Error ? e.name : "Error", message: e instanceof Error ? e.message : String(e) });
+// Traps are not catchable from Szigyr code (§8): they pass through the Js boundary.
+const guard = <T>(f: () => T): Result<T, JsError> => { try { return ok(f()); } catch (e) { if (isTrap(e)) throw e; return err(jsError(e)); } };
+
+export const hostJs: Js = {
+  call: (f, args) => guard(() => (f as (...a: JsRef[]) => JsRef)(...args)),
+  new: (ctor, args) => guard(() => Reflect.construct(ctor as new (...a: JsRef[]) => JsRef, args)),
+  invoke: (obj, method, args) => guard(() => {
+    const f = (obj as Record<string, unknown>)[method];
+    if (typeof f !== "function") throw new TypeError(`${method} is not a function`);
+    return Reflect.apply(f, obj, args);
+  }),
+  get: (obj, key) => guard(() => (obj as Record<string, JsRef>)[key]),
+  set: (obj, key, value) => guard(() => { (obj as Record<string, JsRef>)[key] = value; return null; }),
+  object: (entries) => {
+    const o: Record<string, JsRef> = {};
+    for (const e of entries) Object.defineProperty(o, e.key, { value: e.value, enumerable: true, writable: true, configurable: true });
+    return o;
+  },
+  await: async (v) => { try { return ok(await v); } catch (e) { if (isTrap(e)) throw e; return err(jsError(e)); } },
+  decode: (v, desc) => cast(v, desc),
+  encode: (v) => v,
+  callback: (f, desc) => (...a: unknown[]): void => { f(cast(a[0], desc)); },
+  fn: (f) => (...args: JsRef[]): JsRef => f(args),
+};
 
 export class FakeClock implements Clock {
   private ms: number;

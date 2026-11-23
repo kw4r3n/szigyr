@@ -233,6 +233,7 @@ class FnProver {
   private vid = 0;
   private readonly contracts: Map<FnSym, ExtractedContracts>;
   private readonly tagIds = new Map<string, bigint>();
+  private localsById: Map<number, LocalSym> | undefined;
   private loopDepth = 0;
   private loopBreaks: State[] = [];
   private loopContinues: State[] = [];
@@ -1994,17 +1995,19 @@ class FnProver {
   }
 
   private findLocalById(id: number): LocalSym | undefined {
-    let found: LocalSym | undefined;
-    const walk = (n: Node): void => {
-      if (found) return;
-      if (isId(n)) {
-        const s = localOf.get(n);
-        if (s?.id === id) { found = s; return; }
-      }
-      n.forEachChild(walk);
-    };
-    walk(this.f.decl);
-    return found;
+    if (!this.localsById) {
+      const map = new Map<number, LocalSym>();
+      const walk = (n: Node): void => {
+        if (isId(n)) {
+          const s = localOf.get(n);
+          if (s && !map.has(s.id)) map.set(s.id, s);
+        }
+        n.forEachChild(walk);
+      };
+      walk(this.f.decl);
+      this.localsById = map;
+    }
+    return this.localsById.get(id);
   }
 
   /** Synthesizes and SMT-verifies safe range auto-invariants for canonical counting `for` loops (Q291). */

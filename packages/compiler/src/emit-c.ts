@@ -32,6 +32,9 @@ const RANGE: Record<string, [string, string]> = {
 const CNUM: Record<NumName, string> = { f64: "double", f32: "float", i8: "int8_t", i16: "int16_t", i32: "int32_t", i64: "int64_t", u8: "uint8_t", u16: "uint16_t", u32: "uint32_t", u64: "uint64_t", usize: "uint32_t" };
 // Q271: `<math.h>` macros; the finite ones are the JS values.
 const NUMBER_CONSTS: Record<string, string> = { POSITIVE_INFINITY: "INFINITY", NEGATIVE_INFINITY: "(-INFINITY)", NaN: "NAN", EPSILON: "2.220446049250313e-16", MAX_SAFE_INTEGER: "9007199254740991.0" };
+const RT_COMMON_H = readFileSync(new URL("./c/sz_common.h", import.meta.url), "utf8");
+const RT_NATIVE_H = readFileSync(new URL("./c/sz_rt.h", import.meta.url), "utf8");
+const RT_WASM_H = readFileSync(new URL("./c/sz_wasm_rt.h", import.meta.url), "utf8");
 const numText = (n: ts.NumericLiteral): number => Number(n.text.replace(/_/g, ""));
 const isGen = (t: Type, n: string): boolean => t.k === "gen" && t.name === n;
 /** Structs, and the all-readonly Copy records strict / rt accepts as Copy Structs (Q043). */
@@ -137,10 +140,11 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
     } else keys.set(f.decl, "!generic"); // called through its instances only (emit.ts)
   }
   // Managed call sites of generic strict / rt functions get the key of their instance (D104).
+  const fnsByDecl = new Map(fns.map((f) => [f.decl, f]));
   for (const mod of prog.mods) {
     if (mod.pf.path === DETMATH_PATH) continue;
     const walk = (n: Node): void => {
-      const target = n.kind === K.FunctionDeclaration ? fns.find((f) => f.decl === n) : undefined;
+      const target = n.kind === K.FunctionDeclaration ? fnsByDecl.get(n as ts.FunctionDeclaration) : undefined;
       if (target) {
         // #3: `emitPreFn` emits leading `requires(...)` in JS so `forAll(fn)` skips only own preconditions; register any generic strict/rt calls inside them.
         if (!target.unsafe && !target.sig.tparams.length && !fnParamIdx(target).length && target.decl.body) {
@@ -1927,7 +1931,6 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
       ].join("\n"));
       wasmAudio[String(id)] = { init: `sz_audio_init_${id}`, render: `sz_audio_render_${id}`, free: `sz_audio_free_${id}` };
     }
-    const rtW = readFileSync(new URL("./c/sz_wasm_rt.h", import.meta.url), "utf8");
     const runWb = [
       `SZ_EXP(sz_run_wb) void sz_run_wb(int32_t id, void *p) {`,
       `  switch (id) {`,
@@ -1936,7 +1939,7 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
       `  }`,
       `}`,
     ].join("\n");
-    const c = [rtW, ...typedefs, ...helpers, ...wbTypes, ...protos, ...cleanProtos, ...out, ...cleanBodies, ...wrappers, ...audioW, runWb].join("\n");
+    const c = [RT_WASM_H, RT_COMMON_H, ...typedefs, ...helpers, ...wbTypes, ...protos, ...cleanProtos, ...out, ...cleanBodies, ...wrappers, ...audioW, runWb].join("\n");
     return { c, keys, pkgs: [], meta: { files, poss: posList, lits, fns: wasmFns, ...(audioInsts.length ? { audio: wasmAudio } : {}) }, ...(opts?.proved ? { eliminated } : {}) };
   }
 
@@ -2077,13 +2080,13 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
   const hdrs = new Set<string>(), pkgs = new Set<string>();
   for (const mod of prog.mods) for (const spec of mod.cdecls.keys()) { const cs = parseCSpec(spec); if (cs && isValidPkgName(cs.pkg) && isValidCHeader(cs.header)) { hdrs.add(cs.header); pkgs.add(cs.pkg); } }
 
-  const rtH = readFileSync(new URL("./c/sz_rt.h", import.meta.url), "utf8");
   const c = [
     `static const int SZ_POS[][3] = {${poss.join(",") || "{0,0,0}"}};`,
     `static const char *const SZ_FILES[] = {${files.map((x) => JSON.stringify(x)).join(",") || "\"\""}};`,
     `static const char *const SZ_LITS[] = {${lits.map(cstr).join(",") || "\"\""}};`, // byte-exact, NUL included (#34)
     `#define SZ_NLITS ${lits.length}`,
-    rtH,
+    RT_NATIVE_H,
+    RT_COMMON_H,
     `static const size_t SZ_LITLEN[] = {${lits.map((x) => Buffer.byteLength(x)).join(",") || "0"}};`,
     ...[...hdrs].map((h) => `#include <${h}>`),
     `static double sz_num(napi_value v) { double d; SZ_OK(napi_get_value_double(sz_env, v, &d)); return d; }`,

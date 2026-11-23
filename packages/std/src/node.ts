@@ -3,34 +3,19 @@ import { randomBytes } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import * as http from "node:http";
 import { basename, dirname, join } from "node:path";
-import { asTrap, cast, err, isTrap, noteIsolateTrap, ok, readU8Slice, replaceU8Vec, spawnIsolate, type ForeignTrap, type Pos, type Result, type Slice, type Vec } from "../../runtime-js/src/index.ts";
-import { readDisplayRgba, validateDisplayConfig, webFetch } from "./fake.ts";
+import { asTrap, err, noteIsolateTrap, ok, readU8Slice, replaceU8Vec, spawnIsolate, type ForeignTrap, type Pos, type Result, type Slice, type Vec } from "../../runtime-js/src/index.ts";
+import { createLog, hostClock, hostJs, hostRandom, readDisplayRgba, validateDisplayConfig, webFetch } from "./fake.ts";
 import {
   ALLOC, type Alloc, type Audio, type AudioCallbackSpec, type AudioConfig, type AudioStream, type Clock, type DirEntry,
   type Display, type DisplayColor, type DisplayConfig, type DisplayEvent, type DisplaySurface,
   type FileStat, type Fs, type FsEntryKind, type HttpHeader, type HttpServer, type HttpServerConfig, type HttpServerRawResponse, type HttpServerRequest,
-  type HttpServerResponse, type IoError, type Js, type JsError, type JsRef, type Log, type Net, type Proc, type ProcOptions,
+  type HttpServerResponse, type IoError, type Js, type Log, type Net, type Proc, type ProcOptions,
   type ProcOutput, type Random, type Spawn, type System,
 } from "./types.ts";
 
-export { ALLOC };
-
-/** Q059: info -> stdout, warn / error -> stderr, each message + "\n", no prefix. */
-export function createLog(stdout: (s: string) => void, stderr: (s: string) => void): Log {
-  return { info: (m) => stdout(m + "\n"), warn: (m) => stderr(m + "\n"), error: (m) => stderr(m + "\n") };
-}
-
-export const nodeClock: Clock = {
-  nowMs: () => Date.now(),
-  sleep: (ms) => {
-    const d = Number.isFinite(ms) && ms > 0 ? Math.min(ms, 2147483647) : 0;
-    return new Promise((r) => setTimeout(r, d));
-  },
-};
-export const nodeRandom: Random = {
-  nextF64: () => Math.random(),
-  nextU32: () => Math.floor(Math.random() * 2 ** 32),
-};
+export { ALLOC, createLog };
+export const nodeClock: Clock = hostClock;
+export const nodeRandom: Random = hostRandom;
 
 const ioError = (e: unknown): IoError => {
   const x = e as { code?: unknown; message?: unknown };
@@ -344,34 +329,7 @@ export const nodeSpawn: Spawn = {
   isolate: (path, name) => spawnIsolate(path, name),
 };
 
-const jsError = (e: unknown): JsError => ({
-  code: e instanceof Error ? e.name : "Error",
-  message: e instanceof Error ? e.message : String(e),
-});
-// Traps are not catchable from Szigyr code (§8): they pass through the Js boundary.
-const guard = <T>(f: () => T): Result<T, JsError> => { try { return ok(f()); } catch (e) { if (isTrap(e)) throw e; return err(jsError(e)); } };
-
-export const nodeJs: Js = {
-  call: (f, args) => guard(() => (f as (...a: JsRef[]) => JsRef)(...args)),
-  new: (ctor, args) => guard(() => Reflect.construct(ctor as new (...a: JsRef[]) => JsRef, args)),
-  invoke: (obj, method, args) => guard(() => {
-    const f = (obj as Record<string, unknown>)[method];
-    if (typeof f !== "function") throw new TypeError(`${method} is not a function`);
-    return Reflect.apply(f, obj, args);
-  }),
-  get: (obj, key) => guard(() => (obj as Record<string, JsRef>)[key]),
-  set: (obj, key, value) => guard(() => { (obj as Record<string, JsRef>)[key] = value; return null; }),
-  object: (entries) => {
-    const o: Record<string, JsRef> = {};
-    for (const e of entries) Object.defineProperty(o, e.key, { value: e.value, enumerable: true, writable: true, configurable: true });
-    return o;
-  },
-  await: async (v) => { try { return ok(await v); } catch (e) { if (isTrap(e)) throw e; return err(jsError(e)); } },
-  decode: (v, desc) => cast(v, desc),
-  encode: (v) => v,
-  callback: (f, desc) => (...a: unknown[]): void => { f(cast(a[0], desc)); },
-  fn: (f) => (...args: JsRef[]): JsRef => f(args),
-};
+export const nodeJs: Js = hostJs;
 
 let registeredAudio: Audio = {
   async open(_c: AudioConfig, _s: unknown, _cb: AudioCallbackSpec): Promise<Result<AudioStream, IoError>> {

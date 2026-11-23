@@ -354,12 +354,19 @@ export class Checker {
       }
       return add(callee, m);
     };
+    const sitesByFrom = new Map<FnSym, typeof this.fnSites>();
+    for (const site of this.fnSites) {
+      if (!site.from) continue;
+      let list = sitesByFrom.get(site.from);
+      if (!list) sitesByFrom.set(site.from, list = []);
+      list.push(site);
+    }
     for (const f of this.prog.fns) if (f.layer !== "managed" && !fnParams(f).length) add(f, new Map());
     for (const site of this.fnSites) if (!site.from || site.from.layer === "managed") resolve(site, undefined);
-    for (let q = queue.shift(); q; q = queue.shift()) {
+    for (let qi = 0; qi < queue.length; qi++) {
+      const q = queue[qi]!;
       const fromKey = key(q);
-      for (const site of this.fnSites) {
-        if (site.from !== q.f) continue;
+      for (const site of sitesByFrom.get(q.f) ?? []) {
         const to = resolve(site, q);
         if (!to) continue;
         let list = edges.get(fromKey);
@@ -369,8 +376,8 @@ export class Checker {
     }
     const cyclePath = (from: Inst, to: Inst): string[] | undefined => {
       const target = key(to), seen = new Set<string>(), q: { inst: Inst; path: string[] }[] = [{ inst: from, path: [to.f.name, from.f.name] }];
-      while (q.length) {
-        const cur = q.shift()!, k = key(cur.inst);
+      for (let qi = 0; qi < q.length; qi++) {
+        const cur = q[qi]!, k = key(cur.inst);
         if (k === target) return cur.path;
         if (seen.has(k)) continue;
         seen.add(k);

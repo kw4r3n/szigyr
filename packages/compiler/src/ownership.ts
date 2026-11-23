@@ -40,7 +40,6 @@ const strip = (e: ts.Expression): ts.Expression => {
 };
 const genName = (t: Type | undefined): string | undefined => { const u = t && unref(t); return u?.k === "gen" ? u.name : undefined; };
 const borrowMode = (t: Type | undefined): "ref" | "mut" | undefined => (t?.k === "gen" && t.name === "Ref" ? "ref" : t?.k === "gen" && t.name === "Mut" ? "mut" : undefined);
-const FN_EXPR = new Set<K>([K.ArrowFunction, K.FunctionExpression]);
 const isNever = (t: Type | undefined): boolean => t?.k === "prim" && t.name === "never";
 
 export function checkOwnership(prog: Program): void {

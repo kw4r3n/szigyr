@@ -575,7 +575,7 @@ export async function serveLsp(opts: LspOptions = {}): Promise<number> {
       (input as { unref: () => void }).unref();
     }
     if (ownParser) parser.close();
-    resolveDone(exitCode ?? (shutdownRequested ? 0 : 0));
+    resolveDone(exitCode ?? 0);
   };
 
   const MAX_LSP_HEADER_BYTES = 16 * 1024;

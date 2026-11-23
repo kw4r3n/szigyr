@@ -18,7 +18,6 @@ export interface Field { name: string; type: Type; readonly: boolean }
 /** Q127: conditions a type parameter takes on from the positions it is used in, checked on every instantiation. */
 /** `nopromise`: every user type parameter has it (Q130 addendum): a Promise cannot hide behind a type parameter. */
 export type Capability = "Copy" | "Native" | "Owned" | "Send" | "Key" | "Codec";
-export const CAPABILITIES = new Set<Capability>(["Copy", "Native", "Owned", "Send", "Key", "Codec"]);
 /** `owner`: the declaring layer for user type parameters (Q068 b): "managed" ones take owned types only when explicitly bounded; strict / rt ones may. */
 export interface TParam {
   name: string; id: number; constraint?: Type; caps?: Set<Capability>;

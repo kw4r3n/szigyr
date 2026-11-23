@@ -1,13 +1,11 @@
 // Compiles strict / rt C translation units to freestanding Wasm via clang / lld and instantiates them (Q280, Q281).
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { threadId } from "node:worker_threads";
 import { splitFlags } from "./cdecl.ts";
-import { CLI_NAME } from "./names.ts";
-import { CBuildError } from "./native.ts";
+import { CBuildError, ensurePrivateCacheDir, pruneCacheDir, touchCacheEntry } from "./native.ts";
 import { instantiateWasmAsync, type WasmHost, type WasmMeta } from "../../runtime-js/src/index.ts";
 
 export const WASM_CFLAGS = [
@@ -31,20 +29,6 @@ function wasmCommand(): [string, string[]] {
 
 const compiled = new Map<string, Uint8Array>();
 
-function touch(p: string): void { const now = new Date(); try { utimesSync(p, now, now); } catch { /* raced with a prune */ } }
-
-function prune(dir: string, keep: string): void {
-  try {
-    const names = readdirSync(dir);
-    if (names.length <= 500) return;
-    const cutoff = Date.now() - 7 * 864e5;
-    for (const n of names) {
-      const p = join(dir, n);
-      try { if (n !== keep && statSync(p).mtimeMs < cutoff) rmSync(p, { force: true }); } catch { /* gone already */ }
-    }
-  } catch { /* cache pruning is best-effort */ }
-}
-
 /** Compiles freestanding C source to Wasm binary bytes, cached on disk by source hash. */
 export function compileWasm(c: string): Uint8Array {
   const [cc, ccArgs] = wasmCommand();
@@ -54,18 +38,12 @@ export function compileWasm(c: string): Uint8Array {
   const memHit = compiled.get(hash);
   if (memHit) return memHit;
 
-  const dir = join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), `${CLI_NAME}-wasm`);
-  let st;
-  try { mkdirSync(dir, { recursive: true, mode: 0o700 }); st = statSync(dir); }
-  catch (e) { throw new CBuildError(`Wasm backend: cache directory ${dir} is not usable: ${(e as Error).message}`); }
-  if ((process.getuid && st.uid !== process.getuid()) || (st.mode & 0o022)) {
-    throw new CBuildError(`Wasm backend: cache directory ${dir} is not private to this user`);
-  }
+  const dir = ensurePrivateCacheDir("wasm", "Wasm backend");
 
   const out = join(dir, `${hash}.wasm`);
   if (existsSync(out)) {
     try {
-      touch(out);
+      touchCacheEntry(out);
       const bytes = new Uint8Array(readFileSync(out));
       compiled.set(hash, bytes);
       return bytes;
@@ -97,7 +75,7 @@ export function compileWasm(c: string): Uint8Array {
     rmSync(src, { force: true });
     if (!ok) rmSync(wasmTmp, { force: true });
   }
-  prune(dir, `${hash}.wasm`);
+  pruneCacheDir(dir, `${hash}.wasm`);
   compiled.set(hash, bytes);
   return bytes;
 }
