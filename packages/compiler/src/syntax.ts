@@ -834,7 +834,9 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
           const opText = op.getText(sf);
           e1000(op, `operator '${opText}'`, { kind: "operator", op: opText });
         }
-        if (op.kind === K.EqualsToken && (b.left.kind === K.ArrayLiteralExpression || b.left.kind === K.ObjectLiteralExpression)) e1000(b.left, "destructuring assignment");
+        let lhs = b.left;
+        while (lhs.kind === K.ParenthesizedExpression) lhs = (lhs as ts.ParenthesizedExpression).expression;
+        if (op.kind === K.EqualsToken && (lhs.kind === K.ArrayLiteralExpression || lhs.kind === K.ObjectLiteralExpression)) e1000(b.left, "destructuring assignment", { kind: "destructuring-assignment" });
         else expr(b.left);
         expr(b.right);
         return;

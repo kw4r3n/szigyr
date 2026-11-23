@@ -575,6 +575,7 @@ class Flow {
   /** An assignment target `a.f` / `a[i]`: its root is used; writing through `Ref` is E3006 (Q050). Returns the object written to. Leaves the root in `active`. */
   private lhs(l: ts.Expression): ts.Expression | undefined {
     if (isId(l)) { const sym = localOf.get(l); if (sym) this.useCheck(l, sym); return undefined; }
+    if (l.kind !== K.PropertyAccessExpression && l.kind !== K.ElementAccessExpression) return undefined;
     const obj = l.kind === K.PropertyAccessExpression ? (l as ts.PropertyAccessExpression).expression : (l as ts.ElementAccessExpression).expression;
     const tmp = this.sliceCall(strip(obj)); // Q222 (b): a written `slice` / `view` is not a borrowed argument or a receiver
     if (tmp) this.m.at("E3004", tmp.name, `'${tmp.name.text}' can only be a borrowed argument or a receiver`, { kind: "borrow-temp-position" });

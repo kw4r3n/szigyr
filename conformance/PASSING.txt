@@ -92,6 +92,7 @@ reject/E1000-break-outside-loop.szigyr
 reject/E1000-class-extends.szigyr
 reject/E1000-continue-in-switch.szigyr
 reject/E1000-ctor-default-this.szigyr
+reject/E1000-destructuring-assignment.szigyr
 reject/E1000-detmath-redeclare.szigyr
 reject/E1000-directive-after-first-statement.szigyr
 reject/E1000-duplicate-class-member.szigyr
@@ -120,6 +121,7 @@ reject/E1000-member-name-proto.szigyr
 reject/E1000-member-name-then.szigyr
 reject/E1000-module-array-destructuring.szigyr
 reject/E1000-module-destructuring-duplicate-name.szigyr
+reject/E1000-object-destructuring-assignment.szigyr
 reject/E1000-object-literal-proto.szigyr
 reject/E1000-object-type.szigyr
 reject/E1000-param-prop-dup-field.szigyr
