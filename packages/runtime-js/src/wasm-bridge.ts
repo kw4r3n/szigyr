@@ -22,6 +22,7 @@ interface WasmExports {
   sz_get_depth(): number;
   sz_set_depth(d: number): void;
   sz_defer_enter(): number;
+  sz_defer_step(): number;
   sz_defer_leave(prev: number): void;
   sz_nvecs_get(): number;
   sz_npools_get(): number;
@@ -443,6 +444,33 @@ function createBridge(meta: WasmMeta, host: WasmHost): {
     exp = instance.exports as unknown as WasmExports;
     mem = exp.memory;
     const sp = exp.__stack_pointer;
+    const runWithDefers = <T>(body: () => T): T => {
+      const savedDefer = exp.sz_defer_enter();
+      let hasPrimary = false;
+      let cleanupErr: unknown;
+      let hasCleanupErr = false;
+      try {
+        return body();
+      } catch (e) {
+        hasPrimary = true;
+        throw e;
+      } finally {
+        try {
+          // Run remaining defers one by one so a trap in one cleanup does not skip outer cleanups.
+          while (true) {
+            try {
+              if (!exp.sz_defer_step()) break;
+            } catch (e) {
+              if (!hasCleanupErr) { cleanupErr = e; hasCleanupErr = true; }
+            }
+          }
+        } finally {
+          exp.sz_defer_leave(savedDefer);
+        }
+        if (!hasPrimary && hasCleanupErr) throw cleanupErr;
+      }
+    };
+
     const api: Record<string, (...a: unknown[]) => unknown> = {
       sz_poll: () => null,
       sz_finish: () => null,
@@ -456,36 +484,30 @@ function createBridge(meta: WasmMeta, host: WasmHost): {
         const p0 = exp.sz_npools_get() >>> 0;
         const a0 = exp.sz_narenas_get() >>> 0;
         const savedDepth = exp.sz_get_depth();
-        const savedDefer = exp.sz_defer_enter();
         const savedSp = sp.value as number;
         frames.push(f);
         exp.sz_set_depth(0);
         let res: unknown;
         try {
-          res = fn(...argHandles);
+          res = runWithDefers(() => fn(...argHandles));
         } finally {
           try {
-            try {
-              // Run any un-unwound defers while stack slots above savedSp remain intact.
-              exp.sz_defer_leave(savedDefer);
-            } finally {
-              sp.value = savedSp;
-              if (f.wb) {
-                const { id, fr } = f.wb;
-                f.wb = undefined;
-                exp.sz_run_wb(id, fr);
-              }
-              exp.sz_sync_frame(v0, p0, a0);
-              syncMem();
-              for (const [ab, { ptr, wbRange }] of f.bufMap) {
-                const [off, len] = wbRange();
-                if (len > 0) new Uint8Array(ab, off, len).set(curU8.subarray(ptr + off, ptr + off + len));
-              }
-              for (const sPin of f.slicePins) {
-                if (sPin.byteLen > 0) new Uint8Array(sPin.ab, sPin.byteOff, sPin.byteLen).set(curU8.subarray(sPin.ptr, sPin.ptr + sPin.byteLen));
-              }
-              for (const ptr of f.allocs) exp.sz_dealloc(ptr);
+            sp.value = savedSp;
+            if (f.wb) {
+              const { id, fr } = f.wb;
+              f.wb = undefined;
+              exp.sz_run_wb(id, fr);
             }
+            exp.sz_sync_frame(v0, p0, a0);
+            syncMem();
+            for (const [ab, { ptr, wbRange }] of f.bufMap) {
+              const [off, len] = wbRange();
+              if (len > 0) new Uint8Array(ab, off, len).set(curU8.subarray(ptr + off, ptr + off + len));
+            }
+            for (const sPin of f.slicePins) {
+              if (sPin.byteLen > 0) new Uint8Array(sPin.ab, sPin.byteOff, sPin.byteLen).set(curU8.subarray(sPin.ptr, sPin.ptr + sPin.byteLen));
+            }
+            for (const ptr of f.allocs) exp.sz_dealloc(ptr);
           } finally {
             exp.sz_set_depth(savedDepth);
             frames.pop();
@@ -502,18 +524,14 @@ function createBridge(meta: WasmMeta, host: WasmHost): {
       const runAudio = <T>(fn: () => T): T => {
         const f: Frame = { vals: [undefined], bufMap: new Map(), slicePins: [], allocs: [], arenaNotes: new Map(), wb: undefined };
         const v0 = exp.sz_nvecs_get() >>> 0, p0 = exp.sz_npools_get() >>> 0, a0 = exp.sz_narenas_get() >>> 0;
-        const savedDepth = exp.sz_get_depth(), savedDefer = exp.sz_defer_enter(), savedSp = sp.value as number;
+        const savedDepth = exp.sz_get_depth(), savedSp = sp.value as number;
         frames.push(f); exp.sz_set_depth(0);
-        try { return fn(); } finally {
-          try {
-            exp.sz_defer_leave(savedDefer);
-          } finally {
-            sp.value = savedSp;
-            exp.sz_sync_frame(v0, p0, a0);
-            for (const ptr of f.allocs) exp.sz_dealloc(ptr);
-            exp.sz_set_depth(savedDepth);
-            frames.pop();
-          }
+        try { return runWithDefers(fn); } finally {
+          sp.value = savedSp;
+          exp.sz_sync_frame(v0, p0, a0);
+          for (const ptr of f.allocs) exp.sz_dealloc(ptr);
+          exp.sz_set_depth(savedDepth);
+          frames.pop();
         }
       };
       (api as Record<string, unknown>)[`sz_audio_${id}`] = {
@@ -526,9 +544,10 @@ function createBridge(meta: WasmMeta, host: WasmHost): {
         render(boxPtr: number, outF32: Float32Array, nFrames: number): void {
           const bytes = outF32.byteLength;
           if (bytes > outCap) {
-            if (outPtr) exp.sz_dealloc(outPtr);
-            outPtr = exp.sz_alloc(bytes) >>> 0;
-            if (!outPtr) throw new Error("wasm audio: out of memory");
+            if (outPtr) { exp.sz_dealloc(outPtr); outPtr = 0; outCap = 0; }
+            const next = exp.sz_alloc(bytes) >>> 0;
+            if (!next) throw new Error("wasm audio: out of memory");
+            outPtr = next;
             outCap = bytes;
           }
           if (bytes) { syncMem(); curU8.fill(0, outPtr, outPtr + bytes); }

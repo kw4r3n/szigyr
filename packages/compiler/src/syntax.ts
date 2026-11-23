@@ -2,6 +2,7 @@
 // anything else falls to a default branch that reports E1000. Anchors follow docs/DIAGNOSTICS.md.
 import { dirname } from "node:path";
 import { BUILTIN_NAMES, CAPABILITY_NAMES } from "./builtins.ts";
+import { isValidCHeader } from "./cdecl.ts";
 import type { Diagnostic } from "./diagnostics.ts";
 import { DETMATH_PATH } from "./detmath.ts";
 import { canonPath } from "./modules.ts";
@@ -202,7 +203,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
   function cSpecifierOk(text: string): boolean {
     if (!text.startsWith("c:")) return false;
     const parts = text.slice(2).split(":");
-    return parts.length === 2 && parts.every((q) => q.length > 0 && !/[\s\x00-\x1f\x7f:<>"\\]/.test(q));
+    return parts.length === 2 && parts[0]!.length > 0 && !/[\s\x00-\x1f\x7f:<>"\\]/.test(parts[0]!) && isValidCHeader(parts[1]!);
   }
   function moduleDecl(d: ts.ModuleDeclaration): void {
     mods(d, [K.DeclareKeyword]);

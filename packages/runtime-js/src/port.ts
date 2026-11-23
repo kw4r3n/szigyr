@@ -1,17 +1,18 @@
 // Platform-neutral isolate Port / Channel / wire serializer (SPEC §15.2, zero Node imports).
 import { Arena, Pool, RingRx, RingTx, Vec, ringPack, ringUnpack, type ArenaWire, type PoolWire, type RingShared, type RingWire } from "./collections.ts";
-import { noteIsolateTrap, task, type ForeignTrap, type Pos } from "./trap.ts";
+import { noteIsolateTrap, task, trap, type ForeignTrap, type Pos } from "./trap.ts";
 import type { WasmMeta } from "./wasm-bridge.ts";
 
 /** The wire form of one packed value: plain data, or one tagged wrapper (user data only ever
  * appears inside `$rec`, so the tags cannot collide with it). */
-export function packValue(v: unknown, memo: Map<object, unknown>, transfer: object[]): unknown {
+export function packValue(v: unknown, memo: Map<object, unknown>, transfer: object[], ringMask?: Map<RingShared<unknown>, number>): unknown {
   if (v instanceof Vec) {
     const w = v.pack();
     if (w.buf) transfer.push(w.buf);
     return { $vec: w };
   }
   if (v instanceof RingTx || v instanceof RingRx) {
+    if (ringMask) ringMask.set(v.shared, (ringMask.get(v.shared) ?? 0) | (v instanceof RingTx ? 1 : 2));
     let w = memo.get(v.shared);
     if (!w) { w = { $ring: ringPack(v.shared) }; memo.set(v.shared, w); }
     return { $end: w, $tx: v instanceof RingTx };
@@ -28,9 +29,9 @@ export function packValue(v: unknown, memo: Map<object, unknown>, transfer: obje
     return { $arena: w };
   }
   if (v !== null && typeof v === "object") {
-    if (Array.isArray(v)) return v.map((x) => packValue(x, memo, transfer));
+    if (Array.isArray(v)) return v.map((x) => packValue(x, memo, transfer, ringMask));
     const out: Record<string, unknown> = {};
-    for (const [k, x] of Object.entries(v)) out[k] = packValue(x, memo, transfer);
+    for (const [k, x] of Object.entries(v)) out[k] = packValue(x, memo, transfer, ringMask);
     return { $rec: out };
   }
   return v;
@@ -86,7 +87,11 @@ export class Port {
   send(x: unknown): void {
     if (this.closed || this.peerClosed) return; // §15.2: a send on a closed port discards the value
     const transfer: object[] = [];
-    const wire = packValue(x, new Map(), transfer);
+    const ringMask = new Map<RingShared<unknown>, number>();
+    const wire = packValue(x, new Map(), transfer, ringMask);
+    for (const [s, bits] of ringMask) {
+      if (!s.sab && bits !== 3) trap("T006", "cannot split a queue-mode Ring<T> across an isolate without a concrete element type");
+    }
     try { this.ch.post({ d: wire }, transfer); } catch { /* the peer is gone; the value is discarded */ }
   }
   recv(): Promise<unknown> {

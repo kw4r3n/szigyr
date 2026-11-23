@@ -19,6 +19,7 @@ import {
   shutdownSmt,
 } from "../src/index.ts";
 import { serveMcp } from "../src/mcp.ts";
+import { parseBatchStatuses } from "../src/smt.ts";
 
 const tmpRoots: string[] = [];
 function makeTmp(prefix = "szigyr-prove-"): { dir: string; cacheFile: string } {
@@ -1085,5 +1086,174 @@ export function main(sys: System): void {
     const relC = emitC(analysis.decls!, "native", { proved: pRes.proved })!;
     expect(cFnBody(relC.c, "renderAudio")).not.toContain("sz_chk(");
     expect(cFnBody(relC.c, "pushAllSend")).not.toContain("sz_chk(");
+  });
+
+  it("enforces Stage 6 soundness fixes (#5–#9): sentinels/bool-join, mutated struct bounds, property havoc, switch fallthrough, tagged unions, closure exposes, type/timeout cache, relative anchors", async () => {
+    // #5: sentinel framing isolates query errors & timeouts without shifting subsequent results
+    expect(
+      parseBatchStatuses('__SZ_Q_0__\n(error "bad sort")\nsat\n__SZ_Q_1__\nunsat\n__SZ_Q_2__\nsat\n', 3),
+    ).toEqual({
+      statuses: ["error", "unsat", "sat"],
+      errors: ['(error "bad sort")', undefined, undefined],
+    });
+    expect(
+      parseBatchStatuses('__SZ_Q_0__\nunsat\n__SZ_Q_1__\n', 2, true).statuses,
+    ).toEqual(["unsat", "timeout"]);
+
+    // #5 (bool join) + #6 (mutated struct/vec bound) + #7 (property overwrite & Mut havoc) + #8 (switch fallthrough + inexact) + #9 (tagged union & closure expose)
+    const { dir, cacheFile } = makeTmp("szigyr-soundness-");
+    const soundnessFile = writeTmpFile(dir, "sound.szigyr", `
+type Box = Struct<{ v: i32 }>;
+type Outer = Struct<{ sub: Box; arr: Vec<i32>; n: i32 }>;
+type Variant = { readonly kind: "a"; readonly x: u8 } | { readonly kind: "b"; readonly x: i32 };
+
+function mutateBox(b: Mut<Box>): void {
+  "use rt";
+  b.v = -1;
+}
+
+function privReq(x: i32): i32 {
+  "use rt";
+  requires(x >= 0);
+  return x;
+}
+
+export function boolJoinBad(s: Ref<Slice<i32>>, cond: boolean): i32 {
+  "use rt";
+  requires(s.length >= 2);
+  let flag: boolean = true;
+  if (cond) { flag = false; } else { flag = true; }
+  if (flag) { return s[0]; }
+  return s[5]; // must fail, never shift to proved
+}
+
+export function mutatedFieldBound(s: Mut<Outer>, a: Ref<Slice<i32>>): i32 {
+  "use rt";
+  requires(s.n > 0 && s.n <= i32(a.length));
+  let sum: i32 = 0;
+  for (let i: i32 = 0; i < s.n; i += 1) {
+    s.n -= 1;
+    sum += a[usize(i)]; // i < s.n must not synthesize unsound invariant when s.n mutates
+  }
+  return sum;
+}
+
+export function mutatedVecBound(alloc: Alloc, s: Mut<Outer>, a: Ref<Slice<i32>>): i32 {
+  "use owned";
+  for (let i: usize = 0; i < s.arr.length; i += 1) {
+    const _ = s.arr.pop();
+    if (i < a.length) return s.arr[i]; // s.arr.length mutated by pop()
+  }
+  return 0;
+}
+
+export function propAssignStale(o: Mut<Outer>, a: Ref<Slice<i32>>): i32 {
+  "use rt";
+  requires(o.sub.v >= 0 && usize(o.sub.v) < a.length);
+  o.sub = { v: 99 };
+  return a[usize(o.sub.v)]; // o.sub.v must not stay proved < a.length
+}
+
+export function propMutStale(o: Mut<Outer>, a: Ref<Slice<i32>>): i32 {
+  "use rt";
+  requires(o.sub.v >= 0 && usize(o.sub.v) < a.length);
+  mutateBox(o.sub);
+  return a[usize(o.sub.v)]; // mutateBox(o.sub) must havoc o.sub.v
+}
+
+export function switchFallthrough(k: i32, a: Ref<Slice<i32>>): i32 {
+  "use rt";
+  requires(a.length >= 2);
+  let idx: usize = 5;
+  switch (k) {
+    case 1:
+    case 2:
+      idx = 0;
+      break;
+    default:
+      idx = 1;
+      break;
+  }
+  return a[idx]; // both cases 1 and 2 set idx = 0 -> proved!
+}
+
+export function switchFallthroughFail(k: i32, a: Ref<Slice<i32>>): i32 {
+  "use rt";
+  requires(a.length === 1);
+  let idx: usize = 0;
+  switch (k) {
+    case 1:
+    case 2:
+      idx = 5;
+      break;
+    default:
+      idx = 0;
+      break;
+  }
+  return a[idx]; // case 1 falls through into idx = 5 -> must fail!
+}
+
+export function unionSharedField(u: Variant, a: Ref<Slice<i32>>): i32 {
+  "use rt";
+  requires(a.length === 1);
+  switch (u.kind) {
+    case "a": return 0;
+    case "b": return a[usize(u.x)]; // b.x is i32, must NOT borrow u8 non-negativity from a.x
+  }
+}
+
+export function callPrivViaClosure(): i32 {
+  const cb = (): i32 => privReq(-1);
+  return cb();
+}
+`);
+    const aSound = analyze(soundnessFile, parser);
+    expect(aSound.diagnostics).toEqual([]);
+    const pSound = await prove(soundnessFile, { analysis: aSound, cache: false, parser });
+    const byName = new Map(pSound.functions.map((f) => [f.fn, f]));
+    expect(byName.get("boolJoinBad")!.summary.failed).toBeGreaterThan(0);
+    expect(byName.get("mutatedFieldBound")!.obligations.some((o) => o.kind === "T002" && o.status === "proved")).toBe(false);
+    expect(byName.get("mutatedVecBound")!.obligations.some((o) => o.kind === "T002" && o.status === "proved")).toBe(false);
+    expect(byName.get("propAssignStale")!.obligations.some((o) => o.kind === "T002" && o.status === "proved")).toBe(false);
+    expect(byName.get("propAssignStale")!.obligations.some((o) => o.kind === "T002" && o.status === "failed")).toBe(true);
+    expect(byName.get("propMutStale")!.summary.proved).toBe(0);
+    expect(byName.get("switchFallthrough")!.summary).toMatchObject({ failed: 0, unknown: 0 });
+    expect(byName.get("switchFallthroughFail")!.summary.failed).toBeGreaterThan(0);
+    expect(byName.get("unionSharedField")!.obligations.every((o) => o.status !== "proved")).toBe(true);
+    expect([...pSound.proved.provedPrivateRequires].map((f) => f.name)).not.toContain("privReq");
+
+    // #9c & #9d: type alias change invalidates cache; header shifts preserve cache hit & refresh anchor ranges + cleared div
+    const cacheSrc = (capType: string, padLines = "") => `${padLines}type Lim = Struct<{ readonly n: ${capType} }>;
+export function safeGet(l: Lim, s: Ref<Slice<i32>>, y: u8): i32 {
+  "use rt";
+  requires(s.length >= 256 && y > 0);
+  const q = divTrunc(y, y);
+  return s[usize(l.n) + usize(q - q)];
+}
+`;
+    const cacheTs = writeTmpFile(dir, "cache-type.szigyr", cacheSrc("u8"));
+    const p1 = await prove(cacheTs, { cacheFile, parser });
+    expect(p1.functions[0]!.cached).toBe(false);
+    expect(p1.functions[0]!.remainingRtTrapSites?.filter((s) => s.code !== "T004")).toEqual([]);
+    const line1 = p1.functions[0]!.obligations[0]!.range.start.line;
+
+    // Shift lines above safeGet -> still hits cache, anchors non-empty, line shifted +3, cleared div still absent
+    writeFileSync(cacheTs, cacheSrc("u8", "\n\n\n"));
+    const p2 = await prove(cacheTs, { cacheFile, parser });
+    expect(p2.functions[0]!.cached).toBe(true);
+    expect(p2.proved.anchors.size).toBeGreaterThan(0);
+    expect(p2.functions[0]!.remainingRtTrapSites?.filter((s) => s.code !== "T004")).toEqual([]);
+    expect(p2.functions[0]!.obligations[0]!.range.start.line).toBe(line1 + 3);
+
+    // Changing referenced TypeSym invalidates cache cleanly (u8 -> u16 breaks s.length >= 256)
+    writeFileSync(cacheTs, cacheSrc("u16", "\n\n\n"));
+    const p3 = await prove(cacheTs, { cacheFile, parser });
+    expect(p3.functions[0]!.cached).toBe(false);
+    expect(p3.functions[0]!.summary.failed).toBeGreaterThan(0);
+
+    // Changing timeoutMs invalidates cache cleanly
+    writeFileSync(cacheTs, cacheSrc("u8", "\n\n\n"));
+    const p4 = await prove(cacheTs, { cacheFile, parser, timeoutMs: 2500 });
+    expect(p4.functions[0]!.cached).toBe(false);
   });
 });

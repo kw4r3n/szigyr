@@ -44,37 +44,42 @@ export function applyDiagnosticFixes(diagnostics: readonly Diagnostic[]): { file
     if (!entry) byFile.set(absPath, entry = { display: d.file, fixes: [] });
     entry.fixes.push(fix);
   }
+  const editsOverlap = (a: { startOff: number; endOff: number }, b: { startOff: number; endOff: number }): boolean =>
+    a.startOff === b.startOff && a.endOff === b.endOff
+      ? true
+      : a.startOff < b.endOff && b.startOff < a.endOff;
   const results: { file: string; applied: number }[] = [];
   for (const [absPath, { display, fixes }] of byFile) {
     const text = readFileSync(absPath, "utf8");
     const starts = lineStartsOf(text);
-    const seen = new Set<string>();
-    const edits: { startOff: number; endOff: number; newText: string }[] = [];
+    const acceptedKeys = new Set<string>();
+    const accepted: { startOff: number; endOff: number; newText: string }[] = [];
     for (const fix of fixes) {
-      const resolved: { startOff: number; endOff: number; newText: string }[] = [];
+      const unique: { startOff: number; endOff: number; newText: string; key: string }[] = [];
+      const seenInFix = new Set<string>();
       let ok = true;
       for (const e of fix.edits) {
         const startOff = toOffset(starts, text.length, e.range.start.line, e.range.start.col);
         const endOff = toOffset(starts, text.length, e.range.end.line, e.range.end.col);
         if (startOff === undefined || endOff === undefined || endOff < startOff) { ok = false; break; }
-        resolved.push({ startOff, endOff, newText: e.newText });
+        const key = `${startOff}:${endOff}:${e.newText}`;
+        if (seenInFix.has(key)) continue;
+        seenInFix.add(key);
+        unique.push({ startOff, endOff, newText: e.newText, key });
       }
       if (!ok) continue;
-      for (const r of resolved) {
-        const k = `${r.startOff}:${r.endOff}:${r.newText}`;
-        if (seen.has(k)) continue;
-        seen.add(k);
-        edits.push(r);
+      const novel = unique.filter((r) => !acceptedKeys.has(r.key));
+      if (!novel.length) continue;
+      const selfClash = unique.some((a, i) => unique.some((b, j) => i < j && editsOverlap(a, b)));
+      const accClash = !selfClash && novel.some((a) => accepted.some((b) => editsOverlap(a, b)));
+      if (selfClash || accClash) continue;
+      for (const r of novel) {
+        acceptedKeys.add(r.key);
+        accepted.push({ startOff: r.startOff, endOff: r.endOff, newText: r.newText });
       }
     }
-    edits.sort((a, b) => a.startOff - b.startOff || a.endOff - b.endOff);
-    const accepted: typeof edits = [];
-    for (const e of edits) {
-      const prev = accepted.at(-1);
-      if (prev && (e.startOff < prev.endOff || (e.startOff === prev.startOff && e.endOff === prev.endOff))) continue;
-      accepted.push(e);
-    }
     if (!accepted.length) continue;
+    accepted.sort((a, b) => a.startOff - b.startOff || a.endOff - b.endOff);
     let updated = text;
     for (let i = accepted.length - 1; i >= 0; i--) {
       const e = accepted[i]!;
@@ -148,8 +153,8 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
     }
     let timeoutMs: number | undefined;
     if (rawTimeout !== undefined) {
-      if (!/^\d+$/.test(rawTimeout) || Number(rawTimeout) <= 0) {
-        throw new CliError(`--timeout must be a positive integer (ms), got '${rawTimeout}'\n${USAGE}`);
+      if (!/^\d+$/.test(rawTimeout) || Number(rawTimeout) <= 0 || Number(rawTimeout) > 2_147_483_647) {
+        throw new CliError(`--timeout must be a positive integer (ms, <= 2147483647), got '${rawTimeout}'\n${USAGE}`);
       }
       timeoutMs = Number(rawTimeout);
     }

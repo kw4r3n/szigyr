@@ -9,7 +9,7 @@ import { sliceGroups, type SliceGroupEntry } from "./ownership.ts";
 import { elemDesc } from "./layout.ts";
 import { emitGenDesc, genDescOf } from "./gendesc.ts";
 import { canonPath, declBindings } from "./modules.ts";
-import { INT_RANGE, NUM_NAMES, bindTParams, field, isInt, isInt64, isStr, literalFits, movesLike, nonNull, parseExactInt, resultParts, same, subst, unref, type FnType, type NumName, type Type } from "./types.ts";
+import { INT_RANGE, NUM_NAMES, bindTParams, field, isInt, isInt64, isStr, isTaggedUnion, kindOf, literalFits, movesLike, nonNull, parseExactInt, resultParts, same, subst, unref, type FnType, type NumName, type Type } from "./types.ts";
 import { CLI_NAME, RUNTIME_GLOBAL } from "./names.ts";
 import { DETMATH_PATH, dmBinding } from "./detmath.ts";
 import type { Pos } from "../../runtime-js/src/index.ts";
@@ -834,6 +834,50 @@ export function emitFile(
     }
     const self = typeOf(e);
     const q = (s: string): string => JSON.stringify(s);
+    const ringAdoptShape = (t0: Type, seen = new Set<Type>()): unknown => {
+      const u = unref(t0);
+      if (seen.has(u)) return undefined;
+      seen.add(u);
+      try {
+        if (u.k === "gen" && (u.name === "RingTx" || u.name === "RingRx")) {
+          const el = u.args[0];
+          const d = el ? elemDesc(el) : "other";
+          return d !== "other" ? d : undefined;
+        }
+        if (u.k === "gen" && (u.name === "Array" || u.name === "ReadonlyArray")) {
+          const s = ringAdoptShape(u.args[0]!, seen);
+          return s !== undefined ? { $arr: s } : undefined;
+        }
+        if (u.k === "tuple") {
+          const ss = u.elems.map((el) => ringAdoptShape(el, seen));
+          return ss.some((x) => x !== undefined) ? ss : undefined;
+        }
+        if (u.k === "record") {
+          const out: Record<string, unknown> = {};
+          for (const f of u.fields) {
+            const s = ringAdoptShape(f.type, seen);
+            if (s !== undefined) out[f.name] = s;
+          }
+          return Object.keys(out).length ? out : undefined;
+        }
+        if (u.k === "union") {
+          if (isTaggedUnion(u)) {
+            const variants: Record<string, unknown> = {};
+            for (const m of u.members) {
+              const k = kindOf(m);
+              const s = ringAdoptShape(m, seen);
+              if (k !== undefined && s !== undefined) variants[k] = s;
+            }
+            return Object.keys(variants).length ? { $u: variants } : undefined;
+          }
+          const inner = nonNull(u);
+          return inner ? ringAdoptShape(inner, seen) : undefined;
+        }
+        return undefined;
+      } finally {
+        seen.delete(u);
+      }
+    };
     if (callee.kind === K.Identifier) {
       const name = (callee as ts.Identifier).text;
       const t = self?.k === "num" ? self.name : "";
@@ -880,7 +924,10 @@ export function emitFile(
         case "ensures": throw new Error("emit: ensures outside a function body prologue");
       }
       // Reuse `args` instead of calling `splice(e)` so arguments are never visited twice (#1).
-      return groups ? grouped(e, groups, args, (refs) => `${gen(callee)}(${refs.join(", ")})`) : `${gen(callee)}(${args.join(", ")})`;
+      const raw = groups ? grouped(e, groups, args, (refs) => `${gen(callee)}(${refs.join(", ")})`) : `${gen(callee)}(${args.join(", ")})`;
+      const cs = callSigs.get(e);
+      const shape = cs?.tparams.length && self ? ringAdoptShape(self) : undefined;
+      return shape !== undefined ? `${RT}.adoptRings(${raw}, ${JSON.stringify(shape)})` : raw;
     }
     if (callee.kind !== K.PropertyAccessExpression) return `${gen(callee)}(${args.join(", ")})`;
     const p = callee as ts.PropertyAccessExpression, m = p.name.text;
@@ -935,6 +982,11 @@ export function emitFile(
       if (r.name === "Pool" && (m === "get" || m === "set" || m === "remove")) return nn(withArgs([at(p.name)])); // T011 at the member name (Q188 (a))
       if (r.name === "Arena" && m === "alloc") { const nn2 = self && nonNull(self); const el = nn2?.k === "gen" ? nn2.args[0] : undefined; return nn(withArgs([q(elemDesc(el))])); } // Q188 (b)
       if (r.name === "Arena" && m === "view") { const el = self?.k === "gen" ? self.args[0] : undefined; return nn(withArgs([q(elemDesc(el)), at(p.name)])); } // T012 at the member name (Q188 (b))
+      if (r.name === "Port" && m === "send") {
+        const argT = e.arguments[0] ? typeOf(e.arguments[0]) : undefined;
+        const shape = argT ? ringAdoptShape(argT) : undefined;
+        if (shape !== undefined) return nn(`${gen(callee)}(${RT}.adoptRings(${args[0]}, ${JSON.stringify(shape)}))`);
+      }
     } else if (r && isStr(r)) {
       if (m === "indexOf") return nn(`${RT}.idxOrNull(${withArgs([])})`);
       if (m === "codePointAt") return nn(`${RT}.nn(${withArgs([])})`);
@@ -947,11 +999,15 @@ export function emitFile(
       if (r.name === "Test") return nn(withArgs([at(p.name)]));
     }
     if (groups) return groupedProp(e, groups, args, awaited);
-    return nn(withArgs([]));
+    const resExpr = nn(withArgs([]));
+    const cs = callSigs.get(e);
+    const shape = cs?.tparams.length && self ? ringAdoptShape(self) : undefined;
+    return shape !== undefined ? `${RT}.adoptRings(${resExpr}, ${JSON.stringify(shape)})` : resExpr;
   }
 
   const isUsingStmt = (s: ts.Statement): boolean =>
     s.kind === K.VariableStatement && !!((s as ts.VariableStatement).declarationList.flags & NodeFlags.Using);
+  let usingSeq = 0;
 
   function wrapUsingDecls(decls: readonly ts.VariableDeclaration[], idx: number, isAwaitUsing: boolean, rest: string): string {
     if (idx >= decls.length) return rest;
@@ -971,7 +1027,8 @@ export function emitFile(
     } else {
       cleanup = `${name}.dispose();`;
     }
-    return `const ${name} = ${init};\ntry {\n${inner}\n} finally {\n${cleanup}\n}`;
+    const ue = `${RT}_ue${usingSeq++}`;
+    return `const ${name} = ${init};\nlet ${ue} = false;\ntry {\n${inner}\n} catch (${V}) {\n${ue} = true;\nthrow ${V};\n} finally {\nif (${ue}) { try { ${cleanup} } catch {} } else { ${cleanup} }\n}`;
   }
 
   function emitStmtsWithUsing(ss: readonly ts.Statement[], emitOne: (s: ts.Statement, idx: number) => string, offset = 0): string {

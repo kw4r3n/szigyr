@@ -186,6 +186,22 @@ export async function stopNodeNetServers(): Promise<void> {
   for (const close of [...activeNetServers]) await close();
 }
 
+const MAX_HTTP_BODY_BYTES = 16 * 1024 * 1024;
+
+function parseRequestTarget(rawUrl: string): { path: string; query: string } | undefined {
+  if (rawUrl.startsWith("/")) {
+    const qIdx = rawUrl.indexOf("?");
+    return qIdx >= 0 ? { path: rawUrl.slice(0, qIdx), query: rawUrl.slice(qIdx + 1) } : { path: rawUrl, query: "" };
+  }
+  if (rawUrl === "*") return { path: "*", query: "" };
+  try {
+    const u = new URL(rawUrl);
+    return { path: u.pathname, query: u.search.startsWith("?") ? u.search.slice(1) : "" };
+  } catch {
+    return undefined;
+  }
+}
+
 function serveHttp(config: HttpServerConfig, handler: (req: HttpServerRequest) => Promise<HttpServerRawResponse>): Promise<Result<HttpServer, IoError>> {
   if (!config.host) return Promise.resolve(err({ code: "EINVAL", message: "Net.serve: empty host" }));
   if (!Number.isInteger(config.port) || config.port < 0 || config.port > 65535) {
@@ -200,26 +216,45 @@ function serveHttp(config: HttpServerConfig, handler: (req: HttpServerRequest) =
 
     const server = http.createServer((req, res) => {
       const chunks: Buffer[] = [];
-      req.on("data", (c: Buffer) => chunks.push(c));
+      let totalBytes = 0;
+      let tooLarge = false;
+      req.on("error", () => {});
+      req.on("data", (c: Buffer) => {
+        if (tooLarge) return;
+        totalBytes += c.length;
+        if (totalBytes > MAX_HTTP_BODY_BYTES) {
+          tooLarge = true;
+          chunks.length = 0;
+          if (!res.headersSent) { res.statusCode = 413; res.end("payload too large"); }
+          req.destroy();
+          return;
+        }
+        chunks.push(c);
+      });
       req.on("end", () => {
+        if (tooLarge || req.destroyed) return;
         void (async () => {
           inFlight++;
           const kick = (): void => { if (closing && inFlight === 0) server.closeIdleConnections?.(); };
           res.once("finish", kick);
           res.once("close", kick);
-          const u = new URL(req.url ?? "/", "http://127.0.0.1");
-          const headers: HttpHeader[] = [];
-          for (let i = 0; i + 1 < req.rawHeaders.length; i += 2) {
-            headers.push({ name: req.rawHeaders[i]!.toLowerCase(), value: req.rawHeaders[i + 1]! });
-          }
-          const httpReq: HttpServerRequest = {
-            method: req.method ?? "GET",
-            path: u.pathname,
-            query: u.search.startsWith("?") ? u.search.slice(1) : "",
-            headers,
-            body: Buffer.concat(chunks).toString("utf8"),
-          };
           try {
+            const target = parseRequestTarget(req.url ?? "/");
+            if (!target) {
+              if (!res.headersSent) { res.statusCode = 400; res.end("bad request"); }
+              return;
+            }
+            const headers: HttpHeader[] = [];
+            for (let i = 0; i + 1 < req.rawHeaders.length; i += 2) {
+              headers.push({ name: req.rawHeaders[i]!.toLowerCase(), value: req.rawHeaders[i + 1]! });
+            }
+            const httpReq: HttpServerRequest = {
+              method: req.method ?? "GET",
+              path: target.path,
+              query: target.query,
+              headers,
+              body: Buffer.concat(chunks).toString("utf8"),
+            };
             const resp = await handler(httpReq);
             res.statusCode = resp.status;
             for (const h of resp.headers) res.appendHeader(h.name, h.value);

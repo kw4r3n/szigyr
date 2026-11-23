@@ -5,6 +5,9 @@ import { join } from "node:path";
 import { expect, it } from "vitest";
 import { check, createParser } from "../src/index.ts";
 import { CLI_NAME } from "../src/names.ts";
+import { bundleNpmImports, loadNpmModule } from "../src/bundle-npm.ts";
+import { sanitizeCflags } from "../src/cdecl.ts";
+import { applyDiagnosticFixes } from "../src/cli.ts";
 
 const CLI = new URL("../src/cli.ts", import.meta.url).pathname;
 const CONF = new URL("../../../conformance/", import.meta.url).pathname;
@@ -683,4 +686,59 @@ it("forwards sys.log.warn and sys.log.error to stderr across run --backend=all",
 
   const rJson = szigyr("run", "--json", "--backend=js", f);
   expect(rJson).toEqual({ code: 2, out: "ok-line\n", err: "warn-line\nerr-line\n" });
+});
+
+it("hardens c:/CType/Cflags/npm:/timeout boundaries and applies colliding multi-edit --fix atomically", async () => {
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-sec-`));
+
+  // #1: sanitizeCflags strips dangerous compiler flags while keeping include/define/pthread flags; .pc paths are rejected before pkg-config/cc
+  expect(
+    sanitizeCflags(["-I/ok", "-isystem", "/sys/inc", "-fplugin=./pwn.so", "-specs=x", "-Wp,-include,y", "-Wl,--plugin,z", "-include", "bad.h", "@resp", "-DGOOD=1", "-fPIC", "-pthread"]),
+  ).toEqual(["-I/ok", "-isystem", "/sys/inc", "-DGOOD=1", "-fPIC", "-pthread"]);
+
+  writeFileSync(join(dir, "evil.pc"), "Name: evil\nDescription: x\nVersion: 1\nCflags: -fplugin=./nonexistent.so\nLibs:\n");
+  const pcTs = join(dir, "pc.szigyr");
+  writeFileSync(pcTs, `declare module "c:${join(dir, "evil.pc")}:stdio.h" {\n  function puts(ffi: Ffi, s: ConstPtr<CType<"char">>): i32;\n}\nexport function main(sys: System): void {\n  sys.log.info("ok");\n}\n`);
+  const pcChk = szigyr("check", "--json", pcTs);
+  expect(pcChk.code).toBe(1);
+  expect(jsonLines(pcChk.out)[0]).toMatchObject({ code: "E2009" });
+
+  // #2: invalid CType literals and absolute/traversal C header paths never disclose local files via ccStderr
+  const ctTs = join(dir, "ct.szigyr");
+  writeFileSync(ctTs, `declare module "c:zlib:/etc/passwd" {\n  function zlibVersion(ffi: Ffi): ConstPtr<CType<"char">>;\n}\nfunction f(): usize {\n  "use owned";\n  "use unsafe";\n  return Ptr.sizeOf<CType<"int);\\n#include \\"/etc/passwd\\"\\n//">>();\n}\n`);
+  const ctDs = check(ctTs);
+  expect(ctDs.some((d) => d.code === "E7002")).toBe(true);
+  expect(ctDs.some((d) => d.code === "E4007")).toBe(true);
+  const combinedErr = ctDs.map((d) => `${d.message}\n${String((d.data as { ccStderr?: string } | undefined)?.ccStderr ?? "")}`).join("\n");
+  expect(combinedErr).not.toContain("root:");
+
+  // #3: npm: traversal/absolute specs are rejected while internal package relative imports bundle
+  const appFile = join(dir, "app.szigyr");
+  const pkgDir = join(dir, "node_modules", "goodpkg");
+  mkdirSync(pkgDir, { recursive: true });
+  writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name: "goodpkg", type: "module", main: "index.js" }));
+  writeFileSync(join(pkgDir, "helper.js"), "export const val = 7;\n");
+  writeFileSync(join(pkgDir, "index.js"), 'export { val } from "./helper.js";\n');
+  const outDir = join(dir, "dist");
+  const bundled = bundleNpmImports([{ fromFile: appFile, spec: "npm:goodpkg" }], outDir, { allowNodeBuiltins: false });
+  expect(bundled.entries.has("npm:goodpkg")).toBe(true);
+  for (const badSpec of ["npm:../secret.js", "npm:/etc/passwd", "npm:goodpkg/../../../etc/passwd"]) {
+    expect(() => bundleNpmImports([{ fromFile: appFile, spec: badSpec }], outDir, { allowNodeBuiltins: false })).toThrow(/invalid npm specifier|cannot resolve/);
+    await expect(loadNpmModule(appFile, badSpec)).rejects.toThrow(/invalid npm specifier/);
+  }
+
+  // #12: colliding multi-edit fixes do not leave half-applied edits (log + clock at same parameter list)
+  const fixFile = join(dir, "collide.szigyr");
+  writeFileSync(fixFile, `export function g(x: i32): void {\n  console.log(\`\${x}\`);\n  const t = Date.now();\n  console.log(\`\${t}\`);\n}\n`);
+  const applied = applyDiagnosticFixes(check(fixFile));
+  expect(applied.length).toBe(1);
+  const fixedText = await import("node:fs").then((fs) => fs.readFileSync(fixFile, "utf8"));
+  expect(fixedText).toContain("log: Log");
+  expect(fixedText).not.toContain("clock.nowMs"); // half-applied call without `clock: Clock` parameter must not happen
+  expect(fixedText).toContain("Date.now()");
+
+  // #13-CLI: excessive --timeout exceeds 32-bit timer cap and fails with usage error code 2
+  const okTs = join(dir, "ok.szigyr");
+  writeFileSync(okTs, `export function id(x: i32): i32 { "use rt"; return x; }\n`);
+  expect(szigyr("prove", "--timeout=999999999999", okTs).code).toBe(2);
 });

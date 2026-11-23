@@ -7,7 +7,7 @@
 import { execFileSync } from "node:child_process";
 import { SyntaxKind as K, type ts } from "./parse.ts";
 import type { Module, Program, Reporter } from "./modules.ts";
-import { ccCommand, cTypeOf, parseCSpec, splitFlags } from "./cdecl.ts";
+import { C_IDENT, ccCommand, cTypeOf, isValidCHeader, isValidPkgName, parseCSpec, sanitizeCflags, splitFlags } from "./cdecl.ts";
 import { INT_RANGE, I64_MIN, isBool, isErr, type Type } from "./types.ts";
 
 interface ProbeRes { ok: boolean; stderr: string }
@@ -20,6 +20,7 @@ const probeCache = new Map<string, ProbeRes>();
 const pkgEnv = (pkg: string): string => ["PKG_CONFIG_PATH", "PKG_CONFIG_LIBDIR", "PKG_CONFIG_SYSROOT_DIR"].map((k) => process.env[k] ?? "").join("\0") + `\0${pkg}`;
 
 function pkgExists(pkg: string): boolean {
+  if (!isValidPkgName(pkg)) return false;
   const k = pkgEnv(pkg);
   let ok = pkgKnown.get(k);
   if (ok === undefined) {
@@ -30,10 +31,11 @@ function pkgExists(pkg: string): boolean {
 }
 
 function cflagsOf(pkg: string): string[] {
+  if (!isValidPkgName(pkg)) return [];
   const k = pkgEnv(pkg);
   let flags = pkgFlags.get(k);
   if (flags === undefined) {
-    try { flags = splitFlags(execFileSync("pkg-config", ["--cflags", "--", pkg], { encoding: "utf8" })); }
+    try { flags = sanitizeCflags(splitFlags(execFileSync("pkg-config", ["--cflags", "--", pkg], { encoding: "utf8" }))); }
     catch { flags = []; }
     pkgFlags.set(k, flags);
   }
@@ -73,7 +75,7 @@ function canProbePointee(t: Type): boolean {
   if (t.k === "num") return t.name !== "usize";
   if (t.k === "prim") return t.name === "boolean" || t.name === "void";
   if (t.k === "cstruct") return true;
-  if (t.k === "gen" && t.name === "CType") { const a = t.args[0]; return a?.k === "lit" && a.value.length > 0; }
+  if (t.k === "gen" && t.name === "CType") { const a = t.args[0]; return a?.k === "lit" && C_IDENT.test(a.value); }
   if (t.k === "gen" && (t.name === "Ptr" || t.name === "ConstPtr")) return canProbePointee(t.args[0]!);
   if (t.k === "fn") return (t.ret.k === "prim" && t.ret.name === "void" || canProbeCType(t.ret)) && t.params.every(canProbeCType);
   return true;
@@ -100,6 +102,7 @@ export function checkHeaders(prog: Program, rep: Reporter): void {
     for (const [spec, fns] of mod.cdecls) {
       const cs = parseCSpec(spec);
       if (!cs) continue; // P1 already reported E7002
+      if (!isValidCHeader(cs.header)) { anyHeaderFailed = true; continue; }
       const at = specifierOf(mod, spec);
       if (!pkgExists(cs.pkg)) {
         anyHeaderFailed = true;
@@ -161,7 +164,7 @@ export function checkHeaders(prog: Program, rep: Reporter): void {
         const lines = [`_Static_assert(sizeof(${S}) > 0 && sizeof(${S}) <= 4294967295ULL, "${S}");`];
         for (const f of csym.type.fields) {
           if (isErr(f.type)) continue;
-          const ok = canProbeCType(f.type) || f.type.k === "cstruct" || (f.type.k === "gen" && f.type.name === "CType" && f.type.args[0]?.k === "lit" && f.type.args[0].value.length > 0);
+          const ok = canProbeCType(f.type) || f.type.k === "cstruct" || (f.type.k === "gen" && f.type.name === "CType" && f.type.args[0]?.k === "lit" && C_IDENT.test(f.type.args[0].value));
           if (!ok) continue;
           lines.push(`_Static_assert(offsetof(${S}, ${f.name}) < sizeof(${S}), "${S}.${f.name}");`);
           if (f.type.k === "num" && f.type.name !== "f32" && f.type.name !== "f64") {
@@ -193,6 +196,7 @@ export function checkHeaders(prog: Program, rep: Reporter): void {
         const allFlags = [...new Set(validHeaders.flatMap((h) => h.cflags))];
         const combPrelude = `#include <stdint.h>\n#include <stdbool.h>\n#include <stddef.h>\n${hdrLines}\n`;
         for (const entry of sizeOfs) {
+          if (!C_IDENT.test(entry.cname)) continue;
           const res = probe(`${combPrelude}_Static_assert(sizeof(${entry.cname}) > 0 && sizeof(${entry.cname}) <= 4294967295ULL, "${entry.cname}");\n`, allFlags);
           if (!res.ok) {
             const hint = firstErrLine(res.stderr);

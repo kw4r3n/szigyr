@@ -177,6 +177,37 @@ describe("resident incremental checker, --watch mode, and stdio MCP server", () 
     expect((await runCli(["build", "--target=node", "--watch", entry])).code).toBe(2);
     expect((await runCli(["mcp", "--watch"])).code).toBe(2);
     expect((await runCli(["mcp", entry])).code).toBe(2);
+
+    // #13: transient exception in watch cycle reports error + watch-done ok:false and stays alive without unhandled rejection
+    const badEntry = join(dir, "missing-watch.szigyr");
+    const ac3 = new AbortController();
+    let out3 = "", err3 = "";
+    const cycles3: WatchCycleInfo[] = [];
+    let wWake3: (() => void) | undefined;
+    const nextCycle3 = (): Promise<WatchCycleInfo> => cycles3.length
+      ? Promise.resolve(cycles3.shift()!)
+      : new Promise((r) => { wWake3 = () => r(cycles3.shift()!); });
+    const wp3 = startWatch({
+      files: [badEntry],
+      mode: "check",
+      json: true,
+      backends: ["js"],
+      out: (s) => { out3 += s; },
+      err: (s) => { err3 += s; },
+      debounceMs: 20,
+      signal: ac3.signal,
+      onCycle: (c) => { cycles3.push(c); const w = wWake3; wWake3 = undefined; w?.(); },
+    });
+    const badC1 = await nextCycle3();
+    expect(badC1.ok).toBe(false);
+    expect(badC1.errors).toBeGreaterThanOrEqual(1);
+    writeFileSync(badEntry, `export function ready(): i32 { return 1; }\n`);
+    const badC2 = await nextCycle3();
+    expect(badC2.ok).toBe(true);
+    ac3.abort();
+    expect(await wp3).toBe(0);
+    expect(jsonLines(err3)[0]).toMatchObject({ kind: "error", mode: "check" });
+    expect(jsonLines(out3).filter((r) => r.kind === "watch-done").map((r) => r.ok)).toEqual([false, true]);
   });
 
   it("serves JSON-RPC 2.0 MCP tools in-process (all 7 tools, multi-file overlays, errors) and via isolated stdio CLI subprocess", async () => {

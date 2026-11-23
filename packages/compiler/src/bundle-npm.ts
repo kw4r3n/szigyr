@@ -2,7 +2,7 @@
 // shortcut: regex-based static ESM/CJS bundler for npm: dependencies (handles static import/export/require, JSON, .ts); upgrade to a full JS parser/bundler (e.g. esbuild/rolldown) if packages with dynamic require() expressions or complex UMD wrappers are needed.
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { builtinModules, createRequire, stripTypeScriptTypes } from "node:module";
-import { dirname, extname, join, resolve } from "node:path";
+import { dirname, extname, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { CliError } from "./index.ts";
 
@@ -133,6 +133,22 @@ function resolveExports(exportsField: unknown, sub: string, conditions: readonly
   return undefined;
 }
 
+const NPM_PKG_SEG = /^[A-Za-z0-9._-]+$/;
+
+/** Validates top-level `npm:<spec>` names (builtins or package/subpath without `.`, `..`, leading `/`, or backslashes). */
+export function isValidNpmSpecifier(spec: string): boolean {
+  if (!spec) return false;
+  if (isBuiltin(spec)) return true;
+  if (spec.startsWith(".") || spec.startsWith("/") || /[\x00-\x1f\x7f\\]/.test(spec)) return false;
+  const parts = spec.split("/");
+  if (parts.some((p) => !p || p === "." || p === "..")) return false;
+  if (spec.startsWith("@")) return parts.length >= 2 && /^@[A-Za-z0-9._-]+$/.test(parts[0]!) && NPM_PKG_SEG.test(parts[1]!);
+  return NPM_PKG_SEG.test(parts[0]!);
+}
+
+const isWithinDir = (realRoot: string, candidate: string): boolean =>
+  candidate === realRoot || candidate.startsWith(realRoot + sep);
+
 function splitPkgSpec(spec: string): { pkgName: string; sub: string } {
   const parts = spec.split("/");
   const pkgName = spec.startsWith("@") ? `${parts[0]}/${parts[1]}` : parts[0]!;
@@ -141,41 +157,51 @@ function splitPkgSpec(spec: string): { pkgName: string; sub: string } {
   return { pkgName, sub };
 }
 
-function findPackageFile(fromFile: string, spec: string, allowNodeBuiltins: boolean): string | undefined {
+function findPackageFile(fromFile: string, spec: string, allowNodeBuiltins: boolean, allowRelative = true): string | undefined {
   const conditions = allowNodeBuiltins
     ? ["node", "import", "default", "require"]
     : ["browser", "import", "module", "default", "require"];
-  if (spec.startsWith("./") || spec.startsWith("../") || spec.startsWith("/")) {
-    const raw = spec.startsWith("/") ? spec : resolve(dirname(fromFile), spec);
-    return tryFileCandidates(raw);
+  if (spec.startsWith("/")) return undefined;
+  if (spec.startsWith("./") || spec.startsWith("../")) {
+    if (!allowRelative) return undefined;
+    return tryFileCandidates(resolve(dirname(fromFile), spec));
   }
+  if (!isValidNpmSpecifier(spec)) return undefined;
   const { pkgName, sub } = splitPkgSpec(spec);
   let dir = dirname(fromFile);
   for (;;) {
     const pkgDir = join(dir, "node_modules", pkgName);
     if (existsSync(pkgDir)) {
-      const pj = readJson(join(pkgDir, "package.json"));
-      if (pj) {
-        const expTarget = resolveExports(pj.exports, sub, conditions);
-        if (expTarget) {
-          const hit = tryFileCandidates(resolve(pkgDir, expTarget));
-          if (hit) return hit;
-        }
-        if (sub === ".") {
-          if (!allowNodeBuiltins && typeof pj.browser === "string") {
-            const hit = tryFileCandidates(resolve(pkgDir, pj.browser));
+      let realPkgDir = "";
+      try { realPkgDir = realpathSync(pkgDir); } catch { realPkgDir = ""; }
+      if (realPkgDir) {
+        const tryContained = (base: string): string | undefined => {
+          const hit = tryFileCandidates(base);
+          return hit && isWithinDir(realPkgDir, hit) ? hit : undefined;
+        };
+        const pj = readJson(join(pkgDir, "package.json"));
+        if (pj) {
+          const expTarget = resolveExports(pj.exports, sub, conditions);
+          if (expTarget) {
+            const hit = tryContained(resolve(pkgDir, expTarget));
             if (hit) return hit;
           }
-          for (const field of [pj.module, pj.main]) {
-            if (typeof field === "string") {
-              const hit = tryFileCandidates(resolve(pkgDir, field));
+          if (sub === ".") {
+            if (!allowNodeBuiltins && typeof pj.browser === "string") {
+              const hit = tryContained(resolve(pkgDir, pj.browser));
               if (hit) return hit;
+            }
+            for (const field of [pj.module, pj.main]) {
+              if (typeof field === "string") {
+                const hit = tryContained(resolve(pkgDir, field));
+                if (hit) return hit;
+              }
             }
           }
         }
+        const subHit = tryContained(sub === "." ? join(pkgDir, "index.js") : resolve(pkgDir, sub));
+        if (subHit) return subHit;
       }
-      const subHit = tryFileCandidates(sub === "." ? join(pkgDir, "index.js") : resolve(pkgDir, sub));
-      if (subHit) return subHit;
     }
     const parent = dirname(dir);
     if (parent === dir) break;
@@ -199,14 +225,17 @@ export function bundleNpmImports(
   const emitted = new Set<string>();
   let nextId = 0;
 
-  const resolveDep = (fromFile: string, reqSpec: string, origLabel: string): Resolved => {
+  const resolveDep = (fromFile: string, reqSpec: string, origLabel: string, allowRelative = true): Resolved => {
     if (isBuiltin(reqSpec)) {
       if (!opts.allowNodeBuiltins) {
         throw new CliError(`npm dependency '${origLabel}' imports Node builtin '${reqSpec}', which is not supported for --target=browser`);
       }
       return { kind: "builtin", spec: normBuiltin(reqSpec) };
     }
-    const abs = findPackageFile(fromFile, reqSpec, opts.allowNodeBuiltins);
+    if (!allowRelative && !isValidNpmSpecifier(reqSpec)) {
+      throw new CliError(`invalid npm specifier '${origLabel}'`);
+    }
+    const abs = findPackageFile(fromFile, reqSpec, opts.allowNodeBuiltins, allowRelative);
     if (!abs) throw new CliError(`cannot resolve '${reqSpec}' (from '${origLabel}')`);
     const existing = visited.get(abs);
     if (existing) return { kind: "file", path: abs, modKind: existing.modKind };
@@ -242,8 +271,8 @@ export function bundleNpmImports(
     return info;
   };
 
-  const ensureDep = (fromFile: string, reqSpec: string, origLabel: string): { targetSpec: string; modKind: ModKind | "builtin" } => {
-    const r = resolveDep(fromFile, reqSpec, origLabel);
+  const ensureDep = (fromFile: string, reqSpec: string, origLabel: string, allowRelative = true): { targetSpec: string; modKind: ModKind | "builtin" } => {
+    const r = resolveDep(fromFile, reqSpec, origLabel, allowRelative);
     if (r.kind === "builtin") return { targetSpec: r.spec, modKind: "builtin" };
     const info = emitVendorModule(r.path, origLabel);
     return { targetSpec: info.relFromVendor, modKind: info.modKind };
@@ -391,7 +420,7 @@ export function bundleNpmImports(
   for (const { fromFile, spec } of imports) {
     if (!spec.startsWith("npm:") || entries.has(spec)) continue;
     const pkgSpec = spec.slice(4);
-    const dep = ensureDep(fromFile, pkgSpec, spec);
+    const dep = ensureDep(fromFile, pkgSpec, spec, false);
     if (dep.modKind === "builtin") {
       entries.set(spec, dep.targetSpec);
     } else {
@@ -418,8 +447,9 @@ export function unwrapImportedNpm(mod: unknown): unknown {
 /** Loads an `"npm:<name>"` dependency for direct Node execution, preferring ESM entries and unwrapping opaque CJS. */
 export async function loadNpmModule(fromFile: string, spec: string): Promise<{ mod: unknown; url: string }> {
   const name = spec.slice(4);
+  if (!isValidNpmSpecifier(name)) throw new CliError(`invalid npm specifier '${spec}'`);
   let url = name;
-  const esmHit = !isBuiltin(name) ? findPackageFile(fromFile, name, true) : undefined;
+  const esmHit = !isBuiltin(name) ? findPackageFile(fromFile, name, true, false) : undefined;
   if (esmHit) {
     url = pathToFileURL(esmHit).href;
   } else {

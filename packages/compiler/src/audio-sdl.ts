@@ -17,12 +17,13 @@ const SDL_PUSH_C = `
 #include <dlfcn.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <stdatomic.h>
 
 typedef struct { uint32_t format; int channels; int freq; } sz_sdl_spec;
 static struct {
-  int tried, ok; const char *ec, *em; void *lib;
+  int tried, ok; const char *ec, *em; char em_buf[256]; void *lib;
   bool (*InitSubSystem)(uint32_t);
   void (*QuitSubSystem)(uint32_t);
   uint32_t (*WasInit)(uint32_t);
@@ -41,7 +42,7 @@ static bool load_sdl(const char **ec, const char **em) {
   sdl.tried = 1;
   void *h = dlopen("libSDL3.so.0", RTLD_LAZY | RTLD_LOCAL);
   if (!h) h = dlopen("libSDL3.so", RTLD_LAZY | RTLD_LOCAL);
-  if (!h) { const char *d = dlerror(); sdl.ec = "ENOENT"; sdl.em = d ? d : "libSDL3.so.0 not found"; *ec = sdl.ec; *em = sdl.em; return false; }
+  if (!h) { const char *d = dlerror(); snprintf(sdl.em_buf, sizeof(sdl.em_buf), "%s", d ? d : "libSDL3.so.0 not found"); sdl.ec = "ENOENT"; sdl.em = sdl.em_buf; *ec = sdl.ec; *em = sdl.em; return false; }
   sdl.lib = h;
   #define SYM(n) if (!(sdl.n = dlsym(h, "SDL_" #n))) { sdl.ec = "EIO"; sdl.em = "missing symbol SDL_" #n; *ec = sdl.ec; *em = sdl.em; return false; }
   SYM(InitSubSystem) SYM(QuitSubSystem) SYM(WasInit) SYM(Quit) SYM(OpenAudioDeviceStream) SYM(ResumeAudioStreamDevice)

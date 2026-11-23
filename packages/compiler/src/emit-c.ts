@@ -7,7 +7,7 @@ import { sliceGroups } from "./ownership.ts";
 import type { CFnSym, ConstSym, FnSym, Module, Program } from "./modules.ts";
 import { layout, elemDesc, type Lay } from "./layout.ts";
 import { DETMATH_PATH } from "./detmath.ts";
-import { cPointeeOf, cTypeOf, parseCSpec } from "./cdecl.ts";
+import { cPointeeOf, cTypeOf, isValidCHeader, isValidPkgName, parseCSpec } from "./cdecl.ts";
 import { caseConstLits, type CaseLit } from "./checker.ts";
 import type { ProvedChecks } from "./prove.ts";
 import { AUTHORITIES, I64_MIN, isCopy, isCopyValueRecord, isInt, isInt64, isOwned, isTaggedUnion, kindOf, nonNull, isNull, isBool, parseExactInt, unref, show, subst, type Field, type NumName, type Type } from "./types.ts";
@@ -1163,10 +1163,10 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
           this.ex(b.right);
           return this.t({ k: "prim", name: "boolean" }, neg ? "false" : "true", b);
         }
-        if (isNull(rt) || isNull(lt)) { // `x === null`
-          const side = isNull(rt) ? b.left : b.right;
-          const v = this.ex(side);
-          return this.t({ k: "prim", name: "boolean" }, `${neg ? "" : "!"}${v}.some`, b);
+        if (isNull(rt) || isNull(lt)) { // `x === null` (evaluate both operands in source order for side effects/traps)
+          const l = this.ex(b.left), r = this.ex(b.right);
+          const v = isNull(rt) ? l : r;
+          return this.t({ k: "prim", name: "boolean" }, `${neg ? "" : "!"}((${v}).some)`, b);
         }
         const ln = lt.k === "union" && !!nonNull(lt), rn = rt.k === "union" && !!nonNull(rt);
         if (ln || rn) { // Q017: `T | null` against `T` (or both nullable)
@@ -2068,7 +2068,7 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
 
   // §14.2: the TU includes every declared `c:` header; the packages go to the link (native.ts).
   const hdrs = new Set<string>(), pkgs = new Set<string>();
-  for (const mod of prog.mods) for (const spec of mod.cdecls.keys()) { const cs = parseCSpec(spec); if (cs) { hdrs.add(cs.header); pkgs.add(cs.pkg); } }
+  for (const mod of prog.mods) for (const spec of mod.cdecls.keys()) { const cs = parseCSpec(spec); if (cs && isValidPkgName(cs.pkg) && isValidCHeader(cs.header)) { hdrs.add(cs.header); pkgs.add(cs.pkg); } }
 
   const rtH = readFileSync(new URL("./c/sz_rt.h", import.meta.url), "utf8");
   const c = [

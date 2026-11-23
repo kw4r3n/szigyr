@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import * as rt from "../../runtime-js/src/index.ts";
+import { instantiateWasmAsync } from "../../runtime-js/src/wasm-bridge.ts";
 import { check, run, runTestFile } from "../src/index.ts";
 import { loadCases } from "./harness.ts";
 
@@ -640,4 +641,151 @@ test("traps on out-of-range casts and 32-bit overflows", (t: Test) => {
       expect(res.trap).toMatchObject({ code, line, col });
     }
   });
+
+  it("#10 & #11 regressions: C/Wasm === null side effects, multi-using trap unwinding, wasm audio OOM cap reset, isolate port.close vs trap, and generic Ring across isolate", async () => {
+    // 1) === null / null === expr side effects & inner-cleanup trap still unwinds outer using and keeps first trap (JS, C, Wasm)
+    const strictNullAndDefer = project({
+      "main.szigyr": `type Msg = "clean:1" | "clean:2";
+type Tag = Struct<{ id: i32 }>;
+function logMsg(log: Log, m: Msg): void {
+  "use owned";
+  log.info(m);
+}
+function recordAndNull(v: Mut<Vec<i32>>, n: i32): i32 | null {
+  "use owned";
+  v.push(n);
+  return null;
+}
+export function testNullSides(alloc: Alloc): usize {
+  "use owned";
+  const v = Vec.create<i32>(alloc, 4);
+  const a = recordAndNull(v, 10) === null;
+  const b = null === recordAndNull(v, 20);
+  return a && b ? v.length : 0;
+}
+function cleanupWithTrace(log: Log, tag: Tag): void {
+  "use owned";
+  if (tag.id === 1) {
+    logMsg(log, "clean:1");
+  } else {
+    logMsg(log, "clean:2");
+    const m: i32 = 2147483647;
+    const _ov = m + 1; // T001 inside inner cleanup!
+    if (_ov === 0) logMsg(log, "clean:2");
+  }
+}
+export function runMultiDeferTrap(log: Log): i32 {
+  "use owned";
+  using _outer = Resource.ownWith<Tag, Log>({ id: 1 }, log, cleanupWithTrace);
+  using _inner = Resource.ownWith<Tag, Log>({ id: 2 }, log, cleanupWithTrace);
+  const z: i32 = 0;
+  return divTrunc(1, z); // T007 primary trap!
+}
+export function main(sys: System): void {
+  sys.log.info(\`sides:\${testNullSides(sys.alloc)}\`);
+  const _boom = runMultiDeferTrap(sys.log);
+  sys.log.info(\`done:\${_boom}\`);
+}
+`,
+    });
+    for (const backend of ["js", "c", "wasm"] as const) {
+      const rDefer = await run(strictNullAndDefer, { backend });
+      expect(rDefer.diagnostics, backend).toEqual([]);
+      expect(rDefer.stdout, backend).toBe("sides:2\nclean:2\nclean:1\n");
+      expect(rDefer.trap, backend).toMatchObject({ code: "T007" });
+    }
+
+    // 2) wasm-bridge audio.render allocation failure resets outCap cleanly instead of writing to ptr 0 on next call
+    let allocCount = 0;
+    const mem = new WebAssembly.Memory({ initial: 1 });
+    const mockInst = {
+      exports: {
+        memory: mem,
+        __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, 4096),
+        sz_alloc: (n: number) => (++allocCount === 1 ? 0 : 128),
+        sz_dealloc: () => {},
+        sz_empty_ptr: () => 16,
+        sz_get_depth: () => 0,
+        sz_set_depth: () => {},
+        sz_defer_enter: () => 0,
+        sz_defer_step: () => 0,
+        sz_defer_leave: () => {},
+        sz_nvecs_get: () => 0,
+        sz_npools_get: () => 0,
+        sz_narenas_get: () => 0,
+        sz_sync_frame: () => {},
+        sz_run_wb: () => {},
+        aud_render: () => {},
+      },
+    } as unknown as WebAssembly.Instance;
+    const origInstantiate = WebAssembly.instantiate;
+    WebAssembly.instantiate = (async () => ({ instance: mockInst })) as unknown as typeof WebAssembly.instantiate;
+    try {
+      const api = await instantiateWasmAsync(
+        new Uint8Array([0]),
+        { files: [], poss: [], lits: [], fns: {}, audio: { a: { init: "aud_init", render: "aud_render", free: "aud_free" } } },
+        rt.NATIVE_HOST,
+      );
+      const audio = api.sz_audio_a as unknown as { render(box: number, out: Float32Array, n: number): void };
+      expect(() => audio.render(0, new Float32Array(2), 1)).toThrow("out of memory");
+      expect(() => audio.render(0, new Float32Array(2), 1)).not.toThrow();
+      expect(allocCount).toBe(2);
+    } finally {
+      WebAssembly.instantiate = origInstantiate;
+    }
+
+    // 3) #11: isolate calling port.close() before trapping still surfaces trap to main, & generic Ring.create<T> works across isolate
+    const isoFile = project({
+      "main.szigyr": `function workerTrapAfterClose(port: Port<i32, i32>): void {
+  port.close();
+  panic("after-close-trap");
+}
+export async function main(sys: System): Promise<void> {
+  const p = sys.spawn.isolate(workerTrapAfterClose);
+  const _v = await p.recv();
+  await sys.clock.sleep(30);
+  sys.log.info(\`got:\${_v === null ? "null" : "val"}\`);
+}
+`,
+    });
+    const rTrapIso = await run(isoFile);
+    expect(rTrapIso.diagnostics).toEqual([]);
+    expect(rTrapIso.trap).toMatchObject({ code: "T006" });
+
+    const ringIso = project({
+      "main.szigyr": `function makeG<T extends Copy & Native & Send>(alloc: Alloc, cap: usize): RingPair<T> {
+  "use owned";
+  return Ring.create<T>(alloc, cap);
+}
+async function workerPush(port: Port<i32, RingTx<i32>>): Promise<void> {
+  const tx = await port.recv();
+  if (tx === null) return;
+  tx.push(42);
+  port.send(0);
+}
+export async function main(sys: System): Promise<void> {
+  const { tx, rx } = makeG<i32>(sys.alloc, 4);
+  const p = sys.spawn.isolate(workerPush);
+  p.send(tx);
+  const _done = await p.recv();
+  const res = rx.pop();
+  sys.log.info(\`ring:\${res ?? -1}\`);
+}
+`,
+    });
+    const rRingIso = await run(ringIso);
+    expect(rRingIso.diagnostics).toEqual([]);
+    expect(rRingIso.trap).toBeNull();
+    expect(rRingIso.stdout.trim()).toBe("ring:42");
+
+    // Queue-mode Ring<T> without concrete element type cannot be split over Port.send
+    const { tx: unTx } = rt.Ring.create<number>(rt.NATIVE_HOST, 4);
+    const dummyPort = new rt.Port({
+      post() {},
+      onMessage() {},
+      onClose() {},
+      close() {},
+    });
+    expect(() => dummyPort.send(unTx)).toThrow(/cannot split a queue-mode Ring/);
+  }, 60_000);
 });

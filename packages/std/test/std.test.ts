@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createConnection } from "node:net";
 import { describe, expect, it } from "vitest";
 import { Arena, Trap, Vec, panic, requires, setForeignTrapCheck, stopFakeIsolates, takeIsolateTrap, type Pos } from "../../runtime-js/src/index.ts";
 import { ALLOC, FakeAudio, FakeClock, FakeDisplay, FakeFs, FakeNet, FakeProc, FakeSpawn, MemoryLog, SeededRandom, TestAlloc, createSystem, nodeFs, nodeJs, nodeNet, runMain } from "../src/index.ts";
@@ -449,6 +450,52 @@ describe("node authorities", () => {
       const rTxt = await fetch(`http://127.0.0.1:${srv.port}/txt`);
       expect(rTxt.status).toBe(200);
       expect(await rTxt.text()).toBe("hello");
+    } finally {
+      await srv.close();
+    }
+  });
+
+  it("nodeNet.serve handles protocol-relative paths, invalid '//' without leaking inFlight, and caps >16MiB bodies", async () => {
+    const rawExchange = (port: number, payload: string | Buffer): Promise<string> =>
+      new Promise((resolve, reject) => {
+        const sock = createConnection({ host: "127.0.0.1", port }, () => { sock.end(payload); });
+        const chunks: Buffer[] = [];
+        sock.on("data", (c) => chunks.push(c));
+        sock.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+        sock.on("error", reject);
+      });
+
+    const sRes = await nodeNet.serveRaw({ host: "127.0.0.1", port: 0 }, async (req) => ({
+      status: 200,
+      headers: [{ name: "content-type", value: "text/plain" }],
+      body: { kind: "text", value: `${req.path}|${req.query}|${req.body.length}` },
+    }));
+    expect(sRes.kind).toBe("ok");
+    if (sRes.kind !== "ok") return;
+    const srv = sRes.value;
+    try {
+      const resSlashSlash = await rawExchange(srv.port, "GET // HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+      expect(resSlashSlash).toContain("200 OK");
+      expect(resSlashSlash).toContain("//||0");
+
+      const resProtoRel = await rawExchange(srv.port, "GET //evil.com/admin?k=1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+      expect(resProtoRel).toContain("200 OK");
+      expect(resProtoRel).toContain("//evil.com/admin|k=1|0");
+
+      const bodySize = 16 * 1024 * 1024 + 64;
+      const head = Buffer.from(`POST /up HTTP/1.1\r\nHost: localhost\r\nContent-Length: ${bodySize}\r\nConnection: close\r\n\r\n`);
+      const bigBody = Buffer.alloc(bodySize, 0x61);
+      const resTooLarge = await new Promise<string>((resolve) => {
+        const sock = createConnection({ host: "127.0.0.1", port: srv.port }, () => {
+          sock.write(head);
+          sock.write(bigBody);
+        });
+        const chunks: Buffer[] = [];
+        sock.on("data", (c) => chunks.push(c));
+        sock.on("close", () => resolve(Buffer.concat(chunks).toString("utf8")));
+        sock.on("error", () => resolve(Buffer.concat(chunks).toString("utf8")));
+      });
+      expect(resTooLarge).toContain("413");
     } finally {
       await srv.close();
     }

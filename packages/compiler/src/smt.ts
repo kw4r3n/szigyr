@@ -103,11 +103,17 @@ export async function shutdownSmt(): Promise<void> {
   }
 }
 
-function runExternal(solver: SmtSolverInfo, script: string, timeoutMs: number): Promise<{ stdout: string; stderr: string; timedOut: boolean }> {
+const MAX_TIMER_MS = 2_147_483_647;
+const Q_MARKER = /^"?__SZ_Q_(\d+)__"?$/;
+const M_MARKER = /^"?__SZ_M_(\d+)__"?$/;
+
+function runExternal(solver: SmtSolverInfo, script: string, timeoutMs: number, queryCount = 1): Promise<{ stdout: string; stderr: string; timedOut: boolean }> {
   const cmd = solver.cmd!;
+  const perMs = Math.max(1, Math.floor(timeoutMs));
   const args = solver.kind === "cvc5"
-    ? ["--lang=smt2", `--tlimit=${timeoutMs}`, "--produce-models", "-"]
+    ? ["--lang=smt2", `--tlimit-per=${perMs}`, "--produce-models", "-"]
     : ["-smt2", "-in"];
+  const killMs = Math.min(MAX_TIMER_MS, perMs * Math.max(1, queryCount) + 2000);
   return new Promise((resolve) => {
     const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
@@ -117,12 +123,13 @@ function runExternal(solver: SmtSolverInfo, script: string, timeoutMs: number): 
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGKILL");
-    }, timeoutMs + 2000);
+    }, killMs);
 
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (d: string) => { stdout += d; });
     child.stderr.on("data", (d: string) => { stderr += d; });
+    child.stdin.on("error", () => {});
     child.on("error", (e) => {
       if (settled) return;
       settled = true;
@@ -280,25 +287,56 @@ function buildHeader(solver: SmtSolverInfo, logic: "QF_LIA" | "QF_NIA", timeoutM
   return lines;
 }
 
-function parseBatchStatuses(stdout: string, count: number): { statuses: SmtStatus[]; errors: string[] } {
-  const statuses: SmtStatus[] = [];
-  const errors: string[] = [];
+/** Parses sentinel-framed batch stdout into per-query statuses without letting errors shift later queries. */
+export function parseBatchStatuses(stdout: string, count: number, timedOut = false): { statuses: SmtStatus[]; errors: (string | undefined)[] } {
+  const buckets: string[][] = Array.from({ length: count }, () => []);
+  const preambleErrors: string[] = [];
+  let curIdx = -1;
   for (const rawLine of stdout.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line) continue;
-    if (line === "unsat" || line === "sat" || line === "unknown") {
-      statuses.push(line);
-    } else if (line.startsWith("(:reason-unknown")) {
-      if (statuses.at(-1) === "unknown" && /timeout|canceled/i.test(line)) {
-        statuses[statuses.length - 1] = "timeout";
-      }
-    } else if (line.startsWith("(error")) {
-      errors.push(line);
-      statuses.push(/timeout|canceled/i.test(line) ? "timeout" : "error");
+    const m = Q_MARKER.exec(line);
+    if (m) {
+      const idx = Number(m[1]);
+      curIdx = idx >= 0 && idx < count ? idx : -1;
+      continue;
+    }
+    if (curIdx < 0) {
+      if (line.startsWith("(error")) preambleErrors.push(line);
+    } else {
+      buckets[curIdx]!.push(line);
     }
   }
-  while (statuses.length < count) statuses.push("error");
-  return { statuses: statuses.slice(0, count), errors };
+  if (preambleErrors.length > 0) {
+    const err = preambleErrors[0]!;
+    const st: SmtStatus = /timeout|canceled/i.test(err) ? "timeout" : "error";
+    return { statuses: Array.from({ length: count }, () => st), errors: Array.from({ length: count }, () => err) };
+  }
+  const statuses: SmtStatus[] = [];
+  const errors: (string | undefined)[] = [];
+  for (let i = 0; i < count; i++) {
+    const lines = buckets[i]!;
+    const errLine = lines.find((l) => l.startsWith("(error"));
+    if (errLine) {
+      const st: SmtStatus = /timeout|canceled/i.test(errLine) ? "timeout" : "error";
+      statuses.push(st);
+      errors.push(st === "error" ? errLine : undefined);
+      continue;
+    }
+    const statusLine = lines.find((l) => l === "unsat" || l === "sat" || l === "unknown");
+    if (!statusLine) {
+      statuses.push(timedOut ? "timeout" : "error");
+      errors.push(undefined);
+      continue;
+    }
+    let st: SmtStatus = statusLine as SmtStatus;
+    if (st === "unknown" && lines.some((l) => l.startsWith("(:reason-unknown") && /timeout|canceled/i.test(l))) {
+      st = "timeout";
+    }
+    statuses.push(st);
+    errors.push(undefined);
+  }
+  return { statuses, errors };
 }
 
 /** Runs a batch of verification queries against one shared SMT preamble, lazily fetching models for `sat` queries. */
@@ -312,19 +350,17 @@ export async function runSmtBatch(
   const timeoutMs = opts.timeoutMs ?? 2000;
   const logic = opts.logic ?? "QF_LIA";
   const isZ3 = solver.kind === "z3" || solver.kind === "z3-wasm";
-  const run = (script: string) => (solver.kind === "z3-wasm" ? runWasm(script) : runExternal(solver, script, timeoutMs));
+  const run = (script: string, count: number) => (solver.kind === "z3-wasm" ? runWasm(script) : runExternal(solver, script, timeoutMs, count));
 
   const phase1 = [
     ...buildHeader(solver, logic, timeoutMs, false),
     preamble,
-    ...queries.map((q) => `(push 1)\n(assert ${q.assertion})\n(check-sat)${isZ3 ? "\n(get-info :reason-unknown)" : ""}\n(pop 1)`),
+    ...queries.map((q, i) => `(echo "__SZ_Q_${i}__")\n(push 1)\n(assert ${q.assertion})\n(check-sat)${isZ3 ? "\n(get-info :reason-unknown)" : ""}\n(pop 1)`),
     "",
   ].join("\n");
 
-  const r1 = await run(phase1);
-  if (r1.timedOut) return queries.map(() => ({ status: "timeout" }));
-
-  const { statuses, errors } = parseBatchStatuses(r1.stdout, queries.length);
+  const r1 = await run(phase1, queries.length);
+  const { statuses, errors } = parseBatchStatuses(r1.stdout, queries.length, r1.timedOut);
   const results: SmtCheckResult[] = statuses.map((status, i) => ({
     status,
     ...(status === "error" && (errors[i] ?? errors[0] ?? r1.stderr.trim()) ? { error: errors[i] ?? errors[0] ?? r1.stderr.trim() } : {}),
@@ -338,27 +374,34 @@ export async function runSmtBatch(
   const modelScript = [
     ...buildHeader(solver, logic, timeoutMs, true),
     preamble,
-    ...satQueries.map(({ q }) => {
+    ...satQueries.map(({ q }, j) => {
       const syms = [...q.modelVars!.values()];
-      return `(push 1)\n(assert ${q.assertion})\n(check-sat)\n(get-value (${syms.join(" ")}))\n(pop 1)`;
+      return `(echo "__SZ_M_${j}__")\n(push 1)\n(assert ${q.assertion})\n(check-sat)\n(get-value (${syms.join(" ")}))\n(pop 1)`;
     }),
     "",
   ].join("\n");
 
-  const r2 = await run(modelScript);
-  const sexprs = parseSExprs(r2.stdout);
-  let cursor = 0;
-  for (const { q, i } of satQueries) {
-    while (cursor < sexprs.length) {
-      const tok = sexprs[cursor++];
-      if (typeof tok === "string" && (tok === "sat" || tok === "unsat" || tok === "unknown")) {
-        if (tok === "sat" && cursor < sexprs.length && Array.isArray(sexprs[cursor])) {
-          const symToName = new Map<string, string>();
-          for (const [disp, sym] of q.modelVars!) symToName.set(sym, disp);
-          results[i] = { status: "sat", model: decodeValueList(sexprs[cursor++] as SExpr[], symToName) };
-        }
-        break;
-      }
+  const r2 = await run(modelScript, satQueries.length);
+  const modelBuckets: string[] = Array.from({ length: satQueries.length }, () => "");
+  let mIdx = -1;
+  for (const rawLine of r2.stdout.split(/\r?\n/)) {
+    const m = M_MARKER.exec(rawLine.trim());
+    if (m) {
+      const idx = Number(m[1]);
+      mIdx = idx >= 0 && idx < satQueries.length ? idx : -1;
+    } else if (mIdx >= 0) {
+      modelBuckets[mIdx] += `${rawLine}\n`;
+    }
+  }
+  for (let j = 0; j < satQueries.length; j++) {
+    const { q, i } = satQueries[j]!;
+    const sexprs = parseSExprs(modelBuckets[j]!);
+    if (sexprs.some((x) => Array.isArray(x) && x[0] === "error")) continue;
+    const satPos = sexprs.indexOf("sat");
+    if (satPos >= 0 && satPos + 1 < sexprs.length && Array.isArray(sexprs[satPos + 1])) {
+      const symToName = new Map<string, string>();
+      for (const [disp, sym] of q.modelVars!) symToName.set(sym, disp);
+      results[i] = { status: "sat", model: decodeValueList(sexprs[satPos + 1] as SExpr[], symToName) };
     }
   }
   return results;

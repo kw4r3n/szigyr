@@ -96,10 +96,8 @@ static bool sz_bool(sz_val v) { return sz_js_bool(v) != 0; }
 static sz_val sz_mkbool(bool b) { return sz_js_mkbool(b ? 1 : 0); }
 static bool sz_isnull(sz_val v) { return sz_js_isnull(v) != 0; }
 
-static void sz_defer_unwind(void);
-static int sz_unwinding = 0;
-__attribute__((cold)) _Noreturn static void sz_trap(int code, int pos) { sz_defer_unwind(); sz_unwinding = 0; sz_js_trap(code, pos); }
-__attribute__((cold)) _Noreturn static void sz_fail(const char *msg) { sz_defer_unwind(); sz_unwinding = 0; sz_js_fail(msg); }
+__attribute__((cold)) _Noreturn static void sz_trap(int code, int pos) { sz_js_trap(code, pos); }
+__attribute__((cold)) _Noreturn static void sz_fail(const char *msg) { sz_js_fail(msg); }
 
 static int32_t sz_depth = 0;
 SZ_EXP(sz_get_depth) int32_t sz_get_depth(void) { return sz_depth; }
@@ -239,26 +237,21 @@ static void sz_defer_pop_run(sz_defer *mark) {
     if (d->fn) d->fn(d->data);
   }
 }
-static void sz_defer_unwind(void) {
-  if (sz_unwinding) return;
-  sz_unwinding = 1;
-  sz_defer_pop_run(sz_defer_base);
-  sz_unwinding = 0;
-}
 SZ_EXP(sz_defer_enter) uint32_t sz_defer_enter(void) {
   uint32_t prev = (uint32_t)(uintptr_t)sz_defer_base;
   sz_defer_base = sz_defer_head;
   return prev;
 }
+SZ_EXP(sz_defer_step) uint32_t sz_defer_step(void) {
+  if (!sz_defer_head || sz_defer_head == sz_defer_base) return 0;
+  sz_defer *d = sz_defer_head;
+  sz_defer_head = d->prev;
+  if (d->fn) d->fn(d->data);
+  return 1;
+}
 SZ_EXP(sz_defer_leave) void sz_defer_leave(uint32_t prev) {
-  sz_defer *base = sz_defer_base;
+  sz_defer_head = sz_defer_base;
   sz_defer_base = (sz_defer *)(uintptr_t)prev;
-  if (!sz_unwinding && sz_defer_head != base) {
-    sz_unwinding = 1;
-    sz_defer_pop_run(base);
-    sz_unwinding = 0;
-  }
-  if (sz_defer_head != base) sz_defer_head = base;
 }
 
 // Vec handles live until the boundary call returns; the list slice [v0..n) is synced in finally.

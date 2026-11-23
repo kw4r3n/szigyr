@@ -157,22 +157,28 @@ export async function startWatch(opts: WatchOptions): Promise<number> {
     if (json) out(jsonLine({ kind: "watch-start", mode, files }));
     const dirs = new Set<string>(files.map((f) => dirname(canonPath(f))));
     let errors = 0;
-    if (mode === "check") {
-      const all: Diagnostic[] = [];
-      for (const f of files) {
-        const a = analyze(f, parser);
-        for (const pf of a.files) dirs.add(dirname(pf.path));
-        all.push(...a.diagnostics, ...(a.warnings ?? []));
+    try {
+      if (mode === "check") {
+        const all: Diagnostic[] = [];
+        for (const f of files) {
+          const a = analyze(f, parser);
+          for (const pf of a.files) dirs.add(dirname(pf.path));
+          all.push(...a.diagnostics, ...(a.warnings ?? []));
+        }
+        const deduped = dedupeDiagnostics(all);
+        if (deduped.length) out(diags(deduped));
+        errors = deduped.filter((d) => d.severity === "error").length;
+      } else {
+        const res = await runTestPass({ files, backends, json, ...(all ? { all: true } : {}), ...(filter !== undefined ? { filter } : {}), out, diags, parser });
+        for (const d of res.dirs) dirs.add(d);
+        errors = res.failed + (res.bad ? 1 : 0);
       }
-      const deduped = dedupeDiagnostics(all);
-      if (deduped.length) out(diags(deduped));
-      errors = deduped.filter((d) => d.severity === "error").length;
-    } else {
-      const res = await runTestPass({ files, backends, json, ...(all ? { all: true } : {}), ...(filter !== undefined ? { filter } : {}), out, diags, parser });
-      for (const d of res.dirs) dirs.add(d);
-      errors = res.failed + (res.bad ? 1 : 0);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      (opts.err ?? out)(json ? jsonLine({ kind: "error", mode, message: msg }) : `[watch] error: ${msg}\n`);
+      errors = Math.max(1, errors);
     }
-    syncWatches(dirs);
+    try { syncWatches(dirs); } catch { /* ignore watch sync errors during recovery */ }
     const durationMs = +(performance.now() - t0).toFixed(2);
     const ok = errors === 0;
     out(json

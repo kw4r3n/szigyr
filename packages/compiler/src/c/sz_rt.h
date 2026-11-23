@@ -80,12 +80,35 @@ static void sz_defer_pop_run(sz_defer *mark) {
 static void sz_defer_unwind(void) {
   if (sz_unwinding) return;
   sz_unwinding = 1;
-  sz_defer_pop_run(sz_defer_base);
+  jmp_buf saved_jb;
+  memcpy(saved_jb, sz_jb, sizeof saved_jb);
+  int saved_code = sz_trap_code, saved_pos = sz_trap_pos;
+  const char *saved_err = sz_err;
+  while (sz_defer_head && sz_defer_head != sz_defer_base) {
+    sz_defer *d = sz_defer_head;
+    sz_defer_head = d->prev;
+    if (!d->fn) continue;
+    sz_defer *volatile inner_base = sz_defer_head;
+    if (setjmp(sz_jb) == 0) {
+      d->fn(d->data);
+    } else {
+      while (sz_defer_head && sz_defer_head != inner_base) {
+        sz_defer *volatile d2 = sz_defer_head;
+        sz_defer_head = d2->prev;
+        if (!d2->fn) continue;
+        if (setjmp(sz_jb) == 0) d2->fn(d2->data);
+      }
+    }
+  }
+  memcpy(sz_jb, saved_jb, sizeof sz_jb);
+  sz_trap_code = saved_code;
+  sz_trap_pos = saved_pos;
+  sz_err = saved_err;
   sz_unwinding = 0;
 }
 
-__attribute__((cold)) _Noreturn static void sz_trap(int code, int pos) { if (code >= 1) sz_claim_trap(code, pos); sz_trap_code = code; sz_trap_pos = pos; sz_defer_unwind(); sz_unwinding = 0; longjmp(sz_jb, 1); }
-_Noreturn static void sz_fail(const char *msg) { sz_err = msg; sz_trap(0, 0); }
+__attribute__((cold)) _Noreturn static void sz_trap(int code, int pos) { if (sz_unwinding) longjmp(sz_jb, 1); if (code >= 1) sz_claim_trap(code, pos); sz_trap_code = code; sz_trap_pos = pos; sz_defer_unwind(); longjmp(sz_jb, 1); }
+_Noreturn static void sz_fail(const char *msg) { if (!sz_unwinding) sz_err = msg; sz_trap(0, 0); }
 #define SZ_OK(call) do { if ((call) != napi_ok) sz_fail(#call); } while (0)
 /** Q182: calls trap T006 once the stack is within a margin of this thread's real limit, so a large frame cannot overflow it. */
 static _Thread_local uintptr_t sz_stack_lim;

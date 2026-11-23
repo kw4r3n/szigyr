@@ -43,7 +43,7 @@ export function isolateMain(f: (port: Port, alloc: { readonly kind: "alloc" }) =
     post: (msg, transfer) => { pp.postMessage(msg, transfer as never); },
     onMessage: (g) => { pp.on("message", g); },
     onClose: () => { /* parentPort has no close event; the main side ending terminates the worker */ },
-    close: () => { pp.close(); },
+    close: () => { /* keep parentPort open until isolate finishes so subsequent traps still reach main */ },
   };
   const port = new Port(ch);
   void (async () => {
@@ -53,8 +53,10 @@ export function isolateMain(f: (port: Port, alloc: { readonly kind: "alloc" }) =
       const t = asTrap(e);
       const ft: ForeignTrap = t ? { code: t.code, ...(t.pos ? { file: t.pos.file, line: t.pos.line, col: t.pos.col } : {}) } : { code: "T006", message: String(e) };
       try { pp.postMessage({ t: ft }); } catch { /* the main side is gone */ }
+    } finally {
+      port.close();
+      try { pp.close(); } catch { /* already closed */ }
     }
-    port.close();
   })();
 }
 
@@ -111,6 +113,9 @@ const { pathToFileURL } = require("node:url");
         continue;
       }
       const name = spec.slice(4);
+      if (!name || name.startsWith(".") || name.startsWith("/") || name.includes("\\\\") || name.split("/").some((p) => !p || p === "." || p === "..")) {
+        throw new Error("invalid npm specifier: " + spec);
+      }
       let url = name;
       try { url = pathToFileURL(createRequire(path).resolve(name)).href; } catch { /* fall back to Node's own resolution */ }
       npm.set(spec, unwrapNpm(await import(url)));

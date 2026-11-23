@@ -3,6 +3,37 @@
 // headercheck.ts (the _Static_assert probe) and emit-c.ts (Ptr / ConstPtr values and calls).
 import type { NumName, Type } from "./types.ts";
 
+export const C_IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** Safe `pkg-config` package identifier (no options, paths, traversal, or `.pc` file paths). */
+export function isValidPkgName(pkg: string): boolean {
+  return /^[A-Za-z0-9_][A-Za-z0-9._+-]*$/.test(pkg) && !pkg.endsWith(".pc") && !pkg.includes("..");
+}
+
+/** Safe angle-bracket `#include <...>` path without whitespace, quotes, leading `/`, or `.` / `..` segments. */
+export function isValidCHeader(header: string): boolean {
+  return header.length > 0 && !/[\s\x00-\x1f\x7f:<>"\\]/.test(header) && !header.startsWith("/") && !header.split("/").some((seg) => seg === "" || seg === "." || seg === "..");
+}
+
+const TWO_TOKEN_CFLAGS = new Set(["-I", "-isystem", "-idirafter", "-iquote", "-D", "-U"]);
+const SAFE_CFLAG_PREFIX = /^(?:-[IDU]|-isystem|-idirafter|-iquote|-std=|-m|-W(?![pal],)|-O|-g)/;
+const SAFE_FFLAG = /^-f(?!plugin|profile|sanitize|exec-charset)/;
+
+/** Keeps only benign preprocessor/compiler flags from `pkg-config --cflags` (blocks plugins, specs, wrappers, response files). */
+export function sanitizeCflags(flags: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < flags.length; i++) {
+    const f = flags[i]!;
+    if (TWO_TOKEN_CFLAGS.has(f)) {
+      const next = flags[i + 1];
+      if (next !== undefined && !next.startsWith("@")) { out.push(f, next); i++; }
+      continue;
+    }
+    if (f === "-pthread" || f === "-w" || SAFE_CFLAG_PREFIX.test(f) || SAFE_FFLAG.test(f)) out.push(f);
+  }
+  return out;
+}
+
 /** `c:<package>:<header>`: the package is a pkg-config name, the header an angle-bracket path. */
 export function parseCSpec(spec: string): { pkg: string; header: string } | undefined {
   const m = /^c:([^:]+):(.+)$/.exec(spec);

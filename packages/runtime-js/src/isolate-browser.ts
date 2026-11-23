@@ -25,8 +25,8 @@ export function spawnIsolate(path: string, name: string): Port {
   let gone: (() => void) | undefined;
   let closed = false;
   w.addEventListener("message", (ev: MessageEvent) => {
-    const m = ev.data as Envelope;
-    if (m && typeof m === "object" && "c" in m) { liveWorkers.delete(w); gone?.(); return; }
+    const m = ev.data as Envelope | { e: 1 };
+    if (m && typeof m === "object" && "e" in m) { liveWorkers.delete(w); gone?.(); return; }
     onMsg?.(m);
   });
   w.addEventListener("error", (ev: ErrorEvent) => {
@@ -70,7 +70,7 @@ export function isolateMainBrowser(f: (port: Port, alloc: { readonly kind: "allo
       if (queued) for (const m of queued.splice(0)) f2(m);
     },
     onClose: () => {},
-    close: () => { try { g.close(); } catch { /* closed */ } },
+    close: () => {},
   };
   const port = new Port(ch);
   void (async () => {
@@ -80,7 +80,10 @@ export function isolateMainBrowser(f: (port: Port, alloc: { readonly kind: "allo
       const t = asTrap(e);
       const ft: ForeignTrap = t ? { code: t.code, ...(t.pos ? { file: t.pos.file, line: t.pos.line, col: t.pos.col } : {}) } : { code: "T006", message: String(e) };
       try { g.postMessage({ t: ft }); } catch { /* main gone */ }
+    } finally {
+      port.close();
+      try { g.postMessage({ e: 1 }); } catch { /* main gone */ }
+      try { g.close(); } catch { /* closed */ }
     }
-    port.close();
   })();
 }

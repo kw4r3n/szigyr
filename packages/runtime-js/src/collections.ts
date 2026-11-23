@@ -684,6 +684,37 @@ export function ringUnpack(w: RingWire): RingShared<unknown> {
   return s;
 }
 
+/** Walks a runtime value according to a shape emitted for concrete instantiations and adopts any `RingTx`/`RingRx`. */
+export function adoptRings<T>(v: T, shape: unknown): T {
+  if (v === null || v === undefined || !shape) return v;
+  if (typeof shape === "string") {
+    if (v instanceof RingTx || v instanceof RingRx) v.adopt(shape as ElemKind);
+    return v;
+  }
+  if (Array.isArray(shape)) {
+    if (Array.isArray(v)) for (let i = 0; i < shape.length && i < v.length; i++) adoptRings(v[i], shape[i]);
+    return v;
+  }
+  if (typeof shape === "object") {
+    const sh = shape as Record<string, unknown>;
+    if ("$arr" in sh) {
+      if (Array.isArray(v)) for (const x of v) adoptRings(x, sh.$arr);
+      return v;
+    }
+    if ("$u" in sh && typeof v === "object") {
+      const kind = (v as Record<string, unknown>).kind;
+      const u = sh.$u as Record<string, unknown>;
+      if (typeof kind === "string" && Object.hasOwn(u, kind)) adoptRings(v, u[kind]);
+      return v;
+    }
+    if (typeof v === "object") {
+      const rec = v as Record<string, unknown>;
+      for (const [k, s] of Object.entries(sh)) if (Object.hasOwn(rec, k)) adoptRings(rec[k], s);
+    }
+  }
+  return v;
+}
+
 export class OwnedCell<T> {
   private value: T | undefined;
   private full: boolean;

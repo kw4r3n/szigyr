@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, utime
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { threadId } from "node:worker_threads";
-import { ccCommand, splitFlags } from "./cdecl.ts";
+import { ccCommand, isValidPkgName, sanitizeCflags, splitFlags } from "./cdecl.ts";
 import { CLI_NAME } from "./names.ts";
 
 export const CFLAGS = ["-std=gnu11", "-O2", "-ffp-contract=off", "-fno-fast-math", "-fwrapv", "-fexcess-precision=standard", "-falign-loops=32", "-shared", "-fPIC", "-w"];
@@ -44,8 +44,9 @@ function resolveToolchain(pkgs: string[]): { inc: string; cc: string; ccArgs: st
   // §14.2: the `c:` declarations' packages contribute their cflags to the compile and their libs to the link.
   let pkgCflags: string[] = [], pkgLibs: string[] = [];
   if (pkgs.length) {
+    for (const p of pkgs) if (!isValidPkgName(p)) throw new CBuildError(`C backend: invalid pkg-config package name '${p}'`);
     try {
-      pkgCflags = splitFlags(execFileSync("pkg-config", ["--cflags", "--", ...pkgs], { encoding: "utf8" }));
+      pkgCflags = sanitizeCflags(splitFlags(execFileSync("pkg-config", ["--cflags", "--", ...pkgs], { encoding: "utf8" })));
       pkgLibs = splitFlags(execFileSync("pkg-config", ["--libs", "--", ...pkgs], { encoding: "utf8" }));
     } catch { throw new CBuildError(`C backend: pkg-config could not resolve: ${pkgs.join(", ")}`); }
   }
