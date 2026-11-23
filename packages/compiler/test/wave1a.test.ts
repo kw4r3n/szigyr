@@ -117,6 +117,49 @@ describe("Wave 1-A TS syntax relaxations", () => {
     ]);
   });
 
+  it("suppresses W8001 on loops directly containing await or await using while keeping inner sync loops and async arrow caveats", () => {
+    const { entry } = makeProject({
+      "native.szigyr": `export function step(x: i32): i32 { "use rt"; return x + 1; }\n`,
+      "main.szigyr": [
+        `import { step } from "./native.szigyr";`,
+        `class Guard implements AsyncDisposable {`,
+        `  async disposeAsync(): Promise<void> {}`,
+        `}`,
+        `export async function workerLoop(port: Port<i32, i32>, clock: Clock): Promise<i32> {`,
+        `  let acc: i32 = 0;`,
+        `  while (true) {`,
+        `    const v = await port.recv();`,
+        `    if (v === null) break;`,
+        `    acc += step(v);`,
+        `    for (let j: i32 = 0; j < 2; j += 1) {`,
+        `      acc += step(j);`, // inner sync loop still warns (line 12, col 14)
+        `    }`,
+        `  }`,
+        `  for (let i: i32 = 0; i < 2; i += 1) {`,
+        `    await clock.sleep(1);`,
+        `    acc += step(i);`,
+        `  }`,
+        `  for (let i: i32 = 0; i < 2; i += 1) {`,
+        `    await using _g = new Guard();`,
+        `    acc += step(i);`,
+        `  }`,
+        `  for (let i: i32 = 0; i < 2; i += 1) {`,
+        `    const _fn = async (): Promise<void> => { await clock.sleep(1); };`,
+        `    acc += step(i);`, // await inside nested arrow does NOT suppress sync loop warning (line 25, col 12)
+        `  }`,
+        `  return acc;`,
+        `}`,
+        ``,
+      ].join("\n"),
+    });
+    const diags = check(entry);
+    expect(diags.filter((d) => d.severity === "error")).toEqual([]);
+    expect(diags.filter((d) => d.code === "W8001")).toMatchObject([
+      { code: "W8001", severity: "warning", range: { start: { line: 12, col: 14 } } },
+      { code: "W8001", severity: "warning", range: { start: { line: 25, col: 12 } } },
+    ]);
+  });
+
   it("erases import type / export type from emitted JS and allows type-only class types while rejecting value uses", () => {
     const { dir, entry } = makeProject({
       "types.szigyr": [

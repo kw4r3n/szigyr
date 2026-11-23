@@ -691,6 +691,7 @@ export class OwnedCell<T> {
   private mutBorrowed = false;
   private constructor(value: T | undefined, full: boolean) { this.value = value; this.full = full; }
   static create<T>(v: T): OwnedCell<T> { return new OwnedCell<T>(v, true); }
+  static empty<T>(): OwnedCell<T> { return new OwnedCell<T>(undefined, false); }
   take(pos?: Pos): T {
     if (!this.full) trap("T008", "take from empty OwnedCell", pos);
     if (this.mutBorrowed || this.readers > 0) trap("T008", "take from borrowed OwnedCell", pos);

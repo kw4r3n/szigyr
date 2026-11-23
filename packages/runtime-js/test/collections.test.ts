@@ -136,6 +136,18 @@ describe("OwnedCell", () => {
     expect(c.isEmpty()).toBe(false);
     expect(c.take()).toBeNull();
   });
+  it("OwnedCell.empty starts empty, traps T008 on access, and accepts put", () => {
+    const c = OwnedCell.empty<number>();
+    expect(c.isEmpty()).toBe(true);
+    expect(code(() => c.take(pos))).toBe("T008");
+    expect(code(() => c.withRef((v) => v, pos))).toBe("T008");
+    expect(code(() => c.withMut((v) => v, pos))).toBe("T008");
+    c.put(42, pos);
+    expect(c.isEmpty()).toBe(false);
+    expect(c.withRef((v) => v, pos)).toBe(42);
+    expect(c.take(pos)).toBe(42);
+    expect(c.isEmpty()).toBe(true);
+  });
   it("withRef / withMut enforce borrow rules with T008 and release on throw", () => {
     const c = OwnedCell.create({ x: 10 });
     // Nested shared reads are allowed

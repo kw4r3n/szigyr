@@ -411,7 +411,13 @@ export function nsMembers(ns: string): Record<string, Member | "variadic"> {
     case "Pool": return { create: m(RD, [opaque("Alloc"), USIZE], gen("Pool", tT), { tparams: [T], tcheck: "copy" }) };
     case "Arena": return { create: m(RD, [opaque("Alloc"), USIZE], gen("Arena")) };
     case "Ring": return { create: m(RD, [opaque("Alloc"), USIZE], record([{ name: "tx", type: gen("RingTx", tT), readonly: false }, { name: "rx", type: gen("RingRx", tT), readonly: false }], true), { tparams: [T], tcheck: "ring" }) }; // §15.1 (Q199)
-    case "OwnedCell": return { create: m(RD, [tT], gen("OwnedCell", tT), { tparams: [T], tcheck: "owned" }) };
+    case "OwnedCell": {
+      const T2 = newTParam("T"), tT2: Type = { k: "tparam", p: T2 };
+      return {
+        create: mo(m(RD, [tT], gen("OwnedCell", tT), { tparams: [T], tcheck: "owned" })),
+        empty: mo(m(RD, [], gen("OwnedCell", tT2), { tparams: [T2], tcheck: "owned" })),
+      };
+    }
     case "RegExp": return { compile: mo(m(RD, [STR, STR], result(opaque("RegExp"), ERROR_RECORD), { min: 1 })) };
     case "Ptr": {
       const T2 = newTParam("T"), tT2: Type = { k: "tparam", p: T2 };

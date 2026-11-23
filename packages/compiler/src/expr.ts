@@ -25,10 +25,13 @@ export function isLitOnly(e: ts.Expression): boolean {
   switch (e.kind) {
     case K.NumericLiteral: return true;
     case K.ParenthesizedExpression: return isLitOnly((e as ts.ParenthesizedExpression).expression);
-    case K.PrefixUnaryExpression: return (e as ts.PrefixUnaryExpression).operator === K.MinusToken && isLitOnly((e as ts.PrefixUnaryExpression).operand);
+    case K.PrefixUnaryExpression: {
+      const u = e as ts.PrefixUnaryExpression;
+      return (u.operator === K.MinusToken || u.operator === K.TildeToken) && isLitOnly(u.operand);
+    }
     case K.BinaryExpression: {
       const b = e as ts.BinaryExpression;
-      return ARITH.has(b.operatorToken.kind) && isLitOnly(b.left) && isLitOnly(b.right);
+      return (ARITH.has(b.operatorToken.kind) || BIT_OPS.has(b.operatorToken.kind)) && isLitOnly(b.left) && isLitOnly(b.right);
     }
   }
   return false;
@@ -666,10 +669,11 @@ function lvalue(c: Checker, e0: ts.Expression): Type {
 /** Types two operands; a literal side takes its type from the other side (Q014). */
 function operands(c: Checker, l: ts.Expression, r: ts.Expression, want: Type | undefined): [Type, Type] {
   const L = deferrable(l), R = deferrable(r);
-  if (L && R) { const ctx = numCtx(want) ?? (isLitOnly(l) && isLitOnly(r) ? F64 : undefined); return [expr(c, l, ctx), expr(c, r, ctx)]; }
-  if (L) { const rt = expr(c, r); return [expr(c, l, sideCtx(rt)), rt]; }
-  if (R) { const lt = expr(c, l); return [lt, expr(c, r, sideCtx(lt))]; }
-  return [expr(c, l), expr(c, r)];
+  const ctx = numCtx(want);
+  if (L && R) { const d = ctx ?? (isLitOnly(l) && isLitOnly(r) ? F64 : undefined); return [expr(c, l, d), expr(c, r, d)]; }
+  if (L) { const rt = expr(c, r, ctx); return [expr(c, l, sideCtx(rt)), rt]; }
+  if (R) { const lt = expr(c, l, ctx); return [lt, expr(c, r, sideCtx(lt))]; }
+  return [expr(c, l, ctx), expr(c, r, ctx)];
 }
 
 /** Attaches a `: <type>` declaration fix to `d` when `side` is an unannotated literal `let` binding. */

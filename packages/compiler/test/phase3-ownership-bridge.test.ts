@@ -316,4 +316,55 @@ describe("Phase 3: Result<Owned, E> and OwnedCell.withRef / withMut", () => {
     expect(diags).toContain("10:E3006");
     expect(diags).toContain("13:E3004");
   });
+
+  it("supports OwnedCell.empty<T>() across js, c, and wasm with E2006/E2002/E4001 validation", async () => {
+    const dir = makeTmp();
+    const okFile = writeTmp(
+      dir,
+      "empty-cell.szigyr",
+      [
+        `type BufBox = Struct<{ data: Vec<u8>; tag: u32 }>;`,
+        `export function main(sys: System): void {`,
+        `  const c1 = OwnedCell.empty<BufBox>();`,
+        `  const c2: OwnedCell<Vec<u8>> = OwnedCell.empty();`,
+        `  const e1 = c1.isEmpty();`,
+        `  const e2 = c2.isEmpty();`,
+        `  const v1 = Vec.filled<u8>(sys.alloc, 2, 9);`,
+        `  const v2 = Vec.filled<u8>(sys.alloc, 3, 4);`,
+        `  c1.put({ data: v1, tag: 77 });`,
+        `  c2.put(v2);`,
+        `  const s1 = c1.withRef((b: Ref<BufBox>): u32 => b.tag + u32(b.data[0]));`,
+        `  const taken = c2.take();`,
+        `  sys.log.info(\`\${e1},\${e2},\${c1.isEmpty()},\${c2.isEmpty()},\${s1},\${taken.length}\`);`,
+        `}`,
+        `test("OwnedCell.empty T008 on take/withRef/withMut", (t: Test) => {`,
+        `  const c = OwnedCell.empty<Vec<u8>>();`,
+        `  t.ok(c.isEmpty());`,
+        `  t.traps("T008", () => { const _x = c.take(); });`,
+        `  t.traps("T008", () => { const _n = c.withRef((v: Ref<Vec<u8>>): usize => v.length); });`,
+        `  t.traps("T008", () => { c.withMut((v: Mut<Vec<u8>>): void => { v.push(1); }); });`,
+        `});`,
+      ].join("\n"),
+    );
+
+    expect(check(okFile)).toEqual([]);
+    const tr = await runTestFile(okFile);
+    expect(tr.diagnostics).toEqual([]);
+    expect(tr.results).toEqual([{ name: "OwnedCell.empty T008 on take/withRef/withMut", ok: true }]);
+    for (const backend of ["js", "c", "wasm"] as const) {
+      const r = await run(okFile, { backend });
+      expect(r.diagnostics).toEqual([]);
+      expect(r.trap).toBeNull();
+      expect(r.stdout.trim()).toBe("true,true,false,true,86,3");
+    }
+
+    const expectCode = (name: string, src: string, code: string) => {
+      const p = writeTmp(dir, `${name}.szigyr`, src);
+      expect(check(p).some((d) => d.code === code), name).toBe(true);
+    };
+    expectCode("empty-infer-fail", `function f(): void { const c = OwnedCell.empty(); }`, "E2006");
+    expectCode("empty-non-owned", `function f(): void { const c = OwnedCell.empty<i32>(); }`, "E2002");
+    expectCode("empty-in-owned", `function f(): void { "use owned"; const c = OwnedCell.empty<Vec<u8>>(); }`, "E4001");
+    expectCode("empty-in-rt", `function f(): void { "use rt"; const c = OwnedCell.empty<Vec<u8>>(); }`, "E4001");
+  });
 });

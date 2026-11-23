@@ -81,7 +81,7 @@ const ENTRIES: Record<string, ExplainEntry> = Object.fromEntries([
   e("E7002", "P1", "Invalid 'c:' ambient module declaration", "Ambient 'declare module \"c:<pkg>:<header>\"' syntax or placement is invalid.", "Use valid 'declare module \"c:<pkg>:<header>\"' declarations with allowed C types and Ffi functions."),
 
   // Warnings (W8001)
-  e("W8001", "P3", "Strict/rt call inside a managed loop", "Calling a strict ('\"use owned\"') or rt ('\"use rt\"') function inside a managed loop crosses the JS/native boundary on every iteration.", "Move the loop into the strict/rt function and pass a Vec/Slice buffer instead of calling per element."),
+  e("W8001", "P3", "Strict/rt call inside a managed loop", "Calling a strict ('\"use owned\"') or rt ('\"use rt\"') function inside a synchronous managed loop crosses the JS/native boundary on every iteration.", "Move the loop into the strict/rt function and pass a Vec/Slice buffer instead of calling per element."),
 
   // Runtime Traps (T001-T015)
   e("T001", "runtime", "Signed/unsigned integer overflow", "Checked integer arithmetic (+, -, *, divTrunc(MIN, -1), conversion/negation) overflowed the target type range.", "Use wider integer types (e.g. i32/u32/i64/u64/usize) or f64, validate inputs with 'requires', or use explicit wrapAdd/wrapSub/wrapMul where wraparound is intended."),

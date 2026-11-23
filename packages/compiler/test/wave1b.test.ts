@@ -297,4 +297,45 @@ describe("Wave 1-B operators, callbacks, traps, prover, and mutate", () => {
       expect(check(bf).some((d) => d.code === "E2006"), src).toBe(true);
     }
   });
+
+  it("propagates contextual numeric types through bitwise literal expressions and wrap* ops while keeping E2002/E2003 checks", async () => {
+    const { dir } = makeTmp();
+    const okFile = writeTmp(dir, "bit_ctx_ok.szigyr", [
+      `function fnvPair(x: u32, y: u32): u32 {`,
+      `  "use rt";`,
+      `  return wrapMul(wrapMul(2166136261 ^ x, 16777619) ^ y, 16777619);`,
+      `}`,
+      `export function main(sys: System): void {`,
+      `  const expectedSum: u32 = wrapMul(wrapMul(2166136261 ^ 1, 16777619) ^ 2, 16777619);`,
+      `  const mask: u8 = 1 | 2;`,
+      `  const inv: u32 = ~0;`,
+      `  const sh: i32 = (1 << 4) | 3;`,
+      `  const direct: u32 = fnvPair(1, 2);`,
+      `  sys.log.info(\`\${expectedSum === direct},\${mask},\${inv},\${sh}\`);`,
+      `}`,
+      `test("cmp propagation", (t) => {`,
+      `  t.eq(fnvPair(1, 2), wrapMul(wrapMul(2166136261 ^ 1, 16777619) ^ 2, 16777619));`,
+      `});`,
+      ``,
+    ].join("\n"));
+    expect(check(okFile)).toEqual([]);
+    const rt = await runTestFile(okFile);
+    expect(rt.diagnostics).toEqual([]);
+    expect(rt.results).toEqual([{ name: "cmp propagation", ok: true }]);
+    for (const backend of ["js", "c", "wasm"] as const) {
+      const r = await run(okFile, { backend });
+      expect(r.diagnostics).toEqual([]);
+      expect(r.trap).toBeNull();
+      expect(r.stdout.trim()).toBe("true,3,4294967295,19");
+    }
+
+    const expectErr = (name: string, src: string, code: string) => {
+      const p = writeTmp(dir, `${name}.szigyr`, src);
+      expect(check(p).some((d) => d.code === code), name).toBe(true);
+    };
+    expectErr("ctxless-xor", `function f(): void { const bad = 1 ^ 2; bad; }`, "E2002");
+    expectErr("ctxless-tilde", `function f(): void { const bad = ~1; bad; }`, "E2002");
+    expectErr("mixed-arith", `function f(a: i32, b: u32): u32 { return a + b; }`, "E2003");
+    expectErr("mixed-wrap", `function f(a: i32, b: u32): u32 { return wrapMul(a, b); }`, "E2002");
+  });
 });
