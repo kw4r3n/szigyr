@@ -84,6 +84,111 @@ const isForStepLit = (n: Node): boolean => {
   return fp?.kind === K.ForStatement && (fp as ts.ForStatement).incrementor === inc;
 };
 
+type InitFlow = "read" | "assigned" | "exited" | "escape" | "none";
+
+const readsSym = (root: Node, symId: number): boolean => {
+  let found = false;
+  const walk = (n: Node): void => {
+    if (found) return;
+    if (isId(n) && localOf.get(n)?.id === symId) { found = true; return; }
+    n.forEachChild(walk);
+  };
+  walk(root);
+  return found;
+};
+
+const flowStmtList = (stmts: readonly ts.Statement[], symId: number): InitFlow => {
+  for (const s of stmts) {
+    const r = flowInitStmt(s, symId);
+    if (r === "read" || r === "assigned" || r === "exited") return r;
+    if (r === "escape") return "none";
+  }
+  return "none";
+};
+
+function flowInitStmt(s: ts.Statement, symId: number): InitFlow {
+  switch (s.kind) {
+    case K.Block:
+      return flowStmtList((s as ts.Block).statements, symId);
+    case K.VariableStatement:
+      return readsSym(s, symId) ? "read" : "none";
+    case K.ExpressionStatement: {
+      const u = unwrapParens((s as ts.ExpressionStatement).expression);
+      if (u.kind === K.BinaryExpression) {
+        const b = u as ts.BinaryExpression;
+        if (b.operatorToken.kind === K.EqualsToken) {
+          const lhs = unwrapParens(b.left);
+          if (isId(lhs) && localOf.get(lhs)?.id === symId) {
+            return readsSym(b.right, symId) ? "read" : "assigned";
+          }
+        }
+      }
+      if (u.kind === K.CallExpression && isId((u as ts.CallExpression).expression) && ((u as ts.CallExpression).expression as ts.Identifier).text === "panic") {
+        return readsSym(u, symId) ? "read" : "exited";
+      }
+      return readsSym(s, symId) ? "read" : "none";
+    }
+    case K.ReturnStatement: {
+      const rx = (s as ts.ReturnStatement).expression;
+      return rx && readsSym(rx, symId) ? "read" : "exited";
+    }
+    case K.BreakStatement:
+    case K.ContinueStatement:
+      return "escape";
+    case K.IfStatement: {
+      const ifs = s as ts.IfStatement;
+      if (readsSym(ifs.expression, symId)) return "read";
+      const t = flowInitStmt(ifs.thenStatement, symId);
+      const e = ifs.elseStatement ? flowInitStmt(ifs.elseStatement, symId) : "none";
+      if (t === "read" || e === "read") return "read";
+      if (t === "escape" || e === "escape") return "escape";
+      if ((t === "assigned" && (e === "assigned" || e === "exited")) || (e === "assigned" && t === "exited")) return "assigned";
+      if (t === "exited" && e === "exited") return "exited";
+      return "none";
+    }
+    case K.SwitchStatement: {
+      const sw = s as ts.SwitchStatement;
+      if (readsSym(sw.expression, symId)) return "read";
+      const clauses = sw.caseBlock.clauses;
+      for (const c of clauses) {
+        if (c.kind === K.CaseClause && readsSym((c as ts.CaseClause).expression, symId)) return "read";
+      }
+      let allDone = clauses.length > 0 && clauses[clauses.length - 1]!.statements.length > 0;
+      let anyAssigned = false;
+      for (const c of clauses) {
+        if (!c.statements.length) continue;
+        const r = flowStmtList(c.statements, symId);
+        if (r === "read") return "read";
+        if (r === "assigned") anyAssigned = true;
+        else if (r !== "exited") allDone = false;
+      }
+      return allDone ? (anyAssigned ? "assigned" : "exited") : "none";
+    }
+    default:
+      return readsSym(s, symId) ? "read" : "none";
+  }
+}
+
+/** Whether `n` is a `let x = <lit>;` initializer overwritten along every control-flow path before any read. */
+const isDeadInitLit = (n: Node): boolean => {
+  const { cur, parent } = unwrapParentExpr(n);
+  if (!parent || parent.kind !== K.VariableDeclaration) return false;
+  const d = parent as ts.VariableDeclaration;
+  if (d.initializer !== cur || !isId(d.name)) return false;
+  const sym = localOf.get(d.name);
+  if (!sym || !d.parent || d.parent.kind !== K.VariableDeclarationList) return false;
+  const dl = d.parent as ts.VariableDeclarationList;
+  if ((dl.flags & NodeFlags.Let) === 0 || dl.declarations.length !== 1) return false;
+  if (!dl.parent || dl.parent.kind !== K.VariableStatement) return false;
+  const vs = dl.parent as ts.VariableStatement;
+  const container = vs.parent;
+  if (!container || (container.kind !== K.Block && container.kind !== K.CaseClause && container.kind !== K.DefaultClause)) return false;
+  const stmts = (container as ts.Block | ts.CaseClause | ts.DefaultClause).statements;
+  const idx = stmts.indexOf(vs);
+  if (idx < 0) return false;
+  return flowStmtList(stmts.slice(idx + 1), sym.id) === "assigned";
+};
+
 export interface MutantSpec {
   id: number;
   fnId: number;
@@ -442,7 +547,7 @@ export function emitFile(
       case K.NumericLiteral: {
         const nt = numName(n) as NumName | undefined;
         const orig = nt === "f32" ? `${RT}.f32(${splice(n)})` : nt && isInt64(nt) ? `${parseExactInt(n.getText(sf), false)!}n` : splice(n); // Q015
-        const t = canMutate() && !isCaseExpr(n) && !isVecCreateCapArg(n) ? typeOf(n) : undefined;
+        const t = canMutate() && !isCaseExpr(n) && !isVecCreateCapArg(n) && !isDeadInitLit(n) ? typeOf(n) : undefined;
         if (t?.k === "num") {
           if (isInt64(t.name)) {
             const v = parseExactInt(n.getText(sf), false)!;
@@ -462,7 +567,7 @@ export function emitFile(
         return orig;
       }
       case K.TrueKeyword: case K.FalseKeyword: {
-        if (canMutate() && !isCaseExpr(n) && !isLoopCondLit(n) && typeOf(n)?.k === "prim") {
+        if (canMutate() && !isCaseExpr(n) && !isLoopCondLit(n) && !isDeadInitLit(n) && typeOf(n)?.k === "prim") {
           const val = n.kind === K.TrueKeyword;
           const id = addMutant(val ? "true -> false" : "false -> true", n);
           return `(${RT}.mut(${id}) ? ${!val} : ${val})`;
@@ -651,7 +756,7 @@ export function emitFile(
       if (t && isInt64(t)) {
         const v = parseExactInt(u.operand.getText(sf), true)!;
         const orig = `${v}n`;
-        if (canMutate() && !isCaseExpr(u) && !isVecCreateCapArg(u) && !(v !== 0n && isForStepLit(u))) {
+        if (canMutate() && !isCaseExpr(u) && !isVecCreateCapArg(u) && !isDeadInitLit(u) && !(v !== 0n && isForStepLit(u))) {
           const mutVal = v === 0n ? "1n" : "0n";
           const id = addMutant(v === 0n ? "0 -> 1" : "num -> 0", u);
           return `(${RT}.mut(${id}) ? ${mutVal} : ${orig})`;
@@ -659,7 +764,7 @@ export function emitFile(
         return orig;
       }
       const orig = t === "f32" ? `${RT}.f32(${rawText})` : t && isInt(typeOf(u)!) ? `(${rawText} + 0)` : rawText;
-      if (canMutate() && !isCaseExpr(u) && !isVecCreateCapArg(u) && t) {
+      if (canMutate() && !isCaseExpr(u) && !isVecCreateCapArg(u) && !isDeadInitLit(u) && t) {
         const v = -numValue(u.operand as ts.NumericLiteral);
         if (v !== 0 && isForStepLit(u)) return orig;
         const mutVal = v === 0 ? 1 : 0;
@@ -967,6 +1072,9 @@ export function emitFile(
     if (ns === "String" && m === "decodeUtf8") return `${RT}.strDecodeUtf8(${args[0]}, ${at(p.name)})`;
     if (ns === "String" && m === "decodeUtf8Lossy") return `${RT}.strDecodeUtf8Lossy(${args[0]}, ${at(p.name)})`;
     if (ns === "RegExp" && m === "compile") return `${RT}.regexCompile(${args.join(", ")})`;
+    if (ns === "Number" && (m === "parseI32" || m === "parseU32" || m === "parseI64" || m === "parseU64")) {
+      return `${RT}.parseIntStrict(${q(m.slice(5).toLowerCase())}, ${args.join(", ")})`;
+    }
     // Q035: builtins that can throw a JS exception panic (T006) at their name.
     const throws = ns ? THROWING[ns] : r?.k === "gen" ? THROWING[r.name] : r && isStr(r) ? THROWING.string : undefined;
     if (throws?.includes(m)) {

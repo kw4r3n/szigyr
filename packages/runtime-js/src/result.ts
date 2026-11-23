@@ -248,3 +248,46 @@ export function regexCompile(pattern: string, flags = ""): Result<SzRegExp, Cast
     return err({ code: "SyntaxError", message: e instanceof Error ? e.message : String(e) });
   }
 }
+
+/** Strict full-string integer parser: rejects whitespace, base prefixes (`0x`), underscores, and trailing junk. */
+export function parseIntStrict(kind: "i32" | "u32" | "i64" | "u64", s: string, radix = 10): Result<number | bigint, CastError> {
+  if (!Number.isInteger(radix) || radix < 2 || radix > 36) {
+    return err({ code: "cast", message: `invalid radix ${radix}; expected integer in 2..36` });
+  }
+  if (s.length === 0) return err({ code: "cast", message: `invalid ${kind}: empty string` });
+  let i = 0;
+  let neg = false;
+  const first = s.charCodeAt(0);
+  if (first === 43 || first === 45) {
+    neg = first === 45;
+    if (neg && (kind === "u32" || kind === "u64")) {
+      return err({ code: "cast", message: `invalid ${kind}: negative sign not allowed` });
+    }
+    i = 1;
+    if (i >= s.length) return err({ code: "cast", message: `invalid ${kind}: missing digits` });
+  }
+  const [lo, hi] = kind === "i64" || kind === "u64"
+    ? RANGE64[kind]
+    : [BigInt(RANGE[kind][0]), BigInt(RANGE[kind][1])];
+  const base = BigInt(radix);
+  const limit = neg ? -lo : hi;
+  let acc = 0n;
+  let overflow = false;
+  for (; i < s.length; i++) {
+    const ch = s.charCodeAt(i);
+    let d = -1;
+    if (ch >= 48 && ch <= 57) d = ch - 48;
+    else if (ch >= 97 && ch <= 122) d = ch - 87;
+    else if (ch >= 65 && ch <= 90) d = ch - 55;
+    if (d < 0 || d >= radix) {
+      return err({ code: "cast", message: `invalid ${kind} character '${s[i]}' for radix ${radix}` });
+    }
+    if (!overflow) {
+      acc = acc * base + BigInt(d);
+      if (acc > limit) overflow = true;
+    }
+  }
+  if (overflow) return err({ code: "cast", message: `${kind} overflow` });
+  const signed = neg ? -acc : acc;
+  return ok(kind === "i64" || kind === "u64" ? signed : Number(signed) + 0);
+}

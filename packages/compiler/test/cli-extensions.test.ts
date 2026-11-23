@@ -52,7 +52,7 @@ test("mul works", (t: Test) => {
     expect(t.code).toBe(0);
     expect(jsonLines(t.out)).toEqual([
       expect.objectContaining({ kind: "test", name: "mul works", ok: true }),
-      { kind: "summary", passed: 1, failed: 0 },
+      { kind: "summary", passed: 1, failed: 0, backends: ["js", "c", "wasm"] },
     ]);
   });
 

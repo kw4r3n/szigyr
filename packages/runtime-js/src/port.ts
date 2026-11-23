@@ -144,13 +144,20 @@ export function setIsolateProgram(p: IsolateProgram | undefined): void { isolate
 export function getIsolateProgram(): IsolateProgram | undefined { return isolateProgram; }
 
 const fakeIsolateClosers = new Set<() => void>();
+/** Captures currently registered in-process FakeSpawn isolate sessions. */
+export function snapshotFakeIsolates(): ReadonlySet<() => void> {
+  return new Set(fakeIsolateClosers);
+}
 /** Registers an in-process FakeSpawn isolate session so test/main exit can close dangling listeners. */
 export function registerFakeIsolate(close: () => void): () => void {
   fakeIsolateClosers.add(close);
   return () => { fakeIsolateClosers.delete(close); };
 }
-/** Closes all active in-process FakeSpawn sessions and clears their timers. */
-export function stopFakeIsolates(): void {
-  for (const close of [...fakeIsolateClosers]) close();
-  fakeIsolateClosers.clear();
+/** Closes active in-process FakeSpawn sessions (except any in `keep`) and clears their timers. */
+export function stopFakeIsolates(keep?: ReadonlySet<() => void>): void {
+  for (const close of [...fakeIsolateClosers]) {
+    if (keep?.has(close)) continue;
+    fakeIsolateClosers.delete(close);
+    close();
+  }
 }

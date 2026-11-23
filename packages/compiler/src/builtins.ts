@@ -222,6 +222,7 @@ export function opaqueMembers(name: string): Members {
         ok: m(RD, [BOOL], VOID), eq: m(RD, [tT, tT], VOID, { tparams: [T], tcheck: "eq" }),
         eqSlice: m(RD, [gen("Ref", gen("Slice", tU)), gen("Ref", gen("Slice", tU))], VOID, { tparams: [U] }),
         traps: m(RD, [STR, fn([], VOID)], VOID, { tcheck: "trap" }),
+        trapsAsync: m(RD, [STR, fn([], gen("Promise", VOID))], gen("Promise", VOID), { tcheck: "trap" }),
       }, mo);
     },
     FakeClock: () => ({ nowMs: m(RD, [], F64), advance: m(WR, [F64], VOID), sleep: mo(m(PORT_FX, [F64], gen("Promise", VOID))) }),
@@ -376,6 +377,10 @@ export function nsMembers(ns: string): Record<string, Member | "variadic"> {
       };
     case "Number": return {
       isFinite: m(RD, [F64], BOOL), isNaN: m(RD, [F64], BOOL), isInteger: m(RD, [F64], BOOL), parseFloat: mo(m(RD, [STR], F64)),
+      parseI32: mo(m(RD, [STR, num("u8")], result(num("i32"), ERROR_RECORD), { min: 1 })),
+      parseU32: mo(m(RD, [STR, num("u8")], result(num("u32"), ERROR_RECORD), { min: 1 })),
+      parseI64: mo(m(RD, [STR, num("u8")], result(num("i64"), ERROR_RECORD), { min: 1 })),
+      parseU64: mo(m(RD, [STR, num("u8")], result(num("u64"), ERROR_RECORD), { min: 1 })),
       MAX_SAFE_INTEGER: prop(F64), EPSILON: prop(F64), POSITIVE_INFINITY: prop(F64), NEGATIVE_INFINITY: prop(F64), NaN: prop(F64),
     };
     case "JSON": return {

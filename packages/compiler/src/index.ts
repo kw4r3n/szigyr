@@ -17,7 +17,7 @@ import { loadNative, nativePathOf, nativeProgOf } from "./native.ts";
 import { loadWasm } from "./wasm.ts";
 import { explainCode, type ExplainEntry } from "./explain.ts";
 import { hasTestType, mutateFile, type MutateOptions, type MutateResult } from "./mutate.ts";
-import { proveFile, type ObligationKind, type ObligationStatus, type ProvedChecks, type ProveFnResult, type ProveObligation, type ProveOptions, type ProveResult } from "./prove.ts";
+import { proveFile, type ObligationKind, type ObligationStatus, type ProvedChecks, type ProveFnResult, type ProveObligation, type ProveOptions, type ProveResult, type ProveSkippedFn } from "./prove.ts";
 import { detectSolver, parseGetValue, runSmtBatch, shutdownSmt } from "./smt.ts";
 import { loadNpmModule } from "./bundle-npm.ts";
 import { hasCap, show, type Capability, type Type } from "./types.ts";
@@ -37,7 +37,7 @@ export { explainCode, type ExplainEntry };
 export { createParser, type Parser } from "./parse.ts";
 export { detectSolver, parseGetValue, runSmtBatch, shutdownSmt };
 export type { BaselineFailure, MutantReport, MutateOptions, MutateResult, MutateSummary, SkippedTarget, Witness } from "./mutate.ts";
-export type { ObligationKind, ObligationStatus, ProvedChecks, ProveFnResult, ProveObligation, ProveOptions, ProveResult };
+export type { ObligationKind, ObligationStatus, ProvedChecks, ProveFnResult, ProveObligation, ProveOptions, ProveResult, ProveSkippedFn };
 
 /** A user input mistake the CLI reports without a stack, exit 2 (Q252). */
 export class CliError extends Error {}
@@ -385,7 +385,7 @@ async function runNow(entryFile: string, backend?: Backend, analysis?: Analysis,
   const c = Array.isArray(v) ? { code: `T${String(v[0]).padStart(3, "0")}`, file: v[1] as string, line: v[2] as number, col: v[3] as number } : null;
   const iso = t ? { code: t.code, file: t.file ?? "", line: t.line ?? 0, col: t.col ?? 0, ...(t.message ? { message: t.message } : {}) } : null; // Q265: only an isolate record carries a message
   // Only stack exhaustion outside any source call (Q035) has no position.
-  const own = r.trap ? { code: r.trap.code, file: r.trap.pos?.file ?? "", line: r.trap.pos?.line ?? 0, col: r.trap.pos?.col ?? 0, ...(isolateCause && r.trap.message === `${r.trap.code}: ${isolateCause}` ? { message: isolateCause } : {}) } : null;
+  const own = r.trap ? { code: r.trap.code, file: r.trap.pos?.file ?? "", line: r.trap.pos?.line ?? 0, col: r.trap.pos?.col ?? 0, ...(isolateCause && (r.trap.message === isolateCause || r.trap.message === `${r.trap.code}: ${isolateCause}`) ? { message: isolateCause } : {}) } : null;
   const trap = own ? (c ?? own) : (iso ?? c);
   return { diagnostics: [], stdout: r.stdout, stderr: r.stderr, trap, exitCode: trap ? 3 : (r.exitCode ?? 0) };
 }

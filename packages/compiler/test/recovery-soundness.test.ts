@@ -467,5 +467,38 @@ function make(alloc: Alloc): usize {
 }
 `);
     expect(ownWithCtxInfer).toEqual([]);
+
+    const ownBackwardsClean = checkSrc(`
+type Pair = Struct<{ tx: RingTx<i32>; tag: u16 }>;
+function dropTag(p: Pair): void { "use owned"; }
+function dropTagWith(c: i32, p: Pair): void { "use owned"; }
+function makeOk(alloc: Alloc): u16 {
+  "use owned";
+  const { tx: tx1, rx: rx1 } = Ring.create<i32>(alloc, 4);
+  using a = Resource.own({ tx: tx1, tag: 1 }, dropTag);
+  const { tx: tx2, rx: rx2 } = Ring.create<i32>(alloc, 4);
+  using b = Resource.ownWith({ tx: tx2, tag: 2 }, 7, dropTagWith);
+  return a.borrow().tag + b.borrow().tag;
+}
+`);
+    expect(ownBackwardsClean).toEqual([]);
+
+    const ownMismatchNoCascade = checkSrc(`
+function dropVecF32(v: Vec<f32>): void { "use owned"; }
+function bad(alloc: Alloc): void {
+  "use owned";
+  using _r = Resource.own(Vec.create<i32>(alloc, 1), dropVecF32);
+}
+`);
+    expect(ownMismatchNoCascade.map((d) => d.code)).toEqual(["E2002"]);
+    expect(ownMismatchNoCascade[0]?.message).toContain("expected cleanup (Vec<i32>) => void");
+
+    const ownErrNoCascade = checkSrc(`
+function badErr(): void {
+  "use owned";
+  using _r = Resource.own({ x: 1 }, missingFn);
+}
+`);
+    expect(ownErrNoCascade.map((d) => d.code)).not.toContain("E4002");
   });
 });

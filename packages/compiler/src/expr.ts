@@ -436,6 +436,11 @@ function member(c: Checker, p: ts.PropertyAccessExpression, inCall: boolean): Me
     }
     const m = nsMember(recvNode.text, name.text);
     if (m === undefined) {
+      if (recvNode.text === "Number" && name.text === "parseInt") {
+        const alts = ["parseI32", "parseU32", "parseI64", "parseU64"];
+        c.at("E2001", name, `'Number.parseInt' is not in the allowlist; use 'Number.parseI32', 'Number.parseU32', 'Number.parseI64', or 'Number.parseU64'`, { namespace: "Number", member: "parseInt", suggestions: alts });
+        return MERR;
+      }
       const suggestions = suggestMembers(name.text, Object.keys(nsMembers(recvNode.text)));
       c.at("E2001", name, `'${recvNode.text}.${name.text}' is not in the allowlist${didYouMean(suggestions)}`, { namespace: recvNode.text, member: name.text, ...(suggestions.length ? { suggestions } : {}) });
       return MERR;
@@ -896,10 +901,10 @@ function eqable(t: Type): boolean {
   return isNum(a) || isBool(a) || isStr(a) || a.k === "class" || (a.k === "gen" && a.name === "Handle") || (a.k === "tparam" && tparamHasCap(a.p, "Key"));
 }
 
-/** Q058: the first argument of `t.traps` is a string literal naming an implemented trap (T001 - T015). */
-function trapCode(c: Checker, a: ts.Expression): void {
+/** Q058: the first argument of `t.traps` / `t.trapsAsync` is a string literal naming an implemented trap (T001 - T015). */
+function trapCode(c: Checker, a: ts.Expression, name = "traps"): void {
   const ok = (a.kind === K.StringLiteral || a.kind === K.NoSubstitutionTemplateLiteral) && /^T(00[1-9]|01[0-5])$/.test((a as ts.StringLiteral).text);
-  if (!ok) c.at("E2002", a, "the first argument of 'traps' must be a trap code literal \"T001\" - \"T015\"");
+  if (!ok) c.at("E2002", a, `the first argument of '${name}' must be a trap code literal "T001" - "T015"`);
 }
 
 /** Q017: which types `===` / `!==` accept. */
@@ -1159,7 +1164,16 @@ function resourceCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpr
   if (args.length !== wantArgs) { c.at("E2002", p.name, `'Resource.${m}' takes ${wantArgs} argument(s)`); return ERROR; }
   if (e.typeArguments && e.typeArguments.length !== maxTArgs) { c.at("E2002", p.name, `'Resource.${m}' takes ${maxTArgs} type argument(s)`); return ERROR; }
 
+  const cleanupArg = args[wantArgs - 1]!;
+  const fnRef = lookupModuleFn(c, cleanupArg);
+
   const valArg = args[0]!;
+  let v0 = valArg;
+  while (v0.kind === K.ParenthesizedExpression) v0 = (v0 as ts.ParenthesizedExpression).expression;
+  const valParamIdx = m === "own" ? 0 : 1;
+  const valParamT = fnRef.sym && fnRef.sym.sig.tparams.length === 0 && fnRef.sym.sig.params.length === wantArgs - 1
+    ? fnRef.sym.sig.params[valParamIdx]
+    : undefined;
   let T: Type;
   if (e.typeArguments?.[0]) {
     T = c.typeOf(e.typeArguments[0]!);
@@ -1167,6 +1181,9 @@ function resourceCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpr
     checkTo(c, valArg, T);
   } else if (want?.k === "resource") {
     T = want.inner;
+    checkTo(c, valArg, T);
+  } else if (ctxSensitive(v0) && valParamT && !isErr(valParamT) && !(valParamT.k === "gen" && (valParamT.name === "Ref" || valParamT.name === "Mut"))) {
+    T = valParamT;
     checkTo(c, valArg, T);
   } else {
     T = unref(expr(c, valArg));
@@ -1180,9 +1197,6 @@ function resourceCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpr
       c.at("E2002", e.typeArguments?.[0] ?? valArg, `'Resource.${m}' requires an Owned value or (in unsafe) Ptr / ConstPtr, not '${show(T)}'`);
     }
   }
-
-  const cleanupArg = args[wantArgs - 1]!;
-  const fnRef = lookupModuleFn(c, cleanupArg);
 
   let C: Type | undefined;
   if (m === "ownWith") {
@@ -1457,7 +1471,7 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
         if (holdsOwned(R) || ownedDeep(R)) promiseOk.add(e);
       }
       if ((m.managedOnly || m.layer === "managed") && !c.callAllowed("managed")) c.at("E4001", p.name, `'${p.name.text}' is managed-only`, { callerLayer: c.fx.layer, calleeLayer: "managed" }); // Q044
-      if (m.sig.tcheck === "trap" && e.arguments[0]) trapCode(c, e.arguments[0]);
+      if (m.sig.tcheck === "trap" && e.arguments[0]) trapCode(c, e.arguments[0], p.name.text);
       unsafeOp(c, p);
       return callSig(c, m.sig, e, p.name, want);
     }
@@ -1683,6 +1697,10 @@ function fnArgRef(c: Checker, a: ts.Expression, target: Layer): { ref: FnArgRef;
 function exactIntLit(c: Checker, e: ts.Expression, target: NumName): boolean {
   let cur = e;
   while (cur.kind === K.ParenthesizedExpression) cur = (cur as ts.ParenthesizedExpression).expression;
+  if (cur.kind === K.ConditionalExpression) {
+    const ce = cur as ts.ConditionalExpression;
+    return exactIntLit(c, ce.whenTrue, target) && exactIntLit(c, ce.whenFalse, target);
+  }
   let neg = false;
   if (cur.kind === K.PrefixUnaryExpression && (cur as ts.PrefixUnaryExpression).operator === K.MinusToken) {
     neg = true;

@@ -12,7 +12,7 @@ import { runTestPass, startWatch } from "./watch.ts";
 import { CUnsupported } from "./emit-c.ts";
 import { CBuildError } from "./native.ts";
 
-const USAGE = `usage: ${CLI_NAME} <check|run|test|mutate|prove|query|explain|build|mcp|lsp> [--json] [--watch] [--fix] [--no-cache] [--all] [--filter=<pat>] [--strict] [--timeout=<ms>] [--fail-on-survived] [--backend=js|c|both|wasm|all] [--target=node|browser] [--mode=app|lib] [--release] [-o <dir>] <file...|code>`;
+const USAGE = `usage: ${CLI_NAME} <check|run|test|mutate|prove|query|explain|build|mcp|lsp> [--json] [--watch] [--fix] [--no-cache] [--all] [--filter=<pat>] [--strict] [--timeout=<ms>] [--fail-on-survived] [--backend=js|c|both|wasm|all] [--target=node|browser] [--mode=app|lib] [--release] [-o <dir>] <file...|code...>`;
 
 function lineStartsOf(text: string): number[] {
   const starts = [0];
@@ -163,7 +163,7 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
         throw new CliError(`${cmd}: takes no positional arguments or build/watch/backend flags\n${USAGE}`);
       }
     } else if (cmd === "explain") {
-      if (files.length !== 1) throw new CliError(`explain: exactly one code required\n${USAGE}`);
+      if (!files.length) throw new CliError(`explain: at least one code required\n${USAGE}`);
     } else if (!files.length || ((cmd === "run" || cmd === "build") && files.length > 1)) {
       throw new CliError(`${cmd}: ${cmd === "run" || cmd === "build" ? "exactly one" : "at least one"} file required\n${USAGE}`);
     }
@@ -196,11 +196,17 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
       return await serveLsp({ parser });
     }
     if (cmd === "explain") {
-      const entry = explainCode(files[0]!);
-      if (!entry) throw new CliError(`unknown diagnostic or trap code '${files[0]}'`);
-      out(json
-        ? line({ kind: "explain", ...entry })
-        : `${entry.code} [${entry.phase}]: ${entry.title}\n${entry.description}\nfix: ${entry.remediation}\n`);
+      const entries = files.map((code) => {
+        const entry = explainCode(code);
+        if (!entry) throw new CliError(`unknown diagnostic or trap code '${code}'`);
+        return entry;
+      });
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i]!;
+        out(json
+          ? line({ kind: "explain", ...entry })
+          : `${i > 0 ? "\n" : ""}${entry.code} [${entry.phase}]: ${entry.title}\n${entry.description}\nfix: ${entry.remediation}\n`);
+      }
       return 0;
     }
     for (const f of files) { if (!existsSync(f)) throw new CliError(`no such file: ${f}`); if (!statSync(f).isFile()) throw new CliError(`not a file: ${f}`); }
@@ -233,6 +239,7 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
     if (cmd === "prove") {
       let solver = "";
       let fnCount = 0, proved = 0, failed = 0, unknown = 0, timeout = 0, cached = 0;
+      const skipped: { file: string; fn: string; reason: string }[] = [];
       const seen = new Set<string>();
       for (const f of files) {
         const analysis = all ? analyze(f, parser) : undefined;
@@ -246,6 +253,7 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
         unknown += r.summary.unknown;
         timeout += r.summary.timeout;
         cached += r.summary.cached;
+        skipped.push(...r.summary.skipped);
         for (const fn of r.functions) {
           if (json) {
             out(line({ kind: "prove-fn", ...fn }));
@@ -262,8 +270,8 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
         }
       }
       out(json
-        ? line({ kind: "prove-summary", solver, functions: fnCount, proved, failed, unknown, timeout, cached })
-        : `proved=${proved} failed=${failed} unknown=${unknown} timeout=${timeout} (${cached} cached; ${fnCount} functions, solver=${solver})\n`);
+        ? line({ kind: "prove-summary", solver, functions: fnCount, proved, failed, unknown, timeout, cached, ...(skipped.length ? { skipped } : {}) })
+        : `proved=${proved} failed=${failed} unknown=${unknown} timeout=${timeout} (${cached} cached; ${fnCount} functions${skipped.length ? `, ${skipped.length} skipped` : ""}, solver=${solver})\n`);
       return failed > 0 || (strict && (unknown > 0 || timeout > 0)) ? 1 : 0;
     }
 
@@ -354,6 +362,9 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
             out(`${tag} ${loc} ${m.fn} [${m.op}]${extra ? ` ${extra}` : ""}\n`);
           }
         }
+      }
+      if (!json && skipped.length) {
+        out(`skipped: ${skipped.map((s) => `${s.fn} (${s.reason})`).join(", ")}\n`);
       }
       out(json
         ? line({ kind: "summary", targets, killed, survived, timeout, cached, skipped, ...(skippedTests.length ? { skippedTests } : {}) })

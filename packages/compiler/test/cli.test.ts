@@ -49,7 +49,7 @@ it("test reports each test and a summary; failures exit 1", () => {
   expect(ok.code).toBe(0);
   expect(jsonLines(ok.out)).toEqual([
     expect.objectContaining({ kind: "test", name: "records", ok: true }),
-    { kind: "summary", passed: 1, failed: 0 },
+    { kind: "summary", passed: 1, failed: 0, backends: ["js"] },
   ]);
   const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-`));
   writeFileSync(join(dir, "t.szigyr"), 'test("bad", (t: Test) => {\n  t.ok(false);\n});\n');
@@ -142,7 +142,7 @@ it("test --backend=both runs each test under JS and C and agrees", () => {
   const r = szigyr("test", "--json", "--backend=both", f);
   const ls = jsonLines(r.out);
   expect(ls.filter((l) => l.kind === "mismatch")).toEqual([]);
-  expect(ls.at(-1)).toEqual({ kind: "summary", passed: 1, failed: 1 });
+  expect(ls.at(-1)).toEqual({ kind: "summary", passed: 1, failed: 1, backends: ["js", "c"] });
   expect(r.code).toBe(1);
 });
 
@@ -194,7 +194,7 @@ it("t.eq on values from C (packed Vec<Struct>, unions) agrees under --backend=bo
   const r = szigyr("test", "--json", "--backend=both", f);
   const ls = jsonLines(r.out);
   expect(ls.filter((l) => l.kind === "mismatch")).toEqual([]);
-  expect(ls.at(-1)).toEqual({ kind: "summary", passed: 1, failed: 1 });
+  expect(ls.at(-1)).toEqual({ kind: "summary", passed: 1, failed: 1, backends: ["js", "c"] });
 });
 
 it("Vec growth that runs out of memory is T006 under both backends, not a process abort (D106)", () => {
@@ -260,7 +260,7 @@ it("run / test of a C-only program stop with E4009 on js and both; check is clea
   expect(jsonLines(t.out)[0]).toMatchObject({ code: "E4009" });
   const tc = szigyr("test", "--json", "--backend=c", f);
   expect(tc.code).toBe(0);
-  expect(jsonLines(tc.out).at(-1)).toEqual({ kind: "summary", passed: 1, failed: 0 });
+  expect(jsonLines(tc.out).at(-1)).toEqual({ kind: "summary", passed: 1, failed: 0, backends: ["c"] });
 });
 
 it("E4009 anchors at the first unsafe operation when there is no c: module", () => {
@@ -568,6 +568,17 @@ it("--json emits valid JSONL for exit-2 usage/file errors and explain/query/test
   const exText = szigyr("explain", "E2007");
   expect(exText.code).toBe(0);
   expect(exText.out).toContain("E2007 [P2]");
+  const exMulti = szigyr("explain", "E2007", "t015");
+  expect(exMulti.code).toBe(0);
+  expect(exMulti.out).toContain("E2007 [P2]");
+  expect(exMulti.out).toContain("T015 [runtime]");
+  const exMultiJson = szigyr("explain", "--json", "E2007", "t015");
+  expect(exMultiJson.code).toBe(0);
+  expect(jsonLines(exMultiJson.out)).toHaveLength(2);
+  expect(jsonLines(exMultiJson.out)[0]).toMatchObject({ kind: "explain", code: "E2007", phase: "P2" });
+  expect(jsonLines(exMultiJson.out)[1]).toMatchObject({ kind: "explain", code: "T015", phase: "runtime" });
+  const exBadMulti = szigyr("explain", "E2007", "E9999");
+  expect(exBadMulti.code).toBe(2);
   const exJson = szigyr("explain", "--json", "t015");
   expect(exJson.code).toBe(0);
   expect(jsonLines(exJson.out)[0]).toMatchObject({ kind: "explain", code: "T015", phase: "runtime" });
@@ -760,4 +771,58 @@ it("hardens c:/CType/Cflags/npm:/timeout boundaries and applies colliding multi-
   writeFileSync(join(starPkg, "dep.cjs"), `module.exports = { a: 1 };\n`);
   writeFileSync(join(starPkg, "index.mjs"), `export * from "./dep.cjs";\n`);
   expect(() => bundleNpmImports([{ fromFile: appFile, spec: "npm:starpkg" }], join(dir, "star-dist"), { allowNodeBuiltins: true })).toThrow(/not supported/);
+});
+
+it("provides strict Number.parseI32/U32/I64/U64, redirects Number.parseInt, and lists mutate skipped fns in text", () => {
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-parseint-`));
+  const badPi = join(dir, "bad_parseint.szigyr");
+  writeFileSync(badPi, `export function f(s: string): void { const _ = Number.parseInt(s); }\n`);
+  const badDs = check(badPi);
+  expect(badDs.some((d) => d.code === "E2001" && d.message.includes("parseI32"))).toBe(true);
+
+  const okFile = join(dir, "parse_ints.szigyr");
+  writeFileSync(okFile, `export function onlyMain(sys: System): void { sys.log.info("x"); }
+export function okMut(x: i32): i32 { return x + 1; }
+test("strict int parsing", (t: Test) => {
+  const a = Number.parseI32("-2147483648");
+  t.ok(a.kind === "ok" && a.value === -2147483648);
+  const mz = Number.parseI32("-0");
+  t.ok(mz.kind === "ok" && mz.value === 0);
+  t.eq(Number.parseI32("+42").kind, "ok");
+  t.eq(Number.parseI32("12px").kind, "err");
+  t.eq(Number.parseI32(" 12").kind, "err");
+  t.eq(Number.parseI32("").kind, "err");
+  t.eq(Number.parseI32("-2147483649").kind, "err");
+  t.eq(Number.parseI32("ff", 16).kind, "ok");
+  t.eq(Number.parseI32("z", 36).kind, "ok");
+  t.eq(Number.parseI32("10", 1).kind, "err");
+  t.eq(Number.parseI32("10", 37).kind, "err");
+
+  const u = Number.parseU32("4294967295");
+  t.ok(u.kind === "ok" && u.value === 4294967295);
+  t.eq(Number.parseU32("-0").kind, "err");
+  t.eq(Number.parseU32("4294967296").kind, "err");
+  t.eq(Number.parseU32("0xff", 16).kind, "err");
+
+  const s64 = Number.parseI64("-9223372036854775808");
+  t.ok(s64.kind === "ok" && s64.value === -9223372036854775808);
+  t.eq(Number.parseI64("9223372036854775808").kind, "err");
+  const bigJunk = Number.parseI64("99999999999999999999999abc");
+  t.ok(bigJunk.kind === "err" && bigJunk.error.message.includes("character"));
+
+  const u64v = Number.parseU64("18446744073709551615");
+  t.ok(u64v.kind === "ok" && u64v.value === 18446744073709551615);
+  t.eq(Number.parseU64("-1").kind, "err");
+  t.eq(Number.parseU64("18446744073709551616").kind, "err");
+  t.eq(okMut(2), 3);
+});
+`);
+  expect(check(okFile)).toEqual([]);
+  const tr = szigyr("test", "--backend=all", okFile);
+  expect(tr.code, tr.out + tr.err).toBe(0);
+  expect(tr.out).toContain("1 passed, 0 failed (backends: js, c, wasm)");
+
+  const mr = szigyr("mutate", "--no-cache", okFile);
+  expect(mr.code).toBe(0);
+  expect(mr.out).toContain("skipped: onlyMain (not-mutatable)");
 });

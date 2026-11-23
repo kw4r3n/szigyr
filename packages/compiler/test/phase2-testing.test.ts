@@ -77,7 +77,7 @@ describe("Phase 2: multi-file test --all, --filter, mutate --all colocated tests
     expect(entryOnly.code).toBe(0);
     const eoLines = jsonLines(entryOnly.out);
     expect(eoLines.filter((l) => l.kind === "test").map((l) => l.name)).toEqual(["alpha case"]);
-    expect(eoLines.at(-1)).toEqual({ kind: "summary", passed: 1, failed: 0 });
+    expect(eoLines.at(-1)).toEqual({ kind: "summary", passed: 1, failed: 0, backends: ["js"] });
 
     // --all runs entry + value-imported + type-only-imported tests across JS & C backends
     const allBoth = await runCli(["test", "--json", "--all", "--backend=both", aFile]);
@@ -88,12 +88,20 @@ describe("Phase 2: multi-file test --all, --filter, mutate --all colocated tests
     expect(allTests[0]!.file).toContain("shared.szigyr");
     expect(allTests[1]!.file).toBe(aFile);
     expect(allTests[2]!.file).toContain("types_only.szigyr");
-    expect(allLines.at(-1)).toEqual({ kind: "summary", passed: 3, failed: 0 });
+    expect(allLines.at(-1)).toEqual({ kind: "summary", passed: 3, failed: 0, backends: ["js", "c"] });
+
+    // --backend=all reports all executed backends in both JSON and text summaries
+    const allBackendsJson = await runCli(["test", "--json", "--backend=all", aFile]);
+    expect(allBackendsJson.code).toBe(0);
+    expect(jsonLines(allBackendsJson.out).at(-1)).toEqual({ kind: "summary", passed: 1, failed: 0, backends: ["js", "c", "wasm"] });
+    const allBackendsText = await runCli(["test", "--backend=all", aFile]);
+    expect(allBackendsText.code).toBe(0);
+    expect(allBackendsText.out).toContain("1 passed, 0 failed (backends: js, c, wasm)\n");
 
     // --all across two entry files deduplicates shared.szigyr tests
     const dedup = await runCli(["test", "--all", aFile, bFile]);
     expect(dedup.code).toBe(0);
-    expect(dedup.out).toContain("4 passed, 0 failed\n");
+    expect(dedup.out).toContain("4 passed, 0 failed (backends: js)\n");
     expect(dedup.out).toContain("shared.szigyr > shared rt add");
 
     // --filter case-insensitive substring + skipped count (JSON and text) + combined with --all & --backend=both
@@ -101,16 +109,16 @@ describe("Phase 2: multi-file test --all, --filter, mutate --all colocated tests
     expect(filteredJson.code).toBe(0);
     const fjLines = jsonLines(filteredJson.out);
     expect(fjLines.filter((l) => l.kind === "test").map((l) => l.name)).toEqual(["alpha case", "Beta case"]);
-    expect(fjLines.at(-1)).toEqual({ kind: "summary", passed: 2, failed: 0, skipped: 2 });
+    expect(fjLines.at(-1)).toEqual({ kind: "summary", passed: 2, failed: 0, skipped: 2, backends: ["js", "c"] });
 
     const filteredText = await runCli(["test", "--filter=beta", bFile]);
     expect(filteredText.code).toBe(0);
     expect(filteredText.out).toContain("ok Beta case\n");
-    expect(filteredText.out).toContain("1 passed, 0 failed, 0 skipped".replace(", 0 skipped", "")); // exact: skipped === 0 omits ", 0 skipped"
+    expect(filteredText.out).toContain("1 passed, 0 failed (backends: js)\n");
 
     const filteredSkipText = await runCli(["test", "--all", "--filter=SHARED", aFile]);
     expect(filteredSkipText.code).toBe(0);
-    expect(filteredSkipText.out).toContain("1 passed, 0 failed, 2 skipped\n");
+    expect(filteredSkipText.out).toContain("1 passed, 0 failed, 2 skipped (backends: js)\n");
 
     // Invalid CLI flags exit 2
     expect((await runCli(["test", "--filter=", aFile])).code).toBe(2);
@@ -144,7 +152,7 @@ describe("Phase 2: multi-file test --all, --filter, mutate --all colocated tests
     expect((await nextCycle()).ok).toBe(true);
     ac.abort();
     expect(await wp).toBe(0);
-    expect(jsonLines(watchOut).find((l) => l.kind === "summary")).toEqual({ kind: "summary", passed: 1, failed: 0, skipped: 2 });
+    expect(jsonLines(watchOut).find((l) => l.kind === "summary")).toEqual({ kind: "summary", passed: 1, failed: 0, skipped: 2, backends: ["js"] });
   }, 30_000);
 
   it("mutate --all uses colocated tests in imported modules and invalidates cache when imported test changes", async () => {

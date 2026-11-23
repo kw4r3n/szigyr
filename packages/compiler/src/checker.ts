@@ -953,10 +953,10 @@ export class Checker {
         if (this.fx.layer !== "managed") this.at("E4002", d.name, `'await using' is only allowed in managed code`);
         else if (!isErr(t) && !assignable(t, ASYNC_DISPOSABLE)) this.at("E2002", d.name, `'${show(t)}' does not implement 'AsyncDisposable'`);
       } else if (isUsing) {
-        if (t.k === "resource") { /* ok in managed and strict / rt */ }
+        if (t.k === "resource" || isErr(t)) { /* ok in managed and strict / rt; error already reported */ }
         else if (assignable(t, DISPOSABLE)) {
           if (this.fx.layer !== "managed") this.at("E4002", d.name, `'Disposable' values cannot be used in ${this.fx.layer} code; use 'Resource.own' or 'Resource.ownWith'`);
-        } else if (!isErr(t)) {
+        } else {
           this.at("E2002", d.name, `'${show(t)}' must implement 'Disposable' or be a 'Resource<T>'`);
         }
       }

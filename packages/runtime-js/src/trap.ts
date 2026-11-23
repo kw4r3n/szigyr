@@ -8,7 +8,7 @@ export class Trap extends Error {
   readonly code: TrapCode;
   readonly pos?: Pos;
   constructor(code: TrapCode, message: string, pos?: Pos) {
-    super(`${code}: ${message}`);
+    super(message.startsWith(`${code}: `) ? message : `${code}: ${message}`);
     this.code = code;
     this.pos = pos;
     this.name = "Trap";

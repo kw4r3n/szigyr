@@ -1363,4 +1363,102 @@ test("js second", (t: Test) => {
     const r3 = await mutate(file, { cache: true, cacheFile });
     expect(r3.summary.cached).toBe(0);
   });
+
+  it("skips definitely-overwritten local initializers while keeping live/compound/self-read/unused inits", async () => {
+    const { file } = tmpFile("dead-init.szigyr", `
+type Kind = "a" | "b";
+
+export function deadSwitch(k: Kind, v: i64): i64 {
+  let score: i64 = 0;
+  switch (k) {
+    case "a":
+      score = v + 10;
+      break;
+    case "b":
+      score = v - 5;
+      break;
+  }
+  return score;
+}
+
+export function deadIfElse(x: i32): u64 {
+  let mag: u64 = 0;
+  if (x < 0) {
+    mag = u64(-x);
+  } else {
+    mag = u64(x) + 1;
+  }
+  return mag;
+}
+
+export function deadNegBool(b: boolean): boolean {
+  let neg: i32 = -1;
+  let flag: boolean = false;
+  if (b) {
+    neg = 2;
+    flag = true;
+  } else {
+    neg = 3;
+    flag = neg > 2;
+  }
+  return flag && neg > 0;
+}
+
+export function liveConditional(b: boolean): i32 {
+  let x: i32 = 0;
+  if (b) {
+    x = 5;
+  }
+  return x;
+}
+
+export function liveCompound(): i32 {
+  let x: i32 = 0;
+  x += 2;
+  return x;
+}
+
+export function liveSelfAssign(): i32 {
+  let x: i32 = 0;
+  x = x + 3;
+  return x;
+}
+
+export function unusedLocal(): i32 {
+  let x: i32 = 0;
+  return 7;
+}
+
+test("suite", (t: Test) => {
+  t.eq(deadSwitch("a", 1), 11);
+  t.eq(deadSwitch("b", 10), 5);
+  t.eq(deadIfElse(-3), 3);
+  t.eq(deadIfElse(3), 4);
+  t.ok(deadNegBool(true));
+  t.ok(deadNegBool(false));
+  t.eq(liveConditional(false), 0);
+  t.eq(liveConditional(true), 5);
+  t.eq(liveCompound(), 2);
+  t.eq(liveSelfAssign(), 3);
+  t.eq(unusedLocal(), 7);
+});
+`);
+    const r = await mutate(file, { cache: false });
+    expect(r.diagnostics).toEqual([]);
+    expect(r.baselineFailure).toBeNull();
+    // Placeholder init literals before exhaustive switch / if-else must produce NO literal mutant on the initializer line
+    const initLines: Record<string, readonly number[]> = {
+      deadSwitch: [5],
+      deadIfElse: [18],
+      deadNegBool: [28, 29],
+    };
+    for (const [fn, lines] of Object.entries(initLines)) {
+      expect(r.mutants.filter((m) => m.fn === fn && lines.includes(m.range.start.line) && (m.op === "0 -> 1" || m.op === "num -> 0" || m.op === "false -> true" || m.op === "true -> false")), fn).toEqual([]);
+    }
+    // Live / compound / self-reading / unused locals keep their init literal mutants
+    expect(r.mutants.some((m) => m.fn === "liveConditional" && m.op === "0 -> 1" && m.status === "killed")).toBe(true);
+    expect(r.mutants.some((m) => m.fn === "liveCompound" && m.op === "0 -> 1" && m.status === "killed")).toBe(true);
+    expect(r.mutants.some((m) => m.fn === "liveSelfAssign" && m.op === "0 -> 1" && m.status === "killed")).toBe(true);
+    expect(r.mutants.some((m) => m.fn === "unusedLocal" && m.op === "0 -> 1")).toBe(true);
+  });
 });

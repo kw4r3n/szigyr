@@ -371,4 +371,120 @@ describe("Phase 3: Result<Owned, E> and OwnedCell.withRef / withMut", () => {
     expectCode("empty-in-owned", `function f(): void { "use owned"; const c = OwnedCell.empty<Vec<u8>>(); }`, "E4001");
     expectCode("empty-in-rt", `function f(): void { "use rt"; const c = OwnedCell.empty<Vec<u8>>(); }`, "E4001");
   });
+
+  it("isolates stopped FakeSpawn traps across test boundaries and avoids duplicate trap code prefixes", async () => {
+    const dir = makeTmp();
+    const leakFile = writeTmp(
+      dir,
+      "isolate-leak-and-prefix.szigyr",
+      [
+        `function boomWorker(port: Port<i32, i32>): void {`,
+        `  panic("isolate boom");`,
+        `}`,
+        `test("leaking isolate fails cleanly", (t: Test) => {`,
+        `  const sp = FakeSpawn.create();`,
+        `  const _p = sp.isolate(boomWorker);`,
+        `  t.ok(false);`,
+        `});`,
+        `test("clean next test", (t: Test) => {`,
+        `  t.ok(true);`,
+        `});`,
+        `test("awaited isolate panic formats single prefix", async (t: Test) => {`,
+        `  const sp = FakeSpawn.create();`,
+        `  const p = sp.isolate(boomWorker);`,
+        `  await p.recv();`,
+        `  p.close();`,
+        `});`,
+      ].join("\n"),
+    );
+
+    expect(check(leakFile)).toEqual([]);
+    const tr = await runTestFile(leakFile);
+    expect(tr.diagnostics).toEqual([]);
+    expect(tr.results).toHaveLength(3);
+    expect(tr.results[0]!.ok).toBe(false);
+    expect(tr.results[1]).toEqual({ name: "clean next test", ok: true });
+    expect(tr.results[2]!.ok).toBe(false);
+    expect(tr.results[2]!.failure).toBe("T006: isolate boom");
+    expect(tr.results[2]!.failure).not.toContain("T006: T006:");
+  });
+
+  it("supports Test.trapsAsync across backends without leaking isolates across tests", async () => {
+    const dir = makeTmp();
+    const okFile = writeTmp(
+      dir,
+      "traps-async.szigyr",
+      [
+        `function boomIsolate(port: Port<i32, i32>): void {`,
+        `  panic("async isolate boom");`,
+        `}`,
+        `function divZeroRt(x: i32): i32 {`,
+        `  "use rt";`,
+        `  return divTrunc(10, x);`,
+        `}`,
+        `async function trapLater(c: FakeClock): Promise<void> {`,
+        `  await c.sleep(1);`,
+        `  divZeroRt(0);`,
+        `}`,
+        `test("catches unawaited FakeSpawn isolate panic", async (t: Test) => {`,
+        `  const sp = FakeSpawn.create();`,
+        `  await t.trapsAsync("T006", async () => {`,
+        `    const _p = sp.isolate(boomIsolate);`,
+        `  });`,
+        `});`,
+        `test("catches awaited Port.recv isolate panic", async (t: Test) => {`,
+        `  const sp = FakeSpawn.create();`,
+        `  await t.trapsAsync("T006", async () => {`,
+        `    const p = sp.isolate(boomIsolate);`,
+        `    await p.recv();`,
+        `    p.close();`,
+        `  });`,
+        `});`,
+        `test("catches direct async trap after await", async (t: Test) => {`,
+        `  const clk = FakeClock.create(0);`,
+        `  await t.trapsAsync("T007", async () => {`,
+        `    await trapLater(clk);`,
+        `  });`,
+        `});`,
+        `test("clean test after trapsAsync sees no leaked trap", (t: Test) => {`,
+        `  t.eq(divZeroRt(2), 5);`,
+        `});`,
+      ].join("\n"),
+    );
+
+    expect(check(okFile)).toEqual([]);
+    for (const backend of ["js", "c", "wasm"] as const) {
+      const tr = await runTestFile(okFile, { backend });
+      expect(tr.diagnostics, backend).toEqual([]);
+      expect(tr.results, backend).toEqual([
+        { name: "catches unawaited FakeSpawn isolate panic", ok: true },
+        { name: "catches awaited Port.recv isolate panic", ok: true },
+        { name: "catches direct async trap after await", ok: true },
+        { name: "clean test after trapsAsync sees no leaked trap", ok: true },
+      ]);
+    }
+
+    const negFile = writeTmp(
+      dir,
+      "traps-async-neg.szigyr",
+      [
+        `async function noTrap(c: FakeClock): Promise<void> { await c.sleep(1); }`,
+        `test("wrong code", async (t: Test) => {`,
+        `  await t.trapsAsync("T001", async () => { panic("boom"); });`,
+        `});`,
+        `test("no trap", async (t: Test) => {`,
+        `  const c = FakeClock.create(0);`,
+        `  await t.trapsAsync("T006", async () => { await noTrap(c); });`,
+        `});`,
+      ].join("\n"),
+    );
+    const negRes = await runTestFile(negFile);
+    expect(negRes.results[0]!.ok).toBe(false);
+    expect(negRes.results[0]!.failure).toBe("t.trapsAsync: expected T001, got T006");
+    expect(negRes.results[1]!.ok).toBe(false);
+    expect(negRes.results[1]!.failure).toBe("t.trapsAsync: expected T006, no trap");
+
+    const badCodeFile = writeTmp(dir, "traps-async-badcode.szigyr", `test("bad", async (t: Test) => { await t.trapsAsync("T999", async () => {}); });\n`);
+    expect(check(badCodeFile).some((d) => d.code === "E2002" && d.message.includes("trapsAsync"))).toBe(true);
+  });
 });

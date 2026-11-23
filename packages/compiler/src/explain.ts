@@ -70,7 +70,7 @@ const ENTRIES: Record<string, ExplainEntry> = Object.fromEntries([
   e("E5002", "P1", "Mutable or impure top-level module state", "Top-level 'let' declarations and side-effectful module initializers are disallowed.", "Pass mutable state explicitly or use immutable primitive/literal 'const' definitions."),
 
   // P1/P2 Contracts & Tests (E6001-E6005)
-  e("E6001", "P1", "Misplaced contract call", "'requires', 'invariant', or 'ensures' appeared outside an allowed leading function/loop/forAll contract position.", "Place 'requires'/'ensures' at the top of a function body and 'invariant' at the top of a loop body."),
+  e("E6001", "P1", "Misplaced contract call", "'requires', 'invariant', or 'ensures' appeared outside an allowed leading function/loop/forAll contract position.", "Place 'requires'/'ensures' at the top of a function/method body ('ensures' is not allowed in arrows; 'requires' is also valid in 'forAll' arrows) and 'invariant' at the top of a loop body."),
   e("E6002", "P2", "Contract references disallowed function, reference, or nondeterminism", "Contracts must be side-effect free and deterministic and cannot hold mutable borrows or nondeterministic calls.", "Restrict contract predicates to pure deterministic expressions and read-only parameters."),
   e("E6003", "P1", "Misplaced 'test(...)' declaration", "'test(...)' can only appear as a top-level expression statement in a module (entry-only by default; use 'test --all' to run imported module tests).", "Move 'test(...)' to module top level with a string literal name."),
   e("E6004", "P1", "Misplaced 'forAll(...)' call", "'forAll(...)' is only valid directly inside a 'test(...)' body.", "Call 'forAll(...)' inside a top-level 'test(\"name\", (t: Test) => { ... })'."),

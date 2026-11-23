@@ -353,4 +353,51 @@ describe("node target builder & CLI", () => {
     expect(child3.status).toBe(3);
     expect(child3.stderr).toContain("T006");
   });
+
+  it("supports both bare and 'npm:' keys in load({ npm }) overrides for lib wasm builds", async () => {
+    const srcDir = mkdtempSync(join(tmpdir(), "szigyr-bnode-npmoverride-"));
+    try {
+      const nm = join(srcDir, "node_modules", "ov-pkg");
+      mkdirSync(nm, { recursive: true });
+      writeFileSync(join(nm, "package.json"), JSON.stringify({ name: "ov-pkg", type: "module", main: "index.mjs" }));
+      writeFileSync(join(nm, "index.mjs"), `export const bias = 1;\nexport function bump(x) { return x + bias; }\n`);
+
+      const entry = join(srcDir, "lib.szigyr");
+      writeFileSync(entry, [
+        `import { bump } from "npm:ov-pkg";`,
+        `export function callBump(sys: System, n: i32): i32 {`,
+        `  const r = sys.js.call(bump, [sys.js.encode<i32>(n)]);`,
+        `  if (r.kind !== "ok") return -1;`,
+        `  const d = sys.js.decode<i32>(r.value);`,
+        `  return d.kind === "ok" ? d.value : -2;`,
+        `}`,
+        `export function main(sys: System): void { sys.log.info(\`\${callBump(sys, 10)}\`); }`,
+      ].join("\n"));
+
+      const outDir = join(srcDir, "dist");
+      const br = buildNode(entry, { outDir, mode: "lib", backend: "wasm" });
+      expect(br.diagnostics).toEqual([]);
+      const mod = await import(pathToFileURL(join(outDir, "app.js")).href);
+
+      const loadedBare = await mod.load({ npm: { "ov-pkg": { bump: (x: number) => x + 100 } } });
+      try {
+        const resBare = await loadedBare.run();
+        expect(resBare.trap).toBeNull();
+        expect(resBare.stdout).toBe("110\n");
+      } finally {
+        await loadedBare.stop();
+      }
+
+      const loadedPref = await mod.load({ npm: { "npm:ov-pkg": { bump: (x: number) => x + 200 } } });
+      try {
+        const resPref = await loadedPref.run();
+        expect(resPref.trap).toBeNull();
+        expect(resPref.stdout).toBe("210\n");
+      } finally {
+        await loadedPref.stop();
+      }
+    } finally {
+      rmSync(srcDir, { recursive: true, force: true });
+    }
+  });
 });

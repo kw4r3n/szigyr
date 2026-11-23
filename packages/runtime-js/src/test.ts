@@ -1,5 +1,5 @@
 import { asTrap, capturing, takeIsolateTrap, task, trap, type Pos, type Trap, type TrapCode } from "./trap.ts";
-import { stopFakeIsolates } from "./port.ts";
+import { snapshotFakeIsolates, stopFakeIsolates } from "./port.ts";
 import type { Slice } from "./collections.ts";
 import { createRng, formatArgs, generateRaw, materializeArgs, shrinkRaw, type GenDesc } from "./arbitrary.ts";
 
@@ -65,6 +65,28 @@ export class Test {
       throw new TestFailure(`t.traps: expected ${code}, got ${e.code}`, pos, { kind: "traps", expectedCode: code, actualCode: e.code });
     }
     throw new TestFailure(`t.traps: expected ${code}, no trap`, pos, { kind: "traps", expectedCode: code, actualCode: null });
+  }
+  /** Async counterpart to `traps`: catches async and foreign/isolate traps surfaced during `f`. */
+  async trapsAsync(code: string, f: () => Promise<void>, pos?: Pos): Promise<void> {
+    const before = snapshotFakeIsolates();
+    let caught: Trap | undefined;
+    try {
+      const rejected = await capturing(() => f());
+      if (rejected.length) throw rejected[0];
+      task(undefined);
+      const ft = takeIsolateTrap();
+      if (ft) trap(ft.code as TrapCode, ft.message ?? "trap in an isolate", ft.file ? { file: ft.file, line: ft.line!, col: ft.col! } : undefined);
+    } catch (x) {
+      const e = asTrap(x);
+      if (!e) throw x;
+      caught = e;
+    } finally {
+      stopFakeIsolates(before);
+      takeIsolateTrap();
+    }
+    if (!caught) throw new TestFailure(`t.trapsAsync: expected ${code}, no trap`, pos, { kind: "trapsAsync", expectedCode: code, actualCode: null });
+    if (caught.code === code) return;
+    throw new TestFailure(`t.trapsAsync: expected ${code}, got ${caught.code}`, pos, { kind: "trapsAsync", expectedCode: code, actualCode: caught.code });
   }
 }
 const show = (x: unknown): string => {
@@ -178,6 +200,7 @@ export async function runTests(filter?: string): Promise<TestResult[]> {
       else throw x; // internal error: do not hide it
     } finally {
       stopFakeIsolates();
+      takeIsolateTrap();
     }
   }
   return out;

@@ -103,7 +103,9 @@ export async function runTestPass(params: TestPassParams): Promise<TestPassResul
         : `${t.ok ? "ok" : "FAIL"} ${all && outFile !== f ? `${outFile} > ` : ""}${t.name}${t.ok ? "" : `: ${t.failure ?? ""}${pos ? ` (${pos.file}:${pos.line}:${pos.col})` : ""}`}\n`);
     }
   }
-  out(json ? jsonLine({ kind: "summary", passed, failed, ...(skipped ? { skipped } : {}) }) : `${passed} passed, ${failed} failed${skipped ? `, ${skipped} skipped` : ""}\n`);
+  out(json
+    ? jsonLine({ kind: "summary", passed, failed, ...(skipped ? { skipped } : {}), backends })
+    : `${passed} passed, ${failed} failed${skipped ? `, ${skipped} skipped` : ""} (backends: ${backends.join(", ")})\n`);
   return { passed, failed, skipped, bad, dirs: [...dirs] };
 }
 

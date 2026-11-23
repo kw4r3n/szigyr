@@ -15,10 +15,16 @@ import { detectSolver, runSmtBatch, type SmtQuery, type SmtValue } from "./smt.t
 import { trapSites, type TrapSite } from "./traps.ts";
 import { isBool, isInt, isTaggedUnion, kindOf, nonNull, show, unref, type Type } from "./types.ts";
 
-const PROVE_VERSION = "5";
+const PROVE_VERSION = "6";
 
 export type ObligationKind = "T001" | "T002" | "T003" | "T004" | "T005" | "T007" | "T009" | "T010";
 export type ObligationStatus = "proved" | "failed" | "unknown" | "timeout";
+
+export interface ProveSkippedFn {
+  readonly file: string;
+  readonly fn: string;
+  readonly reason: "unsafe" | "fn-param" | "managed-uncontracted";
+}
 
 export interface ProveObligation {
   readonly kind: ObligationKind;
@@ -66,6 +72,7 @@ export interface ProveResult {
     readonly unknown: number;
     readonly timeout: number;
     readonly cached: number;
+    readonly skipped: readonly ProveSkippedFn[];
   };
   readonly proved: ProvedChecks;
 }
@@ -548,6 +555,23 @@ class FnProver {
       if (p.name.text === "length") {
         const lk = this.lengthKeyOf(p.expression);
         if (lk && st.env.has(lk)) return { smt: st.env.get(lk)!, exact: !st.inexact.has(lk) };
+        const base = strip(p.expression);
+        if (base.kind === K.CallExpression) {
+          const bc = base as ts.CallExpression;
+          if (bc.expression.kind === K.PropertyAccessExpression) {
+            const bp = bc.expression as ts.PropertyAccessExpression;
+            const rt = this.typeOf(bp.expression);
+            if ((rt.k === "gen" || rt.k === "opaque") && rt.name === "Arena" && bp.name.text === "view" && bc.arguments.length === 1) {
+              const alk = this.lengthKeyOf(strip(bc.arguments[0]!));
+              if (alk && st.env.has(alk)) return { smt: st.env.get(alk)!, exact: !st.inexact.has(alk) };
+            }
+            if (bp.name.text === "slice" && bc.arguments.length === 2 && rt.k === "gen" && (rt.name === "Vec" || rt.name === "Slice")) {
+              const a = this.evalPureInt(bc.arguments[0]!, st, mod, overrides, trackNonLinear);
+              const b = this.evalPureInt(bc.arguments[1]!, st, mod, overrides, trackNonLinear);
+              return { smt: `(- ${b.smt} ${a.smt})`, exact: a.exact && b.exact };
+            }
+          }
+        }
       }
       const fk = this.fieldKeyOf(p);
       if (fk && st.env.has(fk)) return { smt: st.env.get(fk)!, exact: !st.inexact.has(fk) };
@@ -975,8 +999,8 @@ class FnProver {
         this.addObligation("T009", `shift count in [0, ${bits - 1n}]`, b.operatorToken, mod, st, `(and (>= ${rhs.smt} 0) (< ${rhs.smt} ${smtInt(bits)}))`, rhs.exact);
       }
       const bitOp = k === K.AmpersandEqualsToken ? "&" : k === K.BarEqualsToken ? "|" : k === K.CaretEqualsToken ? "^" : undefined;
-      const val = bitOp && isInt(lt) && !isSignedInt(lt)
-        ? this.unsignedBitwiseTerm(lt as Extract<Type, { k: "num" }>, bitOp, cur, rhs, st)
+      const val = bitOp && isInt(lt)
+        ? this.bitwiseTerm(lt as Extract<Type, { k: "num" }>, bitOp, cur, rhs, st)
         : { smt: this.freshForType(t, BIT_ASSIGN.has(k) ? "bitcomp" : "fcomp"), exact: false };
       this.writePlace(left, val, st);
       return val;
@@ -1074,9 +1098,9 @@ class FnProver {
       return { smt: this.freshForType(t, "sh"), exact: false };
     }
 
-    if (isInt(t) && !isSignedInt(t) && (k === K.AmpersandToken || k === K.BarToken || k === K.CaretToken)) {
+    if (isInt(t) && (k === K.AmpersandToken || k === K.BarToken || k === K.CaretToken)) {
       const op = k === K.AmpersandToken ? "&" : k === K.BarToken ? "|" : "^";
-      return this.unsignedBitwiseTerm(t as Extract<Type, { k: "num" }>, op, l, r, st);
+      return this.bitwiseTerm(t as Extract<Type, { k: "num" }>, op, l, r, st);
     }
     if (isInt(t) && (k === K.PlusToken || k === K.MinusToken || k === K.AsteriskToken)) {
       const op = k === K.PlusToken ? "+" : k === K.MinusToken ? "-" : "*";
@@ -1089,12 +1113,21 @@ class FnProver {
     return { smt: this.freshForType(t, "bin"), exact: false };
   }
 
-  private unsignedBitwiseTerm(t: Extract<Type, { k: "num" }>, op: "&" | "|" | "^", l: TermVal, r: TermVal, st: State): TermVal {
+  private bitwiseTerm(t: Extract<Type, { k: "num" }>, op: "&" | "|" | "^", l: TermVal, r: TermVal, st: State): TermVal {
     if (l.constVal !== undefined && r.constVal !== undefined) {
       const cv = op === "&" ? (l.constVal & r.constVal) : op === "|" ? (l.constVal | r.constVal) : (l.constVal ^ r.constVal);
       return { smt: smtInt(cv), exact: l.exact && r.exact, constVal: cv };
     }
     const v = this.freshForType(t, "bit");
+    if (isSignedInt(t)) {
+      if (op === "&") {
+        st.assumptions.push(
+          `(=> (>= ${l.smt} 0) (and (>= ${v} 0) (<= ${v} ${l.smt})))`,
+          `(=> (>= ${r.smt} 0) (and (>= ${v} 0) (<= ${v} ${r.smt})))`,
+        );
+      }
+      return { smt: v, exact: false };
+    }
     if (op === "&") {
       st.assumptions.push(`(<= ${v} ${l.smt})`, `(<= ${v} ${r.smt})`);
     } else {
@@ -1264,18 +1297,29 @@ class FnProver {
       const sym = localOf.get(l);
       if (!sym) return;
       if (lt.k === "union" && nonNull(lt)) {
-        if (strip(rhsNode).kind === K.NullKeyword) st.env.set(`nn:${sym.id}`, "false");
-        else if (this.typeOf(rhsNode).k !== "union") {
+        const rhsU = this.typeOf(rhsNode);
+        if (strip(rhsNode).kind === K.NullKeyword) {
+          st.env.set(`nn:${sym.id}`, "false");
+        } else if (rhsU.k !== "union") {
           st.env.set(`nn:${sym.id}`, "true");
           st.env.set(`sym:${sym.id}`, rhsVal.smt);
           if (rhsVal.exact) st.inexact.delete(`sym:${sym.id}`); else st.inexact.add(`sym:${sym.id}`);
+          if (isContainer(unref(nonNull(lt)!))) {
+            const len = rhsVal.containerLen ?? this.exprContainerLength(rhsNode, st);
+            if (len !== undefined) {
+              st.env.set(`len:${sym.id}`, len);
+              if (rhsVal.exact || rhsVal.containerLen === undefined) st.inexact.delete(`len:${sym.id}`); else st.inexact.add(`len:${sym.id}`);
+            }
+          }
         } else {
-          const b = this.fresh("Bool", `${sym.name}_nn`);
+          const rk = this.nnKeyOf(rhsNode);
+          const b = rk && st.env.has(rk) ? st.env.get(rk)! : this.fresh("Bool", `${sym.name}_nn`);
           st.env.set(`nn:${sym.id}`, b);
           st.env.set(`sym:${sym.id}`, this.freshForType(nonNull(lt)!, sym.name));
-          if (rhsVal.containerLen !== undefined) {
-            st.env.set(`len:${sym.id}`, rhsVal.containerLen);
-            if (rhsVal.exact) st.inexact.delete(`len:${sym.id}`); else st.inexact.add(`len:${sym.id}`);
+          const len = rhsVal.containerLen ?? (isContainer(unref(nonNull(lt)!)) ? this.exprContainerLength(rhsNode, st) : undefined);
+          if (len !== undefined) {
+            st.env.set(`len:${sym.id}`, len);
+            if (rhsVal.exact || rhsVal.containerLen === undefined) st.inexact.delete(`len:${sym.id}`); else st.inexact.add(`len:${sym.id}`);
           }
         }
         return;
@@ -1736,13 +1780,11 @@ class FnProver {
         }
         if (m === "view" && c.arguments.length === 1) {
           const s0 = strip(c.arguments[0]!);
-          if (isId(s0)) {
-            const sym = localOf.get(s0);
-            if (sym && st.env.has(`len:${sym.id}`)) {
-              const lv = st.env.get(`len:${sym.id}`)!;
-              const exact = !st.inexact.has(`len:${sym.id}`);
-              return { smt: lv, exact, containerLen: lv };
-            }
+          const lk = this.lengthKeyOf(s0);
+          if (lk && st.env.has(lk)) {
+            const lv = st.env.get(lk)!;
+            const exact = !st.inexact.has(lk);
+            return { smt: lv, exact, containerLen: lv };
           }
         }
         return { smt: this.freshForType(retT, m), exact: false };
@@ -2694,6 +2736,24 @@ class FnProver {
             tmpEnv.set(`len:${sym.id}`, lv);
             if (!retVal.exact && retVal.containerLen !== undefined) tmpInexact.add(`len:${sym.id}`);
           }
+        } else if (su.k === "union" && nonNull(su)) {
+          const retE = retExpr ? strip(retExpr) : undefined;
+          if (retE?.kind === K.NullKeyword) {
+            tmpEnv.set(`nn:${sym.id}`, "false");
+          } else if (retE) {
+            const rt = this.typeOf(retE);
+            const rk = this.nnKeyOf(retE);
+            if (rt.k !== "union") tmpEnv.set(`nn:${sym.id}`, "true");
+            else if (rk && st.env.has(rk)) tmpEnv.set(`nn:${sym.id}`, st.env.get(rk)!);
+            const inner = unref(nonNull(su)!);
+            if (isContainer(inner)) {
+              const lv = retVal.containerLen ?? this.exprContainerLength(retE, st);
+              if (lv) {
+                tmpEnv.set(`len:${sym.id}`, lv);
+                if (!retVal.exact && retVal.containerLen !== undefined) tmpInexact.add(`len:${sym.id}`);
+              }
+            }
+          }
         }
       }
     }
@@ -2927,6 +2987,7 @@ function mergeObligations(
   clearedKeys: Set<string>;
   callReqStats: Map<string, { allProved: boolean }>;
 } {
+  const rank = (s: ObligationStatus): number => (s === "failed" ? 3 : s === "timeout" ? 2 : s === "unknown" ? 1 : 0);
   const byAnchorKind = new Map<string, {
     kind: ObligationKind;
     label: string;
@@ -2934,16 +2995,21 @@ function mergeObligations(
     anchorKey: string;
     range: Range;
     statuses: ObligationStatus[];
+    bestRank: number;
     model?: Record<string, SmtValue>;
     calleeKey?: string;
   }>();
   for (const item of raw) {
     const o = item.obl;
     const key = `${o.kind}@${o.anchorKey}`;
+    const r = rank(item.status);
     let grp = byAnchorKind.get(key);
     if (!grp) {
-      grp = { kind: o.kind, label: o.label, anchor: o.anchor, anchorKey: o.anchorKey, range: o.range, statuses: [], calleeKey: o.calleeKey };
+      grp = { kind: o.kind, label: o.label, anchor: o.anchor, anchorKey: o.anchorKey, range: o.range, statuses: [], bestRank: r, calleeKey: o.calleeKey };
       byAnchorKind.set(key, grp);
+    } else if (r > grp.bestRank) {
+      grp.bestRank = r;
+      grp.label = o.label;
     }
     grp.statuses.push(item.status);
     if (item.status === "failed" && !grp.model && item.counterexample) grp.model = item.counterexample;
@@ -2993,7 +3059,7 @@ export async function proveFile(entryFile: string, opts: ProveOptions = {}): Pro
     diagnostics: analysis.diagnostics,
     solver: solver.id,
     functions: [],
-    summary: { functions: 0, proved: 0, failed: 0, unknown: 0, timeout: 0, cached: 0 },
+    summary: { functions: 0, proved: 0, failed: 0, unknown: 0, timeout: 0, cached: 0, skipped: [] },
     proved: { anchors: new Set(), provedPrivateRequires: new Set() },
   };
   if (analysis.diagnostics.length || !analysis.decls) return empty;
@@ -3004,12 +3070,26 @@ export async function proveFile(entryFile: string, opts: ProveOptions = {}): Pro
   for (const f of decls.fns) contracts.set(f, extractContracts(f));
 
   const fnParamCount = (f: FnSym): number => f.sig.params.filter((p) => unref(p).k === "fn").length;
-  const allTargets = decls.fns.filter((f) => {
-    if (f.mod.pf.path === DETMATH_PATH) return false;
-    if (!opts.all && canonPath(f.mod.pf.path) !== entryPath) return false;
-    if (f.unsafe || fnParamCount(f) > 0) return false;
-    return f.layer !== "managed" || hasContractOrLoop(f);
-  });
+  const skipped: ProveSkippedFn[] = [];
+  const allTargets: FnSym[] = [];
+  for (const f of decls.fns) {
+    if (f.mod.pf.path === DETMATH_PATH) continue;
+    if (!opts.all && canonPath(f.mod.pf.path) !== entryPath) continue;
+    const inScope = !opts.skipFiles?.has(f.mod.pf.path);
+    if (f.unsafe) {
+      if (inScope) skipped.push({ file: displayPath(f.mod.pf.path), fn: f.name, reason: "unsafe" });
+      continue;
+    }
+    if (fnParamCount(f) > 0) {
+      if (inScope) skipped.push({ file: displayPath(f.mod.pf.path), fn: f.name, reason: "fn-param" });
+      continue;
+    }
+    if (f.layer === "managed" && !hasContractOrLoop(f)) {
+      if (inScope) skipped.push({ file: displayPath(f.mod.pf.path), fn: f.name, reason: "managed-uncontracted" });
+      continue;
+    }
+    allTargets.push(f);
+  }
   const targets = opts.skipFiles ? allTargets.filter((f) => !opts.skipFiles!.has(f.mod.pf.path)) : allTargets;
   const exposed = findExposedCallees(decls, new Set(allTargets));
 
@@ -3189,7 +3269,7 @@ export async function proveFile(entryFile: string, opts: ProveOptions = {}): Pro
     diagnostics: [],
     solver: solver.id,
     functions: fnResults,
-    summary: { functions: fnResults.length, proved, failed, unknown, timeout, cached },
+    summary: { functions: fnResults.length, proved, failed, unknown, timeout, cached, skipped },
     proved: { anchors, provedPrivateRequires },
   };
 }

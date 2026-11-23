@@ -1380,4 +1380,191 @@ export function main(sys: System): void {
       await loaded.stop();
     }
   });
+
+  it("proves in-range ternary int casts and non-negative signed '&' masks while keeping OOR/neg masks sound", async () => {
+    const { dir } = makeTmp();
+    const file = writeTmpFile(dir, "ternary-cast-and-signed-mask.szigyr", `
+export function testTernaryCastOk(flag: boolean): u8 {
+  "use rt";
+  return u8(flag ? 1 : 2);
+}
+
+export function testTernaryCastI64(flag: boolean): i64 {
+  "use rt";
+  return i64(flag ? 9223372036854775807 : -9223372036854775808);
+}
+
+export function testTernaryCastOob(flag: boolean): u8 {
+  "use rt";
+  return u8(flag ? 1 : 300);
+}
+
+export function signedAndMaskU64(x: i64): u64 {
+  "use rt";
+  return u64(x & 0x7fffffffffffffff);
+}
+
+export function signedAndMaskU8(y: i32): u8 {
+  "use rt";
+  return u8(y & 0x7f);
+}
+
+export function signedAndAssignU8(y0: i32): u8 {
+  "use rt";
+  let y: i32 = y0;
+  y &= 0x7f;
+  return u8(y);
+}
+
+export function signedAndNegMask(x: i64): u64 {
+  "use rt";
+  return u64(x & -1);
+}
+
+export function runCastOk(sys: System): void {
+  sys.log.info(\`\${testTernaryCastOob(true)}\`);
+}
+
+export function runCastTrap(sys: System): void {
+  sys.log.info(\`\${testTernaryCastOob(false)}\`);
+}
+`);
+    const analysis = analyze(file, parser);
+    expect(analysis.diagnostics).toEqual([]);
+    const pr = await prove(file, { analysis, cache: false, parser });
+    const by = new Map(pr.functions.map((f) => [f.fn, f]));
+
+    expect(by.get("testTernaryCastOk")!.summary.failed).toBe(0);
+    expect(by.get("testTernaryCastOk")!.summary.unknown).toBe(0);
+    expect(by.get("testTernaryCastI64")!.summary.failed).toBe(0);
+    expect(by.get("testTernaryCastI64")!.summary.unknown).toBe(0);
+
+    expect(by.get("testTernaryCastOob")!.obligations.find((o) => o.kind === "T003")?.status).toBe("unknown");
+
+    for (const fnName of ["signedAndMaskU64", "signedAndMaskU8", "signedAndAssignU8"]) {
+      const obs = by.get(fnName)!.obligations.filter((o) => o.kind === "T003");
+      expect(obs.length).toBeGreaterThan(0);
+      expect(obs.every((o) => o.status === "proved")).toBe(true);
+      expect(by.get(fnName)!.summary.unknown).toBe(0);
+    }
+
+    expect(by.get("signedAndNegMask")!.obligations.find((o) => o.kind === "T003")?.status).toBe("unknown");
+
+    const outDir = join(dir, "dist-ternary-c");
+    const br = buildNode(file, { outDir, mode: "lib", backend: "c", analysis, parser, proved: pr.proved });
+    expect(br.diagnostics).toEqual([]);
+    const loaded = await (await import(pathToFileURL(join(outDir, "app.js")).href)).load();
+    try {
+      const okRes = await loaded.run(loaded.exports.runCastOk);
+      expect(okRes.trap).toBeNull();
+      expect(okRes.stdout).toBe("1\n");
+
+      const trapRes = await loaded.run(loaded.exports.runCastTrap);
+      expect(trapRes.trap?.code).toBe("T003");
+    } finally {
+      await loaded.stop();
+    }
+  });
+
+  it("picks the highest-severity status label when merging obligations at the same anchor (T010 entry vs step)", async () => {
+    const { dir } = makeTmp();
+    const file = writeTmpFile(dir, "merge-label.szigyr", `
+export function entryOkStepUnknown(dst: Mut<Slice<i32>>, val: i32): void {
+  "use rt";
+  let i: usize = 0;
+  while (i < dst.length) {
+    invariant(i <= dst.length && (i === 0 || dst[0] === val));
+    dst[i] = val;
+    i += 1;
+  }
+}
+
+export function entryFails(dst: Ref<Slice<i32>>): void {
+  "use rt";
+  let i: usize = 1;
+  while (i < dst.length) {
+    invariant(i === 0);
+    i += 1;
+  }
+}
+`);
+    const analysis = analyze(file, parser);
+    expect(analysis.diagnostics).toEqual([]);
+    const pr = await prove(file, { analysis, cache: false, parser });
+    const by = new Map(pr.functions.map((f) => [f.fn, f]));
+
+    const unkT010 = by.get("entryOkStepUnknown")!.obligations.find((o) => o.kind === "T010");
+    expect(unkT010?.status).toBe("unknown");
+    expect(unkT010?.label).toBe("invariant (step)");
+
+    const failT010 = by.get("entryFails")!.obligations.find((o) => o.kind === "T010");
+    expect(failT010?.status).toBe("failed");
+    expect(failT010?.label).toBe("invariant (entry)");
+  });
+
+  it("proves Arena.alloc -> Arena.view length postconditions and reports skipped functions", async () => {
+    const { dir } = makeTmp();
+    const file = writeTmpFile(dir, "arena-and-skipped.szigyr", `
+function fillSlice(s: Mut<Slice<f32>>, n: usize): void {
+  "use rt";
+  requires(s.length === n);
+  for (let i: usize = 0; i < s.length; i += 1) {
+    s[i] = f32(i);
+  }
+}
+
+function checkSliceLen(s: Ref<Slice<f32>>, n: usize): boolean {
+  "use rt";
+  requires(s.length === n);
+  ensures((r: boolean) => r);
+  return s.length === n;
+}
+
+export function fillArena(arena: Mut<Arena>, n: usize): ArenaBuf<f32> | null {
+  "use owned";
+  requires(n <= 1024);
+  ensures((r: ArenaBuf<f32> | null) => r === null || r.length === n);
+  const buf = arena.alloc<f32>(n, 0);
+  if (buf === null) return null;
+  fillSlice(arena.view(buf), n);
+  const buf2: ArenaBuf<f32> = buf;
+  if (!checkSliceLen(arena.view(buf2), n)) return null;
+  return buf2;
+}
+
+export function applyFn(f: (x: i32) => i32, x: i32): i32 {
+  "use rt";
+  return f(x);
+}
+
+export function unsafePtr(): boolean {
+  "use owned";
+  "use unsafe";
+  return Ptr.null<u8>().isNull();
+}
+
+export function managedPlain(x: i32): i32 {
+  return x + 1;
+}
+`);
+    const analysis = analyze(file, parser);
+    expect(analysis.diagnostics).toEqual([]);
+    const pr = await prove(file, { analysis, cache: false, parser });
+    expect(pr.summary.failed).toBe(0);
+    expect(pr.summary.unknown).toBe(0);
+    expect(pr.summary.skipped).toEqual([
+      { file, fn: "applyFn", reason: "fn-param" },
+      { file, fn: "unsafePtr", reason: "unsafe" },
+      { file, fn: "managedPlain", reason: "managed-uncontracted" },
+    ]);
+
+    const cliJson = await runCli(["prove", "--json", "--no-cache", file]);
+    expect(cliJson.code).toBe(0);
+    const sumJson = jsonLines(cliJson.out).find((l) => l.kind === "prove-summary");
+    expect(sumJson?.skipped).toEqual(pr.summary.skipped);
+
+    const cliText = await runCli(["prove", "--strict", "--no-cache", file]);
+    expect(cliText.code).toBe(0);
+    expect(cliText.out).toContain("3 skipped");
+  });
 });

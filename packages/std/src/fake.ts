@@ -467,7 +467,10 @@ export class FakeSpawn implements Spawn {
     let closedMain = false;
     let closedWorker = false;
     let workerFinished = false;
+    let stopped = false;
     let inFlight = 0;
+    let unregister = (): void => {};
+    const maybeUnregister = (): void => { if (stopped || (workerFinished && inFlight === 0)) unregister(); };
     let onMainMsg: ((m: Envelope) => void) | undefined;
     let onWorkerMsg: ((m: Envelope) => void) | undefined;
     let onMainClose: (() => void) | undefined;
@@ -480,8 +483,10 @@ export class FakeSpawn implements Spawn {
         this.clearDeadlockTimer();
         queueMicrotask(() => {
           inFlight--;
+          if (stopped) { maybeUnregister(); return; }
           if (!closedWorker) onWorkerMsg?.(msg);
           this.scheduleDeadlockCheck();
+          maybeUnregister();
         });
       },
       onMessage: (f) => { onMainMsg = f; },
@@ -497,8 +502,10 @@ export class FakeSpawn implements Spawn {
         this.clearDeadlockTimer();
         queueMicrotask(() => {
           inFlight--;
+          if (stopped) { maybeUnregister(); return; }
           onMainMsg?.(msg);
           this.scheduleDeadlockCheck();
+          maybeUnregister();
         });
       },
       onMessage: (f) => { onWorkerMsg = f; },
@@ -509,10 +516,10 @@ export class FakeSpawn implements Spawn {
 
     const mainPort = new Port(mainCh);
     const workerPort = new Port(workerCh);
-    let unregister = (): void => {};
 
     const forceClose = (): void => {
-      if (closedMain && closedWorker && workerFinished) return;
+      if (stopped) return;
+      stopped = true;
       closedMain = true;
       closedWorker = true;
       workerFinished = true;
@@ -540,6 +547,7 @@ export class FakeSpawn implements Spawn {
     unregister = registerFakeIsolate(forceClose);
 
     queueMicrotask(() => {
+      if (stopped) return;
       void (async () => {
         try {
           await fn(workerPort, ALLOC);
@@ -548,6 +556,7 @@ export class FakeSpawn implements Spawn {
             forceClose();
             throw e;
           }
+          if (stopped) return;
           const t = asTrap(e);
           const ft: ForeignTrap = t
             ? { code: t.code, ...(t.pos ? { file: t.pos.file, line: t.pos.line, col: t.pos.col } : {}), message: t.message }
@@ -557,7 +566,8 @@ export class FakeSpawn implements Spawn {
         } finally {
           workerFinished = true;
           this.sessions.delete(session);
-          unregister();
+          maybeUnregister();
+          if (stopped) return;
           if (!closedWorker) workerPort.close();
           if (!closedMain) {
             queueMicrotask(() => {
