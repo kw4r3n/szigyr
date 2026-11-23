@@ -836,4 +836,62 @@ test("c/wasm parity fixes", (t: Test) => {
     const cOut = emitC(a.decls!, "native");
     expect(cOut?.c).toContain("uint64_t ao64");
   });
+
+  it("propagates target integer type into literal-only bitwise casts while preserving T003 runtime cast traps and diagnostics", async () => {
+    const ok = project({
+      "main.szigyr": `function checkTernary(flag: boolean): u8 {
+  "use rt";
+  return u8(flag ? (0x12 ^ 0x34) : 0x56);
+}
+function check64(): i64 {
+  "use rt";
+  return i64(1 << 40);
+}
+function checkAll(flag: boolean): string {
+  const a: u8 = u8(0x12 ^ 0x34 ^ 0x56);
+  const b: u16 = u16(0x1234 & 0x00ff);
+  const c: u32 = u32(~0);
+  const d: i32 = i32(1 << 3);
+  const e: u32 = u32(0xff00 >>> 8);
+  const f: i64 = check64();
+  const g: u8 = checkTernary(flag);
+  return \`\${a},\${b},\${c},\${d},\${e},\${f},\${g}\`;
+}
+export function main(sys: System): void {
+  sys.log.info(checkAll(true));
+  sys.log.info(checkAll(false));
+}
+test("bitwise casts and T003 runtime traps", (t: Test) => {
+  t.eq(u8(0x12 ^ 0x34 ^ 0x56), u8(0x70));
+  t.eq(u16(0x1234 & 0x00ff), u16(0x34));
+  t.eq(u32(~0), u32(4294967295));
+  t.eq(i32(1 << 3), i32(8));
+  t.eq(u32(0xff00 >>> 8), u32(255));
+  t.eq(check64(), i64(1099511627776));
+  t.eq(checkTernary(true), u8(0x26));
+  t.eq(checkTernary(false), u8(0x56));
+  t.traps("T003", () => { const _ = u8(256); });
+  t.traps("T003", () => { const _ = u32(-1); });
+  t.traps("T003", () => { const _ = i32(1.5); });
+  t.traps("T003", () => { const _ = u8(200 + 100); });
+});
+`,
+    });
+    expect(check(ok)).toEqual([]);
+    for (const backend of ["js", "c", "wasm"] as const) {
+      const r = await run(ok, { backend });
+      expect(r.diagnostics).toEqual([]);
+      expect(r.trap).toBeNull();
+      expect(r.stdout).toBe("112,52,4294967295,8,255,1099511627776,38\n112,52,4294967295,8,255,1099511627776,86\n");
+      const tr = await runTestFile(ok, { backend });
+      expect(tr.diagnostics).toEqual([]);
+      expect(tr.results).toEqual([{ name: "bitwise casts and T003 runtime traps", ok: true }]);
+    }
+
+    const badShift = check(project({ "main.szigyr": `export function f(): u8 { return u8(1 << 3); }\n` }));
+    expect(badShift.map((d) => `${d.code}:${d.message}`)).toEqual(["E2002:bit operator cannot be applied to 'u8' and 'u8'"]);
+
+    const badLit = check(project({ "main.szigyr": `export function f(): u8 { return u8(0x1234 & 0xff); }\n` }));
+    expect(badLit.map((d) => d.code)).toEqual(["E2008"]);
+  });
 });

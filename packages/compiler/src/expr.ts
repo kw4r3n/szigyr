@@ -1717,6 +1717,21 @@ function fnArgRef(c: Checker, a: ts.Expression, target: Layer): { ref: FnArgRef;
   return undefined;
 }
 
+function hasBitOp(e: ts.Expression): boolean {
+  switch (e.kind) {
+    case K.ParenthesizedExpression: return hasBitOp((e as ts.ParenthesizedExpression).expression);
+    case K.PrefixUnaryExpression: {
+      const u = e as ts.PrefixUnaryExpression;
+      return u.operator === K.TildeToken || hasBitOp(u.operand);
+    }
+    case K.BinaryExpression: {
+      const b = e as ts.BinaryExpression;
+      return BIT_OPS.has(b.operatorToken.kind) || hasBitOp(b.left) || hasBitOp(b.right);
+    }
+    default: return false;
+  }
+}
+
 function exactIntLit(c: Checker, e: ts.Expression, target: NumName): boolean {
   let cur = e;
   while (cur.kind === K.ParenthesizedExpression) cur = (cur as ts.ParenthesizedExpression).expression;
@@ -1724,6 +1739,7 @@ function exactIntLit(c: Checker, e: ts.Expression, target: NumName): boolean {
     const ce = cur as ts.ConditionalExpression;
     return exactIntLit(c, ce.whenTrue, target) && exactIntLit(c, ce.whenFalse, target);
   }
+  if (isLitOnly(cur) && hasBitOp(cur)) return true;
   let neg = false;
   if (cur.kind === K.PrefixUnaryExpression && (cur as ts.PrefixUnaryExpression).operator === K.MinusToken) {
     neg = true;
