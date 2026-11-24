@@ -110,8 +110,7 @@ type Members = Record<string, Member>;
 
 const prop = (type: Type): Member => ({ kind: "prop", type, readonly: true });
 const m = (f: Fx, params: Type[], ret: Type, extra: Partial<FnType> = {}): Member => ({ kind: "method", sig: { ...fn(params, ret), ...extra }, fx: f });
-const cb = (params: Type[], ret: Type): FnType => ({ ...fn(params, ret), prefix: true, builtinCb: true });
-const bfn = (params: Type[], ret: Type): FnType => ({ ...fn(params, ret), builtinCb: true });
+const cb = (params: Type[], ret: Type): FnType => ({ ...fn(params, ret), prefix: true });
 const mo = (x: Member): Member => ({ ...x, managedOnly: true } as Member);
 const ioResult = (t: Type): Type => result(t, ERROR_RECORD);
 const pick = <M>(sigs: Record<string, M>, name: string): M | undefined => (Object.hasOwn(sigs, name) ? sigs[name] : undefined);
@@ -142,8 +141,8 @@ const PROC: Members = {
 };
 const NET: Members = {
   fetch: mo(m(PORT_FX, [STR, HTTP_REQUEST_INIT_RECORD], gen("Promise", ioResult(HTTP_RESPONSE_RECORD)), { min: 1 })),
-  serve: mo(m(PORT_FX, [HTTP_SERVER_CONFIG_RECORD, bfn([HTTP_SERVER_REQUEST_RECORD], gen("Promise", HTTP_SERVER_RESPONSE_RECORD))], gen("Promise", ioResult(opaque("HttpServer"))))),
-  serveRaw: mo(m(PORT_FX, [HTTP_SERVER_CONFIG_RECORD, bfn([HTTP_SERVER_REQUEST_RECORD], gen("Promise", HTTP_SERVER_RAW_RESPONSE_RECORD))], gen("Promise", ioResult(opaque("HttpServer"))))),
+  serve: mo(m(PORT_FX, [HTTP_SERVER_CONFIG_RECORD, fn([HTTP_SERVER_REQUEST_RECORD], gen("Promise", HTTP_SERVER_RESPONSE_RECORD))], gen("Promise", ioResult(opaque("HttpServer"))))),
+  serveRaw: mo(m(PORT_FX, [HTTP_SERVER_CONFIG_RECORD, fn([HTTP_SERVER_REQUEST_RECORD], gen("Promise", HTTP_SERVER_RAW_RESPONSE_RECORD))], gen("Promise", ioResult(opaque("HttpServer"))))),
 };
 const SPAWN: Members = { isolate: m(PORT_FX, [UNKNOWN], VOID) };
 const AUDIO: Members = { open: mo(m(PORT_FX, [AUDIO_CONFIG_RECORD, UNKNOWN, UNKNOWN], gen("Promise", ioResult(opaque("AudioStream"))))) };
@@ -203,7 +202,7 @@ export function opaqueMembers(name: string): Members {
       const T = newTParam("T"), U = newTParam("T"), A = newTParam("T");
       return {
         // Q128: the callback gets its one argument from JS, checked like `decode` does.
-        callback: m(RD, [bfn([result({ k: "tparam", p: A }, ERROR_RECORD)], VOID)], J, { tparams: [A], tcheck: "cast" }),
+        callback: m(RD, [fn([result({ k: "tparam", p: A }, ERROR_RECORD)], VOID)], J, { tparams: [A], tcheck: "cast" }),
         fn: m(RD, [cb([gen("Array", J)], J)], J),
         call: m(WR, [J, argsT], jr),
         new: m(WR, [J, argsT], jr),
@@ -222,8 +221,8 @@ export function opaqueMembers(name: string): Members {
       return mapValues({
         ok: m(RD, [BOOL], VOID), eq: m(RD, [tT, tT], VOID, { tparams: [T], tcheck: "eq" }),
         eqSlice: m(RD, [gen("Ref", gen("Slice", tU)), gen("Ref", gen("Slice", tU))], VOID, { tparams: [U] }),
-        traps: m(RD, [STR, bfn([], VOID)], VOID, { tcheck: "trap" }),
-        trapsAsync: m(RD, [STR, bfn([], gen("Promise", VOID))], gen("Promise", VOID), { tcheck: "trap" }),
+        traps: m(RD, [STR, fn([], VOID)], VOID, { tcheck: "trap" }),
+        trapsAsync: m(RD, [STR, fn([], gen("Promise", VOID))], gen("Promise", VOID), { tcheck: "trap" }),
       }, mo);
     },
     FakeClock: () => ({ nowMs: m(RD, [], F64), advance: m(WR, [F64], VOID), sleep: mo(m(PORT_FX, [F64], gen("Promise", VOID))) }),
@@ -239,8 +238,8 @@ export function opaqueMembers(name: string): Members {
       pixelAt: mo(m(RD, [num("u32"), num("u32")], DISPLAY_COLOR_RECORD)),
       drawnTexts: mo(m(RD, [], gen("Array", record([ro("x", F64), ro("y", F64), ro("text", STR), ro("color", DISPLAY_COLOR_RECORD)])))),
     }),
-    FakeProc: () => ({ ...PROC, setEnv: mo(m(WR, [STR, STR], VOID)), setCwd: mo(m(WR, [STR], VOID)), setArgs: mo(m(WR, [gen("ReadonlyArray", STR)], VOID)), exitCode: mo(m(RD, [], num("u8"))), onRun: mo(m(WR, [bfn([PROC_REQUEST_RECORD], ioResult(PROC_OUTPUT_RECORD))], VOID)), calls: mo(m(RD, [], gen("Array", PROC_REQUEST_RECORD))) }),
-    FakeNet: () => ({ ...NET, onFetch: mo(m(WR, [bfn([HTTP_CLIENT_REQUEST_RECORD], ioResult(HTTP_RESPONSE_RECORD))], VOID)), requests: mo(m(RD, [], gen("Array", HTTP_CLIENT_REQUEST_RECORD))) }),
+    FakeProc: () => ({ ...PROC, setEnv: mo(m(WR, [STR, STR], VOID)), setCwd: mo(m(WR, [STR], VOID)), setArgs: mo(m(WR, [gen("ReadonlyArray", STR)], VOID)), exitCode: mo(m(RD, [], num("u8"))), onRun: mo(m(WR, [fn([PROC_REQUEST_RECORD], ioResult(PROC_OUTPUT_RECORD))], VOID)), calls: mo(m(RD, [], gen("Array", PROC_REQUEST_RECORD))) }),
+    FakeNet: () => ({ ...NET, onFetch: mo(m(WR, [fn([HTTP_CLIENT_REQUEST_RECORD], ioResult(HTTP_RESPONSE_RECORD))], VOID)), requests: mo(m(RD, [], gen("Array", HTTP_CLIENT_REQUEST_RECORD))) }),
   };
   return Object.hasOwn(table, name) ? table[name]!() : {};
 }
@@ -336,8 +335,8 @@ export function genMembers(t: { name: GenName; args: Type[] }): Members {
         take: m(WR, [], a),
         put: m(WR, [a], VOID),
         isEmpty: m(RD, [], BOOL),
-        withRef: m(RD, [bfn([gen("Ref", a)], tR)], tR, { tparams: [R] }),
-        withMut: m(WR, [bfn([gen("Mut", a)], tR2)], tR2, { tparams: [R2] }),
+        withRef: m(RD, [fn([gen("Ref", a)], tR)], tR, { tparams: [R] }),
+        withMut: m(WR, [fn([gen("Mut", a)], tR2)], tR2, { tparams: [R2] }),
       };
     }
     case "Ptr": { // §14.4: which of these a given T allows is the checker's E2001 table, not this list

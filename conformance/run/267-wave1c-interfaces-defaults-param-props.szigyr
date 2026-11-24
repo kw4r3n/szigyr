@@ -133,8 +133,9 @@ export function main(sys: System): void {
   strictBump(acc);
   strictBump(acc, 4);
   strictBump(acc, 2, 3);
-  const g: (x: i32) => i32 = addWithBias;
-  const arrowDef: (x: i32) => i32 = (x: i32, d: i32 = 10): i32 => x + d;
+  const g: (x: i32) => i32 = (x: i32): i32 => addWithBias(x);
+  const arrowDefFull = (x: i32, d: i32 = 10): i32 => x + d;
+  const arrowDef: (x: i32) => i32 = (x: i32): i32 => arrowDefFull(x);
   const p3 = `${rtZeroArg()}:${rtZeroArg(5)}:${rtZeroArg(5, 1)}:${rtPick(i32(7))}:${rtPick(i32(7), false)}:${rtPick(i32(7), false, i32(9))}:${rtViaStrict(v3)}:${acc.total}:${strictRunAcc()}:${g(5) + arrowDef(6)}`;
 
   const ls1 = new LinearScorer(3);

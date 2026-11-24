@@ -170,18 +170,37 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
     expect(cascade.diags.filter((d) => d.code === "E4002")).toHaveLength(1);
   });
 
-  it("rejects rest/extra-default callbacks on host/builtin APIs while allowing them on user HOFs", () => {
+  it("rejects rest/extra-default callbacks on both host/builtin APIs and function-typed assignments", () => {
     expect(explainCode("E2002")?.kinds?.["callback-extra-params"]).toBeTruthy();
 
-    // User HOFs still allow contravariant rest & trailing default callbacks
-    const userHof = checkSrc([
+    // Passing rest/trailing-default functions through user HOFs or other fn types is rejected
+    const viaFnTypes = [
+      "function apply(f: (x: i32) => i32): i32 { return f(1); }\nfunction withDef(x: i32, z: i32 = 5): i32 { return x + z; }\nexport function f(): i32 { return apply(withDef); }\n",
+      "function apply(f: (x: i32) => i32): i32 { return f(1); }\nfunction withRest(...xs: Array<i32>): i32 { return i32(xs.length); }\nexport function f(): i32 { return apply(withRest); }\n",
+      "type CB = (x: i32) => i32;\nfunction withDef(x: i32, z: i32 = 5): i32 { return x + z; }\nexport function f(): i32 { const cb: CB = withDef; return cb(1); }\n",
+      "type CB = (x: i32) => i32;\nfunction withRest(...xs: Array<i32>): i32 { return i32(xs.length); }\nfunction mk(): CB { return withRest; }\nexport function f(): i32 { return mk()(1); }\n",
+      "type CB = (x: i32) => i32;\nfunction withDef(x: i32, z: i32 = 5): i32 { return x + z; }\nexport function f(): i32 { const o: { readonly cb: CB } = { cb: withDef }; return o.cb(1); }\n",
+      "type CB = (x: i32) => i32;\nfunction withRest(...xs: Array<i32>): i32 { return i32(xs.length); }\nexport function f(): i32 { const xs: Array<CB> = [withRest]; return xs[0](1); }\n",
+      "type CB = (x: i32) => i32;\nfunction withDef(x: i32, z: i32 = 5): i32 { return x + z; }\nclass Box { readonly cb: CB; constructor(cb: CB) { this.cb = cb; } }\nexport function f(): i32 { return new Box(withDef).cb(1); }\n",
+      "function applyG<T>(f: (x: T) => T, v: T): T { return f(v); }\nfunction withRest(...xs: Array<i32>): i32 { return i32(xs.length); }\nexport function f(): i32 { return applyG(withRest, 1); }\n",
+      "type CB = (x: i32) => i32;\nfunction withRest(...xs: Array<i32>): i32 { return i32(xs.length); }\nexport function f(): i32 { const cb: CB | null = withRest; return cb !== null ? cb(1) : 0; }\n",
+    ];
+    for (const src of viaFnTypes) {
+      const ds = checkSrc(src).diags;
+      expect(ds.length, src).toBeGreaterThan(0);
+      expect(ds[0]!.code, src).toBe("E2002");
+      expect(ds[0]!.data).toMatchObject({ kind: "callback-extra-params" });
+    }
+
+    // Explicit arrow wrappers forward the expected arity cleanly
+    const wrapped = checkSrc([
       "function apply(f: (x: i32) => i32): i32 { return f(1); }",
       "function withDef(x: i32, z: i32 = 5): i32 { return x + z; }",
       "function withRest(...xs: Array<i32>): i32 { return i32(xs.length); }",
-      "export function ok(): i32 { return apply(withDef) + apply(withRest); }",
+      "export function ok(): i32 { return apply((x: i32): i32 => withDef(x)) + apply((x: i32): i32 => withRest(x)); }",
       "",
     ].join("\n"));
-    expect(userHof.diags).toEqual([]);
+    expect(wrapped.diags).toEqual([]);
 
     // Host and special builtin callbacks reject rest and extra defaults
     const badHostCases = [

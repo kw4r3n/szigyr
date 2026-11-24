@@ -2033,13 +2033,13 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
   - (b) `i64`/`u64` 用に独自 `.toFixed` を実装し、引数なし `toSorted()` を辞書順または数値別オーバーロードで導入する。
 - 既定案: (a)。
 
-### Q310 組み込み・ホストコールバックへの残余引数（`...rest`）および契約超の既定引数の渡し方
+### Q310 非 `rest` 関数型への代入における残余引数（`...rest`）および余剰引数の扱い
 - 関連: §3.5、§12、Q300
-- 状況: `Array` の高階メソッド（`map` / `filter` / `forEach` / `reduce` / `find` / `findIndex` / `some` / `every` / `sort` / `toSorted`）、`Map.forEach`、`Set.forEach`、`Net.serve` / `serveRaw`、`Js.callback` / `fn`、`Test.traps` / `trapsAsync`、`FakeProc.onRun`、`FakeNet.onFetch`、`OwnedCell.withRef` / `withMut`、`Resource.own` / `ownWith`、`ensures`、`test`、`forAll` などの組み込み・ホストコールバックに対し、従来の `assignable` は `...rest` 引数や契約の個数を超える末尾の既定引数を受け入れていた。JS ランタイムでは `Array.prototype.map` や `Set.prototype.forEach` 等が第 3 引数（配列や `Set` 本体）等を渡すため、`...xs: Array<usize>` や `z: i32 = 5` に配列本体等の不正な値が流入する問題があった。
+- 状況: `Array` の高階メソッド、`Map.forEach`、`Set.forEach`、`Net.serve` / `serveRaw`、`Js.callback` / `fn`、`Test.traps` / `trapsAsync`、`FakeProc.onRun`、`FakeNet.onFetch`、`OwnedCell.withRef` / `withMut`、`Resource.own` / `ownWith`、`ensures`、`test`、`forAll` などの組み込み・ホストコールバックだけでなく、ユーザー関数型への代入を経由して関数値が組み込みへ渡る場合（注釈付き変数・高階関数引数・戻り値・レコード/クラスフィールド・配列要素・ジェネリック型引数・`T | null`）、従来の非 rest 関数型への `...rest` や余分な既定引数付き関数の代入を許すと実行時に第 3 引数以降が `...rest` 配列や既定値引数に流入し不健全となる（しかも出力側で包むと素の TS/Node の `3,3,3` と黙って結果が変わる）。
 - 選択肢:
-  - (a) 型検査で拒否する（`FnType.builtinCb` および特殊組み込みの個別検査で `...rest` と契約超の引数を `E2002` `data.kind = "callback-extra-params"` で拒否し、非インライン引数には契約どおりの個数だけ転送する矢印関数 `(p0, ...) => fn(p0, ...)` / `() => fn()` への `--fix` を付与する。ユーザー定義の高階関数は呼び出し側が契約個数しか渡さないため従来の反変・共変規則を維持）。
-  - (b) 呼び出しの出力側で契約個数だけ渡すラッパ関数で包む。
-- 既定案: (a)。既存の `conformance/accept/`・`conformance/run/` に違反するケースはなく、暗黙に引数を切り捨てるより型検査で明示して矢印関数ラッパを `fixes` で提案するほうが健全であるため。
+  - (a) すべての非 `rest` 関数型への代入で `...rest` と契約超の引数を `E2002` (`data.kind = "callback-extra-params"`) で拒否する（`FnType.builtinCb` の特別扱いを廃し §3.5 Subtyping 自体を改定）。呼び出し重複などの副作用を防ぐため、アロー関数ラップ `(p0, ...) => fn(p0, ...)` / `() => fn()` の `--fix` は `managed` 層の純粋な名前・メンバー参照にのみ付与し、呼び出し式等には付与しない。
+  - (b) 呼び出しの出力側で契約個数だけ渡すラッパ関数で包む（`i1.ts` の素の TS/Node 結果 `3,3,3` と `2,2,2` で黙って乖離するため不採用）。
+- 決定 (2026-11-24): オーナー承認のうえ (a) を採用（§3.5 Subtyping を改定、`conformance/run/267` の 136-137 行目をアローラップ形に更新）。
 
 ### Q311 大きな配列の spread が `T006` になる長さのエンジン依存
 - 関連: §4、§10、Q301

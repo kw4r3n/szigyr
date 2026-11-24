@@ -1,0 +1,9 @@
+// expect: E2002 @ 8:17
+// stage: 1
+// open-question: Q310
+type CB = (x: usize, i: usize) => usize;
+function F(...xs: Array<usize>): usize { return xs.length; }
+function hof(a: Array<usize>, f: CB): Array<usize> { return a.map(f); }
+export function run(a: Array<usize>): Array<usize> {
+  return hof(a, F);
+}

@@ -257,4 +257,56 @@ it("rejects rest/extra-default builtin callbacks with E2002 callback-extra-param
   expect(inlineDiag?.code).toBe("E2002");
   expect(inlineDiag?.data).toMatchObject({ kind: "callback-extra-params" });
   expect(inlineDiag?.fixes).toBeUndefined();
+
+  // Call-site expression (fx1 shape) must NOT attach arrow-wrap fix (would duplicate mk calls)
+  const callFile = join(dir, "cb-call.szigyr");
+  writeFileSync(callFile, [
+    "function cnt(...xs: Array<usize>): usize { return xs.length; }",
+    "function mk(log: Log): (...xs: Array<usize>) => usize { log.info(\"mk\"); return cnt; }",
+    "export function main(sys: System): void {",
+    "  const a: Array<usize> = [10, 20, 30];",
+    "  sys.log.info(`${a.map(mk(sys.log)).join(\",\")}`);",
+    "}",
+    "",
+  ].join("\n"));
+  const callDiag = check(callFile)[0];
+  expect(callDiag?.code).toBe("E2002");
+  expect(callDiag?.data).toMatchObject({ kind: "callback-extra-params" });
+  expect(callDiag?.fixes).toBeUndefined();
+
+  // Member on call expression must NOT attach fix either
+  const callMemberFile = join(dir, "cb-call-member.szigyr");
+  writeFileSync(callMemberFile, [
+    "function cnt(...xs: Array<usize>): usize { return xs.length; }",
+    "function mkRec(log: Log): { readonly f: (...xs: Array<usize>) => usize } { log.info(\"mk\"); return { f: cnt }; }",
+    "export function main(sys: System): void {",
+    "  const a: Array<usize> = [10, 20, 30];",
+    "  sys.log.info(`${a.map(mkRec(sys.log).f).join(\",\")}`);",
+    "}",
+    "",
+  ].join("\n"));
+  const callMemberDiag = check(callMemberFile)[0];
+  expect(callMemberDiag?.code).toBe("E2002");
+  expect(callMemberDiag?.data).toMatchObject({ kind: "callback-extra-params" });
+  expect(callMemberDiag?.fixes).toBeUndefined();
+
+  // Pure member reference and annotated nullable local get arrow-wrap fix and become clean
+  const memberFile = join(dir, "cb-member.szigyr");
+  writeFileSync(memberFile, [
+    "function cnt(...xs: Array<usize>): usize { return xs.length; }",
+    "type CB = (x: usize, i: usize) => usize;",
+    "export function main(sys: System): void {",
+    "  const o: { readonly f: (...xs: Array<usize>) => usize } = { f: cnt };",
+    "  const cb: CB | null = o.f;",
+    "  sys.log.info(`${cb !== null ? cb(1, 2) : 0}`);",
+    "}",
+    "",
+  ].join("\n"));
+  const memberDiag = check(memberFile)[0];
+  expect(memberDiag?.code).toBe("E2002");
+  expect(memberDiag?.data).toMatchObject({ kind: "callback-extra-params" });
+  expect(memberDiag?.fixes?.[0]?.title).toBe("wrap in arrow function");
+  expect(await cliMain(["check", "--fix", memberFile], () => {}, () => {})).toBe(0);
+  expect(readFileSync(memberFile, "utf8")).toContain("const cb: CB | null = (p0, p1) => o.f(p0, p1);");
+  expect(check(memberFile)).toEqual([]);
 });

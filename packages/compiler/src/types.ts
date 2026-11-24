@@ -23,9 +23,9 @@ export interface TParam {
   name: string; id: number; constraint?: Type; caps?: Set<Capability>;
   owner?: "managed" | "strict" | "rt"; allowOwned?: boolean; inParam?: boolean; noPromise?: boolean;
 }
-/** `min`: builtin optional trailing parameters (Q032). `prefix`: a builtin callback may take a prefix of the parameters. `builtinCb`: fixed-arity builtin/host callback rejecting `...rest` or extra params. */
+/** `min`: builtin optional trailing parameters (Q032). `prefix`: a builtin callback may take a prefix of the parameters. */
 export interface FnType {
-  k: "fn"; tparams: TParam[]; params: Type[]; rest?: Type; ret: Type; min?: number; prefix?: boolean; builtinCb?: boolean;
+  k: "fn"; tparams: TParam[]; params: Type[]; rest?: Type; ret: Type; min?: number; prefix?: boolean;
   /** Builtin call-site conditions: `cast` / `codec` / `owned` / `eq` / `copy` constrain the first type argument (Q084, Q086); `trap` checks the code literal (Q058). */
   /** `box` / `chandle` / `castptr`: the §14.4 / §14.5 conditions on the type argument. */
   tcheck?: "cast" | "codec" | "jsonstringify" | "owned" | "eq" | "copy" | "trap" | "box" | "chandle" | "castptr" | "ring" | "alloc" | "ptrnull" | "ptrsizeof";
@@ -224,7 +224,7 @@ export function assignable(s: Type, t: Type, arg = false): boolean {
   if (s.k === "tuple" && t.k === "tuple") return s.elems.length === t.elems.length && s.elems.every((e, i) => assignable(e, t.elems[i]!));
   if (s.k === "tuple" && t.k === "gen" && t.name === "ReadonlyArray") return s.elems.every((e) => assignable(e, t.args[0]!));
   if (s.k === "fn" && t.k === "fn") {
-    if (t.builtinCb && !t.rest && (s.rest !== undefined || s.params.length > t.params.length)) return false;
+    if (!t.rest && (s.rest !== undefined || s.params.length > t.params.length)) return false;
     const sMin = s.min ?? s.params.length;
     if (sMin > t.params.length) return false;
     if (t.rest) {
@@ -237,12 +237,9 @@ export function assignable(s: Type, t: Type, arg = false): boolean {
         if (!assignable(tp, sp)) return false;
       }
     } else {
-      if (!t.prefix && !s.rest && s.params.length < t.params.length) return false;
-      const sRestEl = s.rest ? restElem(s.rest) : undefined;
-      const n = s.rest ? t.params.length : Math.min(s.params.length, t.params.length);
-      for (let i = 0; i < n; i++) {
-        const sp = i < s.params.length ? s.params[i]! : sRestEl;
-        if (!sp || !assignable(t.params[i]!, sp)) return false;
+      if (!t.prefix && s.params.length < t.params.length) return false;
+      for (let i = 0; i < s.params.length; i++) {
+        if (!assignable(t.params[i]!, s.params[i]!)) return false;
       }
     }
     // a builtin void callback drops the result; a dropped Promise would lose its trap (Q125)
@@ -253,6 +250,18 @@ export function assignable(s: Type, t: Type, arg = false): boolean {
   if (s.k === "tparam" && s.p.constraint) return assignable(s.p.constraint, t, arg);
   if (s.k === "opaque" && t.k === "opaque") return FAKE_OF[s.name] === t.name;
   return false;
+}
+/** True iff `s` fails assignment to non-rest `t` solely because `s` has a rest param or more params than `t`. */
+export function fnExtraParamsOnly(s: FnType, t: FnType): boolean {
+  if (t.rest || (s.rest === undefined && s.params.length <= t.params.length)) return false;
+  const sMin = s.min ?? s.params.length;
+  if (sMin > t.params.length) return false;
+  const sRestEl = s.rest ? restElem(s.rest) : undefined;
+  for (let i = 0; i < t.params.length; i++) {
+    const sp = i < s.params.length ? s.params[i]! : sRestEl;
+    if (!sp || !assignable(t.params[i]!, sp)) return false;
+  }
+  return assignable(s.ret, t.ret) || (t.ret.k === "prim" && t.ret.name === "void" && !!t.prefix && !(s.ret.k === "gen" && s.ret.name === "Promise"));
 }
 /** An `implements` clause type, with the class's own type parameters replaced by the instance's arguments. */
 const substClass = (t: Type, inst: { cls: ClassSym; args: Type[] }): Type => subst(t, bindTParams(inst.cls.tparams, inst.args));

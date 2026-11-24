@@ -8,7 +8,7 @@ import { BUILTIN_FUNCTIONS, GLOBAL_AUTHORITIES, NAMESPACES, RESERVED, contractBa
 import { isDeterministic } from "./determinism.ts";
 import { isGeneratable } from "./gendesc.ts";
 import {
-  AUDIO_CONFIG_RECORD, BOOL, ERROR, ERROR_RECORD, F64, NEVER, NULL, NUM_NAMES, STR, UNKNOWN, USIZE, VOID, assignable, audioStateOk, bindTParams, borrowOk, boxable, comparable, field, fn, gen, hasArenaBuf, hasAuthority, hasCap, hasInt64, hasLayout, hasPtr, hasRawPtr, hasTParam,
+  AUDIO_CONFIG_RECORD, BOOL, ERROR, ERROR_RECORD, F64, NEVER, NULL, NUM_NAMES, STR, UNKNOWN, USIZE, VOID, assignable, audioStateOk, bindTParams, borrowOk, boxable, comparable, field, fn, fnExtraParamsOnly, gen, hasArenaBuf, hasAuthority, hasCap, hasInt64, hasLayout, hasPtr, hasRawPtr, hasTParam,
   isAuthority, isBool, isCopy, isInt, isInt64, isNative, isNull, isNum, isOwned, isOwnedCap, isStr, isVoid, movesLike, holdsOwned, ownedDeep, ptrTargetOk, isTaggedUnion, kindOf, keyOk, intLiteralFits, literalFits, nonNull, nullable, num, opaque, parseExactInt, result, resultParts, restElem,
   same, sendable, show, subst, tparamHasCap, tuple, unify, union, unref, castable, collectTParams, layerOk, type ClassSym, type FnType, type NumName, type Type,
   hasLoneSurrogate,
@@ -81,34 +81,38 @@ function attachConvertFix(c: Checker, e: ts.Expression, t: Type, want: Type): vo
   }];
 }
 
+function isPureRef(e: ts.Expression): boolean {
+  const inner = assignTarget(e);
+  if (inner.kind === K.Identifier || inner.kind === K.ThisKeyword) return true;
+  if (inner.kind === K.PropertyAccessExpression) {
+    const p = inner as ts.PropertyAccessExpression;
+    return !p.questionDotToken && isPureRef(p.expression);
+  }
+  return false;
+}
+
 function reportMismatch(c: Checker, e: ts.Expression, t: Type, want: Type, arg = false): boolean {
   if (assignable(t, want, arg)) return true;
-  if (
-    t.k === "fn" && want.k === "fn" && want.builtinCb && !want.rest &&
-    (t.rest !== undefined || t.params.length > want.params.length) &&
-    assignable(t, { ...want, builtinCb: false }, arg)
-  ) {
+  const wantFn0 = want.k === "fn" ? want : nonNull(want);
+  const wantFn = wantFn0?.k === "fn" ? wantFn0 : undefined;
+  if (t.k === "fn" && wantFn && fnExtraParamsOnly(t, wantFn)) {
     const extraDesc = t.rest !== undefined ? "a rest parameter" : `${t.params.length} parameters`;
-    const inner = assignTarget(e);
-    const isInline = isFnExpr(inner);
-    const arityStr = want.params.length === 0 ? "0 parameters" : `at most ${want.params.length} parameter(s)`;
-    const hint = isInline ? `use ${arityStr}` : `wrap in an arrow function taking ${want.params.length} parameter(s)`;
-    c.at("E2002", e, `callback '${show(t)}' accepts ${extraDesc}, exceeding expected '${show(want)}' (${hint})`, {
+    const isInline = isFnExpr(assignTarget(e));
+    const arityStr = wantFn.params.length === 0 ? "0 parameters" : `at most ${wantFn.params.length} parameter(s)`;
+    const hint = isInline ? `use ${arityStr}` : `wrap in an arrow function taking ${wantFn.params.length} parameter(s)`;
+    c.at("E2002", e, `callback '${show(t)}' accepts ${extraDesc}, exceeding expected '${show(wantFn)}' (${hint})`, {
       kind: "callback-extra-params",
-      expected: show(want),
+      expected: show(wantFn),
       actual: show(t),
     });
-    if (!isInline && c.fx.layer === "managed") {
+    if (isPureRef(e) && c.fx.layer === "managed") {
       const d = c.prog.rep.out.at(-1);
       if (d?.code === "E2002") {
         const sf = c.fx.mod.sf;
         const s = e.getStart(sf);
-        const raw = sf.text.slice(s, e.end);
-        const calleeText = inner.kind === K.Identifier || inner.kind === K.PropertyAccessExpression ||
-          inner.kind === K.ElementAccessExpression || inner.kind === K.CallExpression || e.kind === K.ParenthesizedExpression
-          ? raw : `(${raw})`;
+        const calleeText = sf.text.slice(s, e.end);
         const pNames: string[] = [];
-        for (let i = 0, idx = 0; i < want.params.length; i++) {
+        for (let i = 0, idx = 0; i < wantFn.params.length; i++) {
           while (c.scope.lookup(`p${idx}`) || c.prog.lookupValue(c.mod, `p${idx}`) || c.mod.nsImports.has(`p${idx}`)) idx++;
           pNames.push(`p${idx++}`);
         }
@@ -1414,7 +1418,7 @@ function resourceCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpr
   } else if (c.fx.layer !== "managed") {
     c.at("E4003", cleanupArg, "cleanup must be the name of a module-level strict / rt function");
   } else {
-    checkTo(c, cleanupArg, { ...fn(expParams, VOID), builtinCb: true });
+    checkTo(c, cleanupArg, fn(expParams, VOID));
   }
 
   if (isErr(T)) return ERROR;
@@ -2107,7 +2111,7 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
       if (name === "ensures") {
         const a = args[0]!;
         const r = c.fx.ret ?? ERROR;
-        const pred: FnType = { ...fn(r.k === "prim" && r.name === "void" ? [] : [r], BOOL), builtinCb: true }; // Q129: a void function's ensures takes no argument
+        const pred: FnType = fn(r.k === "prim" && r.name === "void" ? [] : [r], BOOL); // Q129: a void function's ensures takes no argument
         if (!isFnExpr(a)) c.at("E2002", a, `ensures takes '${show(pred)}'`);
         else {
           ensuresArgs.add(a);
