@@ -1,0 +1,17 @@
+// expect: E2002 @ 16:13
+// stage: 2
+// open-question: Q316
+// Defaults do not change the parameter count: a function with one more (defaulted) parameter than the
+// function type still does not match (Q189 (b)).
+function three(x: i32, d: i32, e: i32 = 0): i32 {
+  "use owned";
+  return x + d + e;
+}
+function ap(f: (x: i32, d: i32) => i32, a: i32): i32 {
+  "use owned";
+  return f(a, 3);
+}
+function g(a: i32): i32 {
+  "use owned";
+  return ap(three, a);
+}

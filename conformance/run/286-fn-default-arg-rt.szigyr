@@ -1,0 +1,28 @@
+// expect-output: 5:6:5:17:5:6
+// stage: 2
+// open-question: Q316
+// A function with default parameters is a valid argument for a function-typed parameter:
+// Q189 (b) compares the parameter and return types, and the callee always receives every argument.
+function wb(x: i32, d: i32 = 1): i32 {
+  "use rt";
+  return x + d;
+}
+function add(x: i32, d: i32): i32 {
+  "use rt";
+  return x * d;
+}
+function both(x: i32 = 5, d: i32 = 1): i32 {
+  "use rt";
+  return x + d;
+}
+function ap(f: (x: i32, d: i32) => i32, a: i32): i32 {
+  "use rt";
+  return f(a, 3);
+}
+function fwd(f: (x: i32, d: i32) => i32, a: i32): i32 {
+  "use rt";
+  return ap(f, a) + f(a, 10);
+}
+export function main(sys: System): void {
+  sys.log.info(`${ap(wb, 2)}:${ap(add, 2)}:${wb(4)}:${fwd(wb, 2)}:${ap(both, 2)}:${both()}`);
+}

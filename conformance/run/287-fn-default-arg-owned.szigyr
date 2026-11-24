@@ -1,0 +1,32 @@
+// expect-output: 5:6:5:80:3:5
+// stage: 2
+// open-question: Q316
+// As 286 for "use owned", plus type arguments inferred through the argument (from its parameters and
+// from its return type alone) and an rt function passed to a strict parameter.
+function wb(x: i32, d: i32 = 1): i32 {
+  "use owned";
+  return x + d;
+}
+function add(x: i32, d: i32): i32 {
+  "use owned";
+  return x * d;
+}
+function wbRt(x: i32, d: i32 = 1): i32 {
+  "use rt";
+  return x + d;
+}
+function ap(f: (x: i32, d: i32) => i32, a: i32): i32 {
+  "use owned";
+  return f(a, 3);
+}
+function applyG<T extends Copy>(f: (x: T, d: T) => T, v: T): T {
+  "use owned";
+  return f(v, v);
+}
+function mk<T extends Copy>(f: (x: i32, d: i32) => T): T {
+  "use owned";
+  return f(1, 2);
+}
+export function main(sys: System): void {
+  sys.log.info(`${ap(wb, 2)}:${ap(add, 2)}:${wb(4)}:${applyG(wb, 40)}:${mk(wb)}:${ap(wbRt, 2)}`);
+}

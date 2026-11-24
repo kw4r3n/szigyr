@@ -2014,7 +2014,10 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
   });
   for (const { a, t, i } of fnChecks) { // Q189 (b): parameter and return types must match exactly
     const p = unref(subst(sig.params[i]!, m));
-    if (p.k === "fn" && t.k === "fn" && !same(p, t)) c.at("E2002", a, `expected '${show(p)}', got '${show(t)}'`);
+    if (p.k !== "fn" || t.k !== "fn") continue;
+    // Q316: defaults leave the signature as it is, so `min` is compared by the subtyping rule; these arguments never reach assignable()
+    const { min: pm = p.params.length, ...pp } = p, { min: tm = t.params.length, ...tt } = t;
+    if (tm > pm || !same(pp, tt)) c.at("E2002", a, `expected '${show(p)}', got '${show(t)}'`);
   }
   sig.tparams.forEach((p, i) => c.prog.insts.push({ mod: c.mod, node: e.typeArguments?.[i] ?? anchor, p, arg: m.get(p.id)! })); // Q127
   callTArgs.set(e, sig.tparams.map((p) => m.get(p.id)!));

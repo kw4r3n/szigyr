@@ -991,10 +991,10 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 | `!` 後置非 null 表明（`E1006`） | 健全性 | 健全性のため検査なしの null 除去を禁止（`Szigyr-design-v0.md:158`、`SPEC.md` §3.5、`syntax.ts:expr`、`explain.ts` `E1006`） |
 | `throw` / `try` / `catch` / `finally`（`E1007`） | 健全性 | 効果の明示（失敗しうる関数を `Result<T, E>` として型に表す）（`Szigyr-design-v0.md:165`、`EVALUATION.md` §3、`syntax.ts:stmt` `kind: "throw"` / `"try"`、`explain.ts` `E1007`） |
 | 可変モジュール状態 `let` 等（`E5002`） | 健全性 | 大域状態をなくす（`Szigyr-design-v0.md:172`、`Q054`、`SPEC.md` §3.5/§10、`syntax.ts:varList` `kind: "module-let"`、`explain.ts` `E5002`） |
-| `declare`（`declare module "c:..."` 以外、`E1000`） | 健全性 | `docs/SPEC.md` §0 の 5（`SPEC.md:10`「No ambient globals」）に基づく（Claude の既定案、`SPEC.md` §3.5、`Q004`、`Q011`、`syntax.ts:moduleDecl` `kind: "ambient-module"`） |
+| `declare`（`declare module "c:..."` 以外、`E1000`） | 健全性 | `docs/SPEC.md` §0 の 5（`SPEC.md:10`「No ambient globals」）に基づく（Claude の既定案。2026-11-24 にオーナーへ示し、変更の指示はなかった。`SPEC.md` §3.5、`Q004`、`Q011`、`syntax.ts:moduleDecl` `kind: "ambient-module"`） |
 | `var`（`E1001`） | 曖昧さ | 関数ホイスティングの罠を避け `const`/`let` に限定（`SPEC.md` §3.5、`explain.ts` `E1001`、`syntax.ts:varList` / `syntax.ts:moduleDecl`） |
 | `==` / `!=`（`E1002`） | 曖昧さ | 暗黙型変換を含む等価比較を禁止し `===`/`!==` に統一（`SPEC.md` §3.5、`explain.ts` `E1002`、`syntax.ts:expr`） |
-| 暗黙の truthiness（`E2004`） | 曖昧さ | `CLAUDE.md:79`（「やらないこと：暗黙の型変換や曖昧な糖衣構文」）に基づく（`==` / `!=` と同扱い、Claude の既定案、`SPEC.md` §4、`explain.ts` `E2004`、`expr.ts:cond`） |
+| 暗黙の truthiness（`E2004`） | 曖昧さ | `CLAUDE.md:79`（「やらないこと：暗黙の型変換や曖昧な糖衣構文」）に基づく（`==` / `!=` と同扱い。Claude の既定案。2026-11-24 にオーナーへ示し、変更の指示はなかった。`SPEC.md` §4、`explain.ts` `E2004`、`expr.ts:cond`） |
 | `?` 省略可能プロパティ・引数・タプル要素、`undefined`（`E1008` / `E2000`） | 曖昧さ | 書き方を 1 通りに統一し `undefined` と `null` の二重化を排除（`Szigyr-design-v0.md:163`、`EVALUATION.md` §3；構文・診断は `syntax.ts:params` `kind: "optional-param"`、`syntax.ts:memberName` `kind: "optional-member"`、`syntax.ts:type` `kind: "optional-tuple-elem"`、`modules.ts:typeOf`；※ `Q005` は `E1008` コード割当のみで理由の根拠ではない） |
 | 分割代入の既定値 `{ a = 1 }` / `[a = 1]`・非末尾/シグネチャ既定引数（`E1008`） | 曖昧さ | 書き方を 1 通りに統一する方針（`?` / `undefined` との関連：`EVALUATION.md` §3、`Szigyr-design-v0.md:163`；構文は `syntax.ts:bindingPattern` / `syntax.ts:arrayBindingPattern` `kind: "destructure-default"`、`syntax.ts:params` `kind: "default-param"` / `"non-trailing-default"`；`Q005` はコード割当） |
 | 正規表現の `imsu` 以外のフラグ・重複フラグ（`E1000`） | 曖昧さ | `g` / `y` を持たないステートレス `RegExp` として設計（`STDLIB.md:94`「stateless — no `g`/`y`」、`syntax.ts:expr` `kind: "regex-flag"`；重複フラグやその他フラグの個別理由は未記録） |
