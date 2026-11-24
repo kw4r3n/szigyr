@@ -219,8 +219,7 @@ it("two Workers run C-backend strict code at the same time without sharing runti
   writeFileSync(join(dir, "w.mjs"), `import { parentPort } from "node:worker_threads";\nconst { run } = await import(${JSON.stringify(idx)});\nconst out = [];\nfor (let i = 0; i < 8; i += 1) { const r = await run(${JSON.stringify(f)}, { backend: "c" }); out.push(r.diagnostics.map((d) => d.code).join() + r.stdout + "|" + (r.trap ? r.trap.code + "@" + r.trap.line : "")); }\nparentPort.postMessage(out);\n`);
   writeFileSync(join(dir, "main.mjs"), `import { Worker } from "node:worker_threads";\nconst go = () => new Promise((res, rej) => { const w = new Worker(${JSON.stringify(join(dir, "w.mjs"))}); w.on("message", res); w.on("error", rej); });\nconsole.log(JSON.stringify(await Promise.all([go(), go()])));\n`);
   const r = spawnSync("node", [join(dir, "main.mjs")], { encoding: "utf8" });
-  // Q318: on the CI runner the tsgo child sometimes writes the line "context canceled" to the inherited stderr as it shuts down
-  expect(r.stderr.split("\n").filter((l) => l !== "context canceled").join("\n")).toBe("");
+  expect(r.stderr).toBe("");
   expect(r.status).toBe(0);
   const one =`${"400000\n".repeat(40)}|T001@15`;
   expect(JSON.parse(r.stdout)).toEqual([Array(8).fill(one), Array(8).fill(one)]);
