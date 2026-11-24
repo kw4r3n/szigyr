@@ -26,7 +26,7 @@
 | E1007 | `throw` / `try` | P1 | `throw` / `try` キーワード | Q002 |
 | E1008 | 省略可能なプロパティや引数、分割代入の既定値、非末尾・シグネチャのみの既定引数（末尾の既定引数は許可） | P1 | 下の「形ごとのアンカー」 | Q002, Q005 |
 | E1009 | `"use unsafe"` の位置が不正（ファイルの先頭、managed の関数、アロー関数や関数式、2 回目） | P1 | 指示子の文字列リテラル | Q198 |
-| E2000 | 仕様にない大域名 | P2 | 解決できない識別子（型名も含む）、またはブロック内の宣言より前の参照 | Q006, Q011, Q034, Q322 |
+| E2000 | 仕様にない大域名 | P2 | 解決できない識別子（型名も含む）、またはブロック内の宣言より前の参照 | Q006, Q011, Q034, Q321, Q322 |
 | E2001 | 仕様にない組み込みメンバ（`i64`/`u64` の `toFixed`、`ReadonlyArray` の `splice` 等を含む） | P2 | メンバ名の識別子（ドットの後）。添字アクセスなら添字の式 | Q007, Q309 |
 | E2002 | 型の不一致 | P2 | 下の「形ごとのアンカー」 | Q007, Q008 ほか |
 | E2003 | 数値型の混在 | P2 | 演算子トークン（二項、比較、複合代入） | Q008, Q014 |
@@ -82,6 +82,7 @@
 | E1008 | 省略可能な引数 `x?: T`、非末尾の既定引数の後の必須引数、シグネチャのみの既定引数（`c:` / `interface` / 関数型） | 引数名 | Q002, Q005 |
 | E1008 | 分割代入の既定値 | 既定値を持つ束縛名 | Q052 |
 | E2000 | ブロック内で宣言より前に参照された名前（外側スコープに同名がある場合を含む、`data.kind = "use-before-declaration"`） | 参照している識別子 | Q322 |
+| E2000 | 局所 `type` 別名本体での外側関数の型パラメータ名参照（モジュール直下に同名型がある場合を含む、`data.kind = "outer-type-param"`） | その型名の識別子 | Q321 |
 | E2002 | 初期化、代入、実引数、`return` の型の不一致 | 値の式の先頭 | Q002 |
 | E2002 | ユーザー型にないメンバ | メンバ名 | Q007 |
 | E2002 | 演算子と型の組み合わせが不正（E2003 / E2007 以外） | 演算子トークン | Q008, Q017–Q019 |
@@ -183,7 +184,7 @@
 - **`E1000`** (`syntax.ts`): `"enum"`, `"public-modifier"`, `"modifier"`, `"duplicate-declaration"`, `"module-statement"`, `"directive"`, `"namespace"`, `"ambient-module"`, `"rest-param-layer"`, `"rest-param"`, `"param-destructuring"`, `"reserved-name"`, `"private-name"`, `"computed-property"`, `"member-name"`, `"class-extends"`, `"implements-clause"`, `"generator"`, `"duplicate-constructor"`, `"class-accessor"`, `"index-signature"`, `"class-member"`, `"interface-extends"`, `"interface-mixed"`, `"destructure-rest"`, `"destructure-property"`, `"nested-destructuring"`, `"misplaced-directive"`, `"label"`, `"break-outside-loop"`, `"continue-outside-loop"`, `"for-in"`, `"labeled-statement"`, `"empty-statement"`, `"nested-class"`, `"nested-interface"`, `"with"`, `"debugger"`, `"bigint-literal"`, `"await-outside-async"`, `"this-outside-method"`, `"instanceof"`, `"operator"`, `"destructuring-assignment"`, `"inc-dec"`, `"unary-operator"`, `"object-property-name"`, `"shorthand-initializer"`, `"object-accessor"`, `"object-member"`, `"regex-flag"`, `"regex-syntax"`, `"typeof"`, `"delete"`, `"void"`, `"tagged-template"`, `"super"`, `"yield"`, `"spread"`, `"array-hole"`, `"class-expression"`, `"empty-tuple"`, `"tuple-rest"`, `"intersection-type"`, `"type-operator"`, `"type-query"`, `"indexed-access-type"`, `"conditional-type"`, `"mapped-type"`, `"object-type"`, `"symbol-type"`, `"template-literal-type"`, `"utility-type"`, `"no-initializer"`, `"literal-type"`, `"type-param-default"`, `"syntax"`
 - **`E4002`** (`checker.ts`): `"managed-array"`, `"mutable-record"`, `"managed-string"`
 - **`E4003`** (`checker.ts` / `expr.ts`): `"strict-fn-type"`, `"strict-arrow"`, `"strict-fn-arg"`, `"cfn-arg"`, `"generic-fn"`, `"cfn-in-forAll"`
-- **その他の追加 `data.kind`**: `E1005` `"as"`, `"as-const"`、`E2000` `"js-global"`, `"use-before-declaration"`、`E2002` `"bad-rest-type"`, `"callback-extra-params"`, `"spread-non-rest"`, `"void-value"`, `"unsigned-compare-zero"`, `"template-nullable"`, `"iterate-string"`, `"compare-structural"`、`E2004` `"truthiness"`、および `E3004` `"move-out-of-borrow"`
+- **その他の追加 `data.kind`**: `E1005` `"as"`, `"as-const"`、`E2000` `"js-global"`, `"use-before-declaration"`, `"outer-type-param"`、`E2002` `"bad-rest-type"`, `"callback-extra-params"`, `"spread-non-rest"`, `"void-value"`, `"unsigned-compare-zero"`, `"template-nullable"`, `"iterate-string"`, `"compare-structural"`、`E2004` `"truthiness"`、および `E3004` `"move-out-of-borrow"`
 
 ### 付録 B の期待位置（既定案による）
 

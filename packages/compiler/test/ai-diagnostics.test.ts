@@ -437,7 +437,7 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
     for (const [code, ks] of [
       ["E1000", ["utility-type", "no-initializer", "literal-type", "type-param-default"]],
       ["E1005", ["as", "as-const"]],
-      ["E2000", ["js-global", "use-before-declaration"]],
+      ["E2000", ["js-global", "use-before-declaration", "outer-type-param"]],
       ["E2002", ["template-nullable", "iterate-string", "compare-structural"]],
       ["E2004", ["truthiness"]],
     ] as const) {
@@ -656,6 +656,73 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
       "  type P = string;",
       "  const s: P = \"ok\";",
       "  return a.v + i32(s.length);",
+      "}",
+      "",
+    ].join("\n")).diags).toEqual([]);
+  });
+
+  it("rejects outer type parameters inside local type aliases with E2000 outer-type-param even when shadowed at module level", () => {
+    const assertOuterTp = (src: string, name: string) => {
+      const ds = checkSrc(src).diags;
+      expect(ds.length, src).toBeGreaterThan(0);
+      expect(ds[0], src).toMatchObject({ code: "E2000", data: { kind: "outer-type-param", name } });
+      expect(ds[0]!.message, src).toContain("type B<U> = ...");
+      expect(ds[0]!.fixes, src).toBeUndefined();
+    };
+
+    // t2: module-level type T shadowed by enclosing function<T>
+    assertOuterTp([
+      "type T = string;",
+      "export function f<T extends Copy>(a: T): string {",
+      "  type B = T;",
+      '  const b: B = "x";',
+      "  return b;",
+      "}",
+      "",
+    ].join("\n"), "T");
+
+    // Existing E2000-local-type-outer-tparam shape (no module-level T)
+    assertOuterTp([
+      "export function f<T>(x: T): T {",
+      "  type Box = { readonly v: T };",
+      "  const b: Box = { v: x };",
+      "  return b.v;",
+      "}",
+      "",
+    ].join("\n"), "T");
+
+    // Nested generic functions
+    assertOuterTp([
+      "export function outer<T>(a: T): T {",
+      "  function inner<U>(b: U): T {",
+      "    type Pair = { readonly first: T; readonly second: U };",
+      "    return a;",
+      "  }",
+      "  return inner<i32>(1);",
+      "}",
+      "",
+    ].join("\n"), "T");
+
+    // Enclosing generic class method
+    assertOuterTp([
+      "export class Box<T> {",
+      "  m(x: T): T {",
+      "    type Alias = T;",
+      "    return x;",
+      "  }",
+      "}",
+      "",
+    ].join("\n"), "T");
+
+    // Alias's own type parameter shadowing outer T, and w3 passing outer T to B<U>, stay accepted
+    expect(checkSrc([
+      "type T = string;",
+      "export function f<T extends Copy>(a: T): T {",
+      "  type Self<T> = { readonly v: T };",
+      "  type B<U> = { readonly v: U };",
+      "  const s: Self<T> = { v: a };",
+      "  const b: B<T> = { v: s.v };",
+      "  return b.v;",
       "}",
       "",
     ].join("\n")).diags).toEqual([]);

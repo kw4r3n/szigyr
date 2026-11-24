@@ -2138,6 +2138,7 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
   - (b) 外側の関数の型パラメータを捕捉可能にし、同名のシャドウイングも許す。
   - (c) `managed` 層だけで受理する。
 - 既定案・扱い: (a) を採用（`20261124-2240-eval-followups` での Claude 既定案、オーナーが項目 B を任せる決定のもとで実装）。
+- 追記（2026-11-25）: 外側の関数の型パラメータと同名の型がモジュール直下にある場合も、局所 `type` 本体からの参照はモジュール直下へ抜かさず `E2000`（`data.kind = "outer-type-param"`、別名自身の型パラメータと使用側の `B<T>` は対象外）で拒否する。
 
 ### Q322 ブロック内の宣言より前に書かれた同名への参照（外側スコープに同名がある場合を含む）
 - 関連: `docs/SPEC.md` §4 Control、`Q320`、`Q321`、`packages/compiler/src/checker.ts`、`packages/compiler/src/expr.ts`、`packages/compiler/src/modules.ts`

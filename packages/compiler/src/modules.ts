@@ -571,6 +571,7 @@ export class Program {
       ...(outer.cscope ? { cscope: outer.cscope } : {}),
       ...(outer.locals ? { locals: outer.locals } : {}),
       ...(outer.checkPendingType ? { checkPendingType: ownTps ? (id) => !ownTps.has(id.text) && outer.checkPendingType!(id) : outer.checkPendingType } : {}),
+      ...(outer.outerTParams ? { outerTParams: outer.outerTParams } : {}),
     };
     this.constraints(d.typeParameters, tparams, e);
     const params: Type[] = [];
@@ -649,7 +650,7 @@ export class Program {
     decls?.forEach((d, i) => { if (d.constraint) this.resolveConstraint(d.constraint, ps[i]!, e); });
   }
 
-  aliasBody(a: Extract<TypeSym, { k: "alias" }>, extra?: Pick<TypeEnv, "checkPendingType">): Type {
+  aliasBody(a: Extract<TypeSym, { k: "alias" }>, extra?: Pick<TypeEnv, "checkPendingType" | "outerTParams">): Type {
     if (a.body) return a.body;
     if (a.busy) return ERROR; // typeRef reports the cycle (Q085); shortcut: recursive aliases stay unsupported, upgrade with a lazy alias type
     a.busy = true;
@@ -660,6 +661,7 @@ export class Program {
       tparams: new Map(a.tparams.map((p) => [p.name, p])),
       ...(a.locals ? { locals: a.locals } : {}),
       ...(extra?.checkPendingType ? { checkPendingType: ownTps ? (id) => !ownTps.has(id.text) && extra.checkPendingType!(id) : extra.checkPendingType } : {}),
+      ...(extra?.outerTParams ? { outerTParams: extra.outerTParams } : {}),
     };
     this.constraints(a.decl.typeParameters, a.tparams, e);
     a.body = this.typeOf(a.decl.type, e);
@@ -993,6 +995,16 @@ export class Program {
   typeRef(id: ts.Identifier, argNodes: ts.NodeArray<ts.TypeNode> | undefined, whole: Node, e: TypeEnv): Type {
     const name = id.text;
     if (e.checkPendingType?.(id)) return ERROR;
+    if (!e.tparams.has(name) && e.outerTParams?.has(name)) {
+      this.rep.at(
+        e.mod,
+        "E2000",
+        id,
+        `type parameter '${name}' of an enclosing function cannot be used in a local type alias; declare a type parameter on the alias (e.g. 'type B<U> = ...') and pass '${name}' at the use site`,
+        { kind: "outer-type-param", name },
+      );
+      return ERROR;
+    }
     const args = (argNodes ?? []).map((a) => (name === "OwnedStruct" || name === "CStruct" ? ERROR : this.typeOf(a, e, name === "Promise" || name === "Ptr" || name === "ConstPtr" || name === "CHandle"))); // `Promise<void>` (Q028); `Ptr<void>` (§14.4)
     const arity = (n: number): boolean => {
       if (args.length === n) return true;
@@ -1080,7 +1092,7 @@ export function legalUnion(u: Type): boolean {
   return isTaggedUnion(rest) && new Set(rest.members.map(kindOf)).size === rest.members.length;
 }
 
-export interface TypeEnv { mod: Module; tparams: Map<string, TParam>; cscope?: Map<string, CStructSym>; locals?: ReadonlyMap<string, TypeSym>; checkPendingType?: (id: ts.Identifier) => boolean }
+export interface TypeEnv { mod: Module; tparams: Map<string, TParam>; cscope?: Map<string, CStructSym>; locals?: ReadonlyMap<string, TypeSym>; checkPendingType?: (id: ts.Identifier) => boolean; outerTParams?: ReadonlyMap<string, TParam> }
 
 export const tparamShells = (list: ts.NodeArray<ts.TypeParameterDeclaration> | undefined, owner?: Layer, allowOwned = false): TParam[] =>
   (list ?? []).map((d) => ({ ...newTParam(d.name.text), noPromise: true, ...(owner ? { owner } : {}), ...(allowOwned ? { allowOwned } : {}) }));

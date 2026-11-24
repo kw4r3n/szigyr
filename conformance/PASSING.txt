@@ -197,6 +197,7 @@ reject/E1009-unsafe-twice.szigyr
 reject/E2000-bare-namespace-call.szigyr
 reject/E2000-local-type-before-decl.szigyr
 reject/E2000-local-type-out-of-scope.szigyr
+reject/E2000-local-type-outer-tparam-shadow.szigyr
 reject/E2000-local-type-outer-tparam.szigyr
 reject/E2000-nested-function-before-decl.szigyr
 reject/E2000-nested-function-mutual.szigyr

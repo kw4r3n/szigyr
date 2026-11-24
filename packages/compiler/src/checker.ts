@@ -826,7 +826,10 @@ export class Checker {
     const sym: Extract<TypeSym, { k: "alias" }> = { k: "alias", decl: d, mod: this.fx.mod, locals: snap };
     snap.set(d.name.text, sym);
     this.scope.types.set(d.name.text, sym);
-    this.prog.aliasBody(sym, { checkPendingType: (id) => this.pendingUse(id, true) });
+    this.prog.aliasBody(sym, {
+      checkPendingType: (id) => this.pendingUse(id, true),
+      ...(this.fx.tparams.size ? { outerTParams: this.fx.tparams } : {}),
+    });
     const savedTps = this.fx.tparams;
     this.fx.tparams = new Map((sym.tparams ?? []).map((p) => [p.name, p]));
     this.walkTypePos(d.type, "alias", { unsafe: false, cdecl: false });
