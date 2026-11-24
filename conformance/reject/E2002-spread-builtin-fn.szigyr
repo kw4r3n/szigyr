@@ -1,0 +1,6 @@
+// expect: E2002 @ 5:21
+// stage: 2
+// open-question: Q301
+export function f(n: Array<i32>): i32 {
+  return wrapAdd(1, ...n);
+}

@@ -1461,4 +1461,34 @@ test("suite", (t: Test) => {
     expect(r.mutants.some((m) => m.fn === "liveSelfAssign" && m.op === "0 -> 1" && m.status === "killed")).toBe(true);
     expect(r.mutants.some((m) => m.fn === "unusedLocal" && m.op === "0 -> 1")).toBe(true);
   });
+
+  it("mutates ||=, &&=, labeled loops, and String(x) cleanly", async () => {
+    const { file } = tmpFile("logical-label-mutate.szigyr", `
+function score(limit: i32): string {
+  let ok: boolean = false;
+  ok ||= limit > 0;
+  ok &&= limit < 100;
+  let total: i32 = 0;
+  outer: for (let i: i32 = 0; i < limit; i += 1) {
+    let j: i32 = 0;
+    while (j < 2) {
+      j += 1;
+      if (i === 1) continue outer;
+      total += 1;
+      if (total >= 3) break outer;
+    }
+  }
+  return String(total) + ":" + String(ok);
+}
+
+test("score suite", (t: Test) => {
+  t.eq(score(4), "3:true");
+  t.eq(score(1), "2:true");
+});
+`);
+    const r = await mutate(file, { cache: false });
+    expect(r.diagnostics).toEqual([]);
+    expect(r.baselineFailure).toBeNull();
+    expect(r.mutants.length).toBeGreaterThan(0);
+  });
 });

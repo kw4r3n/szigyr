@@ -1,0 +1,46 @@
+// expect: ok
+// stage: 2
+
+class FlagBox {
+  flag: boolean;
+  constructor(v: boolean) {
+    this.flag = v;
+  }
+}
+
+export function testStrict(cond: boolean): boolean {
+  "use owned";
+  let a: boolean = cond;
+  let b: boolean = !cond;
+  a ||= b;
+  b &&= cond;
+  let i: i32 = 0;
+  let total: i32 = 0;
+  outer: while (i < 4) {
+    i += 1;
+    let j: i32 = 0;
+    inner: do {
+      j += 1;
+      if (j === 2) continue outer;
+      if (i === 3) break outer;
+      total += 1;
+    } while (j < 3);
+  }
+  return a && (b || total >= 0);
+}
+
+export function testManaged(items: Array<i32>): string {
+  const box = new FlagBox(false);
+  box.flag ||= true;
+  box.flag &&= false;
+  const xs: Array<boolean> = [false, true];
+  xs[0] ||= true;
+  xs[1] &&= box.flag;
+  let acc: i32 = 0;
+  loopA: for (const item of items) {
+    if (item < 0) continue loopA;
+    if (item > 100) break loopA;
+    acc += item;
+  }
+  return String(acc) + ":" + String(xs[0]) + ":" + String(3.5);
+}

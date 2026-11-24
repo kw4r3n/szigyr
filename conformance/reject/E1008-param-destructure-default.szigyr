@@ -1,0 +1,6 @@
+// expect: E1008 @ 4:21
+// stage: 1
+// open-question: Q302
+export function f({ a = 1 }: { readonly a: i32 }): i32 {
+  return a;
+}

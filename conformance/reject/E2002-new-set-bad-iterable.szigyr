@@ -1,0 +1,5 @@
+// expect: E2002 @ 4:26
+// stage: 2
+function f(): Set<string> {
+  return new Set<string>("ab");
+}

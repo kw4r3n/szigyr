@@ -146,4 +146,234 @@ it("attaches concrete-type, resource-escape, conflictAt, cycle, and CLI kind/mis
   writeFileSync(compound, "export function f(a: i32, b: f64): i32 {\n  let x: i32 = a;\n  x += b;\n  return x;\n}\n");
   const cd = check(compound).find((d) => d.code === "E2003");
   expect(cd?.fixes?.map((fx) => fx.title)).toEqual(["convert right to 'i32'"]);
+
+  // safe Part D fixes: public modifier on class member & mutable TypeLiteral in strict code
+  const pubFile = join(dir, "pub.szigyr");
+  writeFileSync(pubFile, "export class A {\n  public m(): i32 { return 1; }\n}\n");
+  const pubRc = await cliMain(["check", pubFile], () => {}, () => {});
+  expect(pubRc).toBe(1);
+  let fixOut = "";
+  const fixRc = await cliMain(["check", "--fix", pubFile], (s) => { fixOut += s; }, () => {});
+  expect(fixRc).toBe(0);
+  expect(readFileSync(pubFile, "utf8")).not.toContain("public");
+  expect(check(pubFile)).toEqual([]);
+
+  const mutRecFile = join(dir, "mut-rec.szigyr");
+  writeFileSync(mutRecFile, "function f(p: { x: i32; y: i32 }): i32 {\n  \"use owned\";\n  return p.x + p.y;\n}\n");
+  const mrBefore = check(mutRecFile);
+  expect(mrBefore).toHaveLength(1);
+  expect(mrBefore[0]).toMatchObject({ code: "E4002", data: { kind: "mutable-record" } });
+  expect(mrBefore[0]!.fixes).toBeUndefined();
+  const mrRc = await cliMain(["check", "--fix", mutRecFile], () => {}, () => {});
+  expect(mrRc).toBe(1);
+  expect(check(mutRecFile)).toEqual(mrBefore);
+
+  // Mutable strict record with field assignment (like fix-r1) and managed caller passing mutable record (like fix-c1):
+  // check --fix must not introduce new E2002 diagnostics.
+  const mutatedRecFile = join(dir, "mut-rec-write.szigyr");
+  writeFileSync(mutatedRecFile, "function f(r: { a: i32 }): i32 {\n  \"use owned\";\n  r.a = 5;\n  return r.a;\n}\nexport function main(sys: System): void { sys.log.info(\"x\"); }\n");
+  const r1Before = check(mutatedRecFile);
+  expect(r1Before.map((d) => d.code)).toEqual(["E4002"]);
+  expect(r1Before[0]!.fixes).toBeUndefined();
+  expect(await cliMain(["check", "--fix", mutatedRecFile], () => {}, () => {})).toBe(1);
+  expect(check(mutatedRecFile)).toEqual(r1Before);
+
+  const managedCallerRecFile = join(dir, "mut-rec-caller.szigyr");
+  writeFileSync(managedCallerRecFile, "function f(r: { a: i32 }): i32 {\n  \"use owned\";\n  return r.a;\n}\nexport function main(sys: System): void {\n  const r: { a: i32 } = { a: 1 };\n  const n = f(r);\n  r.a = 7;\n  sys.log.info(`${n}${f(r)}`);\n}\n");
+  const c1Before = check(managedCallerRecFile);
+  expect(c1Before.map((d) => d.code)).toEqual(["E4002"]);
+  expect(c1Before[0]!.fixes).toBeUndefined();
+  expect(await cliMain(["check", "--fix", managedCallerRecFile], () => {}, () => {})).toBe(1);
+  expect(check(managedCallerRecFile)).toEqual(c1Before);
+});
+
+it("rejects rest/extra-default builtin callbacks with E2002 callback-extra-params and fixes non-inline callbacks", async () => {
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-cb-`));
+
+  // Non-inline rest callback (m4/m8 shape) gets arrow-wrap --fix that makes check clean
+  const restFile = join(dir, "cb-rest.szigyr");
+  writeFileSync(restFile, [
+    "function cnt(...xs: Array<usize>): usize { return xs.length; }",
+    "export function main(sys: System): void {",
+    "  const a: Array<usize> = [10, 20, 30];",
+    "  const r = a.map(cnt);",
+    "  sys.log.info(`${r.join(\",\")}`);",
+    "}",
+    "",
+  ].join("\n"));
+  const restDiag = check(restFile)[0];
+  expect(restDiag?.code).toBe("E2002");
+  expect(restDiag?.data).toMatchObject({ kind: "callback-extra-params" });
+  expect(restDiag?.fixes?.[0]?.title).toBe("wrap in arrow function");
+  expect(await cliMain(["check", "--fix", restFile], () => {}, () => {})).toBe(0);
+  expect(readFileSync(restFile, "utf8")).toContain("a.map((p0, p1) => cnt(p0, p1))");
+  expect(check(restFile)).toEqual([]);
+
+  // Non-inline trailing-default callback (m6 shape) gets arrow-wrap --fix that makes check clean
+  const defFile = join(dir, "cb-def.szigyr");
+  writeFileSync(defFile, [
+    "function g(x: usize, i: usize, z: i32 = 5): i32 { return z; }",
+    "export function main(sys: System): void {",
+    "  const a: Array<usize> = [10, 20, 30];",
+    "  const r = a.map(g);",
+    "  sys.log.info(`${r.length}`);",
+    "}",
+    "",
+  ].join("\n"));
+  const defDiag = check(defFile)[0];
+  expect(defDiag?.code).toBe("E2002");
+  expect(defDiag?.data).toMatchObject({ kind: "callback-extra-params" });
+  expect(defDiag?.fixes?.[0]?.title).toBe("wrap in arrow function");
+  expect(await cliMain(["check", "--fix", defFile], () => {}, () => {})).toBe(0);
+  expect(readFileSync(defFile, "utf8")).toContain("a.map((p0, p1) => g(p0, p1))");
+  expect(check(defFile)).toEqual([]);
+
+  // 0-arg host callback (Test.traps) gets `() => fn()` fix
+  const trapFile = join(dir, "cb-zero.szigyr");
+  writeFileSync(trapFile, [
+    "function helper(x: i32 = 5): void { panic(\"boom\"); }",
+    "test(\"zero-arg wrap\", (t: Test) => {",
+    "  t.traps(\"T006\", helper);",
+    "});",
+    "",
+  ].join("\n"));
+  const trapDiag = check(trapFile)[0];
+  expect(trapDiag?.code).toBe("E2002");
+  expect(trapDiag?.data).toMatchObject({ kind: "callback-extra-params" });
+  expect(await cliMain(["check", "--fix", trapFile], () => {}, () => {})).toBe(0);
+  expect(readFileSync(trapFile, "utf8")).toContain("t.traps(\"T006\", () => helper())");
+  expect(check(trapFile)).toEqual([]);
+
+  // Inline arrow with rest/extra-default gets E2002 callback-extra-params with NO fix
+  const inlineFile = join(dir, "cb-inline.szigyr");
+  writeFileSync(inlineFile, [
+    "export function main(sys: System): void {",
+    "  const s = new Set<string>([\"a\"]);",
+    "  s.forEach((...xs: Array<string>): void => { sys.log.info(`${xs.length}`); });",
+    "}",
+    "",
+  ].join("\n"));
+  const inlineDiag = check(inlineFile)[0];
+  expect(inlineDiag?.code).toBe("E2002");
+  expect(inlineDiag?.data).toMatchObject({ kind: "callback-extra-params" });
+  expect(inlineDiag?.fixes).toBeUndefined();
+
+  // Call-site expression (fx1 shape) must NOT attach arrow-wrap fix (would duplicate mk calls)
+  const callFile = join(dir, "cb-call.szigyr");
+  writeFileSync(callFile, [
+    "function cnt(...xs: Array<usize>): usize { return xs.length; }",
+    "function mk(log: Log): (...xs: Array<usize>) => usize { log.info(\"mk\"); return cnt; }",
+    "export function main(sys: System): void {",
+    "  const a: Array<usize> = [10, 20, 30];",
+    "  sys.log.info(`${a.map(mk(sys.log)).join(\",\")}`);",
+    "}",
+    "",
+  ].join("\n"));
+  const callDiag = check(callFile)[0];
+  expect(callDiag?.code).toBe("E2002");
+  expect(callDiag?.data).toMatchObject({ kind: "callback-extra-params" });
+  expect(callDiag?.fixes).toBeUndefined();
+
+  // Member on call expression must NOT attach fix either
+  const callMemberFile = join(dir, "cb-call-member.szigyr");
+  writeFileSync(callMemberFile, [
+    "function cnt(...xs: Array<usize>): usize { return xs.length; }",
+    "function mkRec(log: Log): { readonly f: (...xs: Array<usize>) => usize } { log.info(\"mk\"); return { f: cnt }; }",
+    "export function main(sys: System): void {",
+    "  const a: Array<usize> = [10, 20, 30];",
+    "  sys.log.info(`${a.map(mkRec(sys.log).f).join(\",\")}`);",
+    "}",
+    "",
+  ].join("\n"));
+  const callMemberDiag = check(callMemberFile)[0];
+  expect(callMemberDiag?.code).toBe("E2002");
+  expect(callMemberDiag?.data).toMatchObject({ kind: "callback-extra-params" });
+  expect(callMemberDiag?.fixes).toBeUndefined();
+
+  // Pure member reference and annotated nullable local get arrow-wrap fix and become clean
+  const memberFile = join(dir, "cb-member.szigyr");
+  writeFileSync(memberFile, [
+    "function cnt(...xs: Array<usize>): usize { return xs.length; }",
+    "type CB = (x: usize, i: usize) => usize;",
+    "export function main(sys: System): void {",
+    "  const o: { readonly f: (...xs: Array<usize>) => usize } = { f: cnt };",
+    "  const cb: CB | null = o.f;",
+    "  sys.log.info(`${cb !== null ? cb(1, 2) : 0}`);",
+    "}",
+    "",
+  ].join("\n"));
+  const memberDiag = check(memberFile)[0];
+  expect(memberDiag?.code).toBe("E2002");
+  expect(memberDiag?.data).toMatchObject({ kind: "callback-extra-params" });
+  expect(memberDiag?.message).toMatch(/^function '/);
+  expect(memberDiag?.fixes?.[0]?.title).toBe("wrap in arrow function");
+  expect(await cliMain(["check", "--fix", memberFile], () => {}, () => {})).toBe(0);
+  expect(readFileSync(memberFile, "utf8")).toContain("const cb: CB | null = (p0, p1) => o.f(p0, p1);");
+  expect(check(memberFile)).toEqual([]);
+
+  // Reassignable let local (fx2 shape), mutable field (fx3 shape), field on let, and param get NO fix
+  const unstableSources = [
+    [
+      "function cnt(...xs: Array<usize>): usize { return xs.length; }",
+      "function one(...xs: Array<usize>): usize { return 100 + xs.length; }",
+      "export function main(sys: System): void {",
+      "  const a: Array<usize> = [10, 20, 30];",
+      "  let f = cnt;",
+      "  const cb: (x: usize, i: usize) => usize = f;",
+      "  f = one;",
+      "  sys.log.info(`${a.map(cb).join(\",\")}`);",
+      "}",
+      "",
+    ].join("\n"),
+    [
+      "function cnt(...xs: Array<usize>): usize { return xs.length; }",
+      "function one(...xs: Array<usize>): usize { return 100 + xs.length; }",
+      "export function main(sys: System): void {",
+      "  const a: Array<usize> = [10, 20, 30];",
+      "  const o: { f: (...xs: Array<usize>) => usize } = { f: cnt };",
+      "  const cb: (x: usize, i: usize) => usize = o.f;",
+      "  o.f = one;",
+      "  sys.log.info(`${a.map(cb).join(\",\")}`);",
+      "}",
+      "",
+    ].join("\n"),
+    [
+      "function cnt(...xs: Array<usize>): usize { return xs.length; }",
+      "export function main(sys: System): void {",
+      "  let o: { readonly f: (...xs: Array<usize>) => usize } = { f: cnt };",
+      "  const cb: (x: usize, i: usize) => usize = o.f;",
+      "  sys.log.info(`${cb(1, 2)}`);",
+      "}",
+      "",
+    ].join("\n"),
+    [
+      "export function wrap(a: Array<usize>, f: (...xs: Array<usize>) => usize): Array<usize> { return a.map(f); }",
+      "",
+    ].join("\n"),
+  ];
+  for (let i = 0; i < unstableSources.length; i++) {
+    const f = join(dir, `cb-unstable-${i}.szigyr`);
+    writeFileSync(f, unstableSources[i]!);
+    const diag = check(f)[0];
+    expect(diag?.code, unstableSources[i]).toBe("E2002");
+    expect(diag?.data).toMatchObject({ kind: "callback-extra-params" });
+    expect(diag?.message).toMatch(/^function '/);
+    expect(diag?.fixes).toBeUndefined();
+  }
+
+  // Immutable local const gets arrow-wrap fix and becomes clean
+  const constLocalFile = join(dir, "cb-const-local.szigyr");
+  writeFileSync(constLocalFile, [
+    "function cnt(...xs: Array<usize>): usize { return xs.length; }",
+    "export function main(sys: System): void {",
+    "  const f = cnt;",
+    "  const cb: (x: usize, i: usize) => usize = f;",
+    "  sys.log.info(`${cb(1, 2)}`);",
+    "}",
+    "",
+  ].join("\n"));
+  const constDiag = check(constLocalFile)[0];
+  expect(constDiag?.fixes?.[0]?.title).toBe("wrap in arrow function");
+  expect(await cliMain(["check", "--fix", constLocalFile], () => {}, () => {})).toBe(0);
+  expect(check(constLocalFile)).toEqual([]);
 });

@@ -1,0 +1,52 @@
+// expect-output: 12|30:42|35|9:10:7
+// stage: 2
+// open-question: Q302
+
+type Pt = { readonly x: i32; readonly y: i32 };
+type User = { readonly name: string; readonly age: i32 };
+type Box = OwnedStruct<{ data: Vec<i32>; tag: i32 }>;
+
+function sumTuple([a, b]: [i32, i32]): i32 {
+  return a + b;
+}
+
+function dotCopyStrict({ x, y }: Pt, k: i32 = 2): i32 {
+  "use rt";
+  return (x + y) * k;
+}
+
+function describe({ name, age: years }: User, [a, b]: [i32, i32]): string {
+  return `${name}:${years + a + b}`;
+}
+
+function readTag({ tag }: Ref<Box>): i32 {
+  "use owned";
+  return tag;
+}
+
+function takeBox({ data, tag }: Box): i32 {
+  "use owned";
+  return tag + i32(data.length);
+}
+
+class Calc {
+  apply([x, y]: [i32, i32]): i32 {
+    return x * y;
+  }
+}
+
+export function main(sys: System): void {
+  const arrowSum = ({ x, y }: Pt): i32 => x + y;
+  const s = sumTuple([5, 7]);
+  const d = dotCopyStrict({ x: 3, y: 4 }, 6);
+  const u = describe({ name: "ada", age: 30 }, [2, 3]);
+  const c = new Calc().apply([3, 3]);
+
+  const v = Vec.filled<i32>(sys.alloc, 2, 1);
+  const box: Box = { data: v, tag: 10 };
+  const t = readTag(box);
+  const box2: Box = { data: Vec.filled<i32>(sys.alloc, 3, 2), tag: 4 };
+  const tb = takeBox(box2);
+
+  sys.log.info(`${s}|${arrowSum({ x: 10, y: 20 })}:${d}|${u.length === 6 ? 35 : 0}|${c}:${t}:${tb}`);
+}

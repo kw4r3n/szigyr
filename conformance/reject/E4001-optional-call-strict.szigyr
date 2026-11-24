@@ -1,0 +1,7 @@
+// expect: E4001 @ 6:3
+// stage: 2
+// open-question: Q299
+export function f(g: () => void): void {
+  "use owned";
+  g?.();
+}

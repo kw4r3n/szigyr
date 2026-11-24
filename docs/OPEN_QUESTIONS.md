@@ -1888,3 +1888,208 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
   - (a) ① `HttpServer` に `stop(): void`（進行中レスポンスに `Connection: close` を付けて返し終えた後にソケットを閉じて停止する冪等な優雅停止）と `waitClosed(): Promise<void>` を追加する。② `QueryParam` レコードと `Url` 組込名前空間（managed 専用：`parseQuery`, `getQueryParam`, `formatQuery`, `encodeComponent`, `decodeComponent`）を追加し、`runtime-js/src/result.ts` の `URLSearchParams` / UTF-8 `encodeURIComponent`（孤立サロゲートも置換文字経由で安全に符号化）で Node/ブラウザ両対応する。③ `FakeFs` の書込で親ディレクトリ未存在を `nodeFs` と同じ `ENOENT` にし、`FakeFs.addSymlink(path, target): Result<null, IoError>`（循環 `ELOOP`・`stat` の `lstat` 化・`readDir` の `"symlink"`・`exists` のリンク先解決）を追加する。
   - (b) アプリ側のポーリング・自前パーサ・`nodeFs` 専用 E2E 検証のまま据え置く。
 - 既定案: (a)。
+
+### Q297 null 合体代入 `x ??= v` の層範囲・評価回数・型
+- 関連: §3.1、§4、Q257
+- 状況: TS の `x ??= v` を解禁するにあたり、対応層・左辺の評価回数・式全体の型・文位置での絞り込みを定める必要がある。
+- 選択肢:
+  - (a) 全層（managed / strict / rt、JS / C / Wasm 一致）で許可。左辺は `T | null` 必須（非 null は `E2002`）かつ 1 回のみ評価し、右辺は左辺が `null` のときのみ短絡評価（文脈型は左辺の `T | null`、数値/文字列リテラルは `T` を引き継ぐ）。式全体の型は右辺が `T` に代入可能なら `T`、そうでなければ `T | null`。文位置の `x ??= v` で右辺が非 null なら直後から `x` を `T` に絞り込む。
+  - (b) managed 限定、または左辺を常に `T | null` とみなす。
+- 既定案: (a)。
+
+### Q298 省略可能添字 `a?.[i]` の層範囲と書き込み禁止
+- 関連: §4、Q025
+- 状況: `a?.[i]` を解禁するにあたり、対応するレシーバ型・層・書き込み左辺の扱いを決める必要がある。
+- 選択肢:
+  - (a) `a[i]` と同じコンテナ型（`Array` / `ReadonlyArray` / `tuple` / `Vec` / `Slice`）を `T | null` で受け、読み取りのみ許可（`a?.[i] = v` や複合代入左辺は `E2002`）。`strict` / `rt` は非 Result ユニオンに `Copy` を要するため事実上 `managed` のみとなるが、`managed` 内の `Vec<T> | null` も JS ランタイムで短絡・範囲検査（`T002`）を行う。
+  - (b) `Vec` / `Slice` からの `?.[` を別途禁止する。
+- 既定案: (a)。
+
+### Q299 省略可能呼び出し `f?.()` の層範囲と戻り値型
+- 関連: §4、Q025
+- 状況: `f?.()` と `o.f?.()` / `o?.f?.()` を解禁するにあたり、層制限と短絡評価を明確にする。
+- 選択肢:
+  - (a) 関数値自体が `managed` 専用のため `f?.()` は `managed` 専用とし、`strict` / `rt` は `E4001`。呼び出し対象は `(Params) => R | null` 必須（非 null は `E2002`）。対象を 1 回評価し、`null` なら引数を評価せず `null` を返し（返り値型は `R | null`）、`await` 付き引数や `o?.f()`（呼び出し可能フィールド）にも対応する。
+  - (b) `(Params) => R | null` を直接書ける位置だけ許可し `o.f?.()` を拒否する。
+- 既定案: (a)。
+
+### Q300 残余引数 `...rest` の層・位置・型制約
+- 関連: §3.5、Q004
+- 状況: TS の残余引数 `...rest: Array<T>`（`T[]`）および `ReadonlyArray<T>`（`readonly T[]`）を許可する範囲と、非 managed 層や特殊コールバックでの拒否規則を定める必要がある。
+- 選択肢:
+  - (a) `managed` 層の末尾引数のみ許可し、型は `Array<T>` / `ReadonlyArray<T>`（`T[]` / `readonly T[]`）必須（それ以外は `E2002`、`?`/既定値付きは `E1008`、分割代入付き/末尾以外は `E1000`）。末尾の既定引数の後ろも許可する（既定引数を省略せず渡した後の可変長部分を受ける）。`strict` / `rt` / `c:` では `E1000`（`data.kind = "rest-param-layer"` 等）で拒否し、`forAll` / `fuzzContracts` / `spawn.isolate` / `audio.open` でも拒否する。
+  - (b) `Array<T>` のみに絞る、または `strict` / `rt` でも固定引数のスプレッド展開を認める。
+- 既定案: (a)。
+
+### Q301 関数呼び出しスプレッド `f(...xs)` の制約
+- 関連: §3.5、Q053、Q300
+- 状況: 関数呼び出しでの `...xs` を一般引数へ展開すると静的引数個数検査や所有権・C ABI 境界と衝突する。
+- 選択肢:
+  - (a) `managed` 専用（`strict` / `rt` は `E4001`）かつ、呼び出し先が `...rest` 引数を持つ場合の末尾 `rest` 引数位置（固定引数はすべて実引数で与えた後ろ）および `Math.min` / `Math.max` への `Array<T>` / `ReadonlyArray<T>` の展開に限定する（他位置は `E2002`）。
+  - (b) 固定引数位置や `strict` / `rt` の関数への配列展開も許す。
+- 既定案: (a)。
+
+### Q302 引数の分割代入と所有権・C/Wasm 対応
+- 関連: §3.5、§5、Q052
+- 状況: `function f({ a, b: c }: R)` と `function f([a, b]: [T0, T1])` を許可する際の既定値・所有権・後続既定引数・C/Wasm 出力を定める必要がある。
+- 選択肢:
+  - (a) レコード / `OwnedStruct` / `CStruct`（および `Ref<OwnedStruct>` / `Mut<OwnedStruct>`）のオブジェクト分割代入は全層（JS / C / Wasm 一致）、タプルの配列分割代入は `managed` で許可する（`strict` / `rt` のタプル注釈は `E4002`）。パターンの型注釈は必須（`E2006`、コンテキスト付きアロー関数を除く）。パターン内の既定値 `{ a = 1 }` は `E1008`、ネストや残余要素は `E1000` を維持し、引数全体への `= {...}` 既定値と後続既定引数からの束縛名参照は許可する。`OwnedStruct` 値渡しで `Owned` フィールドを省略すると `E3003`、`Ref`/`Mut` から `Owned` フィールドを取り出すと `E3004` とする（`Copy` フィールドのみの読み取りは許可）。
+  - (b) `managed` 限定またはトップレベル `function` のみ許可する。
+- 既定案: (a)。
+
+### Q303 論理代入演算子 `x ||= v` / `x &&= v` の解禁要否 [決定: (b) 全層解禁]
+- 関連: §3.1、§3.5、Q297
+- 状況: 当初 `conformance/reject/E1000-logical-assign.szigyr` が `E1000` 固定だったため保留したが、承認後に同テストを非 `boolean` 左辺 `E2004` 検証へ更新して解禁した。
+- 選択肢:
+  - (a) 既存の禁止（`E1000`）を維持する。
+  - (b) 全層（`managed` / `strict` / `rt`）で解禁し、`boolean` 左右辺（`E2004`、`||=` 左辺誤りには `??=` ヒント付）・左辺 1 回評価・右辺短絡評価・契約禁止（`E6002`）・JS/C/Wasm 一致を保証する。
+- 決定: (b)（実装済み: `syntax.ts`, `expr.ts`, `checker.ts`, `ownership.ts`, `emit.ts`, `emit-c.ts`, `prove.ts`, `conformance/run/279-logical-assign*.szigyr`）。
+
+### Q304 ラベルおよびラベルつき `break` / `continue` の解禁要否 [決定: (b) ループ専用・全層解禁]
+- 関連: §3.5、§4
+- 状況: 多重ループ脱出に用いられるループラベルは JS/C/Wasm いずれにも健全に写像可能。承認後に `conformance/reject/E1000-label.szigyr` を非ループラベル拒否（`E1000 @ 6:3`）へ更新して解禁した。
+- 選択肢:
+  - (a) `E1000` 禁止を維持する。
+  - (b) ループ文（`while` / `do..while` / `for` / `for..of`）限定で関数スコープのラベルおよび `break lbl;` / `continue lbl;` を全層解禁する（非ループ文・重複有効ラベル・未知/クロージャ越えラベルは `E1000`、中間 `using` スコープは LIFO 解放）。
+- 決定: (b)（実装済み: `syntax.ts`, `checker.ts`, `ownership.ts`, `emit.ts`, `emit-c.ts`, `prove.ts`, `conformance/run/280-labeled-loops.szigyr`）。
+
+### Q305 `String(x)` 関数形式変換の解禁要否 [決定: (b) `managed` 専用解禁]
+- 関連: §4、§5、§12、§13、`docs/STDLIB.md`
+- 状況: 承認後に `conformance/reject/E2000-bare-namespace-call.szigyr` を `return Math(x);`（`E2000 @ 5:10`）へ更新して解禁した。
+- 選択肢:
+  - (a) `String(x)` の禁止を維持する。
+  - (b) `managed` 専用で単一引数（`string` / 数値 / `boolean`）の `String(x)` を解禁し、`${x}` と同一の変換結果（`i64`/`u64`/`-0`/`NaN`/`±Infinity` 含む）を返す。`strict` / `rt` は `E4001`、その他引数型・引数数誤り・スプレッド・型引数・`?.(` は `E2002`、値としての裸の `String` 参照は `E2000`、`String.*` は従来通り維持。
+- 決定: (b)（実装済み: `expr.ts`, `conformance/run/281-string-call.szigyr`）。
+
+### Q306a `enum` 宣言（`E1000`）の扱い
+- 関連: §3.5、D181、`docs/Szigyr-design-v0.md:170`、`EVALUATION.md` §3
+- 状況: `Szigyr-design-v0.md:170` の一般列挙には含まれるが、文字列リテラル union 等と比較して禁止する個別根拠が docs に未記載（`syntax.ts:stmt` `kind: "enum"`）。
+- 選択肢:
+  - (a) `E1000` 禁止を維持し、文字列リテラル union と網羅的 `switch` へ誘導する（診断・`explain` で案内）。
+  - (b) 非網羅性や暗黙数値割当の扱いなど安全要件を定めたうえで、`enum`（文字列/固定値）を解禁する。
+- 既定案: (a) 現状の `E1000` 禁止を維持し、文字列リテラル union を推奨する。
+
+### Q306b `instanceof` 演算子（`E1000`）の扱い
+- 関連: §3.5、D181、`EVALUATION.md` §3
+- 状況: 禁止理由が docs に未記載であり、`managed` 層には `class` があるため実行時型判別の需要と衝突しやすい（`syntax.ts:expr` `kind: "instanceof"`）。
+- 選択肢:
+  - (a) `E1000` 禁止を維持し、tagged union（`.kind === "..."`）へ誘導する。
+  - (b) `managed` 層の `class` に対してのみ、型絞り込み付きの `instanceof` を許可する（`strict`/`rt` は引き続き不可）。
+- 既定案: (a) 現状の `E1000` 禁止を維持し、判別は tagged union に統一する。
+
+### Q306c `managed` 層の `class extends`（継承、`E1000`）の扱い
+- 関連: §3.5、D181、`docs/Szigyr-design-v0.md:164`、`EVALUATION.md` §3
+- 状況: `Szigyr-design-v0.md:164` は固定レイアウトを根拠に `extends` を禁止しているが、`class` は `managed` 専用のため根拠が噛み合わない（`syntax.ts:classDecl` `kind: "class-extends"`）。
+- 選択肢:
+  - (a) `E1000` 禁止を維持し、`interface implements` とコンポジションに統一する。
+  - (b) `managed` 専用に単一継承 `extends`（`super` 呼び出し・メソッド上書き規則含む）を解禁する。
+- 既定案: (a) 現状の `E1000` 禁止を維持し、実装再利用はコンポジションと `implements` に限定する。
+
+### Q306d `managed` 層の getter / setter アクセサ（`E1000`）の扱い
+- 関連: §3.5、D181、`docs/Szigyr-design-v0.md:164`、`EVALUATION.md` §3
+- 状況: `Szigyr-design-v0.md:164` は固定レイアウト節で getter/setter 禁止を挙げているが、`class` は `managed` 専用である（`syntax.ts:classDecl` `kind: "class-accessor"`、`syntax.ts:expr` `kind: "object-accessor"`）。
+- 選択肢:
+  - (a) `E1000` 禁止を維持し、明示的なフィールドとメソッド呼び出しに限定する（プロパティアクセスが副作用やトラップを隠さないようにする）。
+  - (b) `managed` の `class`（または `readonly` な `get` のみ）で getter/setter を許可する。
+- 既定案: (a) 現状の `E1000` 禁止を維持し、明示的なメソッド／フィールドに統一する。
+
+### Q306e 再帰的 `interface` 定義（`E2002`）の扱い
+- 関連: §3.5、D181、`EVALUATION.md` §3、`Q085`
+- 状況: `class` は再帰定義できる一方、`interface` の再帰参照は `E2002`（`modules.ts:recIfaceBody` / `modules.ts:instantiateTypeSym` `kind: "cyclic-interface"`）となり、`Q085` の型別名と違い `interface` だけを不可とする理由記録が docs にない。
+- 選択肢:
+  - (a) `E2002` 禁止を維持し、再帰データ構造は `class` に統一する（構造的レコードと同等の簡潔な同一性検査を保つ）。
+  - (b) 遅延・名目的比較を導入して再帰的 `interface` を解禁する。
+- 既定案: (a) 現状の `E2002` 禁止を維持し、再帰型には `class` を使う。
+
+### Q306f 構造的部分型・レコードの幅部分型（`E2002`）の扱い
+- 関連: §3.5、D181、`docs/Szigyr-design-v0.md:161`、`EVALUATION.md` §3
+- 状況: `Szigyr-design-v0.md:161` は固定レイアウトを理由に閉じた厳密なオブジェクト型（幅部分型なし）を定めているが、`managed` 層のレコードには固定レイアウト制約が当てはまらない（`EVALUATION.md` §3）。
+- 選択肢:
+  - (a) 閉じた厳密なレコード型（幅部分型なし）を全層で維持し、互換性が必要ならジェネリクスまたは明示的変換を使う。
+  - (b) `managed` 層に限り余剰フィールドを許す構造的幅部分型を許可する（`strict`/`rt` は閉じたまま維持）。
+- 既定案: (a) 閉じた厳密なレコード型を全層で維持し、型同一性規則と層移行の一貫性を優先する。
+
+### Q307 `satisfies` 演算子の削除経緯と再評価
+- 関連: §3.5、D181、D182
+- 状況: `0125a76`（2026-11-22）で JS/C/Wasm/prove/mutate 対応付きで一旦解禁されたが、`1ca7365`（2026-11-24 Group A）でコミット本文なしに再禁止（`E1000-satisfies.szigyr` 追加）された。リポジトリ内に再禁止理由の記録はない（型注釈 `const x: T = e` と二重の書き方を避ける設計意図と推測される）。今回は実装を変えない。
+- 選択肢:
+  - (a) 型注釈一本化のため `E1000` 禁止（`use a type annotation instead`）を正式仕様として確定する。
+  - (b) TS 互換（リテラル型・精密型を保ったまま形状検査する用途）を重視し再解禁を検討する。
+- 既定案: (a) 型注釈一本化のため `E1000` 禁止を維持する。
+
+### Q308 `docs/SPEC.md:100` の `Pure` 表記と `query deterministic` の呼称不整合
+- 関連: §7、`docs/STDLIB.md`、D182
+- 状況: `517a3f0`（Group B）で CLI/API/LSP/MCP 出力の `pure` フラグは `deterministic`（`QuerySymbol.deterministic` / `deterministic: true`）へ改名されたが、`docs/SPEC.md:100` の箇条書き見出しのみ `**Pure**` のまま残っている。
+- 選択肢:
+  - (a) `docs/SPEC.md:100` の見出しを `**Deterministic**`（または `**Deterministic (query deterministic)**`）へ合わせて統一する。
+  - (b) `docs/SPEC.md:100` を現状維持する。
+- 既定案: (a)。
+
+### Q309 `i64`/`u64` の `.toFixed()` 省略と `Array.toSorted` の比較関数必須化
+- 関連: §5、D181、`docs/STDLIB.md`
+- 状況: 設計評価の指示 E で数値の `toFixed(n)` と配列の `toSorted` を `managed` へ追加する際、`i64`/`u64`（JS の `BigInt`）には JS 標準の `.toFixed()` がなく、`Number(...)` 経由にすると 53 bit 超で精度が失われ Node と結果を一致させられない。また JS の引数なし `Array.prototype.toSorted()` は辞書順文字列ソートとなり数値比較と異なる（既存の `Array.prototype.sort` と同様に比較関数 `(a: T, b: T) => f64` が必要）。
+- 選択肢:
+  - (a) `i64`/`u64` への `.toFixed()` は実装せず（`E2001`）、`i64`/`u64` には JS の `BigInt.prototype.toString` と一致する `.toString(radix?)` のみを許可する。`toSorted` は `Array.sort` に揃えて比較関数 `(a: T, b: T) => f64` 必須とする。
+  - (b) `i64`/`u64` 用に独自 `.toFixed` を実装し、引数なし `toSorted()` を辞書順または数値別オーバーロードで導入する。
+- 既定案: (a)。
+
+### Q310 非 `rest` 関数型への代入における残余引数（`...rest`）および余剰引数の扱い
+- 関連: §3.5、§12、Q300
+- 状況: `Array` の高階メソッド、`Map.forEach`、`Set.forEach`、`Net.serve` / `serveRaw`、`Js.callback` / `fn`、`Test.traps` / `trapsAsync`、`FakeProc.onRun`、`FakeNet.onFetch`、`OwnedCell.withRef` / `withMut`、`Resource.own` / `ownWith`、`ensures`、`test`、`forAll` などの組み込み・ホストコールバックだけでなく、ユーザー関数型への代入を経由して関数値が組み込みへ渡る場合（注釈付き変数・高階関数引数・戻り値・レコード/クラスフィールド・配列要素・ジェネリック型引数・`T | null`）、従来の非 rest 関数型への `...rest` や余分な既定引数付き関数の代入を許すと実行時に第 3 引数以降が `...rest` 配列や既定値引数に流入し不健全となる（しかも出力側で包むと素の TS/Node の `3,3,3` と黙って結果が変わる）。
+- 選択肢:
+  - (a) すべての非 `rest` 関数型への代入で `...rest` と契約超の引数を `E2002` (`data.kind = "callback-extra-params"`) で拒否する（`FnType.builtinCb` の特別扱いを廃し §3.5 Subtyping 自体を改定）。呼び出し重複などの副作用を防ぐため、アロー関数ラップ `(p0, ...) => fn(p0, ...)` / `() => fn()` の `--fix` は `managed` 層の純粋な名前・メンバー参照にのみ付与し、呼び出し式等には付与しない。
+  - (b) 呼び出しの出力側で契約個数だけ渡すラッパ関数で包む（`i1.ts` の素の TS/Node 結果 `3,3,3` と `2,2,2` で黙って乖離するため不採用）。
+- 決定 (2026-11-24): オーナー承認のうえ (a) を採用（§3.5 Subtyping を改定、`conformance/run/267` の 136-137 行目をアローラップ形に更新）。
+
+### Q311 大きな配列の spread が `T006` になる長さのエンジン依存
+- 関連: §4、§10、Q301
+- 状況: 関数呼び出しでの `f(...xs)`（および配列スプレッド）を JS の残余引数展開 `f(...xs)` として実行する場合、引数展開がスタックを使うため、非常に大きな配列を渡した際にスタックオーバーフローで `T006` が発生するしきい値の長さは JS エンジンのコールスタック上限に依存する。
+- 選択肢:
+  - (a) 現状のまま実装の既定上限に委ね、大量要素を扱う場合はスプレッドではなく `Array` / `ReadonlyArray` 引数として直接渡すことを推奨する。
+  - (b) コンパイラまたはランタイムでスプレッド長さに固定の上限を設けて全エンジン共通で `T006` にする。
+- 既定案: (a)（現状維持・未決）。
+
+### Q312 10 以外の基数での `toString` と `f64` 小数のエンジン間パリティ
+- 関連: §5、§10、`docs/STDLIB.md`
+- 状況: ECMAScript 仕様は 10 以外の基数（`radix !== 10`）における `Number.prototype.toString(radix)` の具体的な丸め・変換アルゴリズムを実装依存としている。とくに `f64` の小数を含む値を 2〜36 進（10 以外）で `toString(radix)` した場合に異なる JS エンジン間で文字列の末尾桁などに差が出るかは未確認である。
+- 選択肢:
+  - (a) 現状は実行環境の ECMAScript `toString(radix)` に委ね、エンジン間パリティの要否と `f64` 小数向け独自実装の必要性を別途評価する。
+  - (b) 基数 2〜36 の浮動小数点 `toString` をランタイム内で自前実装して全エンジン同一にする。
+- 既定案: (a)（現状維持・未決）。
+
+### Q313 値位置における `void` 式（`f?.()`・`g()`・`switch`・アロー戻り推論）の検査範囲
+- 関連: §3.1、§4、`Q302`
+- 状況: `const r = f?.()`・`f?.() ?? 1`・`return f?.()` 等は `E2002`（`void-value`）で拒否されている一方、ジェネリックの型引数推論を含む `id(f?.())` / `id(g())`、戻り値型注釈のないアロー `a.map((x, i) => f?.())`、`switch (f?.())` の式位置では現在受理される。また expression body のアロー `(): void => f?.()` は受理され、block body `{ return f?.(); }` は拒否される非対称もある。
+- 選択肢:
+  - (a) 現状は未決として記録にとどめ、どの値位置まで `void` 式（`T | null` 化される `f?.()` を含む）を禁止するかを後続で設計する。
+  - (b) `unify`・`return` 推論・`switch` 判別式・アロー式本体を含めて `void` 式の値利用を一律に `E2002`（`void-value`）で拒否する（`(): void => f?.()` は文扱いとするか検討）。
+- 既定案: 未決（記録のみ）。
+
+### Q314 多重ラベル付きループ（`a: b: while (...)`）の拒否理由・メッセージ
+- 関連: §4、`Q304`、`docs/DECISIONS.md` D181/D183
+- 状況: ループに対して 2 つ以上のラベルを連続して付けた `a: b: while (n < 5) { ... }` は現在 `E1000` で拒否されるが、外側の `LabeledStatement` の直下が `LabeledStatement` であるため、「ラベルはループにだけ付けられる（`labeled-statement`）」というメッセージになる。
+- 選択肢:
+  - (a) 当面は現状のまま拒否を維持し（専用メッセージ追加・解禁の要否は別途判断）、記録にとどめる。
+  - (b) 1 つのループに対する多重ラベルを明示的に受理するか、多重ラベル専用の診断文言へ分ける。
+- 既定案: 未決（記録のみ）。
+
+### Q315 関数型の最小引数数（既定値つき省略可能引数）の比較と型表示形式
+- 関連: §3.5、`Q310`
+- 状況: 既定値つき引数から推論された関数型（例: `let h = keep;` where `keep(x: i32, d: i32 = 10): i32`）に対して、同じ総引数数でも必須引数がより多い関数（例: `keep2(x: i32, d: i32): i32`）を代入・結合・配列格納・ジェネリック統一・`??` 右辺などで混ぜると、従来の `same()` が `min` を比較せず、`assignable()` が `sMin > t.params.length` のみを見ていたため受理され、実行時に未指定引数が `undefined`（または rest つきで必須引数欠落）になる問題があった。また `show()` が省略可能引数を区別しなかったため、型不一致の診断で `expected` と `got` が同一文字列になる問題もあった。
+- 選択肢:
+  - (a) `same()` で `min` を比較し、`assignable()` で `sMin > tMin`（代入先の最小引数数より代入元の最小引数数が大きい場合）を `E2002` で拒否する（`§3.5` Subtyping）。型表示 `show()` は既定値つき省略可能パラメータを `(i32, i32?) => i32` のように `?` 付きで出力し（union / 関数型は `(T | null)?`）、`same()` が区別する 2 型が同じ文字列にならないようにする（なおソース構文上の `(x: i32, d?: i32) => i32` は従来どおり `E1008` であり、`?` は表示専用。`szigyr query`・MCP・LSP hover・C 出力の型キーにも反映される）。
+  - (b) 検査規則のみ修正し、`show()` の表示形式は `(i32, i32) = 1? => i32` や別記法にするか表示変更を見送る（診断から省略可能引数の差が読めないため見送り）。
+- 既定案・扱い: `same()` と `assignable()` の規則は既定案どおり採用し、§3.5 Subtyping へ反映した。`show()` における `?` 付け表示形式は Claude の既定案として実装し、本論点に記録する。
+
+### Q316 既定値つきの関数を、関数型の実引数や型引数の推論に通したときの扱い
+- 関連: §3.5、`Q189`、`Q315`
+- 状況: `Q315` の規則（`same()` が最小引数数 `min` を比べる）を入れたあと、健全なプログラムが次の 3 つの形で `E2002` になった。どれも `main`（`517a3f0`）では受理されて正しく動いていた。例の `keep` と `wb` は `(x: i32, d: i32 = 1): i32`、`keep2` は `(x: i32, d: i32): i32`、`F` は `(x: i32, d: i32) => i32` とする。
+  1. 既定値つきの関数を、strict / rt の関数型パラメータの実引数に渡す形（`ap(wb, 2)`）。`Q189` (b) の完全一致の検査が `same()` を呼んでいた。この実引数は `assignable()` を通らず、検査はこの 1 か所だけである。
+  2. 型引数の推論を通る形（`const a: Array<F> = mk(keep)`、`Box<F>` の変数に `new Box(keep)` を入れる形）。推論された型引数が `(i32, i32?) => i32` になり、注釈の `F` と別の型になる。`Array` やジェネリックなクラスは不変なので代入できない。
+  3. 既定値つきの関数と必須の関数を混ぜる形。ジェネリックや条件式を通る形（`const f: F = pick(keep, keep2)`、`cond ? e : [keep]`）と、注釈なしで既定値つきの関数を先に置く形（`[keep, keep2]`、`let h = keep; h = keep2`、`const xs = [keep]; xs.push(keep2)`、`m ?? keep2`、`new Box(keep)` に `set(keep2)`）がある。型引数の単一化も注釈のない配列リテラルも最初の式の型を採り、あとの式や代入先の注釈は使わない。順序を入れ替えた `[keep2, keep]` と条件式 `c ? keep : keep2` は受理される。条件式は必須の側の型に合流するためである。
+- 選択肢（2 と 3 について）:
+  - (a) 今のままにする。型引数か型注釈を書けば通る（`mk<F>(keep)`、`new Box<F>(keep)`、`const xs: Array<F> = [keep, keep2]`、`let h: F = keep`）。`??` は結果の変数に `F` と書いても通らず、左辺の変数に `F | null` と書くと通る。診断は 2 つの型の違いを `?` で示す。
+  - (b) 型引数の推論に、代入先の注釈の型を使う。
+  - (c) 関数型に省略できる引数を持たせない。既定値は関数を名前で直接呼ぶときだけ使える。`Q315` の `?` の表示は要らなくなる。試していない。
+  - (d) 配列リテラル、`??`、型引数の単一化でも、条件式と同じく必須の側の型に合流させる。`let` への再代入と `push` の形は直らない。試していない。
+- 既定案・扱い: 1 はオーナーの了承を得て直した（2026-11-24）。`Q189` (b) が完全一致を求めるのはパラメータの型と戻り値の型で、既定値の有無は含めない。実引数の関数の `min` がパラメータの型の `min` 以下なら受理する（§3.5 Subtyping と同じ向き）。関数型には省略できる引数を書けない（`E1008`）ので、パラメータを通した呼び出しは常にすべての引数を渡す。パラメータの数が違う関数は、多いぶんに既定値があっても `E2002` のままにする。ケースは `conformance/run/286-fn-default-arg-rt.szigyr`、`conformance/run/287-fn-default-arg-owned.szigyr`、`conformance/reject/E2002-fn-default-arg-extra-param.szigyr`。2 と 3 は (a) のまま進め、オーナーの判断を待つ。`Q315` の `?` の表示は、この論点が決まるまで決定として記録しない。

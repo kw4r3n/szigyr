@@ -1,0 +1,6 @@
+// expect: E4001 @ 5:10
+// stage: 2
+function f(x: i32): boolean {
+  "use rt";
+  return String(x).length > 0;
+}

@@ -1567,4 +1567,63 @@ export function managedPlain(x: i32): i32 {
     expect(cliText.code).toBe(0);
     expect(cliText.out).toContain("3 skipped");
   });
+
+  it("models ||= and &&= short-circuit, loop mod-set, and labeled loop jumps", async () => {
+    const { dir, cacheFile } = makeTmp();
+    const src = `
+export function safeShortCircuit(flag: boolean, z: i32): boolean {
+  "use rt";
+  requires(flag === true);
+  let x: boolean = flag;
+  x ||= divTrunc(10, z) > 0;
+  return x;
+}
+
+export function unsafeAfterShortCircuit(flag: boolean, z: i32): boolean {
+  "use rt";
+  requires(flag === false);
+  let x: boolean = flag;
+  x ||= divTrunc(10, z) > 0;
+  return x;
+}
+
+export function loopModFlag(n: i32): boolean {
+  "use rt";
+  ensures((r: boolean) => r === true);
+  let ok: boolean = true;
+  let i: i32 = 0;
+  while (i < n) {
+    ok &&= false;
+    i += 1;
+  }
+  return ok;
+}
+
+export function labeledBreakProves(s: Ref<Slice<i32>>): i32 {
+  "use rt";
+  requires(s.length >= 2);
+  let acc: i32 = 0;
+  outer: for (let i: i32 = 0; i < 2; i += 1) {
+    let j: i32 = 0;
+    while (j < 2) {
+      if (j === 1) continue outer;
+      acc = s[usize(i)];
+      if (acc < 0) break outer;
+      j += 1;
+    }
+  }
+  return acc;
+}
+`;
+    const file = writeTmpFile(dir, "logical-label-prove.szigyr", src);
+    const analysis = analyze(file, parser);
+    expect(analysis.diagnostics).toEqual([]);
+    const res = await prove(file, { analysis, cache: false, parser });
+    const byFn = new Map(res.functions.map((f) => [f.fn, f]));
+    expect(byFn.get("safeShortCircuit")!.summary.failed).toBe(0);
+    expect(byFn.get("safeShortCircuit")!.summary.unknown).toBe(0);
+    expect(byFn.get("unsafeAfterShortCircuit")!.summary.failed).toBeGreaterThan(0);
+    expect(byFn.get("loopModFlag")!.summary.failed).toBeGreaterThan(0);
+    expect(byFn.get("labeledBreakProves")!.obligations.some((o) => o.kind === "T002" && o.status === "proved")).toBe(true);
+  });
 });

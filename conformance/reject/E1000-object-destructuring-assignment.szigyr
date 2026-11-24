@@ -1,0 +1,9 @@
+// expect: E1000 @ 7:4
+// stage: 1
+type Pair = { readonly a: i32; readonly b: i32 };
+export function unpack(p: Pair): i32 {
+  let a: i32 = 0;
+  let b: i32 = 0;
+  ({ a, b } = p);
+  return a + b;
+}

@@ -1,0 +1,10 @@
+// expect: E2002 @ 4:10
+// stage: 1
+// open-question: Q023
+function f(c: boolean): i32 {
+  do {
+    if (c) continue;
+    return 1;
+  } while (false);
+}
+export function main(): void {}

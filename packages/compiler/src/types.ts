@@ -25,7 +25,7 @@ export interface TParam {
 }
 /** `min`: builtin optional trailing parameters (Q032). `prefix`: a builtin callback may take a prefix of the parameters. */
 export interface FnType {
-  k: "fn"; tparams: TParam[]; params: Type[]; ret: Type; min?: number; prefix?: boolean;
+  k: "fn"; tparams: TParam[]; params: Type[]; rest?: Type; ret: Type; min?: number; prefix?: boolean;
   /** Builtin call-site conditions: `cast` / `codec` / `owned` / `eq` / `copy` constrain the first type argument (Q084, Q086); `trap` checks the code literal (Q058). */
   /** `box` / `chandle` / `castptr`: the §14.4 / §14.5 conditions on the type argument. */
   tcheck?: "cast" | "codec" | "jsonstringify" | "owned" | "eq" | "copy" | "trap" | "box" | "chandle" | "castptr" | "ring" | "alloc" | "ptrnull" | "ptrsizeof";
@@ -76,7 +76,8 @@ export const F64 = num("f64"), USIZE = num("usize");
 export const gen = (name: GenName, ...args: Type[]): Type => ({ k: "gen", name, args });
 export const tuple = (elems: Type[]): Type => ({ k: "tuple", elems });
 export const opaque = (name: string): Type => ({ k: "opaque", name });
-export const fn = (params: Type[], ret: Type, tparams: TParam[] = []): FnType => ({ k: "fn", tparams, params, ret });
+export const fn = (params: Type[], ret: Type, tparams: TParam[] = [], rest?: Type): FnType => ({ k: "fn", tparams, params, ...(rest ? { rest } : {}), ret });
+export const restElem = (t: Type): Type | undefined => (t.k === "gen" && (t.name === "Array" || t.name === "ReadonlyArray") && t.args.length === 1 ? t.args[0] : undefined);
 export const record = (fields: Field[], struct = false): Type => ({ k: "record", fields: [...fields].sort((a, b) => (a.name < b.name ? -1 : 1)), struct });
 export const ro = (name: string, type: Type): Field => ({ name, type, readonly: true });
 
@@ -100,6 +101,7 @@ export function nonNull(t: Type): Type | undefined {
   return union(t.members.filter((m) => !isNull(m)));
 }
 export const isNull = (t: Type): boolean => t.k === "prim" && t.name === "null";
+export const isVoid = (t: Type): boolean => t.k === "prim" && t.name === "void";
 export const isNum = (t: Type): t is { k: "num"; name: NumName } => t.k === "num";
 export const isInt = (t: Type): boolean => t.k === "num" && t.name !== "f64" && t.name !== "f32";
 export const isBool = (t: Type): boolean => t.k === "prim" && t.name === "boolean";
@@ -186,7 +188,7 @@ export function same(a: Type, b: Type): boolean {
     case "record":
       return b.k === "record" && a.struct === b.struct && sameFields(a.fields, b.fields);
     case "union": return b.k === "union" && a.members.length === b.members.length && a.members.every((m) => b.members.some((n) => same(m, n)));
-    case "fn": return b.k === "fn" && a.params.length === b.params.length && a.params.every((p, i) => same(p, b.params[i]!)) && same(a.ret, b.ret);
+    case "fn": return b.k === "fn" && a.params.length === b.params.length && (a.min ?? a.params.length) === (b.min ?? b.params.length) && a.params.every((p, i) => same(p, b.params[i]!)) && Boolean(a.rest) === Boolean(b.rest) && (!a.rest || same(a.rest, b.rest!)) && same(a.ret, b.ret);
     case "class": return b.k === "class" && a.cls === b.cls && sameArgs(a.args, b.args);
     case "iface": return b.k === "iface" && a.iface === b.iface && sameArgs(a.args, b.args);
     case "tparam": return b.k === "tparam" && a.p.id === b.p.id;
@@ -222,17 +224,44 @@ export function assignable(s: Type, t: Type, arg = false): boolean {
   if (s.k === "tuple" && t.k === "tuple") return s.elems.length === t.elems.length && s.elems.every((e, i) => assignable(e, t.elems[i]!));
   if (s.k === "tuple" && t.k === "gen" && t.name === "ReadonlyArray") return s.elems.every((e) => assignable(e, t.args[0]!));
   if (s.k === "fn" && t.k === "fn") {
-    const sMin = s.min ?? s.params.length;
-    if (sMin > t.params.length || (!t.prefix && s.params.length < t.params.length)) return false;
-    const n = Math.min(s.params.length, t.params.length);
+    if (!t.rest && (s.rest !== undefined || s.params.length > t.params.length)) return false;
+    const sMin = s.min ?? s.params.length, tMin = t.min ?? t.params.length;
+    if (sMin > tMin) return false;
+    if (t.rest) {
+      const tRestEl = restElem(t.rest), sRestEl = s.rest ? restElem(s.rest) : undefined;
+      if (!tRestEl || !sRestEl || !assignable(tRestEl, sRestEl)) return false;
+      const n = Math.max(s.params.length, t.params.length);
+      for (let i = 0; i < n; i++) {
+        const tp = i < t.params.length ? t.params[i]! : tRestEl;
+        const sp = i < s.params.length ? s.params[i]! : sRestEl;
+        if (!assignable(tp, sp)) return false;
+      }
+    } else {
+      if (!t.prefix && s.params.length < t.params.length) return false;
+      for (let i = 0; i < s.params.length; i++) {
+        if (!assignable(t.params[i]!, s.params[i]!)) return false;
+      }
+    }
     // a builtin void callback drops the result; a dropped Promise would lose its trap (Q125)
-    return s.params.slice(0, n).every((p, i) => assignable(t.params[i]!, p)) && (assignable(s.ret, t.ret) || (t.ret.k === "prim" && t.ret.name === "void" && !!t.prefix && !(s.ret.k === "gen" && s.ret.name === "Promise")));
+    return assignable(s.ret, t.ret) || (t.ret.k === "prim" && t.ret.name === "void" && !!t.prefix && !(s.ret.k === "gen" && s.ret.name === "Promise"));
   }
   if (s.k === "class" && t.k === "iface") return s.cls.implements.some((i) => same(substClass(i, s), t));
   if (s.k === "opaque" && (s.name === "AudioStream" || s.name === "DisplaySurface" || s.name === "HttpServer") && t.k === "iface" && t.iface === ASYNC_DISPOSABLE_IFACE) return true;
   if (s.k === "tparam" && s.p.constraint) return assignable(s.p.constraint, t, arg);
   if (s.k === "opaque" && t.k === "opaque") return FAKE_OF[s.name] === t.name;
   return false;
+}
+/** True iff `s` fails assignment to non-rest `t` solely because `s` has a rest param or more params than `t`. */
+export function fnExtraParamsOnly(s: FnType, t: FnType): boolean {
+  if (t.rest || (s.rest === undefined && s.params.length <= t.params.length)) return false;
+  const sMin = s.min ?? s.params.length, tMin = t.min ?? t.params.length;
+  if (sMin > tMin || tMin < t.params.length) return false;
+  const sRestEl = s.rest ? restElem(s.rest) : undefined;
+  for (let i = 0; i < t.params.length; i++) {
+    const sp = i < s.params.length ? s.params[i]! : sRestEl;
+    if (!sp || !assignable(t.params[i]!, sp)) return false;
+  }
+  return assignable(s.ret, t.ret) || (t.ret.k === "prim" && t.ret.name === "void" && !!t.prefix && !(s.ret.k === "gen" && s.ret.name === "Promise"));
 }
 /** An `implements` clause type, with the class's own type parameters replaced by the instance's arguments. */
 const substClass = (t: Type, inst: { cls: ClassSym; args: Type[] }): Type => subst(t, bindTParams(inst.cls.tparams, inst.args));
@@ -245,7 +274,7 @@ export function subst(t: Type, m: Map<number, Type>): Type {
     case "tparam": return m.get(t.p.id) ?? t;
     case "record": return { ...t, fields: t.fields.map((f) => ({ ...f, type: subst(f.type, m) })) };
     case "union": return union(t.members.map((x) => subst(x, m)));
-    case "fn": return { ...t, params: t.params.map((x) => subst(x, m)), ret: subst(t.ret, m) };
+    case "fn": return { ...t, params: t.params.map((x) => subst(x, m)), ...(t.rest ? { rest: subst(t.rest, m) } : {}), ret: subst(t.ret, m) };
     case "class": case "iface": case "gen": return { ...t, args: t.args.map((x) => subst(x, m)) } as Type;
     case "iter": return { k: "iter", elem: subst(t.elem, m) };
     case "resource": return { k: "resource", inner: subst(t.inner, m) };
@@ -259,7 +288,7 @@ export function hasTParam(t: Type, ids: Set<number>): boolean {
     case "tparam": return ids.has(t.p.id);
     case "record": return t.fields.some((f) => hasTParam(f.type, ids));
     case "union": return t.members.some((x) => hasTParam(x, ids));
-    case "fn": return t.params.some((x) => hasTParam(x, ids)) || hasTParam(t.ret, ids);
+    case "fn": return t.params.some((x) => hasTParam(x, ids)) || (t.rest ? hasTParam(t.rest, ids) : false) || hasTParam(t.ret, ids);
     case "class": case "iface": case "gen": return t.args.some((x) => hasTParam(x, ids));
     case "iter": return hasTParam(t.elem, ids);
     case "resource": return hasTParam(t.inner, ids);
@@ -294,7 +323,20 @@ export function unify(p: Type, a: Type, m: Map<number, Type>, ids: Set<number>):
       if (a.k === "tuple" && a.elems.length === p.elems.length) p.elems.forEach((x, i) => unify(x, a.elems[i]!, m, ids));
       return;
     case "fn":
-      if (a.k === "fn") { p.params.forEach((x, i) => { if (a.params[i]) unify(x, a.params[i]!, m, ids); }); unify(p.ret, a.ret, m, ids); }
+      if (a.k === "fn") {
+        p.params.forEach((x, i) => {
+          const ap = i < a.params.length ? a.params[i] : (a.rest ? restElem(a.rest) : undefined);
+          if (ap) unify(x, ap, m, ids);
+        });
+        if (p.rest) {
+          if (a.rest) unify(p.rest, a.rest, m, ids);
+          else {
+            const pEl = restElem(p.rest);
+            if (pEl) for (let i = p.params.length; i < a.params.length; i++) unify(pEl, a.params[i]!, m, ids);
+          }
+        }
+        unify(p.ret, a.ret, m, ids);
+      }
       return;
     case "record":
       if (a.k === "record") for (const f of p.fields) { const g = field(a, f.name); if (g) unify(f.type, g.type, m, ids); }
@@ -370,7 +412,7 @@ export function ownedDeep(t: Type, seen = new Set<object>()): boolean {
     case "union": return t.members.some((m) => ownedDeep(m, seen));
     case "tuple": return ownedInside(t) || t.elems.some((a) => ownedDeep(a, seen));
     case "gen": return ownedInside(t) || t.args.some((a) => ownedDeep(a, seen));
-    case "fn": return t.params.some((p) => ownedDeep(p, seen)) || ownedDeep(t.ret, seen);
+    case "fn": return t.params.some((p) => ownedDeep(p, seen)) || (t.rest ? ownedDeep(t.rest, seen) : false) || ownedDeep(t.ret, seen);
     case "class": case "iface": {
       const sym = t.k === "class" ? t.cls : t.iface;
       if (seen.has(sym)) return false;
@@ -436,7 +478,11 @@ export function show(t: Type): string {
     case "lit": return JSON.stringify(t.value);
     case "record": return `${t.struct ? "OwnedStruct<" : ""}{ ${t.fields.map((f) => `${f.readonly ? "readonly " : ""}${f.name}: ${show(f.type)}`).join("; ")} }${t.struct ? ">" : ""}`;
     case "union": return t.members.map(show).join(" | ");
-    case "fn": return `(${t.params.map(show).join(", ")}) => ${show(t.ret)}`;
+    case "fn": {
+      const min = t.min ?? t.params.length;
+      const ps = t.params.map((p, i) => i >= min ? (p.k === "union" || p.k === "fn" ? `(${show(p)})?` : `${show(p)}?`) : show(p));
+      return `(${[...ps, ...(t.rest ? [`...${show(t.rest)}`] : [])].join(", ")}) => ${show(t.ret)}`;
+    }
     case "class": return t.cls.name + (t.args.length ? `<${t.args.map(show).join(", ")}>` : "");
     case "iface": return t.iface.name + (t.args.length ? `<${t.args.map(show).join(", ")}>` : "");
     case "tparam": return t.p.name;

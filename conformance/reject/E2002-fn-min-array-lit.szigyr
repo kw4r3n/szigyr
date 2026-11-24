@@ -1,0 +1,9 @@
+// expect: E2002 @ 7:28
+// stage: 1
+// open-question: Q315
+function addWithBias(x: i32, b: i32 = 10): i32 { return x + b; }
+function add(x: i32, d: i32): i32 { return x + d; }
+export function run(): i32 {
+  const fs = [addWithBias, add];
+  return fs[1](5);
+}

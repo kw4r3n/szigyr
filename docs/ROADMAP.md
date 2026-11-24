@@ -262,6 +262,15 @@
 - [x] **最小 stdio LSP サーバ**（`packages/compiler/src/lsp.ts`・`szigyr lsp`・`serveLsp`）: `Content-Length` JSON-RPC 2.0・`initialize`/`shutdown`/`exit`・未保存マルチファイル overlay（`didOpen`/`didChange`/`didSave`/`didClose`＋閉鎖時依存再診断）・`publishDiagnostics`・`hover`（宣言／仮引数／AST 式型・層・純粋性・capability）・`codeAction`（`quickfix` 編集適用）・`documentSymbol` を常駐増分パーサ上で実装。
 - **検証**: `pnpm typecheck` 通過、`pnpm verify:conformance` 通過（`accept=84 reject=695 run=226`、`ok`）、`rtk bypass pnpm conformance` 通過（1 ファイル `1,384/1,384`）、`rtk bypass pnpm test` 通過（59 ファイル `562/562`；`packages/compiler/test/lsp.test.ts` 1/1 の分割チャンク・UTF-8・`E1001`/`E1002`・quickfix・hover・シンボル・マルチファイル overlay E2E および `packages/compiler/test/microdaw-display.test.ts` 4/4 の `SDL_VIDEODRIVER=dummy` ＋ `SDL_AUDIO_DRIVER=disk` 同時駆動・再配置 `buildNode`・Chromium Canvas 2D ＋ AudioWorklet Wasm E2E を含む）。
 
+## TS 受理改善・診断・標準ライブラリ拡充（2026-11-24、`agy/ts-acceptance-20261124`）
+
+- [x] **破壊・構文受理の整理**: 分割代入代入の P3 クラッシュ修正（`E1000`）、`??=`、`?.[i]`、`f?.()` / `o?.f?.()`、末尾レスト引数 `...rest: Array<T>`、call spread `f(...xs)` / `Math.min|max(...xs)`、引数分割代入（レコード／`OwnedStruct` 全層＋タプル `managed`）を実装し、`conformance` 3 バックエンド一致を確認。
+- [x] **禁止理由と診断 (`D181`–`D183`, `Q303`–`Q309`)**: `docs/DECISIONS.md` に §3.5 禁止理由表と Group A/B 遡及記録を追記。`E1000`/`E1007`/`E4002`/`E4003` に `data.kind`・安全 `--fix`・`strict` 局所変数カスケード抑止・`explain` 種別別案内を追加。承認後に `Q303` (`||=`/`&&=`, 全層)・`Q304` (ループ限定ラベル, 全層)・`Q305` (`String(x)`, `managed` 専用) も解禁し JS/C/Wasm 一致を確認。
+- [x] **managed 標準ライブラリ拡充＋`bench/probe-ts/`**: 数値 `.toString(radix?)` / `.toFixed(digits?)`（`i64`/`u64` は `toString` のみ、`Q309`）、`Array.at` / `.toSorted(cmp)` / `.splice`、`Promise.resolve`、`new Set(iterable?)`、`[...iterable]`（`Set`/`Map`/イテレータ）、`String(x)` を追加。`bench/probe-ts/run.ts`（CI 外、31 本の Node 比較）の実測:
+  - 作業前（`517a3f0`）: `accepted: 5/31`, `matched: 5/5`（`p31_generator` は未捕捉 `TypeError`）
+  - 途中（`2a68c91`、Q303–Q305 解禁前）: `accepted: 8/31`（`p03_defaultrest`, `p05_spread`, `p27_tuple` が新規受理）, `matched: 8/8`（`p31_generator` は `E1000` 診断へ安定化）
+  - Q303–Q305 解禁後: `accepted: 9/31`（`p30_labeled` が新規受理）, `matched: 9/9`
+
 ## 保留
 
 - **ネイティブモバイル殻（iOS / Android）**（Q279）: モバイル専用ターゲットの必要が出たときに着手する（ブラウザ版 Wasm 成果物自体はモバイルブラウザでも動く）。

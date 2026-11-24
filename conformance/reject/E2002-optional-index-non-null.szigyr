@@ -1,0 +1,6 @@
+// expect: E2002 @ 5:10
+// stage: 2
+// open-question: Q298
+export function f(xs: Array<i32>): i32 | null {
+  return xs?.[0];
+}

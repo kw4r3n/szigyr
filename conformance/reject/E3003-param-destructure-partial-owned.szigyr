@@ -1,0 +1,8 @@
+// expect: E3003 @ 5:12
+// stage: 2
+// open-question: Q302
+type Pair = OwnedStruct<{ a: Vec<i32>; b: Vec<i32> }>;
+function f({ a }: Pair): usize {
+  "use owned";
+  return a.length;
+}

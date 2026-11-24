@@ -124,7 +124,7 @@ function paramHoverType(narrow: Node, decls: ReturnType<typeof analyze>["decls"]
   if (fnNode.kind === K.FunctionDeclaration) {
     const f = decls.fns.find((x) => x.decl === fnNode);
     const idx = (fnNode as ts.FunctionDeclaration).parameters.indexOf(param);
-    return f && idx >= 0 ? f.sig.params[idx] : undefined;
+    return f && idx >= 0 ? (param.dotDotDotToken ? f.sig.rest : f.sig.params[idx]) : undefined;
   }
   if (fnNode.kind === K.MethodDeclaration && fnNode.parent?.kind === K.ClassDeclaration) {
     for (const mod of decls.mods) {
@@ -134,7 +134,7 @@ function paramHoverType(narrow: Node, decls: ReturnType<typeof analyze>["decls"]
           if (mName && mName.kind === K.Identifier) {
             const m = sym.cls.methods.get((mName as ts.Identifier).text);
             const idx = (fnNode as ts.MethodDeclaration).parameters.indexOf(param);
-            return m && idx >= 0 ? m.sig.params[idx] : undefined;
+            return m && idx >= 0 ? (param.dotDotDotToken ? m.sig.rest : m.sig.params[idx]) : undefined;
           }
         }
       }

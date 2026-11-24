@@ -1,0 +1,6 @@
+// expect: E1000 @ 4:11
+// stage: 1
+// open-question: Q004
+namespace N {
+  export const x: i32 = 1;
+}

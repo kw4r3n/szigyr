@@ -51,8 +51,8 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
     const forIn = checkSrc("export function f(xs: Array<i32>): void { for (const k in xs) {} }\n").diags[0]!;
     expect(forIn).toMatchObject({ code: "E1000", message: "'for..in' is not allowed; use 'for..of' or an index loop", data: { kind: "for-in" } });
 
-    const logOrEq = checkSrc("export function f(x: boolean): void { x ||= true; }\n").diags[0]!;
-    expect(logOrEq).toMatchObject({ code: "E1000", message: "operator '||=' is not allowed", data: { kind: "operator", op: "||=" } });
+    const logOrEq = checkSrc("export function f(x: i32): void { x ||= true; }\n").diags[0]!;
+    expect(logOrEq).toMatchObject({ code: "E2004", data: { actual: "i32" } });
 
     const inter = checkSrc("type A = { readonly a: i32 };\ntype B = { readonly b: i32 };\ntype C = A & B;\n").diags[0]!;
     expect(inter).toMatchObject({ code: "E1000", data: { kind: "intersection-type" } });
@@ -103,8 +103,8 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
     const strCharAt = checkSrc("export function f(s: string): string { return s.charAt(0); }\n").diags[0]!;
     expect(strCharAt).toMatchObject({ code: "E2001", data: { suggestions: ["slice", "charCodeAt"] } });
 
-    const arrAt = checkSrc("export function f(xs: Array<i32>): i32 { return xs.at(0); }\n").diags[0]!;
-    expect(arrAt).toMatchObject({ code: "E2001", data: { suggestions: ["[i]", "length"] } });
+    const arrMissing = checkSrc("export function f(xs: Array<i32>): usize { return xs.pus(1); }\n").diags[0]!;
+    expect(arrMissing).toMatchObject({ code: "E2001", data: { suggestions: ["push", "pop"] } });
 
     const typo = checkSrc("export function f(s: string): string { return s.toUperCase(); }\n").diags[0]!;
     expect(typo.code).toBe("E2001");
@@ -152,5 +152,208 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
     const e2001 = explainCode("E2001")!;
     expect(e2001.remediation).not.toContain("docs/SPEC.md");
     expect(e2001.remediation).not.toContain("§12");
+  });
+
+  it("emits specific data.kind metadata and deduplicates E4002 local cascade in strict code", () => {
+    expect(checkSrc("enum E { A, B }\n").diags[0]).toMatchObject({ code: "E1000", data: { kind: "enum" } });
+    expect(checkSrc("export function f(x: i32): void { if (x < 0) throw \"neg\"; }\n").diags[0]).toMatchObject({ code: "E1007", data: { kind: "throw", syntax: "throw" } });
+    expect(checkSrc("export function f(x: i32): i32 { try { return x; } catch (e) { return 0; } }\n").diags[0]).toMatchObject({ code: "E1007", data: { kind: "try", syntax: "try" } });
+    expect(checkSrc("class A { public m(): void {} }\n").diags[0]).toMatchObject({ code: "E1000", data: { kind: "public-modifier" } });
+    expect(checkSrc("class A { get x(): i32 { return 1; } }\n").diags[0]).toMatchObject({ code: "E1000", data: { kind: "class-accessor" } });
+    expect(checkSrc("class A { [k: string]: i32; }\n").diags[0]).toMatchObject({ code: "E1000", data: { kind: "index-signature" } });
+    expect(checkSrc("export function f(): void { const o = { m(): i32 { return 1; } }; }\n").diags[0]).toMatchObject({ code: "E1000", data: { kind: "object-method" } });
+    expect(checkSrc("export function f(xs: Array<i32>): void { \"use owned\"; }\n").diags[0]).toMatchObject({ code: "E4002", data: { kind: "managed-array" } });
+    expect(checkSrc("export function f(p: { x: i32; y: i32 }): i32 { \"use owned\"; return p.x + p.y; }\n").diags[0]).toMatchObject({ code: "E4002", data: { kind: "mutable-record" } });
+    expect(checkSrc("export function f(): void { \"use owned\"; const g = (x: i32): i32 => x; }\n").diags[0]).toMatchObject({ code: "E4003", data: { kind: "strict-arrow" } });
+
+    const cascade = checkSrc("function f(xs: Array<i32>): usize {\n  \"use owned\";\n  return xs.length + xs.length + xs.length;\n}\n");
+    expect(cascade.diags.filter((d) => d.code === "E4002")).toHaveLength(1);
+  });
+
+  it("rejects rest/extra-default callbacks on both host/builtin APIs and function-typed assignments", () => {
+    expect(explainCode("E2002")?.kinds?.["callback-extra-params"]).toBeTruthy();
+
+    // Passing rest/trailing-default functions through user HOFs or other fn types is rejected
+    const viaFnTypes = [
+      "function apply(f: (x: i32) => i32): i32 { return f(1); }\nfunction withDef(x: i32, z: i32 = 5): i32 { return x + z; }\nexport function f(): i32 { return apply(withDef); }\n",
+      "function apply(f: (x: i32) => i32): i32 { return f(1); }\nfunction withRest(...xs: Array<i32>): i32 { return i32(xs.length); }\nexport function f(): i32 { return apply(withRest); }\n",
+      "type CB = (x: i32) => i32;\nfunction withDef(x: i32, z: i32 = 5): i32 { return x + z; }\nexport function f(): i32 { const cb: CB = withDef; return cb(1); }\n",
+      "type CB = (x: i32) => i32;\nfunction withRest(...xs: Array<i32>): i32 { return i32(xs.length); }\nfunction mk(): CB { return withRest; }\nexport function f(): i32 { return mk()(1); }\n",
+      "type CB = (x: i32) => i32;\nfunction withDef(x: i32, z: i32 = 5): i32 { return x + z; }\nexport function f(): i32 { const o: { readonly cb: CB } = { cb: withDef }; return o.cb(1); }\n",
+      "type CB = (x: i32) => i32;\nfunction withRest(...xs: Array<i32>): i32 { return i32(xs.length); }\nexport function f(): i32 { const xs: Array<CB> = [withRest]; return xs[0](1); }\n",
+      "type CB = (x: i32) => i32;\nfunction withDef(x: i32, z: i32 = 5): i32 { return x + z; }\nclass Box { readonly cb: CB; constructor(cb: CB) { this.cb = cb; } }\nexport function f(): i32 { return new Box(withDef).cb(1); }\n",
+      "function applyG<T>(f: (x: T) => T, v: T): T { return f(v); }\nfunction withRest(...xs: Array<i32>): i32 { return i32(xs.length); }\nexport function f(): i32 { return applyG(withRest, 1); }\n",
+      "type CB = (x: i32) => i32;\nfunction withRest(...xs: Array<i32>): i32 { return i32(xs.length); }\nexport function f(): i32 { const cb: CB | null = withRest; return cb !== null ? cb(1) : 0; }\n",
+    ];
+    for (const src of viaFnTypes) {
+      const ds = checkSrc(src).diags;
+      expect(ds.length, src).toBeGreaterThan(0);
+      expect(ds[0]!.code, src).toBe("E2002");
+      expect(ds[0]!.data).toMatchObject({ kind: "callback-extra-params" });
+    }
+
+    // Explicit arrow wrappers forward the expected arity cleanly
+    const wrapped = checkSrc([
+      "function apply(f: (x: i32) => i32): i32 { return f(1); }",
+      "function withDef(x: i32, z: i32 = 5): i32 { return x + z; }",
+      "function withRest(...xs: Array<i32>): i32 { return i32(xs.length); }",
+      "export function ok(): i32 { return apply((x: i32): i32 => withDef(x)) + apply((x: i32): i32 => withRest(x)); }",
+      "",
+    ].join("\n"));
+    expect(wrapped.diags).toEqual([]);
+
+    // Host and special builtin callbacks reject rest and extra defaults
+    const badHostCases = [
+      "export async function s1(sys: System): Promise<void> { const _ = await sys.net.serve({ host: \"127.0.0.1\", port: 0 }, async (req: HttpServerRequest, z: i32 = 1): Promise<HttpServerResponse> => ({ status: 200, headers: [], body: \"ok\" })); }\n",
+      "export async function s2(sys: System): Promise<void> { const _ = await sys.net.serveRaw({ host: \"127.0.0.1\", port: 0 }, async (...xs: Array<HttpServerRequest>): Promise<HttpServerRawResponse> => ({ status: 200, headers: [], body: { kind: \"text\", value: \"ok\" } })); }\n",
+      "export function j1(js: Js): JsRef { return js.callback<i32>((r: Result<i32, CastError>, z: i32 = 1): void => {}); }\n",
+      "export function j2(js: Js): JsRef { return js.fn((...xs: Array<JsRef>): JsRef => xs[0]); }\n",
+      "test(\"t1\", (t: Test) => { t.traps(\"T006\", (...xs: Array<i32>): void => {}); });\n",
+      "test(\"t2\", async (t: Test) => { await t.trapsAsync(\"T006\", async (z: i32 = 1): Promise<void> => {}); });\n",
+      "export function fp1(fp: FakeProc): void { fp.onRun((req: ProcRequest, z: i32 = 1): Result<ProcOutput, IoError> => Result.err({ code: \"E\", message: \"m\" })); }\n",
+      "export function fn1(fn: FakeNet): void { fn.onFetch((...xs: Array<HttpClientRequest>): Result<HttpResponse, IoError> => Result.err({ code: \"E\", message: \"m\" })); }\n",
+      "export function oc1(a: Alloc): usize { const c = OwnedCell.create(Vec.create<i32>(a, 1)); return c.withRef((v: Ref<Vec<i32>>, z: i32 = 1): usize => v.length); }\n",
+      "export function oc2(a: Alloc): void { const c = OwnedCell.create(Vec.create<i32>(a, 1)); c.withMut((...xs: Array<Mut<Vec<i32>>>): void => {}); }\n",
+      "export function r1(a: Alloc): void { using r = Resource.own(Vec.create<i32>(a, 1), (v: Vec<i32>, z: i32 = 1): void => {}); }\n",
+      "function dropRest(v: Vec<i32>, ...xs: Array<i32>): void {}\nexport function r2(a: Alloc): void { using r = Resource.own(Vec.create<i32>(a, 1), dropRest); }\n",
+      "test(\"bad rest test\", (...t: Array<Test>): void => {});\n",
+      "export function ens1(x: i32): i32 { ensures((r: i32, z: i32 = 1): boolean => r > 0); return x; }\n",
+      "test(\"fa1\", (t: Test) => { forAll((x: i32 = 1): boolean => x > 0); });\n",
+    ];
+    for (const src of badHostCases) {
+      const ds = checkSrc(src).diags;
+      expect(ds.length, src).toBeGreaterThan(0);
+      expect(ds[0]!.code, src).toBe("E2002");
+      expect(ds[0]!.message).not.toMatch(/Q\d{2,3}/);
+      expect(ds[0]!.message).not.toContain("§");
+    }
+
+    // Required-arity widening must reject assigning fewer optional params into more optional params, with distinct show()
+    const minArityCases = [
+      "function keep(x: i32, d: i32 = 10): i32 { return d; }\nfunction keep2(x: i32, d: i32): i32 { return d; }\nexport function f(): i32 { let h = keep; h = keep2; return h(5); }\n",
+      "function keep(x: i32, d: i32 = 10): i32 { return d; }\nfunction keep2(x: i32, d: i32): i32 { return d; }\nexport function f(): i32 { const fs = [keep, keep2]; return fs[1](5); }\n",
+      "function keep(x: i32, d: i32 = 10): i32 { return d; }\nfunction keep2(x: i32, d: i32): i32 { return d; }\nexport function f(): i32 { const fs = [keep]; fs.push(keep2); return fs[1](5); }\n",
+      "function keep(x: i32, d: i32 = 10): i32 { return d; }\nfunction keep2(x: i32, d: i32): i32 { return d; }\nfunction pick<T>(a: T, b: T, c: boolean): T { return c ? a : b; }\nexport function f(): i32 { const h = pick(keep, keep2, false); return h(5); }\n",
+      "function v(x: i32 = 1, ...r: Array<i32>): i32 { return x + i32(r.length); }\nfunction w2(x: i32, ...r: Array<i32>): i32 { return x * 2 + i32(r.length); }\nexport function f(): i32 { let h = v; h = w2; return h(); }\n",
+      "function add(x: i32, d: i32): string { return `${d}`; }\nfunction wb(x: i32, d: i32 = 1): string { return `${d}`; }\nexport function f(): string { let a = [wb]; const q: Array<(x: i32, d: i32) => string> = [add]; a = q; return a[0](5); }\n",
+      "function keep(x: i32, d: i32 = 10): i32 { return d; }\nfunction keep2(x: i32, d: i32): i32 { return d; }\nexport function f(c: boolean): i32 { const h = (c ? keep : null) ?? keep2; return h(5); }\n",
+    ];
+    for (const src of minArityCases) {
+      const ds = checkSrc(src).diags;
+      expect(ds.length, src).toBeGreaterThan(0);
+      expect(ds[0]!.code, src).toBe("E2002");
+      const m = /expected '([^']+)', got '([^']+)'/.exec(ds[0]!.message);
+      expect(m, ds[0]!.message).toBeTruthy();
+      expect(m![1], ds[0]!.message).not.toBe(m![2]);
+      expect(m![1], ds[0]!.message).toContain("?");
+      const data = ds[0]!.data as { expected?: string; actual?: string } | undefined;
+      if (data?.expected && data?.actual) expect(data.expected, src).not.toBe(data.actual);
+    }
+    const condRev = checkSrc("function keep(x: i32, d: i32 = 10): i32 { return d; }\nfunction keep2(x: i32, d: i32): i32 { return d; }\nexport function f(c: boolean): i32 { const h = c ? keep2 : keep; return h(5); }\n").diags;
+    expect(condRev.map((d) => d.code)).toEqual(["E2002"]);
+
+    // Reverse assignment and calling joined fn with all required arguments remain valid
+    expect(checkSrc("function keep(x: i32, d: i32 = 10): i32 { return d; }\nfunction keep2(x: i32, d: i32): i32 { return d; }\nexport function f(c: boolean): i32 { let h = keep2; h = keep; const g = c ? keep2 : keep; return h(5, 6) + g(5, 6); }\n").diags).toEqual([]);
+  });
+
+  it("rejects spread arguments in non-rest builtins and new with E2002 spread-non-rest and never emits internal-error-type", () => {
+    const spreadCases = [
+      "export function f(a: Array<f64>): i32 { return i32(...a); }\n",
+      "export function f(n: Array<i32>): i32 { return wrapAdd(...n); }\n",
+      "export function f(n: Array<i32>): i32 { return wrapAdd(1, ...n); }\n",
+      "export function f(n: Array<i32>): i32 { return rem(...n); }\n",
+      "export function f(n: Array<i32>): i32 { return divTrunc(4, ...n); }\n",
+      "export function f(s: Array<string>): void { panic(...s); }\n",
+      "export function f(a: Array<f64>): Result<i32, CastError> { return cast<i32>(...a); }\n",
+      "export function f(a: Array<f64>): f64 { return Math.abs(...a); }\n",
+      "export function f(a: Array<f64>): f64 { return Math.abs(-2.0, ...a); }\n",
+      "export function f(a: Array<f64>): boolean { return Number.isFinite(...a); }\n",
+      "export function f(n: Array<i32>): Result<i32, string> { return Result.ok(...n); }\n",
+      "export function f(n: Array<i32>): void { const r = Result.ok(...n); }\n",
+      "export function f(a: Alloc, xs: Array<i32>): void { using r = Resource.own(...xs); }\n",
+      "export function f(sys: System, xs: Array<i32>): void { sys.spawn.isolate(...xs); }\n",
+      "export function f(sys: System, xs: Array<i32>): void { sys.audio.open(...xs); }\n",
+      "export function f(s: Array<string>): Map<string, i32> { return new Map<string, i32>(...s); }\n",
+      "export function f(s: Array<string>): Set<string> { return new Set<string>(...s); }\n",
+      "export function f(s: Array<string>): void { const r = new RegExp(...s); }\n",
+    ];
+    for (const src of spreadCases) {
+      const ds = checkSrc(src).diags;
+      expect(ds.length, src).toBeGreaterThan(0);
+      expect(ds.some((d) => d.data?.kind === "internal-error-type"), src).toBe(false);
+      expect(ds[0]).toMatchObject({ code: "E2002", data: { kind: "spread-non-rest" } });
+    }
+
+    // Non-callable targets with spread must not emit internal-error-type
+    const nonCallableSpread = [
+      "export function f(a: Array<i32>): void { const x: i32 = 1; x(...a); }\n",
+      "class C { readonly x: i32 = 1; }\nexport function f(a: Array<i32>): void { C(...a); }\n",
+      "export function f(a: Array<i32>): void { const x: i32 = 1; new x(...a); }\n",
+    ];
+    for (const src of nonCallableSpread) {
+      const ds = checkSrc(src).diags;
+      expect(ds.length, src).toBeGreaterThan(0);
+      expect(ds.some((d) => d.data?.kind === "internal-error-type"), src).toBe(false);
+    }
+
+    // Spread in strict/rt builtins reports E4001 (managed-only)
+    const strictSpread = [
+      "export function f(s: Ref<Slice<f64>>): i32 { \"use owned\"; return i32(...s); }\n",
+      "export function f(s: Ref<Slice<f64>>): f64 { \"use owned\"; return Math.abs(...s); }\n",
+      "export function f(s: Ref<Slice<i32>>): Result<i32, i32> { \"use owned\"; return Result.ok(...s); }\n",
+    ];
+    for (const src of strictSpread) {
+      const ds = checkSrc(src).diags;
+      expect(ds[0]).toMatchObject({ code: "E4001", data: { callerLayer: "strict", calleeLayer: "managed" } });
+    }
+
+    // Allowed variadic/rest spreads keep working
+    expect(checkSrc("export function f(xs: Array<f64>, ys: Array<i32>): f64 {\n  const a = Math.min(...xs) + Math.max(...xs);\n  const b = ys.splice(0, 1, ...[2, 3]);\n  return a + f64(b.length);\n}\n").diags).toEqual([]);
+  });
+
+  it("suppresses E2002/E4002 cascade after destructuring assignment E1000", () => {
+    const d4 = checkSrc("export function main(sys: System): void { let a = 0; let b = 0; let c = 0; [a, [b, c]] = [1, [2, 3]]; sys.log.info(`${a}`); }\n").diags;
+    expect(d4.map((d) => d.code)).toEqual(["E1000"]);
+
+    const strictArr = checkSrc("export function f(): void {\n  \"use owned\";\n  let a: i32 = 0;\n  let b: i32 = 0;\n  [a, b] = [1, 2];\n}\n").diags;
+    expect(strictArr.map((d) => d.code)).toEqual(["E1000"]);
+
+    const objAssign = checkSrc("export function f(): void {\n  let a: i32 = 0;\n  let b: i32 = 0;\n  ({ a, b } = { a: 1, b: 2 });\n}\n").diags;
+    expect(objAssign.map((d) => d.code)).toEqual(["E1000"]);
+
+    // While suppressing LHS/literal cascades, destructuring RHS expressions are still type-checked (p13-cascade shape)
+    const rhsDiags = checkSrc([
+      "function rtf(): i32 { \"use rt\"; return 1; }",
+      "export function main(sys: System): void {",
+      "  let a: i32 = 0;",
+      "  let b: i32 = 0;",
+      "  [a, b] = [nope, sys.secret(), rtf() + \"x\"];",
+      "  ({ a } = { a: undefinedThing });",
+      "  sys.log.info(`${a}${b}`);",
+      "}",
+      "",
+    ].join("\n")).diags;
+    expect(rhsDiags.map((d) => d.code)).toEqual(["E1000", "E1000", "E2000", "E2001", "E2002", "E2000"]);
+  });
+
+  it("allows void optional calls as statements and rejects them in value positions with E2002", () => {
+    const stmtOk = checkSrc([
+      "class C { m(): void {} readonly f: (() => void) | null = null; }",
+      "export function main(): void {",
+      "  const f: (() => void) | null = (): void => {};",
+      "  const c: C | null = new C();",
+      "  const c0 = new C();",
+      "  f?.();",
+      "  c0.f?.();",
+      "  c?.f?.();",
+      "  c?.m();",
+      "}",
+      "",
+    ].join("\n")).diags;
+    expect(stmtOk).toEqual([]);
+
+    expect(checkSrc("export function main(): void {\n  const f: (() => void) | null = (): void => {};\n  const r = f?.();\n}\n").diags.map((d) => d.code)).toEqual(["E2002"]);
+    expect(checkSrc("export function main(): void {\n  const f: (() => void) | null = (): void => {};\n  const r = f?.() ?? 1;\n}\n").diags.map((d) => d.code)).toEqual(["E2002"]);
+    expect(checkSrc("class C { m(): void {} }\nexport function main(): void {\n  const c: C | null = new C();\n  const r = c?.m();\n}\n").diags.map((d) => d.code)).toEqual(["E2002"]);
   });
 });

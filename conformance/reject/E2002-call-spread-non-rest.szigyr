@@ -1,0 +1,9 @@
+// expect: E2002 @ 8:14
+// stage: 2
+// open-question: Q301
+function add(a: i32, b: i32): i32 {
+  return a + b;
+}
+export function g(xs: Array<i32>): i32 {
+  return add(...xs);
+}

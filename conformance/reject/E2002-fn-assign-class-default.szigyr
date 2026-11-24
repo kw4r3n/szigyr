@@ -1,0 +1,9 @@
+// expect: E2002 @ 8:22
+// stage: 1
+// open-question: Q310
+type CB = (x: usize, i: usize) => usize;
+function F(x: usize, i: usize, z: usize = 5): usize { return z; }
+class C { readonly f: CB; constructor(f: CB) { this.f = f; } }
+export function run(a: Array<usize>): Array<usize> {
+  return a.map(new C(F).f);
+}

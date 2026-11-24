@@ -1,0 +1,9 @@
+// expect: E2002 @ 8:10
+// stage: 1
+// open-question: Q315
+function keep(x: i32, d: i32 = 10): i32 { return d; }
+function keep2(x: i32, d: i32): i32 { return d; }
+export function run(c: boolean): i32 {
+  const h = c ? keep2 : keep;
+  return h(5);
+}

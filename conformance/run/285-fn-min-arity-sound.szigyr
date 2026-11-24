@@ -1,0 +1,20 @@
+// expect-output: 11:3|11:11|11:11
+// stage: 1
+
+function addWithBias(x: i32, b: i32 = 10): i32 { return x + b; }
+function add(x: i32, d: i32): i32 { return x + d; }
+function apply(f: (x: i32, d: i32) => i32): i32 { return f(1, 2); }
+
+function pickCond(c: boolean, forward: boolean): i32 {
+  const h = forward ? (c ? addWithBias : add) : (c ? add : addWithBias);
+  return h(5, 6);
+}
+
+export function main(sys: System): void {
+  let h = add;
+  h = addWithBias;
+  const rev = `${h(5, 6)}:${apply(addWithBias)}`;
+  const condRev = `${pickCond(true, false)}:${pickCond(false, false)}`;
+  const condFwd = `${pickCond(true, true)}:${pickCond(false, true)}`;
+  sys.log.info(`${rev}|${condRev}|${condFwd}`);
+}

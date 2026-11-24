@@ -1,0 +1,22 @@
+// expect-output: ok:true
+// expect-trap: T007 @ 12:12
+// stage: 2
+function trapVec(alloc: Alloc, z: i32): boolean {
+  "use owned";
+  const v = Vec.create<boolean>(alloc, 2);
+  v.push(false);
+  v.push(true);
+  // Short-circuits when v[0] is false:
+  v[0] &&= divTrunc(10, z) > 0;
+  // Evaluates RHS when v[1] is true and traps at divTrunc:
+  v[1] &&= divTrunc(10, z) > 0;
+  return v[1];
+}
+
+export function main(sys: System): void {
+  const z: i32 = 0;
+  let b: boolean = true;
+  b ||= divTrunc(10, z) > 0;
+  sys.log.info(`ok:${b}`);
+  trapVec(sys.alloc, z);
+}

@@ -1,0 +1,6 @@
+// expect: E2002 @ 5:31
+// stage: 1
+// open-question: Q301
+export function f(s: Array<string>): Map<string, i32> {
+  return new Map<string, i32>(...s);
+}

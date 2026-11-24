@@ -37,8 +37,9 @@ const COMPOUND: Partial<Record<K, string>> = {
 /** §12 members that can throw a JS exception (Q035): parse errors, out-of-range code points, string / array / Map / Set size limits. */
 const THROWING: Record<string, readonly string[]> = {
   String: ["fromCodePoint"],
+  num: ["toString", "toFixed"],
   string: ["padStart", "padEnd", "repeat", "replaceAll", "toUpperCase", "toLowerCase"],
-  Array: ["push", "concat", "join"], ReadonlyArray: ["concat", "join"], Map: ["set"], Set: ["add"],
+  Array: ["push", "concat", "join", "splice"], ReadonlyArray: ["concat", "join"], Map: ["set"], Set: ["add"],
 };
 const INT_OP: Record<string, string> = { "+": "add", "-": "sub", "*": "mul" };
 const INT32_BOUNDS: Partial<Record<NumName, readonly [number, number]>> = Object.fromEntries(
@@ -411,7 +412,7 @@ export function emitFile(
       }
     } finally { inContract--; }
     if (!checks.length) return undefined;
-    const ps = fn.parameters.map((p) => (p.name as ts.Identifier).text).join(", ");
+    const ps = fn.parameters.map((p) => `${p.dotDotDotToken ? "..." : ""}${p.name.getText(sf)}`).join(", ");
     return `(${ps}) => { ${checks.join(" ")} return true; }`;
   };
 
@@ -585,7 +586,10 @@ export function emitFile(
       case K.BinaryExpression: return binary(n as ts.BinaryExpression);
       case K.ElementAccessExpression: {
         const e = n as ts.ElementAccessExpression;
-        return `${RT}.at(${gen(e.expression)}, ${gen(e.argumentExpression)}, ${at(e.argumentExpression)})`; // `?.[]` is not in the language (E1000)
+        if (e.questionDotToken) {
+          return optional(gen(e.expression), hasAwait(e.argumentExpression), (o) => `${RT}.nn(${RT}.at(${o}, ${gen(e.argumentExpression)}, ${at(e.argumentExpression)}))`);
+        }
+        return `${RT}.at(${gen(e.expression)}, ${gen(e.argumentExpression)}, ${at(e.argumentExpression)})`;
       }
       case K.PropertyAccessExpression: {
         const p = n as ts.PropertyAccessExpression;
@@ -633,7 +637,7 @@ export function emitFile(
         const af = n as ts.ArrowFunction;
         if (af.body.kind !== K.Block && inContract === 0) {
           const isAsync = !!af.modifiers?.some((x) => x.kind === K.AsyncKeyword);
-          const ps = af.parameters.map((p) => (p.initializer ? `${p.name.getText(sf)} = ${gen(p.initializer)}` : p.name.getText(sf))).join(", ");
+          const ps = af.parameters.map((p) => `${p.dotDotDotToken ? "..." : ""}${p.name.getText(sf)}${p.initializer ? ` = ${gen(p.initializer)}` : ""}`).join(", ");
           return `${isAsync ? "async " : ""}(${ps}) => (${RT}.step(), (${gen(af.body)}))`;
         }
         break;
@@ -655,7 +659,7 @@ export function emitFile(
         const tail = pre ? `\n${RT}.setPre(${f.name!.text}, ${pre});` : "";
         if (key === "!generic") return `function ${f.name!.text}() { throw new Error("internal: a generic strict / rt function runs only through its C instances (D104)"); }`;
         if (key) {
-          const ps = f.parameters.map((p) => p.name.getText(sf));
+          const ps = f.parameters.map((p, i) => (p.name.kind === K.Identifier ? (p.name as ts.Identifier).text : `${RUNTIME_GLOBAL}_p${i}`));
           const firstDef = f.parameters.findIndex((p) => !!p.initializer);
           if (firstDef >= 0) {
             const A = `${RUNTIME_GLOBAL}_a`;
@@ -702,11 +706,11 @@ export function emitFile(
     const isIncDec = (u.kind === K.PrefixUnaryExpression || u.kind === K.PostfixUnaryExpression) &&
       ((u as ts.PrefixUnaryExpression | ts.PostfixUnaryExpression).operator === K.PlusPlusToken || (u as ts.PrefixUnaryExpression | ts.PostfixUnaryExpression).operator === K.MinusMinusToken);
     const deletable = u.kind === K.CallExpression || isIncDec || (u.kind === K.BinaryExpression &&
-      ((u as ts.BinaryExpression).operatorToken.kind === K.EqualsToken || COMPOUND[(u as ts.BinaryExpression).operatorToken.kind] !== undefined));
+      ((u as ts.BinaryExpression).operatorToken.kind === K.EqualsToken || (u as ts.BinaryExpression).operatorToken.kind === K.QuestionQuestionEqualsToken || (u as ts.BinaryExpression).operatorToken.kind === K.BarBarEqualsToken || (u as ts.BinaryExpression).operatorToken.kind === K.AmpersandAmpersandEqualsToken || COMPOUND[(u as ts.BinaryExpression).operatorToken.kind] !== undefined));
     if (!deletable) return orig;
     const et = typeOf(u);
     if (et?.k === "prim" && et.name === "never") return orig;
-    if (u.kind === K.BinaryExpression && (u as ts.BinaryExpression).operatorToken.kind === K.EqualsToken) {
+    if (u.kind === K.BinaryExpression && ((u as ts.BinaryExpression).operatorToken.kind === K.EqualsToken || (u as ts.BinaryExpression).operatorToken.kind === K.QuestionQuestionEqualsToken)) {
       const lhs = assignTarget((u as ts.BinaryExpression).left);
       if (isId(lhs)) {
         const sym = localOf.get(lhs);
@@ -802,10 +806,27 @@ export function emitFile(
     const k = b.operatorToken.kind;
     const o = b.operatorToken.getText(sf);
     const anchor = (): string => at(b.operatorToken);
-    const left = k === K.EqualsToken || COMPOUND[k] !== undefined ? assignTarget(b.left) : b.left; // Q133: the target without its parentheses
+    const left = k === K.EqualsToken || k === K.QuestionQuestionEqualsToken || k === K.BarBarEqualsToken || k === K.AmpersandAmpersandEqualsToken || COMPOUND[k] !== undefined ? assignTarget(b.left) : b.left; // Q133: the target without its parentheses
     if (k === K.EqualsToken && left.kind === K.ElementAccessExpression) {
       const e = left as ts.ElementAccessExpression;
       return `${RT}.setAt(${gen(e.expression)}, ${gen(e.argumentExpression)}, ${gen(b.right)}, ${at(e.argumentExpression)})`;
+    }
+    if (k === K.QuestionQuestionEqualsToken || k === K.BarBarEqualsToken || k === K.AmpersandAmpersandEqualsToken) {
+      const isNullish = k === K.QuestionQuestionEqualsToken;
+      const op = isNullish ? "??=" : k === K.BarBarEqualsToken ? "||=" : "&&=";
+      if (left.kind === K.ElementAccessExpression) {
+        needAp = true;
+        const e = left as ts.ElementAccessExpression, ip = at(e.argumentExpression), aw = hasAwait(b.right);
+        const fa = aw ? "async " : "", apCall = aw ? `(await ${AP}` : AP, close = aw ? ")" : "";
+        const cur = `${RUNTIME_GLOBAL}_c`, nv = `${RUNTIME_GLOBAL}_v`;
+        const cond = isNullish ? `${cur} == null` : k === K.BarBarEqualsToken ? `!${cur}` : cur;
+        return `${apCall}(${fa}(${O}, ${KEY}) => { let ${cur} = ${RT}.at(${O}, ${KEY}, ${ip}); if (${cond}) { const ${nv} = ${gen(b.right)}; ${RT}.setAt(${O}, ${KEY}, ${nv}, ${ip}); ${cur} = ${nv}; } return ${cur}; }, ${gen(e.expression)}, ${gen(e.argumentExpression)})${close}`;
+      }
+      if (left.kind === K.PropertyAccessExpression) {
+        const p = left as ts.PropertyAccessExpression;
+        return `(${gen(p.expression)}.${p.name.text} ${op} ${gen(b.right)})`;
+      }
+      return `(${gen(left)} ${op} ${gen(b.right)})`;
     }
     const base = COMPOUND[k];
     if (base !== undefined) {
@@ -982,6 +1003,7 @@ export function emitFile(
         seen.delete(u);
       }
     };
+    const awaited = e.arguments.some(hasAwait);
     if (callee.kind === K.Identifier) {
       const name = (callee as ts.Identifier).text;
       const t = self?.k === "num" ? self.name : "";
@@ -1027,17 +1049,25 @@ export function emitFile(
         case "ensures": throw new Error("emit: ensures outside a function body prologue");
       }
       // Reuse `args` instead of calling `splice(e)` so arguments are never visited twice (#1).
-      const raw = groups ? grouped(e, groups, args, (refs) => `${gen(callee)}(${refs.join(", ")})`) : `${gen(callee)}(${args.join(", ")})`;
+      const raw = e.questionDotToken
+        ? optional(gen(callee), awaited, (o) => `${RT}.nn(${o}(${args.join(", ")}))`)
+        : groups ? grouped(e, groups, args, (refs) => `${gen(callee)}(${refs.join(", ")})`) : `${gen(callee)}(${args.join(", ")})`;
       const cs = callSigs.get(e);
       const shape = cs?.tparams.length && self ? ringAdoptShape(self) : undefined;
       return shape !== undefined ? `${RT}.adoptRings(${raw}, ${JSON.stringify(shape)})` : raw;
     }
-    if (callee.kind !== K.PropertyAccessExpression) return `${gen(callee)}(${args.join(", ")})`;
+    if (callee.kind !== K.PropertyAccessExpression) {
+      return e.questionDotToken
+        ? optional(gen(callee), awaited, (o) => `${RT}.nn(${o}(${args.join(", ")}))`)
+        : `${gen(callee)}(${args.join(", ")})`;
+    }
     const p = callee as ts.PropertyAccessExpression, m = p.name.text;
     const recv = p.expression;
+    if (e.questionDotToken) {
+      return optional(gen(callee), awaited, (o) => `${RT}.nn(${o}(${args.join(", ")}))`);
+    }
     const withArgs = (extra: string[]): string => `${gen(callee)}(${[...args, ...extra].join(", ")})`;
     const nn = (s: string): string => (p.questionDotToken ? `${RT}.nn(${s})` : s);
-    const awaited = e.arguments.some(hasAwait);
     if (recv.kind === K.Identifier && (((recv as ts.Identifier).text === "Vec" && (m === "create" || m === "filled")) || ((recv as ts.Identifier).text === "Pool" && m === "create")) && !typeOf(recv)) {
       const el = self?.k === "gen" ? self.args[0] : undefined;
       return withArgs([q(elemDesc(el))]);
@@ -1075,13 +1105,13 @@ export function emitFile(
       return `${RT}.parseIntStrict(${q(m.slice(5).toLowerCase())}, ${args.join(", ")})`;
     }
     // Q035: builtins that can throw a JS exception panic (T006) at their name.
-    const throws = ns ? THROWING[ns] : r?.k === "gen" ? THROWING[r.name] : r && isStr(r) ? THROWING.string : undefined;
+    const throws = ns ? THROWING[ns] : r?.k === "gen" ? THROWING[r.name] : r?.k === "num" ? THROWING.num : r && isStr(r) ? THROWING.string : undefined;
     if (throws?.includes(m)) {
       const guarded = (o: string): string => `${RT}.guarded(${o}, ${q(m)}, [${args.join(", ")}], ${at(p.name)})`;
       return p.questionDotToken ? optional(gen(recv), awaited, guarded) : guarded(ns ?? gen(recv));
     }
     if (r?.k === "gen") {
-      if ((r.name === "Array" || r.name === "ReadonlyArray") && (m === "pop" || m === "find")) return nn(`${RT}.nn(${withArgs([])})`);
+      if ((r.name === "Array" || r.name === "ReadonlyArray") && (m === "pop" || m === "find" || m === "at")) return nn(`${RT}.nn(${withArgs([])})`);
       if ((r.name === "Array" || r.name === "ReadonlyArray") && (m === "indexOf" || m === "findIndex")) return nn(`${RT}.idxOrNull(${withArgs([])})`);
       if (r.name === "Map" && m === "get") return nn(`${RT}.nn(${withArgs([])})`);
       if ((r.name === "Vec" || r.name === "Slice") && m === "borrowSlice") return nn(withArgs([at(p.name)]));

@@ -3,7 +3,7 @@ import { SyntaxKind as K, type Node, type ParsedFile, type ts } from "./parse.ts
 import { directiveOf } from "./modules.ts";
 import { exprTypes, localOf } from "./expr.ts";
 import { sliceGroups } from "./ownership.ts";
-import { isInt, type Type } from "./types.ts";
+import { isInt, unref, type Type } from "./types.ts";
 import { genFx } from "./builtins.ts";
 
 export interface TrapSite { code: string; line: number; col: number }
@@ -58,7 +58,8 @@ export function trapSites(pf: ParsedFile): Record<string, TrapSite[]> {
           (pa.parent as ts.BinaryExpression).left === pa;
         if (!isPlainLhs && rt?.k === "cstruct" && ft?.k === "num" && ft.name === "usize") add("T003", pa.name);
       } else if (n.kind === K.ObjectBindingPattern) {
-        if (exprTypes.get(n)?.k === "cstruct") {
+        const ot = exprTypes.get(n);
+        if (ot && unref(ot).k === "cstruct") {
           for (const el of (n as ts.ObjectBindingPattern).elements) {
             const ft = el.name ? exprTypes.get(el.name) : undefined;
             if (el.name && ft?.k === "num" && ft.name === "usize") add("T003", (el.propertyName ?? el.name) as Node);
@@ -95,7 +96,10 @@ export function trapSites(pf: ParsedFile): Record<string, TrapSite[]> {
       }
       n.forEachChild(walk);
     };
-    for (const p of d.parameters) if (p.initializer) walk(p.initializer);
+    for (const p of d.parameters) {
+      if (p.name.kind !== K.Identifier) walk(p.name);
+      if (p.initializer) walk(p.initializer);
+    }
     walk(d.body!);
     out[d.name!.text] = sites.sort((a, b) => a.line - b.line || a.col - b.col);
   }

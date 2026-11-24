@@ -1,0 +1,6 @@
+// expect: E2002 @ 5:19
+// stage: 1
+// open-question: Q301
+export function f(a: Array<f64>): f64 {
+  return Math.abs(...a);
+}

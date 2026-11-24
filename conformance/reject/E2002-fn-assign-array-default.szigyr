@@ -1,0 +1,9 @@
+// expect: E2002 @ 7:26
+// stage: 1
+// open-question: Q310
+type CB = (x: usize, i: usize) => usize;
+function F(x: usize, i: usize, z: usize = 5): usize { return z; }
+export function run(a: Array<usize>): Array<usize> {
+  const fs: Array<CB> = [F];
+  return a.map(fs[0]);
+}

@@ -1,0 +1,63 @@
+// expect-output: rt:true:false:true:false:true:10,1,1,1,12,1
+// stage: 2
+
+type RtFlags = OwnedStruct<{ a: boolean; b: boolean }>;
+
+function rtTouch(log: Mut<Slice<i32>>, idx: usize): usize {
+  "use rt";
+  log[idx] += 1;
+  return 0;
+}
+
+function rtStep(log: Mut<Slice<i32>>, logAt: usize, tag: i32, val: boolean): boolean {
+  "use rt";
+  log[logAt] += tag;
+  return val;
+}
+
+function rtLogical(log: Mut<Slice<i32>>, arr: Mut<Slice<boolean>>, zero: i32): i32 {
+  "use rt";
+  let x: boolean = false;
+  let y: boolean = true;
+  let mask: i32 = 0;
+
+  const r1 = (x ||= true);
+  const r2 = (x ||= divTrunc(10, zero) > 0);
+  const r3 = (y &&= true);
+  const r4 = (y &&= false);
+  const r5 = (y &&= divTrunc(10, zero) > 0);
+  if (r1) mask |= 1;
+  if (r2) mask |= 2;
+  if (r3) mask |= 4;
+  if (r4) mask |= 8;
+  if (r5) mask |= 16;
+
+  const rf: RtFlags = { a: true, b: false };
+  const ra = (rf.a ||= rtStep(log, 0, 99, false));
+  const rb = (rf.b &&= rtStep(log, 0, 98, true));
+
+  arr[rtTouch(log, 0)] ||= rtStep(log, 1, 10, true);
+  arr[rtTouch(log, 2)] ||= rtStep(log, 0, 11, false);
+  arr[1 + rtTouch(log, 3)] &&= rtStep(log, 4, 12, false);
+  arr[1 + rtTouch(log, 5)] &&= rtStep(log, 4, 13, true);
+
+  if (ra && !rb && arr[0] && !arr[1]) mask |= 32;
+  return mask;
+}
+
+export function main(sys: System): void {
+  const zero: i32 = 0;
+  const logVec = Vec.create<i32>(sys.alloc, 6);
+  let k: usize = 0;
+  while (k < 6) {
+    logVec.push(0);
+    k += 1;
+  }
+  const arrVec = Vec.create<boolean>(sys.alloc, 2);
+  arrVec.push(false);
+  arrVec.push(true);
+
+  const mask = rtLogical(logVec.borrowSlice(0, 6), arrVec.borrowSlice(0, 2), zero);
+  const trace = `${logVec[1]},${logVec[0]},${logVec[2]},${logVec[3]},${logVec[4]},${logVec[5]}`;
+  sys.log.info(`rt:${(mask & 1) !== 0}:${(mask & 8) !== 0}:${(mask & 32) !== 0}:${(mask & 16) !== 0}:${(mask & 6) === 6}:${trace}`);
+}

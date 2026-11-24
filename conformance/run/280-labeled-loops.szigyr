@@ -1,0 +1,209 @@
+// expect-output: loops:0,0;1,0;1,1;2,0;2,1;2,2|3:12
+// expect-output: sw:hit1;sw-cont;sw-exit:1
+// expect-output: do:0,1,2:10
+// expect-output: unwind:in-0|out-0|blk-1|in-1|out-1|forof:done|outer-keep
+// expect-output: rt-loops:12:1:10
+// expect-output: strict:20
+// expect-output: strict:10
+// expect-output: strict:21
+// expect-output: strict:11
+// expect-output: strict:99
+// stage: 2
+
+type StrictMsg = "strict:20" | "strict:10" | "strict:21" | "strict:11" | "strict:99" | "bad-stay";
+type StrictBox = OwnedStruct<{ id: StrictMsg }>;
+type TagBox = OwnedStruct<{ id: i32 }>;
+
+function dropTag(log: Log, box: StrictBox): void {
+  "use owned";
+  log.info(box.id);
+}
+
+function joinLog(log: Array<string>): string {
+  let out: string = "";
+  let i: usize = 0;
+  while (i < log.length) {
+    if (i > 0) out = `${out}|${log[i]}`;
+    else out = log[i];
+    i += 1;
+  }
+  return out;
+}
+
+function testNestedLoops(alloc: Alloc): string {
+  const trace = Vec.create<i32>(alloc, 16);
+  let pairs: string = "";
+  let sum: i32 = 0;
+  let outerIter: i32 = 0;
+  outer: for (let i: i32 = 0; i < 5; i += 1) {
+    outerIter += 1;
+    let j: i32 = 0;
+    inner: while (j < 5) {
+      pairs = pairs === "" ? `${i},${j}` : `${pairs};${i},${j}`;
+      sum += i + j;
+      j += 1;
+      if (j > i && i < 2) continue outer;
+      if (i === 2 && j === 3) break outer;
+      if (j === 2 && i === 99) continue inner;
+    }
+    trace.push(1);
+  }
+  return `loops:${pairs}|${outerIter}:${sum}`;
+}
+
+function testSwitchInLabel(): string {
+  let step: i32 = 0;
+  let log: string = "";
+  loop: while (step < 5) {
+    step += 1;
+    switch (step) {
+      case 1:
+        log = `${log}hit1;`;
+        break;
+      case 2:
+        log = `${log}sw-cont;`;
+        continue loop;
+      case 3:
+        log = `${log}sw-exit`;
+        break loop;
+      default:
+        break;
+    }
+    if (step === 2) log = `${log}bad;`;
+  }
+  return `sw:${log}:${step - 2}`;
+}
+
+function testLabeledDoWhile(): string {
+  let k: i32 = 0;
+  let acc: i32 = 0;
+  let seq: string = "";
+  dl: do {
+    const cur = k;
+    seq = seq === "" ? `${cur}` : `${seq},${cur}`;
+    k += 1;
+    if (cur === 0) {
+      acc += 1;
+      continue dl;
+    }
+    if (cur === 2) {
+      acc += 7;
+      break dl;
+    }
+    acc += 2;
+  } while (k < 4);
+  return `do:${seq}:${acc}`;
+}
+
+function testUnwind(): string {
+  const events: Array<string> = [];
+  {
+    using keep = Resource.own<TagBox>({ id: 1 }, (_b: TagBox): void => {
+      events.push("outer-keep");
+    });
+    outer: for (let i: i32 = 0; i < 3; i += 1) {
+      using outRes = Resource.own<TagBox>({ id: i }, (b: TagBox): void => {
+        events.push(`out-${b.id}`);
+      });
+      let j: i32 = 0;
+      inner: while (j < 2) {
+        using inRes = Resource.own<TagBox>({ id: i }, (b: TagBox): void => {
+          events.push(`in-${b.id}`);
+        });
+        j += 1;
+        if (i === 0) continue outer;
+        if (i === 1) {
+          using blkRes = Resource.own<TagBox>({ id: i }, (b: TagBox): void => {
+            events.push(`blk-${b.id}`);
+          });
+          if (blkRes.borrow().id >= 0 && inRes.borrow().id >= 0 && outRes.borrow().id >= 0) {
+            break outer;
+          }
+        }
+      }
+      events.push("bad-after-inner");
+    }
+    const nums: Array<i32> = [1, 2, 3, 4];
+    let forOfSum: i32 = 0;
+    arrLoop: for (const v of nums) {
+      if (v === 2) continue arrLoop;
+      if (v === 4) break arrLoop;
+      forOfSum += v;
+    }
+    if (keep.borrow().id === 1 && forOfSum === 4) events.push("forof:done");
+  }
+  return `unwind:${joinLog(events)}`;
+}
+
+function testStrictUsing(log: Log): void {
+  "use owned";
+  using outside = Resource.ownWith<StrictBox, Log>({ id: "strict:99" }, log, dropTag);
+  outer: for (let i: i32 = 0; i < 3; i += 1) {
+    using rOut = Resource.ownWith<StrictBox, Log>({ id: i === 0 ? "strict:10" : "strict:11" }, log, dropTag);
+    inner: while (true) {
+      using rIn = Resource.ownWith<StrictBox, Log>({ id: i === 0 ? "strict:20" : "strict:21" }, log, dropTag);
+      if (rIn.borrow().id === "strict:20" && rOut.borrow().id === "strict:10") continue outer;
+      break outer;
+    }
+  }
+  if (outside.borrow().id !== "strict:99") dropTag(log, { id: "bad-stay" });
+}
+
+function rtLabeledLoops(): OwnedStruct<{ sum: i32; sw: i32; doAcc: i32 }> {
+  "use rt";
+  let sum: i32 = 0;
+  outer: for (let i: i32 = 0; i < 5; i += 1) {
+    let j: i32 = 0;
+    inner: while (j < 5) {
+      sum += i + j;
+      j += 1;
+      if (j > i && i < 2) continue outer;
+      if (i === 2 && j === 3) break outer;
+      if (j === 99) continue inner;
+    }
+  }
+  let step: i32 = 0;
+  let sw: i32 = 0;
+  swLoop: while (step < 5) {
+    step += 1;
+    switch (step) {
+      case 1:
+        sw += 10;
+        break;
+      case 2:
+        sw += 20;
+        continue swLoop;
+      case 3:
+        break swLoop;
+      default:
+        break;
+    }
+    if (step === 2) sw += 1000;
+  }
+  let k: i32 = 0;
+  let doAcc: i32 = 0;
+  dl: do {
+    const cur = k;
+    k += 1;
+    if (cur === 0) {
+      doAcc += 1;
+      continue dl;
+    }
+    if (cur === 2) {
+      doAcc += 7;
+      break dl;
+    }
+    doAcc += 2;
+  } while (k < 4);
+  return { sum, sw: sw === 30 ? step - 2 : -1, doAcc };
+}
+
+export function main(sys: System): void {
+  sys.log.info(testNestedLoops(sys.alloc));
+  sys.log.info(testSwitchInLabel());
+  sys.log.info(testLabeledDoWhile());
+  sys.log.info(testUnwind());
+  const rtRes = rtLabeledLoops();
+  sys.log.info(`rt-loops:${rtRes.sum}:${rtRes.sw}:${rtRes.doAcc}`);
+  testStrictUsing(sys.log);
+}

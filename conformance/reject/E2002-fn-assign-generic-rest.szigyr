@@ -1,0 +1,8 @@
+// expect: E2002 @ 7:18
+// stage: 1
+// open-question: Q310
+function F(...xs: Array<usize>): usize { return xs.length; }
+function hofg<T, U>(a: Array<T>, f: (x: T, i: usize) => U): Array<U> { return a.map(f); }
+export function run(a: Array<usize>): Array<usize> {
+  return hofg(a, F);
+}

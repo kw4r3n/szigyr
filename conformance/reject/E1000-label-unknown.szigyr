@@ -1,0 +1,8 @@
+// expect: E1000 @ 5:11
+// stage: 1
+export function f(n: i32): i32 {
+  while (n > 0) {
+    break missing;
+  }
+  return n;
+}

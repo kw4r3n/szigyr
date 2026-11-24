@@ -56,6 +56,8 @@ function canon(t: Type): Type {
 }
 const ckey = (t: Type): string => show(canon(t));
 const borrowMode = (t: Type): "Ref" | "Mut" | undefined => (t.k === "gen" && (t.name === "Ref" || t.name === "Mut") ? t.name : undefined);
+const loopLabelOf = (n: Node): string | undefined => n.parent?.kind === K.LabeledStatement ? (n.parent as ts.LabeledStatement).label.text : undefined;
+const findLoop = <T extends { label?: string }>(loops: T[], label: string): T | undefined => { for (let i = loops.length - 1; i >= 0; i--) if (loops[i]!.label === label) return loops[i]!; return undefined; };
 
 interface Local { c: string; t: Type; ptr: boolean }
 
@@ -481,9 +483,12 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
     throw new CUnsupported(where, `passing '${show(t)}' between C and managed code`);
   }
 
+  function paramCName(p: ts.ParameterDeclaration, k: number): string {
+    return p.name.kind === K.Identifier ? `u_${(p.name as ts.Identifier).text}` : `sz_dp_${k}`;
+  }
   function proto(i: Inst): string {
     const where = `${i.f.mod.file}: ${i.f.name}`;
-    const ps = i.f.decl.parameters.slice(0, i.params.length).flatMap((p, k) => (unref(i.params[k]!).k === "fn" ? [] : [`${ctype(i.params[k]!, where)} u_${(p.name as ts.Identifier).text}`])); // Q189 (b): no runtime value
+    const ps = i.f.decl.parameters.slice(0, i.params.length).flatMap((p, k) => (unref(i.params[k]!).k === "fn" ? [] : [`${ctype(i.params[k]!, where)} ${paramCName(p, k)}`])); // Q189 (b): no runtime value
     return `static ${ctype(i.ret, where)} ${i.name}(${ps.join(", ") || "void"})`;
   }
 
@@ -602,7 +607,7 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
     tmp = 0; label = 0;
     hasUsing = false;
     fnDm: string | undefined;
-    loops: { cont: string; dm: string | undefined }[] = [];
+    loops: { label?: string; cont: string; dm: string | undefined; brk: string; brkDm: string | undefined; brkUsed: boolean }[] = [];
     breaks: (string | undefined)[] = [];
     ensures: ts.ArrowFunction[] = [];
     /** Inside a block-bodied ensures predicate: where its `return` goes. */
@@ -618,24 +623,36 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
         const callArgs: string[] = [];
         for (let k = 0; k < argc; k++) {
           const p = f.decl.parameters[k]!;
-          if (p.name.kind !== K.Identifier) throw this.no(p, "a destructured parameter");
           const t = full.params[k]!, a = unref(t);
           if (a.k === "fn") continue;
-          const name = (p.name as ts.Identifier).text;
-          this.scopes[0]!.set(name, { c: borrowMode(t) && isStruct(a) ? `(*u_${name})` : `u_${name}`, t: a, ptr: false });
-          callArgs.push(`u_${name}`);
+          const cn = paramCName(p, k);
+          if (p.name.kind === K.ObjectBindingPattern) {
+            this.bindObjectPattern(p.name as ts.ObjectBindingPattern, borrowMode(t) && isStruct(a) ? `(*${cn})` : cn, a);
+          } else if (p.name.kind === K.Identifier) {
+            const name = (p.name as ts.Identifier).text;
+            this.scopes[0]!.set(name, { c: borrowMode(t) && isStruct(a) ? `(*${cn})` : cn, t: a, ptr: false });
+          } else {
+            throw this.no(p, "this destructured parameter");
+          }
+          callArgs.push(cn);
         }
         for (let k = argc; k < f.decl.parameters.length; k++) {
           const p = f.decl.parameters[k]!;
-          if (p.name.kind !== K.Identifier) throw this.no(p, "a destructured parameter");
           const pt = full.params[k]!, a = unref(pt);
           if (a.k === "fn") continue;
-          const name = (p.name as ts.Identifier).text;
+          const cn = paramCName(p, k);
           const val = this.conv(this.ex(p.initializer!), this.typeOf(p.initializer!), pt);
           const ct = ctype(pt, this.where);
-          this.emit(`${ct} u_${name} = ${val};`);
-          this.scopes[0]!.set(name, { c: `u_${name}`, t: a, ptr: false });
-          callArgs.push(`u_${name}`);
+          this.emit(`${ct} ${cn} = ${val};`);
+          if (p.name.kind === K.ObjectBindingPattern) {
+            this.bindObjectPattern(p.name as ts.ObjectBindingPattern, cn, a);
+          } else if (p.name.kind === K.Identifier) {
+            const name = (p.name as ts.Identifier).text;
+            this.scopes[0]!.set(name, { c: cn, t: a, ptr: false });
+          } else {
+            throw this.no(p, "this destructured parameter");
+          }
+          callArgs.push(cn);
         }
         if (this.isVoid()) this.emit(`${full.name}(${callArgs.join(", ")});`);
         else this.emit(`return ${full.name}(${callArgs.join(", ")});`);
@@ -645,11 +662,17 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
       this.hasUsing = hasUsingStmt(f.decl.body!);
       if (this.hasUsing) { this.fnDm = `sz_dm_${this.tmp++}`; this.emit(`sz_defer *${this.fnDm} = sz_defer_head;`); }
       f.decl.parameters.forEach((p, i) => {
-        if (p.name.kind !== K.Identifier) throw this.no(p, "a destructured parameter");
         const t = this.i.params[i]!, a = unref(t);
         if (a.k === "fn") return; // Q189 (b): no runtime value; calls through it are resolved in `call`
-        const name = (p.name as ts.Identifier).text;
-        this.scopes[0]!.set(name, { c: borrowMode(t) && isStruct(a) ? `(*u_${name})` : `u_${name}`, t: a, ptr: false });
+        const cn = paramCName(p, i);
+        if (p.name.kind === K.ObjectBindingPattern) {
+          this.bindObjectPattern(p.name as ts.ObjectBindingPattern, borrowMode(t) && isStruct(a) ? `(*${cn})` : cn, a);
+        } else if (p.name.kind === K.Identifier) {
+          const name = (p.name as ts.Identifier).text;
+          this.scopes[0]!.set(name, { c: borrowMode(t) && isStruct(a) ? `(*${cn})` : cn, t: a, ptr: false });
+        } else {
+          throw this.no(p, "this destructured parameter");
+        }
       });
       for (const s of f.decl.body!.statements) {
         if (s.kind === K.ExpressionStatement && (s as ts.ExpressionStatement).expression.kind === K.CallExpression) {
@@ -768,8 +791,9 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
           this.emit("}");
           return;
         }
+        case K.LabeledStatement: this.stmt((s as ts.LabeledStatement).statement); return;
         case K.WhileStatement: {
-          const w = s as ts.WhileStatement, cont = `sz_L${this.label++}`;
+          const w = s as ts.WhileStatement, cont = `sz_L${this.label++}`, brk = `sz_L${this.label++}`;
           const dmLoop = this.hasUsing ? `sz_dm_${this.tmp++}` : undefined;
           if (dmLoop) this.emit(`sz_defer *${dmLoop} = sz_defer_head;`);
           this.emit("for (;;) {");
@@ -777,22 +801,25 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
           const c = this.ex(w.expression); this.emit(`if (!${c}) break;`);
           const dmBody = this.hasUsing ? `sz_dm_${this.tmp++}` : undefined;
           if (dmBody) this.emit(`sz_defer *${dmBody} = sz_defer_head;`);
-          this.loops.push({ cont, dm: dmBody });
+          const lp = { label: loopLabelOf(w), cont, dm: dmBody, brk, brkDm: dmLoop, brkUsed: false };
+          this.loops.push(lp);
           this.breaks.push(dmLoop);
           this.block(() => this.stmt(w.statement));
           this.breaks.pop();
           this.loops.pop();
           this.emit("}");
+          if (lp.brkUsed) this.emit(`${brk}: ;`);
           return;
         }
         case K.DoStatement: {
-          const w = s as ts.DoStatement, cont = `sz_L${this.label++}`;
+          const w = s as ts.DoStatement, cont = `sz_L${this.label++}`, brk = `sz_L${this.label++}`;
           const dmLoop = this.hasUsing ? `sz_dm_${this.tmp++}` : undefined;
           if (dmLoop) this.emit(`sz_defer *${dmLoop} = sz_defer_head;`);
           this.emit("for (;;) {");
           const dmBody = this.hasUsing ? `sz_dm_${this.tmp++}` : undefined;
           if (dmBody) this.emit(`sz_defer *${dmBody} = sz_defer_head;`);
-          this.loops.push({ cont, dm: dmBody });
+          const lp = { label: loopLabelOf(w), cont, dm: dmBody, brk, brkDm: dmLoop, brkUsed: false };
+          this.loops.push(lp);
           this.breaks.push(dmLoop);
           this.block(() => this.stmt(w.statement));
           this.breaks.pop();
@@ -800,10 +827,11 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
           this.emit(`${cont}: ;`);
           const c = this.ex(w.expression); this.emit(`if (!${c}) break;`);
           this.emit("}");
+          if (lp.brkUsed) this.emit(`${brk}: ;`);
           return;
         }
         case K.ForStatement: {
-          const fo = s as ts.ForStatement, cont = `sz_L${this.label++}`;
+          const fo = s as ts.ForStatement, cont = `sz_L${this.label++}`, brk = `sz_L${this.label++}`;
           this.block(() => {
             if (fo.initializer) {
               if (fo.initializer.kind === K.VariableDeclarationList) for (const d of (fo.initializer as ts.VariableDeclarationList).declarations) this.varDecl(d);
@@ -815,7 +843,8 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
             if (fo.condition) { const c = this.ex(fo.condition); this.emit(`if (!${c}) break;`); }
             const dmBody = this.hasUsing ? `sz_dm_${this.tmp++}` : undefined;
             if (dmBody) this.emit(`sz_defer *${dmBody} = sz_defer_head;`);
-            this.loops.push({ cont, dm: dmBody });
+            const lp = { label: loopLabelOf(fo), cont, dm: dmBody, brk, brkDm: dmLoop, brkUsed: false };
+            this.loops.push(lp);
             this.breaks.push(dmLoop);
             this.block(() => this.stmt(fo.statement));
             this.breaks.pop();
@@ -823,17 +852,27 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
             this.emit(`${cont}: ;`);
             if (fo.incrementor) this.block(() => this.exVoid(fo.incrementor!));
             this.emit("}");
+            if (lp.brkUsed) this.emit(`${brk}: ;`);
           });
           return;
         }
         case K.BreakStatement: {
+          const lb = (s as ts.BreakStatement).label;
+          if (lb) {
+            const l = findLoop(this.loops, lb.text)!;
+            l.brkUsed = true;
+            if (l.brkDm) this.emit(`sz_defer_pop_run(${l.brkDm});`);
+            this.emit(`goto ${l.brk};`);
+            return;
+          }
           const dm = this.breaks.at(-1);
           if (dm) this.emit(`sz_defer_pop_run(${dm});`);
           this.emit("break;");
           return;
         }
         case K.ContinueStatement: {
-          const l = this.loops.at(-1)!;
+          const lb = (s as ts.ContinueStatement).label;
+          const l = lb ? findLoop(this.loops, lb.text)! : this.loops.at(-1)!;
           if (l.dm) this.emit(`sz_defer_pop_run(${l.dm});`);
           this.emit(`goto ${l.cont};`);
           return;
@@ -919,7 +958,12 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
         return;
       }
       const src = this.t(t, v, d); // `const { x, y } = s`: whole-value move, then fields
-      for (const el of (d.name as ts.ObjectBindingPattern).elements) {
+      this.bindObjectPattern(d.name as ts.ObjectBindingPattern, src, t);
+    }
+
+    private bindObjectPattern(pat: ts.ObjectBindingPattern, src: string, t0: Type): void {
+      const t = unref(t0);
+      for (const el of pat.elements) {
         const prop = (el.propertyName ?? el.name) as ts.Identifier, name = (el.name as ts.Identifier).text, ft = ((x: Type): Type => (this.i.m.size ? subst(x, this.i.m) : x))(exprTypes.get(el.name!)!);
         const c = `u_${name}_${this.tmp++}`;
         if (t.k === "cstruct") {
@@ -1160,6 +1204,55 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
         return r;
       }
       if (k === K.EqualsToken) return this.assign(b, undefined);
+      if (k === K.QuestionQuestionEqualsToken) {
+        const left = assignTarget(b.left), resT = this.typeOf(b);
+        const optVal = (v: string, from: Type, to: Type): string => {
+          const inner = nonNull(from);
+          return inner && !nonNull(to) ? this.conv(`(${v}).v`, inner, to) : this.conv(v, from, to);
+        };
+        if (left.kind === K.ElementAccessExpression) {
+          const a = left as ts.ElementAccessExpression;
+          const { data, len, et } = this.seq(a.expression);
+          const i = this.ex(a.argumentExpression);
+          const el = elem(et, this.where);
+          if (!this.isProved(a.argumentExpression)) this.emit(`sz_chk(${i}, ${len}, ${this.pos(a.argumentExpression)});`);
+          const r = `t${this.tmp++}`;
+          this.emit(`${ctype(et, this.where)} ${r} = ${el.ld(data, i)};`);
+          this.emit(`if (!${r}.some)`); this.block(() => {
+            this.emit(`${r} = ${this.conv(this.ex(b.right), this.typeOf(b.right), et)};`);
+            this.emit(el.st(data, i, r));
+          });
+          return this.t(resT, optVal(r, et, resT), b);
+        }
+        const p = this.place(left), lt = this.typeOf(left);
+        const decl = left.kind === K.Identifier ? (this.lookup((left as ts.Identifier).text)?.t ?? lt) : lt;
+        this.emit(`if (!(${p}).some)`); this.block(() => {
+          this.emit(`${p} = ${this.conv(this.ex(b.right), this.typeOf(b.right), decl)};`);
+        });
+        return this.t(resT, optVal(p, decl, resT), b);
+      }
+      if (k === K.BarBarEqualsToken || k === K.AmpersandAmpersandEqualsToken) {
+        const left = assignTarget(b.left), isOr = k === K.BarBarEqualsToken;
+        if (left.kind === K.ElementAccessExpression) {
+          const a = left as ts.ElementAccessExpression;
+          const { data, len, et } = this.seq(a.expression);
+          const i = this.ex(a.argumentExpression);
+          const el = elem(et, this.where);
+          if (!this.isProved(a.argumentExpression)) this.emit(`sz_chk(${i}, ${len}, ${this.pos(a.argumentExpression)});`);
+          const r = `t${this.tmp++}`;
+          this.emit(`bool ${r} = ${el.ld(data, i)};`);
+          this.emit(`if (${isOr ? "!" : ""}${r})`); this.block(() => {
+            this.emit(`${r} = ${this.ex(b.right)};`);
+            this.emit(el.st(data, i, r));
+          });
+          return this.t(this.typeOf(b), r, b);
+        }
+        const p = this.place(left);
+        this.emit(`if (${isOr ? "!" : ""}(${p}))`); this.block(() => {
+          this.emit(`${p} = ${this.ex(b.right)};`);
+        });
+        return this.t(this.typeOf(b), p, b);
+      }
       const COMP: Partial<Record<K, string>> = {
         [K.PlusEqualsToken]: "+", [K.MinusEqualsToken]: "-", [K.AsteriskEqualsToken]: "*", [K.SlashEqualsToken]: "/", [K.PercentEqualsToken]: "%",
         [K.AmpersandEqualsToken]: "&", [K.BarEqualsToken]: "|", [K.CaretEqualsToken]: "^",

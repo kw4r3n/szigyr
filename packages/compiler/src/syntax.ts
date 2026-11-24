@@ -25,7 +25,6 @@ const UNSAFE_DIRECTIVE = "use unsafe";
 const CONTRACTS = new Set(["requires", "ensures", "invariant"]);
 /** Q054: annotation heads that make a module-level const mutable. */
 const MUTABLE_TYPES = new Set(["Array", "Map", "Set", "Vec", "Pool", "Arena", "OwnedStruct"]);
-// Logical assignments (&&=, ||=, ??=) are disallowed and fall to E1000.
 const BINARY_OPS = new Set<K>([
   K.PlusToken, K.MinusToken, K.AsteriskToken, K.SlashToken, K.PercentToken, K.AsteriskAsteriskToken,
   K.LessThanToken, K.LessThanEqualsToken, K.GreaterThanToken, K.GreaterThanEqualsToken, K.EqualsEqualsEqualsToken, K.ExclamationEqualsEqualsToken,
@@ -33,6 +32,7 @@ const BINARY_OPS = new Set<K>([
   K.AmpersandAmpersandToken, K.BarBarToken, K.QuestionQuestionToken,
   K.EqualsToken, K.PlusEqualsToken, K.MinusEqualsToken, K.AsteriskEqualsToken, K.SlashEqualsToken, K.PercentEqualsToken, K.AsteriskAsteriskEqualsToken,
   K.AmpersandEqualsToken, K.BarEqualsToken, K.CaretEqualsToken, K.LessThanLessThanEqualsToken, K.GreaterThanGreaterThanEqualsToken, K.GreaterThanGreaterThanGreaterThanEqualsToken,
+  K.QuestionQuestionEqualsToken, K.BarBarEqualsToken, K.AmpersandAmpersandEqualsToken,
 ]);
 const PREFIX_OPS = new Set<K>([K.MinusToken, K.ExclamationToken, K.TildeToken]);
 
@@ -78,7 +78,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
   /** Contract and `test` calls that sit in an allowed position (E6001 / E6003 otherwise). */
   const allowedCalls = new Set<Node>();
   /** Q120 / Q124 / §16.1: what the enclosing function allows. Arrows inherit `thisOk` and `inTest`. */
-  let fc = { thisOk: false, async: false, inTest: false, loops: 0, breaks: 0 };
+  let fc = { thisOk: false, async: false, inTest: false, loops: 0, breaks: 0, layer: undefined as string | undefined, labels: new Set<string>() };
 
   const calleeName = (s: Node): { call: ts.CallExpression; name: string } | undefined => {
     if (s.kind !== K.ExpressionStatement) return;
@@ -95,6 +95,12 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     const ms = (n as Node & { modifiers?: ts.NodeArray<ts.ModifierLike> }).modifiers;
     for (const m of ms ?? []) {
       if (m.kind === K.DefaultKeyword) at("E1003", ms![0]!, "default export is not allowed", { kind: "default-export" });
+      else if (m.kind === K.PublicKeyword && !allowed.includes(K.PublicKeyword)) {
+        at("E1000", m, "'public' modifier is not allowed here (class members are public by default)", { kind: "public-modifier", modifier: "public" });
+        let end = m.end;
+        while (end < sf.text.length && (sf.text[end] === " " || sf.text[end] === "\t")) end++;
+        fix("remove 'public' modifier", m.getStart(sf), end, "");
+      }
       else if (!allowed.includes(m.kind)) e1000(m, "this modifier", { kind: "modifier" });
     }
   };
@@ -131,7 +137,9 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       }
     }
   }
-  for (let i = prologue(stmts, true, true); i < stmts.length; i++) {
+  const topStart = prologue(stmts, true, true);
+  fc.layer = fileLayer;
+  for (let i = topStart; i < stmts.length; i++) {
     const s = stmts[i]!;
     switch (s.kind) {
       case K.ImportDeclaration: importDecl(s as ts.ImportDeclaration); break;
@@ -154,6 +162,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         varList((s as ts.VariableStatement).declarationList, "module");
         break;
       case K.ModuleDeclaration: break; // handled above
+      case K.EnumDeclaration: at("E1000", s, "'enum' is not allowed; use a string literal union type (e.g. 'type Kind = \"a\" | \"b\"')", { kind: "enum" }); break;
       case K.ExpressionStatement: {
         const x0 = (s as ts.ExpressionStatement).expression;
         if (x0.kind === K.StringLiteral && (x0 as ts.StringLiteral).text === UNSAFE_DIRECTIVE) { at("E1009", x0, `'${UNSAFE_DIRECTIVE}' at module level`, { directive: UNSAFE_DIRECTIVE }); break; }
@@ -168,12 +177,9 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
   }
   return out;
 
-  /** Leading string-literal statements (directives, Q039). Returns the index of the first other statement.
-   * §14.4: "use unsafe" may accompany the layer directive in either order; anywhere else it is E1009. */
-  function prologue(list: ts.NodeArray<ts.Statement>, allowDirective: boolean, isModule = false): number {
+  function peekLayer(list: ts.NodeArray<ts.Statement>, allowDirective: boolean): { layerAt: number; layer: string | undefined; lits: ts.StringLiteral[] } {
     const lits: ts.StringLiteral[] = [];
-    let i = 0;
-    for (; i < list.length; i++) {
+    for (let i = 0; i < list.length; i++) {
       const s = list[i]!;
       if (s.kind !== K.ExpressionStatement || (s as ts.ExpressionStatement).expression.kind !== K.StringLiteral) break;
       lits.push((s as ts.ExpressionStatement).expression as ts.StringLiteral);
@@ -181,7 +187,14 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     let layerAt = -1;
     if (allowDirective && lits[0] && DIRECTIVES.has(lits[0].text)) layerAt = 0;
     else if (allowDirective && lits[0]?.text === UNSAFE_DIRECTIVE && lits[1] && DIRECTIVES.has(lits[1].text)) layerAt = 1;
-    const layer = layerAt >= 0 ? lits[layerAt]!.text : undefined;
+    return { layerAt, layer: layerAt >= 0 ? lits[layerAt]!.text : undefined, lits };
+  }
+
+  /** Leading string-literal statements (directives, Q039). Returns the index of the first other statement.
+   * §14.4: "use unsafe" may accompany the layer directive in either order; anywhere else it is E1009. */
+  function prologue(list: ts.NodeArray<ts.Statement>, allowDirective: boolean, isModule = false): number {
+    const { layerAt, layer, lits } = peekLayer(list, allowDirective);
+    const i = lits.length;
     if (isModule) fileLayer = layer;
     let unsafeSeen = false;
     lits.forEach((lit, j) => {
@@ -207,9 +220,9 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
   }
   function moduleDecl(d: ts.ModuleDeclaration): void {
     mods(d, [K.DeclareKeyword]);
-    if (d.name.kind !== K.StringLiteral) { e1000(d.name, "this module name"); return; }
+    if (d.name.kind !== K.StringLiteral) { e1000(d.name, "this module name", { kind: "namespace" }); return; }
     const spec = (d.name as ts.StringLiteral).text;
-    if (!spec.startsWith("c:")) { e1000(d, "this module declaration"); return; }
+    if (!spec.startsWith("c:")) { e1000(d, "this module declaration", { kind: "ambient-module" }); return; }
     if (!cSpecifierOk(spec)) at("E7002", d.name, "a 'c:' specifier is 'c:<package>:<header>'", { specifier: spec });
     else if (cDeclares.has(spec)) at("E7002", d.name, `duplicate 'declare module' for '${spec}'`, { specifier: spec });
     if (!d.body || d.body.kind !== K.ModuleBlock) { at("E7002", d.name, "'declare module' needs a body of function declarations", { specifier: spec }); return; }
@@ -399,7 +412,11 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     const isTestCb = (n.kind === K.ArrowFunction || n.kind === K.FunctionExpression) && n.parent?.kind === K.CallExpression &&
       allowedCalls.has(n.parent) && (n.parent as ts.CallExpression).arguments[1] === n;
     const inTest = (n.kind === K.ArrowFunction || n.kind === K.FunctionExpression) && (fc.inTest || isTestCb);
-    fc = { thisOk, async: !!n.modifiers?.some((m) => m.kind === K.AsyncKeyword), inTest, loops: 0, breaks: 0 };
+    const fnLayer = kind === "function" && n.body?.kind === K.Block
+      ? peekLayer((n.body as ts.Block).statements, true).layer
+      : undefined;
+    const layer = fnLayer ?? (n.kind === K.ArrowFunction || n.kind === K.FunctionExpression ? fc.layer : fileLayer);
+    fc = { thisOk, async: !!n.modifiers?.some((m) => m.kind === K.AsyncKeyword), inTest, loops: 0, breaks: 0, layer, labels: new Set<string>() };
     try { scoped(() => fn0(n, kind)); } finally { fc = saved; } // parameters and the top level of the body share one scope
   }
   function fn0(n: ts.FunctionDeclaration | ts.MethodDeclaration | ts.ArrowFunction | ts.FunctionExpression | ts.ConstructorDeclaration, kind: FnKind): void {
@@ -417,8 +434,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     else if (n.kind === K.ArrowFunction) mods(n, [K.AsyncKeyword]);
     else if (n.kind === K.Constructor) mods(n, []);
     typeParams(n.typeParameters);
-    params(n.parameters, { allowDefaults: true, allowParamProps: n.kind === K.Constructor, forbidThis: n.kind === K.Constructor });
-    for (const p of n.parameters) if (isId(p.name)) bind(p.name);
+    params(n.parameters, { allowDefaults: true, allowParamProps: n.kind === K.Constructor, forbidThis: n.kind === K.Constructor, allowRest: fc.layer === undefined, allowDestructure: true, bind: true, layer: fc.layer });
     if (n.type) type(n.type);
     const body = n.body;
     if (!body) { e1000(n, "function overload or declaration without body"); return; }
@@ -463,43 +479,64 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     }
   }
 
-  function params(list: ts.NodeArray<ts.ParameterDeclaration>, opts?: { allowDefaults?: boolean; allowParamProps?: boolean; forbidThis?: boolean }): void {
+  function params(list: ts.NodeArray<ts.ParameterDeclaration>, opts?: { allowDefaults?: boolean; allowParamProps?: boolean; forbidThis?: boolean; allowRest?: boolean; allowDestructure?: boolean; bind?: boolean; layer?: string }): void {
     let seenDefault = false;
-    for (const p of list) {
+    for (let i = 0; i < list.length; i++) {
+      const p = list[i]!;
       mods(p, opts?.allowParamProps ? [K.PrivateKeyword, K.PublicKeyword, K.ReadonlyKeyword] : []);
       if (opts?.allowParamProps) {
         const hasPub = !!p.modifiers?.some((m) => m.kind === K.PublicKeyword);
         const hasPriv = !!p.modifiers?.some((m) => m.kind === K.PrivateKeyword);
         if (hasPub && hasPriv) e1000(p.modifiers![0]!, "conflicting access modifiers");
       }
-      if (p.dotDotDotToken) { e1000(p, "rest parameter"); continue; }
-      if (!isId(p.name)) { e1000(p.name, "parameter destructuring"); continue; }
-      if (p.name.text === "this") { e1000(p.name, "'this' parameter"); continue; }
-      declName(p.name);
-      if (opts?.allowParamProps && isParamProp(p) && (SPECIAL_MEMBERS.has(p.name.text) || p.name.text.startsWith(RUNTIME_GLOBAL))) {
-        e1000(p.name, `member name '${p.name.text}'`, { kind: "reserved-name", name: p.name.text });
+      if (p.dotDotDotToken) {
+        if (!opts?.allowRest) {
+          if (opts?.layer) e1000(p, `rest parameter in '${opts.layer}' (managed only)`, { kind: "rest-param-layer", layer: opts.layer });
+          else e1000(p, "rest parameter", { kind: "rest-param" });
+          continue;
+        }
+        if (i !== list.length - 1) { e1000(p, "non-trailing rest parameter", { kind: "rest-param" }); continue; }
+        if (!isId(p.name)) { e1000(p.name, "rest parameter destructuring", { kind: "rest-param" }); continue; }
       }
+      if (!isId(p.name)) {
+        if (opts?.allowDestructure && (p.name.kind === K.ObjectBindingPattern || p.name.kind === K.ArrayBindingPattern)) {
+          if (isParamProp(p)) e1000(p.modifiers![0]!, "parameter property with destructuring", { kind: "param-destructuring" });
+          if (p.name.kind === K.ObjectBindingPattern) bindingPattern(p.name as ts.ObjectBindingPattern);
+          else arrayBindingPattern(p.name as ts.ArrayBindingPattern);
+        } else {
+          e1000(p.name, "parameter destructuring", { kind: "param-destructuring" });
+          continue;
+        }
+      } else {
+        if (p.name.text === "this") { e1000(p.name, "'this' parameter"); continue; }
+        declName(p.name);
+        if (opts?.bind) bind(p.name);
+        if (opts?.allowParamProps && isParamProp(p) && (SPECIAL_MEMBERS.has(p.name.text) || p.name.text.startsWith(RUNTIME_GLOBAL))) {
+          e1000(p.name, `member name '${p.name.text}'`, { kind: "reserved-name", name: p.name.text });
+        }
+      }
+      const idName = isId(p.name) ? { name: p.name.text } : {};
       if (p.questionToken) {
-        at("E1008", p.name, "optional parameter is not allowed", { kind: "optional-param", name: p.name.text });
+        at("E1008", p.name, "optional parameter is not allowed", { kind: "optional-param", ...idName });
         nullableFix(p.questionToken, p.type);
       } else if (p.initializer) {
-        if (!opts?.allowDefaults) {
-          at("E1008", p.name, "default parameter is not allowed here", { kind: "default-param", name: p.name.text });
+        if (!opts?.allowDefaults || p.dotDotDotToken) {
+          at("E1008", p.name, "default parameter is not allowed here", { kind: "default-param", ...idName });
         } else {
           seenDefault = true;
           const saved = fc;
           fc = { ...fc, async: false, ...(opts.forbidThis ? { thisOk: false } : {}) };
           try { expr(p.initializer); } finally { fc = saved; }
         }
-      } else if (seenDefault && opts?.allowDefaults) {
-        at("E1008", p.name, "required parameter cannot follow a default parameter", { kind: "non-trailing-default", name: p.name.text });
+      } else if (seenDefault && opts?.allowDefaults && !p.dotDotDotToken) {
+        at("E1008", p.name, "required parameter cannot follow a default parameter", { kind: "non-trailing-default", ...idName });
       }
       if (p.type) type(p.type);
     }
   }
 
   function memberName(n: Node & { name: ts.PropertyName; postfixToken?: Node; type?: ts.TypeNode }): void {
-    if (!isId(n.name)) e1000(n.name, "this member name");
+    if (!isId(n.name)) e1000(n.name, "this member name", { kind: n.name.kind === K.PrivateIdentifier ? "private-name" : n.name.kind === K.ComputedPropertyName ? "computed-property" : "member-name" });
     else if (SPECIAL_MEMBERS.has(n.name.text) || n.name.text.startsWith(RUNTIME_GLOBAL)) e1000(n.name, `member name '${n.name.text}'`, { kind: "reserved-name", name: n.name.text }); // Q123
     if (n.postfixToken?.kind === K.QuestionToken) {
       at("E1008", n.name, "optional member is not allowed", { kind: "optional-member", ...(isId(n.name) ? { name: n.name.text } : {}) });
@@ -512,11 +549,11 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     if (c.name) declName(c.name);
     typeParams(c.typeParameters);
     for (const h of c.heritageClauses ?? []) {
-      if (h.token !== K.ImplementsKeyword) { e1000(h, "'extends' on a class"); continue; }
+      if (h.token !== K.ImplementsKeyword) { e1000(h, "'extends' on a class", { kind: "class-extends" }); continue; }
       for (const t of h.types) {
         const exp = t.expression;
         const ok = isId(exp) || (exp.kind === K.PropertyAccessExpression && isId((exp as ts.PropertyAccessExpression).expression) && isId((exp as ts.PropertyAccessExpression).name));
-        if (!ok) e1000(t.expression, "this implements clause");
+        if (!ok) e1000(t.expression, "this implements clause", { kind: "implements-clause" });
         for (const a of t.typeArguments ?? []) type(a);
       }
     }
@@ -539,13 +576,13 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         }
         case K.MethodDeclaration: {
           const md = m as ts.MethodDeclaration;
-          if (md.asteriskToken) { e1000(md.asteriskToken, "generator method"); break; }
+          if (md.asteriskToken) { e1000(md.asteriskToken, "generator method", { kind: "generator" }); break; }
           memberName(md);
           fn(md, "method");
           break;
         }
         case K.Constructor:
-          if (hasCtor) e1000(m, "duplicate constructor");
+          if (hasCtor) e1000(m, "duplicate constructor", { kind: "duplicate-constructor" });
           else {
             hasCtor = true;
             const ctor = m as ts.ConstructorDeclaration;
@@ -553,7 +590,13 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
             for (const p of ctor.parameters) if (isParamProp(p) && isId(p.name)) claim(members, p.name);
           }
           break;
-        default: e1000(m, "this class member");
+        case K.GetAccessor: case K.SetAccessor:
+          e1000(m, "getter/setter accessor", { kind: "class-accessor" });
+          break;
+        case K.IndexSignature:
+          e1000(m, "index signature", { kind: "index-signature" });
+          break;
+        default: e1000(m, "this class member", { kind: "class-member" });
       }
     }
   }
@@ -577,7 +620,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         memberName(s);
         if (isId(s.name)) claim(names, s.name);
         typeParams(s.typeParameters);
-        params(s.parameters);
+        params(s.parameters, { allowRest: fc.layer === undefined, layer: fc.layer });
         if (s.type) type(s.type);
       }
     } else if (isRecordInterface(d)) {
@@ -652,9 +695,9 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
 
   function bindingPattern(p: ts.ObjectBindingPattern): void { // Q052: `const { a, b: c } = p` only
     for (const el of p.elements) {
-      if (el.dotDotDotToken) { e1000(el, "rest element"); continue; }
-      if (el.propertyName && !isId(el.propertyName)) { e1000(el.propertyName, "this property name"); continue; }
-      if (!isId(el.name)) { e1000(el.name ?? el, "nested destructuring"); continue; }
+      if (el.dotDotDotToken) { e1000(el, "rest element", { kind: "destructure-rest" }); continue; }
+      if (el.propertyName && !isId(el.propertyName)) { e1000(el.propertyName, "this property name", { kind: "destructure-property" }); continue; }
+      if (!isId(el.name)) { e1000(el.name ?? el, "nested destructuring", { kind: "nested-destructuring" }); continue; }
       declName(el.name);
       bind(el.name);
       if (el.initializer) at("E1008", el.name, "destructuring default is not allowed", { kind: "destructure-default", name: el.name.text });
@@ -663,9 +706,9 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
 
   function arrayBindingPattern(p: ts.ArrayBindingPattern): void {
     for (const el of p.elements) {
-      if (el.dotDotDotToken) { e1000(el, "rest element"); continue; }
+      if (el.dotDotDotToken) { e1000(el, "rest element", { kind: "destructure-rest" }); continue; }
       if (!el.name) continue;
-      if (!isId(el.name)) { e1000(el.name, "nested destructuring"); continue; }
+      if (!isId(el.name)) { e1000(el.name, "nested destructuring", { kind: "nested-destructuring" }); continue; }
       declName(el.name);
       bind(el.name);
       if (el.initializer) at("E1008", el.name, "destructuring default is not allowed", { kind: "destructure-default", name: el.name.text });
@@ -768,16 +811,41 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       }
       case K.BreakStatement: case K.ContinueStatement: {
         const l = (s as ts.BreakStatement).label;
-        if (l) e1000(l, "label");
-        else if (!(s.kind === K.BreakStatement ? fc.breaks : fc.loops)) e1000(s, `'${s.kind === K.BreakStatement ? "break" : "continue"}' outside a loop`); // Q124
+        if (l) {
+          if (!fc.labels.has(l.text)) at("E1000", l, `unknown label '${l.text}'`, { kind: "label" });
+        } else if (!(s.kind === K.BreakStatement ? fc.breaks : fc.loops)) {
+          e1000(s, `'${s.kind === K.BreakStatement ? "break" : "continue"}' outside a loop`, { kind: s.kind === K.BreakStatement ? "break-outside-loop" : "continue-outside-loop" }); // Q124
+        }
         return;
       }
       case K.ReturnStatement: { const e = (s as ts.ReturnStatement).expression; if (e) expr(e); return; }
-      case K.ThrowStatement: at("E1007", s, "'throw' is not allowed", { syntax: "throw" }); return;
-      case K.TryStatement: at("E1007", s, "'try' is not allowed", { syntax: "try" }); return;
+      case K.ThrowStatement: at("E1007", s, "'throw' is not allowed; return 'Result<T, E>' via 'Result.ok(...)' / 'Result.err(...)' or call 'panic(msg)'", { kind: "throw", syntax: "throw" }); return;
+      case K.TryStatement: at("E1007", s, "'try' is not allowed; propagate errors via 'Result<T, E>' instead of exceptions", { kind: "try", syntax: "try" }); return;
       case K.ForInStatement: at("E1000", s, "'for..in' is not allowed; use 'for..of' or an index loop", { kind: "for-in" }); return;
-      case K.LabeledStatement: e1000(s, "labeled statement", { kind: "labeled-statement" }); return;
-      case K.EnumDeclaration: e1000(s, "'enum' declaration", { kind: "enum" }); return;
+      case K.LabeledStatement: {
+        const ls = s as ts.LabeledStatement;
+        const inner = ls.statement;
+        const isLoop = inner.kind === K.WhileStatement || inner.kind === K.DoStatement || inner.kind === K.ForStatement || inner.kind === K.ForOfStatement;
+        if (!isLoop) {
+          at("E1000", ls.label, "labeled statements are only allowed on loops", { kind: "labeled-statement" });
+          stmt(inner);
+          return;
+        }
+        const name = ls.label.text;
+        if (fc.labels.has(name)) {
+          at("E1000", ls.label, `duplicate label '${name}'`, { kind: "labeled-statement" });
+          stmt(inner);
+          return;
+        }
+        fc.labels.add(name);
+        try {
+          stmt(inner);
+        } finally {
+          fc.labels.delete(name);
+        }
+        return;
+      }
+      case K.EnumDeclaration: at("E1000", s, "'enum' is not allowed; use a string literal union type (e.g. 'type Kind = \"a\" | \"b\"')", { kind: "enum" }); return;
       case K.EmptyStatement: e1000(s, "empty statement ';'", { kind: "empty-statement" }); return;
       case K.FunctionDeclaration: e1000(s, "nested function declaration", { kind: "nested-function" }); return;
       case K.ClassDeclaration: e1000(s, "nested class declaration", { kind: "nested-class" }); return;
@@ -790,8 +858,11 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
   }
 
   // ---- expressions (§3, §4)
-  function args(list: ts.NodeArray<ts.Expression> | undefined): void {
-    for (const a of list ?? []) expr(a); // a spread argument falls to E1000 (Q053)
+  function args(list: ts.NodeArray<ts.Expression> | undefined, allowSpread = false): void {
+    for (const a of list ?? []) {
+      if (allowSpread && a.kind === K.SpreadElement) expr((a as ts.SpreadElement).expression);
+      else expr(a);
+    }
   }
 
   function expr(e: ts.Expression): void {
@@ -810,13 +881,13 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         if (/n$/i.test(raw)) fix("remove 'n' suffix", e.getStart(sf), e.end, raw.slice(0, -1));
         return;
       }
-      case K.ThisKeyword: if (!fc.thisOk) e1000(e, "'this' outside an instance method or constructor"); return; // Q120
-      case K.TemplateExpression: for (const sp of (e as ts.TemplateExpression).templateSpans) expr(sp.expression); return;
-      case K.ParenthesizedExpression: expr((e as ts.ParenthesizedExpression).expression); return;
       case K.AwaitExpression:
-        if (!fc.async) e1000(e, "'await' outside an async function"); // Q124
+        if (!fc.async) e1000(e, "'await' outside an async function", { kind: "await-outside-async" }); // Q124
         expr((e as ts.AwaitExpression).expression);
         return;
+      case K.ThisKeyword: if (!fc.thisOk) e1000(e, "'this' outside an instance method or constructor", { kind: "this-outside-method" }); return; // Q120
+      case K.TemplateExpression: for (const sp of (e as ts.TemplateExpression).templateSpans) expr(sp.expression); return;
+      case K.ParenthesizedExpression: expr((e as ts.ParenthesizedExpression).expression); return;
       case K.ConditionalExpression: {
         const c = e as ts.ConditionalExpression;
         expr(c.condition); expr(c.whenTrue); expr(c.whenFalse);
@@ -832,9 +903,11 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
           fix(`use '${repStr}'`, op.getStart(sf), op.end, repStr);
         } else if (!BINARY_OPS.has(op.kind)) {
           const opText = op.getText(sf);
-          e1000(op, `operator '${opText}'`, { kind: "operator", op: opText });
+          e1000(op, `operator '${opText}'`, { kind: op.kind === K.InstanceOfKeyword ? "instanceof" : "operator", op: opText });
         }
-        if (op.kind === K.EqualsToken && (b.left.kind === K.ArrayLiteralExpression || b.left.kind === K.ObjectLiteralExpression)) e1000(b.left, "destructuring assignment");
+        let lhs = b.left;
+        while (lhs.kind === K.ParenthesizedExpression) lhs = (lhs as ts.ParenthesizedExpression).expression;
+        if (op.kind === K.EqualsToken && (lhs.kind === K.ArrayLiteralExpression || lhs.kind === K.ObjectLiteralExpression)) e1000(b.left, "destructuring assignment", { kind: "destructuring-assignment" });
         else expr(b.left);
         expr(b.right);
         return;
@@ -858,7 +931,6 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       }
       case K.CallExpression: {
         const c = e as ts.CallExpression;
-        if (c.questionDotToken) e1000(c, "optional call");
         const callee = c.expression;
         if (callee.kind === K.ImportKeyword) at("E7001", callee, "dynamic import is not allowed", { kind: "dynamic-import" });
         else if (isId(callee) && callee.text === "require") at("E7001", callee, "'require' is not allowed", { kind: "require" });
@@ -869,14 +941,14 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
           expr(callee);
         }
         for (const t of c.typeArguments ?? []) type(t);
-        args(c.arguments);
+        args(c.arguments, true);
         return;
       }
       case K.NewExpression: {
         const x = e as ts.NewExpression;
         expr(x.expression);
         for (const t of x.typeArguments ?? []) type(t);
-        args(x.arguments);
+        args(x.arguments, true);
         return;
       }
       case K.PropertyAccessExpression: {
@@ -887,7 +959,6 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       }
       case K.ElementAccessExpression: {
         const x = e as ts.ElementAccessExpression;
-        if (x.questionDotToken) e1000(x, "'?.[]'");
         expr(x.expression); expr(x.argumentExpression);
         return;
       }
@@ -896,17 +967,19 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         for (const p of (e as ts.ObjectLiteralExpression).properties) {
           if (p.kind === K.PropertyAssignment) {
             const pa = p as ts.PropertyAssignment;
-            if (!isId(pa.name)) e1000(pa.name, "this property name");
-            else if (pa.name.text === "__proto__") e1000(pa.name, "property name '__proto__'"); // Q123
+            if (!isId(pa.name)) e1000(pa.name, "this property name", { kind: pa.name.kind === K.ComputedPropertyName ? "computed-property" : "object-property-name" });
+            else if (pa.name.text === "__proto__") e1000(pa.name, "property name '__proto__'", { kind: "reserved-name", name: "__proto__" }); // Q123
             else claim(keys, pa.name as ts.Identifier);
             expr(pa.initializer);
           } else if (p.kind === K.ShorthandPropertyAssignment) {
             const sp = p as ts.ShorthandPropertyAssignment;
             claim(keys, sp.name as ts.Identifier);
-            if (sp.objectAssignmentInitializer) e1000(sp, "shorthand initializer");
+            if (sp.objectAssignmentInitializer) e1000(sp, "shorthand initializer", { kind: "shorthand-initializer" });
             expr(sp.name as ts.Identifier);
           } else if (p.kind === K.SpreadAssignment) expr((p as ts.SpreadAssignment).expression);
-          else e1000(p, "this object literal member");
+          else if (p.kind === K.MethodDeclaration) e1000(p, "method shorthand in object literal", { kind: "object-method" });
+          else if (p.kind === K.GetAccessor || p.kind === K.SetAccessor) e1000(p, "getter/setter in object literal", { kind: "object-accessor" });
+          else e1000(p, "this object literal member", { kind: "object-member" });
         }
         return;
       }
@@ -1017,7 +1090,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       }
       case K.FunctionType: {
         const f = t as ts.FunctionTypeNode;
-        typeParams(f.typeParameters); params(f.parameters); if (f.type) type(f.type);
+        typeParams(f.typeParameters); params(f.parameters, { allowRest: fc.layer === undefined, layer: fc.layer }); if (f.type) type(f.type);
         return;
       }
       case K.ArrayType: {

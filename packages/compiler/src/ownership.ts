@@ -30,7 +30,7 @@ export interface SliceGroupEntry { arg: number; mut: boolean; name: Node }
  * Read by the JS and C emitters and by the rt trap-site listing (traps.ts).
  */
 export const sliceGroups = new WeakMap<Node, SliceGroupEntry[][]>();
-interface Frame { loop: boolean; depth: number; breaks: State[]; continues: State[]; moves: { sym: LocalSym; node: Node }[] }
+interface Frame { loop: boolean; label?: string; depth: number; breaks: State[]; continues: State[]; moves: { sym: LocalSym; node: Node }[] }
 
 const strip = (e: ts.Expression): ts.Expression => {
   while (e.kind === K.ParenthesizedExpression) e = (e as ts.ParenthesizedExpression).expression;
@@ -176,10 +176,51 @@ class Flow {
         }
       }
     }
+    for (const p of d.parameters) {
+      if (p.name.kind === K.ObjectBindingPattern) {
+        const pt = exprTypes.get(p.name);
+        const bm = borrowMode(pt);
+        if (bm) {
+          for (const el of (p.name as ts.ObjectBindingPattern).elements) {
+            if (!isId(el.name)) continue;
+            const sym = localOf.get(el.name);
+            if (sym && movesLike(sym.type)) {
+              this.m.at("E3004", el.name, `cannot move owned field '${sym.name}' out of a ${bm === "ref" ? "Ref" : "Mut"} borrow`, { variable: sym.name, kind: "move-out-of-borrow" });
+            }
+          }
+        } else if (pt) {
+          this.checkPartialDestructure(p.name as ts.ObjectBindingPattern, unref(pt));
+        }
+        this.declared(p.name);
+      } else if (p.name.kind === K.ArrayBindingPattern) {
+        this.declared(p.name);
+      }
+    }
     const b = d.body;
     if (!b) return;
     if (b.kind === K.Block) this.stmts((b as ts.Block).statements);
     else this.ex(b as ts.Expression, "move");
+  }
+
+  private checkPartialDestructure(p: ts.ObjectBindingPattern, srcType: Type): void {
+    if (srcType.k !== "record") return;
+    const bound = new Set<string>();
+    for (const el of p.elements) {
+      if (!isId(el.name)) continue;
+      const prop = el.propertyName && isId(el.propertyName) ? el.propertyName : el.name;
+      bound.add(prop.text);
+    }
+    const omitted = srcType.fields.filter((f) => !bound.has(f.name) && movesLike(f.type));
+    if (omitted.length > 0) {
+      const names = omitted.map((f) => f.name);
+      const allOwned = srcType.fields.filter((f) => movesLike(f.type)).map((f) => f.name);
+      this.m.at(
+        "E3003",
+        p,
+        `cannot partially destructure owned struct; bind remaining owned field(s): ${names.map((n) => `'${n}'`).join(", ")} (e.g. 'const { ${allOwned.join(", ")} } = ...')`,
+        { field: names[0]!, fields: names },
+      );
+    }
   }
 
   // ---- statements
@@ -201,6 +242,7 @@ class Flow {
         this.state = join(a, this.state);
         return;
       }
+      case K.LabeledStatement: this.stmt((s as ts.LabeledStatement).statement); return;
       case K.WhileStatement: {
         const x = s as ts.WhileStatement;
         this.loop(() => {
@@ -208,7 +250,7 @@ class Flow {
           const out = isTrue(x.expression) ? null : copy(this.state);
           this.stmt(x.statement);
           return out;
-        });
+        }, false, loopLabelOf(x));
         return;
       }
       case K.DoStatement: {
@@ -219,7 +261,7 @@ class Flow {
           f.continues = [];
           this.ex(x.expression, "read");
           return isTrue(x.expression) ? null : copy(this.state);
-        }, x.expression.kind === K.FalseKeyword); // `do … while (false)` has no back edge
+        }, x.expression.kind === K.FalseKeyword, loopLabelOf(x)); // `do … while (false)` has no back edge
         return;
       }
       case K.ForStatement: {
@@ -234,7 +276,7 @@ class Flow {
           f.continues = [];
           if (x.incrementor) this.ex(x.incrementor, "read");
           return out;
-        });
+        }, false, loopLabelOf(x));
         return;
       }
       case K.ForOfStatement: {
@@ -247,7 +289,7 @@ class Flow {
           }
           this.stmt(x.statement);
           return out;
-        });
+        }, false, loopLabelOf(x));
         return;
       }
       case K.SwitchStatement: {
@@ -267,8 +309,8 @@ class Flow {
         this.state = f.breaks.reduce(join, x.caseBlock.clauses.length ? fall : s0);
         return;
       }
-      case K.BreakStatement: this.target(false)?.breaks.push(this.state); this.state = null; return;
-      case K.ContinueStatement: this.target(true)?.continues.push(this.state); this.state = null; return;
+      case K.BreakStatement: this.target(false, (s as ts.BreakStatement).label?.text)?.breaks.push(this.state); this.state = null; return;
+      case K.ContinueStatement: this.target(true, (s as ts.ContinueStatement).label?.text)?.continues.push(this.state); this.state = null; return;
       case K.ReturnStatement: {
         const r = (s as ts.ReturnStatement).expression;
         if (r) this.ex(r, "move");
@@ -279,13 +321,16 @@ class Flow {
     // P1 and P2 reject every other statement kind
   }
 
-  private push(loop: boolean): Frame {
-    const f: Frame = { loop, depth: this.loopDepth + (loop ? 1 : 0), breaks: [], continues: [], moves: [] };
+  private push(loop: boolean, label?: string): Frame {
+    const f: Frame = { loop, label, depth: this.loopDepth + (loop ? 1 : 0), breaks: [], continues: [], moves: [] };
     this.frames.push(f);
     return f;
   }
-  private target(loop: boolean): Frame | undefined {
-    for (let i = this.frames.length - 1; i >= 0; i--) if (!loop || this.frames[i]!.loop) return this.frames[i]!;
+  private target(loop: boolean, label?: string): Frame | undefined {
+    for (let i = this.frames.length - 1; i >= 0; i--) {
+      const f = this.frames[i]!;
+      if (label ? f.label === label : !loop || f.loop) return f;
+    }
     return undefined;
   }
 
@@ -293,8 +338,8 @@ class Flow {
    * One pass over a loop. `iter` runs the condition and the body, and returns the state that leaves through the condition.
    * The back edge (the body's end joined with its `continue`s) must not hold an outer local the loop moved (E3002, §5.3).
    */
-  private loop(iter: (f: Frame) => State, once = false): void {
-    const f = this.push(true);
+  private loop(iter: (f: Frame) => State, once = false, label?: string): void {
+    const f = this.push(true, label);
     const out = iter(f);
     const back = f.continues.reduce(join, this.state);
     if (!once) for (const mv of f.moves) {
@@ -315,25 +360,7 @@ class Flow {
       if (d.name.kind === K.ObjectBindingPattern && !!d.initializer && !isBorrowInit) {
         const p = d.name as ts.ObjectBindingPattern;
         const srcType = unref(exprTypes.get(p) ?? exprTypes.get(strip(d.initializer)) ?? { k: "error" });
-        if (srcType.k === "record") {
-          const bound = new Set<string>();
-          for (const el of p.elements) {
-            if (!isId(el.name)) continue;
-            const prop = el.propertyName && isId(el.propertyName) ? el.propertyName : el.name;
-            bound.add(prop.text);
-          }
-          const omitted = srcType.fields.filter((f) => !bound.has(f.name) && movesLike(f.type));
-          if (omitted.length > 0) {
-            const names = omitted.map((f) => f.name);
-            const allOwned = srcType.fields.filter((f) => movesLike(f.type)).map((f) => f.name);
-            this.m.at(
-              "E3003",
-              p,
-              `cannot partially destructure owned struct; bind remaining owned field(s): ${names.map((n) => `'${n}'`).join(", ")} (e.g. 'const { ${allOwned.join(", ")} } = ...')`,
-              { field: names[0]!, fields: names },
-            );
-          }
-        }
+        this.checkPartialDestructure(p, srcType);
       }
       if (d.initializer) this.ex(d.initializer, copyOut ? "read" : "move");
       this.declared(d.name);
@@ -529,6 +556,37 @@ class Flow {
       if (ctx !== "read" && (isId(l) || l.kind === K.PropertyAccessExpression)) this.ex(l, ctx); // the value of `x = v` is `x` (Q172)
       return;
     }
+    if (k === K.QuestionQuestionEqualsToken || k === K.BarBarEqualsToken || k === K.AmpersandAmpersandEqualsToken) {
+      const logical = k !== K.QuestionQuestionEqualsToken;
+      const l = assignTarget(b.left);
+      if (isId(l)) {
+        const sym = localOf.get(l);
+        if (sym) {
+          this.useCheck(l, sym);
+          if (borrowMode(sym.declared)) {
+            this.m.at("E3004", l, `the borrow parameter '${sym.name}' cannot be reassigned`, { variable: sym.name, kind: "reassign-borrow" });
+          } else {
+            const cAct = this.active.find((x) => x.sym.id === sym.id);
+            if (cAct) this.exclusive(l, sym, cAct.node, true);
+            if (sym.fnDepth < this.depth) this.ident(l, "read");
+          }
+        }
+        const s0 = copy(this.state);
+        this.ex(b.right, logical ? "read" : "move");
+        this.state = join(s0, this.state);
+        return;
+      }
+      const mark = this.active.length;
+      const base = this.lhs(l);
+      const bt = base && unref(exprTypes.get(base) ?? { k: "error" });
+      const struct = l.kind === K.PropertyAccessExpression && bt?.k === "record" && bt.struct;
+      const vecElem = l.kind === K.ElementAccessExpression && (genName(bt) === "Vec" || genName(bt) === "Slice");
+      const s0 = copy(this.state);
+      this.ex(b.right, logical ? "read" : struct ? "move" : vecElem ? "read" : "store");
+      this.state = join(s0, this.state);
+      this.active.length = mark;
+      return;
+    }
     if (k === K.AmpersandAmpersandToken || k === K.BarBarToken || k === K.QuestionQuestionToken) {
       const inner: Ctx = k === K.QuestionQuestionToken ? ctx : "read";
       this.ex(b.left, inner);
@@ -575,6 +633,7 @@ class Flow {
   /** An assignment target `a.f` / `a[i]`: its root is used; writing through `Ref` is E3006 (Q050). Returns the object written to. Leaves the root in `active`. */
   private lhs(l: ts.Expression): ts.Expression | undefined {
     if (isId(l)) { const sym = localOf.get(l); if (sym) this.useCheck(l, sym); return undefined; }
+    if (l.kind !== K.PropertyAccessExpression && l.kind !== K.ElementAccessExpression) return undefined;
     const obj = l.kind === K.PropertyAccessExpression ? (l as ts.PropertyAccessExpression).expression : (l as ts.ElementAccessExpression).expression;
     const tmp = this.sliceCall(strip(obj)); // Q222 (b): a written `slice` / `view` is not a borrowed argument or a receiver
     if (tmp) this.m.at("E3004", tmp.name, `'${tmp.name.text}' can only be a borrowed argument or a receiver`, { kind: "borrow-temp-position" });
@@ -766,6 +825,7 @@ class Flow {
       const mode = borrowMode(p);
       if (mode) { const u = this.borrow(a, mode, undefined, i); if (u) uses.push(u); return; }
       const x = strip(a);
+      if (x.kind === K.SpreadElement) { this.ex((x as ts.SpreadElement).expression, "read"); return; }
       if (syncCellCb && i === 0 && (x.kind === K.ArrowFunction || x.kind === K.FunctionExpression) && !hasMod(x, K.AsyncKeyword)) {
         const sub = new Flow(this.m, this.depth + 1, false, this.syncBorrowMinDepth, this.active, this.pendingMut);
         sub.callMark = this.active.length;
@@ -829,4 +889,5 @@ class Flow {
   }
 }
 
+const loopLabelOf = (n: Node): string | undefined => n.parent?.kind === K.LabeledStatement ? (n.parent as ts.LabeledStatement).label.text : undefined;
 const isTrue = (e: ts.Expression): boolean => e.kind === K.TrueKeyword;

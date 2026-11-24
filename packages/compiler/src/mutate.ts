@@ -99,7 +99,7 @@ export function hasTestType(t: Type, seen = new Set<unknown>()): boolean {
     case "union": return t.members.some((m) => hasTestType(m, seen));
     case "tuple": return t.elems.some((e) => hasTestType(e, seen));
     case "gen": return t.args.some((a) => hasTestType(a, seen));
-    case "fn": return t.params.some((p) => hasTestType(p, seen)) || hasTestType(t.ret, seen);
+    case "fn": return t.params.some((p) => hasTestType(p, seen)) || (t.rest ? hasTestType(t.rest, seen) : false) || hasTestType(t.ret, seen);
     case "class": {
       if (t.args.some((a) => hasTestType(a, seen))) return true;
       if (seen.has(t.cls)) return false;
@@ -141,7 +141,7 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
     if (!targetModSet.has(f.mod)) continue;
     const skippedName = f.mod === entryMod ? f.name : `${displayPath(f.mod.pf.path)}:${f.name}`;
     if (f.unsafe) { skipped.push({ fn: skippedName, reason: "unsafe" }); continue; }
-    if (f.sig.params.some((p) => hasTestType(p))) { skipped.push({ fn: skippedName, reason: "test-helper" }); continue; }
+    if (f.sig.params.some((p) => hasTestType(p)) || (f.sig.rest && hasTestType(f.sig.rest))) { skipped.push({ fn: skippedName, reason: "test-helper" }); continue; }
     if (!isMutatable(f.sig, false)) { skipped.push({ fn: skippedName, reason: "not-mutatable" }); continue; }
     targets.push({ fnId: targets.length, name: f.name, mod: f.mod, decl: f.decl, pure: isDeterministic(f.sig, false), fnSym: f });
   }
@@ -153,7 +153,7 @@ export async function mutateFile(entryFile: string, opts: MutateOptions = {}): P
         const qName = `${clsName}.${mName}`;
         const skippedName = m === entryMod ? qName : `${displayPath(m.pf.path)}:${qName}`;
         const extra = method.static ? [] : [clsType];
-        if (method.sig.params.some((p) => hasTestType(p)) || extra.some((e) => hasTestType(e))) { skipped.push({ fn: skippedName, reason: "test-helper" }); continue; }
+        if (method.sig.params.some((p) => hasTestType(p)) || (method.sig.rest && hasTestType(method.sig.rest)) || extra.some((e) => hasTestType(e))) { skipped.push({ fn: skippedName, reason: "test-helper" }); continue; }
         if (!isMutatable(method.sig, false, extra)) { skipped.push({ fn: skippedName, reason: "not-mutatable" }); continue; }
         targets.push({ fnId: targets.length, name: qName, mod: m, decl: method.node, pure: false, clsSym: sym.cls });
       }
@@ -729,7 +729,7 @@ async function findWitness(
   mutantId: number,
   mutState: { m: number; steps: number; stepLimit: number; deadlineMs: number; recording: boolean; watchFn: number; watchDepth: number },
 ): Promise<Witness | null> {
-  if (fnSym.sig.tparams.length !== 0 || fnSym.sig.params.length === 0) return null;
+  if (fnSym.sig.tparams.length !== 0 || fnSym.sig.params.length === 0 || fnSym.sig.rest) return null;
   if (!fnSym.sig.params.every(isGeneratable)) return null;
 
   const descs = fnSym.sig.params.map(genDescOf);

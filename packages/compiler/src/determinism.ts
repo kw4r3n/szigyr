@@ -14,7 +14,7 @@ function hasForbidden(roots: readonly Type[], badLeaf: (t: Type) => boolean, rej
       case "record": return t.fields.some((f) => bad(f.type));
       case "union": return t.members.some(bad);
       case "gen": return t.args.some(bad);
-      case "fn": return t.params.some(bad) || bad(t.ret);
+      case "fn": return t.params.some(bad) || (t.rest ? bad(t.rest) : false) || bad(t.ret);
       case "tuple": return t.elems.some(bad);
       case "resource": return bad(t.inner);
       case "class": {
@@ -53,10 +53,10 @@ const badMutLeaf = (t: Type): boolean =>
   (t.k === "gen" && UNMUTATABLE_GEN.has(t.name));
 
 export function isDeterministic(sig: FnType, unsafe = false, extraTypes: readonly Type[] = []): boolean {
-  return !unsafe && !hasForbidden([...sig.params, sig.ret, ...extraTypes], badDetLeaf, true); // §7.3 / §14: unsafe functions are never deterministic
+  return !unsafe && !hasForbidden([...sig.params, ...(sig.rest ? [sig.rest] : []), sig.ret, ...extraTypes], badDetLeaf, true); // §7.3 / §14: unsafe functions are never deterministic
 }
 
 /** SPEC-v1 §7: safe functions and class methods excluding System/Ffi/Js/JsRef/Test/Ptr/ConstPtr/CHandle. */
 export function isMutatable(sig: FnType, unsafe = false, extraTypes: readonly Type[] = []): boolean {
-  return !unsafe && !hasForbidden([...sig.params, sig.ret, ...extraTypes], badMutLeaf, false);
+  return !unsafe && !hasForbidden([...sig.params, ...(sig.rest ? [sig.rest] : []), sig.ret, ...extraTypes], badMutLeaf, false);
 }

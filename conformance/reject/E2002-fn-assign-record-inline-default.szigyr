@@ -1,0 +1,8 @@
+// expect: E2002 @ 6:21
+// stage: 1
+// open-question: Q310
+type H = { readonly f: (k: i32) => i32 };
+export function run(a: Array<i32>): Array<i32> {
+  const h: H = { f: (k: i32, d: i32 = 100): i32 => k + d };
+  return a.map(h.f);
+}

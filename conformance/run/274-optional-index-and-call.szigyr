@@ -1,0 +1,61 @@
+// expect-output: 20:null:0|12:null:null|hi:null|14:15:8:null:null:0
+// stage: 2
+// open-question: Q298
+// open-question: Q299
+
+type Holder = {
+  readonly xs: Array<i32> | null;
+  readonly fn: ((x: i32) => i32) | null;
+};
+
+function fmtIntOpt(v: i32 | null): string {
+  return v !== null ? `${v}` : "null";
+}
+
+function fmtStrOpt(v: string | null): string {
+  return v !== null ? v : "null";
+}
+
+export function main(sys: System): void {
+  let side: i32 = 0;
+  const bump = (n: i32): i32 => {
+    side += 1;
+    return n;
+  };
+  const bumpIdx = (): usize => {
+    side += 1;
+    return 1;
+  };
+
+  const a1: Array<i32> | null = [10, 20, 30];
+  const a2: Array<i32> | null = null;
+  const v1 = a1?.[1];
+  const v2 = a2?.[bumpIdx()];
+  const sideAfterIdx = side;
+
+  const h0: Holder = { xs: null, fn: (x: i32): i32 => x + 4 };
+  const h1: Holder | null = { xs: [11, 12], fn: (x: i32): i32 => x + 4 };
+  const h2: Holder | null = { xs: null, fn: null };
+  const h3: Holder | null = null;
+  const hv1 = h1?.xs?.[1];
+  const hv2 = h2?.xs?.[0];
+  const hv3 = h3?.xs?.[0];
+
+  const tup1: [i32, string] | null = [1, "hi"];
+  const tup2: [i32, string] | null = null;
+  const ts1 = tup1?.[1];
+  const ts2 = tup2?.[1];
+
+  const f1: ((x: i32) => i32) | null = (x: i32): i32 => x * 2;
+  const f2: ((x: i32) => i32) | null = null;
+  side = 0;
+  const c1 = f1?.(7);
+  const c2 = h0.fn?.(11);
+  const c2b = h1?.fn?.(4);
+  const c3 = f2?.(bump(5));
+  const c4 = h3?.fn?.(bump(6));
+
+  sys.log.info(
+    `${fmtIntOpt(v1)}:${fmtIntOpt(v2)}:${sideAfterIdx}|${fmtIntOpt(hv1)}:${fmtIntOpt(hv2)}:${fmtIntOpt(hv3)}|${fmtStrOpt(ts1)}:${fmtStrOpt(ts2)}|${fmtIntOpt(c1)}:${fmtIntOpt(c2)}:${fmtIntOpt(c2b)}:${fmtIntOpt(c3)}:${fmtIntOpt(c4)}:${side}`,
+  );
+}
