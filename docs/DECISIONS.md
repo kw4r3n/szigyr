@@ -1059,3 +1059,10 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 - **オーナー承認（2026-11-24）**:
   - 初回 cleanup（`2a68c91` 時点）では、既存 `conformance/reject/` の期待変更禁止により保留していた `x ||= v` / `x &&= v`（`Q303`: `E1000-logical-assign.szigyr`）、ラベルつきループの `break`/`continue`（`Q304`: `E1000-label.szigyr`）、`String(x)`（`Q305`: `E2000-bare-namespace-call.szigyr`）の 3 件を、`20261124-1036-ts-acceptance-review-fixes` にてオーナーが解禁承認し、`0092775` で実装・期待更新・全層/全バックエンド整合を完了した（`[..."ab"]` は `conformance/reject/E2002-array-spread-not-array.szigyr` を維持して反復可能オブジェクトの spread と両立）。
   - 続いて `20261124-1212-ts-acceptance-arity-fixes` にて、非 `rest` 関数型への代入全般（`SPEC.md` §3.5 Subtyping 改定および `run/267` のアローラップ書換えを含む `Q310`）もオーナー承認のうえ実装した（未決論点 `Q306a`–`Q306f`, `Q307`, `Q308`, `Q309`, `Q311`–`Q314` は引き続き未承認・未着手）。
+
+## D184: パーサーを閉じるときに tsgo の子プロセスへ先に `SIGKILL` を送る（`Q318`、2026-11-24）
+- 判断: `createParser().close()` は、`api.close()` を呼ぶ前に tsgo の子プロセスへ `SIGKILL` を送る。
+- 理由: typescript 7.0.2 の同期クライアントの `close()` は、パイプを閉じてから `SIGTERM` を送る。CI のランナーでは、子プロセスが継承した stderr へ `context canceled` の行を出すことがあり、stderr の完全一致を見るテストが 2 回失敗した。`SIGKILL` で終わるプロセスは何も書けない。パーサーが子プロセスに渡しているファイル操作は読み取り（`readFile` と `fileExists`）だけで、閉じる前にスナップショットを解放している。
+- 確認: ランナーのジョブのログで、`context canceled` と完全に一致する行を数えた。`main`（`189bf28`）の実行では 92 行、この変更を入れた実行では 2 回とも 0 行だった。手元ではこの行が一度も出ていないので、手元の実行では効果を確かめられない。
+- 制限: 子プロセスには同期クライアントの非公開フィールド（`client.channel.child`）をたどって届く。typescript を更新してこのフィールドが動くと、この呼び出しは何もしなくなり、エラーも出ない。そのときは `context canceled` の行がまた出るおそれがある。typescript の側の `close()` でこの行が出なくなったら、この呼び出しを消す。
+- テスト: `D111` のテストに入れていた、この行の許容は外した。
