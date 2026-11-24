@@ -1,0 +1,103 @@
+type Ev = { readonly time: u32; readonly kind: u8; readonly value: i32 };
+
+function lcg(x: u32): u32 {
+  "use rt";
+  return wrapAdd(wrapMul(x, 1664525), 1013904223);
+}
+
+function skip(seed: u32, steps: usize): u32 {
+  "use rt";
+  let x = seed;
+  for (let i: usize = 0; i < steps; i += 1) x = lcg(x);
+  return x;
+}
+
+function gen(alloc: Alloc, n: usize, seed: u32): Vec<Ev> {
+  "use owned";
+  const v = Vec.create<Ev>(alloc, n);
+  let x = seed;
+  let t: u32 = 0;
+  for (let i: usize = 0; i < n; i += 1) {
+    x = lcg(x);
+    t += x >>> 30;
+    x = lcg(x);
+    const kind = u8(rem(x >>> 24, 3));
+    x = lcg(x);
+    const value = i32(x >>> 16) - 32768;
+    v.push({ time: t, kind, value });
+  }
+  return v;
+}
+
+function merge(alloc: Alloc, a: Ref<Slice<Ev>>, b: Ref<Slice<Ev>>): Vec<Ev> {
+  "use owned";
+  const out = Vec.create<Ev>(alloc, a.length + b.length);
+  let i: usize = 0;
+  let j: usize = 0;
+  while (i < a.length && j < b.length) {
+    if (b[j].time < a[i].time) {
+      out.push(b[j]);
+      j += 1;
+    } else {
+      out.push(a[i]);
+      i += 1;
+    }
+  }
+  while (i < a.length) {
+    out.push(a[i]);
+    i += 1;
+  }
+  while (j < b.length) {
+    out.push(b[j]);
+    j += 1;
+  }
+  return out;
+}
+
+function simulate(m: Ref<Slice<Ev>>): u32 {
+  "use rt";
+  let active: u32 = 0;
+  let maxActive: u32 = 0;
+  let cc: i64 = 0;
+  for (let i: usize = 0; i < m.length; i += 1) {
+    const e = m[i];
+    if (e.kind === 0) {
+      active += 1;
+      if (active > maxActive) maxActive = active;
+    } else if (e.kind === 1) {
+      if (active > 0) active -= 1;
+    } else {
+      cc += i64(e.value);
+    }
+  }
+  let h: u32 = 17;
+  h = wrapAdd(wrapMul(h, 31), u32(m.length));
+  h = wrapAdd(wrapMul(h, 31), maxActive);
+  h = wrapAdd(wrapMul(h, 31), u32(cc & 4294967295));
+  return h;
+}
+
+function runCore(alloc: Alloc, a: Ref<Slice<Ev>>, b: Ref<Slice<Ev>>): u32 {
+  "use owned";
+  const m = merge(alloc, a, b);
+  return simulate(m);
+}
+
+const N: usize = 4000000;
+const RUNS: u32 = 7;
+
+export function main(sys: System): void {
+  const a = gen(sys.alloc, N, 12345);
+  const b = gen(sys.alloc, N, skip(12345, N * 3));
+  const times: Array<f64> = [];
+  let sum: u32 = 0;
+  for (let r: u32 = 0; r < RUNS; r += 1) {
+    const t0 = sys.clock.nowMs();
+    sum = runCore(sys.alloc, a, b);
+    times.push(sys.clock.nowMs() - t0);
+  }
+  const sorted = times.toSorted((x: f64, y: f64): f64 => x - y);
+  const best = sorted[0];
+  const med = sorted[3];
+  sys.log.info(`task=t5 variant=szigyr n=${N} checksum=${sum} best_ms=${best} median_ms=${med}`);
+}

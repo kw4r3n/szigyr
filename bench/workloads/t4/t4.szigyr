@@ -1,0 +1,99 @@
+// t4 grouping: counting layout (count per key, prefix offsets, one flat array).
+const N: usize = 8000000;
+const K: usize = 65536;
+const RUNS: u32 = 7;
+
+function gen(alloc: Alloc, n: usize): Vec<u32> {
+  "use owned";
+  // interleaved: key, value-as-u32 per pair
+  const v = Vec.create<u32>(alloc, n * 2);
+  let x: u32 = 12345;
+  for (let i: usize = 0; i < n; i += 1) {
+    x = wrapAdd(wrapMul(x, 1664525), 1013904223);
+    const a: u32 = x >>> 16;
+    x = wrapAdd(wrapMul(x, 1664525), 1013904223);
+    const b: u32 = x >>> 16;
+    x = wrapAdd(wrapMul(x, 1664525), 1013904223);
+    const c: u32 = rem(x >>> 8, 2000001);
+    v.push((a * b) >>> 16);
+    v.push(c);
+  }
+  return v;
+}
+
+function split(alloc: Alloc, pairs: Ref<Vec<u32>>, keys: Mut<Vec<u32>>, vals: Mut<Vec<i32>>): void {
+  "use owned";
+  for (let i: usize = 0; i < keys.length; i += 1) {
+    keys[i] = pairs[i * 2];
+    vals[i] = i32(pairs[i * 2 + 1]) - 1000000;
+  }
+}
+
+function group(keys: Ref<Slice<u32>>, vals: Ref<Slice<i32>>, offs: Mut<Slice<u32>>, cur: Mut<Slice<u32>>, flat: Mut<Slice<i32>>): void {
+  "use rt";
+  requires(keys.length === vals.length && keys.length === flat.length);
+  requires(offs.length === 65537 && cur.length === 65536);
+  offs.fill(0);
+  for (let i: usize = 0; i < keys.length; i += 1) {
+    const k = usize(keys[i]) + 1;
+    offs[k] = offs[k] + 1;
+  }
+  for (let k: usize = 1; k < offs.length; k += 1) offs[k] = offs[k] + offs[k - 1];
+  for (let k: usize = 0; k < cur.length; k += 1) cur[k] = offs[k];
+  for (let i: usize = 0; i < keys.length; i += 1) {
+    const k = usize(keys[i]);
+    const p = cur[k];
+    flat[usize(p)] = vals[i];
+    cur[k] = p + 1;
+  }
+}
+
+function report(offs: Ref<Slice<u32>>, flat: Ref<Slice<i32>>): u32 {
+  "use rt";
+  requires(offs.length === 65537);
+  let h: u32 = 0;
+  for (let k: usize = 0; k < 65536; k += 1) {
+    const lo = usize(offs[k]);
+    const hi = usize(offs[k + 1]);
+    if (hi > lo) {
+      let s: i64 = 0;
+      for (let j: usize = lo; j < hi; j += 1) s += i64(flat[j]);
+      h = wrapAdd(wrapMul(h, 31), u32(k));
+      h = wrapAdd(wrapMul(h, 31), u32(s & 0xFFFFFFFF));
+      h = wrapAdd(wrapMul(h, 31), u32(hi - lo));
+    }
+  }
+  return h;
+}
+
+function core(alloc: Alloc, keys: Ref<Vec<u32>>, vals: Ref<Vec<i32>>): u32 {
+  "use owned";
+  const offs = Vec.filled<u32>(alloc, 65537, 0);
+  const cur = Vec.filled<u32>(alloc, 65536, 0);
+  const flat = Vec.filled<i32>(alloc, keys.length, 0);
+  group(keys, vals, offs, cur, flat);
+  return report(offs, flat);
+}
+
+function setup(alloc: Alloc, keys: Mut<Vec<u32>>, vals: Mut<Vec<i32>>): void {
+  "use owned";
+  const pairs = gen(alloc, keys.length);
+  split(alloc, pairs, keys, vals);
+}
+
+export function main(sys: System): void {
+  const keys = Vec.filled<u32>(sys.alloc, N, 0);
+  const vals = Vec.filled<i32>(sys.alloc, N, 0);
+  setup(sys.alloc, keys, vals);
+  const times: Array<f64> = [];
+  let cs: u32 = 0;
+  for (let r: u32 = 0; r < RUNS; r += 1) {
+    const t0 = sys.clock.nowMs();
+    cs = core(sys.alloc, keys, vals);
+    times.push(sys.clock.nowMs() - t0);
+  }
+  const sorted = times.toSorted((a: f64, b: f64): f64 => a - b);
+  const best = sorted[0];
+  const med = sorted[3];
+  sys.log.info(`task=t4 variant=szigyr n=${N} checksum=${cs} best_ms=${best} median_ms=${med}`);
+}
