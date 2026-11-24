@@ -30,7 +30,7 @@ export interface SliceGroupEntry { arg: number; mut: boolean; name: Node }
  * Read by the JS and C emitters and by the rt trap-site listing (traps.ts).
  */
 export const sliceGroups = new WeakMap<Node, SliceGroupEntry[][]>();
-interface Frame { loop: boolean; depth: number; breaks: State[]; continues: State[]; moves: { sym: LocalSym; node: Node }[] }
+interface Frame { loop: boolean; label?: string; depth: number; breaks: State[]; continues: State[]; moves: { sym: LocalSym; node: Node }[] }
 
 const strip = (e: ts.Expression): ts.Expression => {
   while (e.kind === K.ParenthesizedExpression) e = (e as ts.ParenthesizedExpression).expression;
@@ -242,6 +242,7 @@ class Flow {
         this.state = join(a, this.state);
         return;
       }
+      case K.LabeledStatement: this.stmt((s as ts.LabeledStatement).statement); return;
       case K.WhileStatement: {
         const x = s as ts.WhileStatement;
         this.loop(() => {
@@ -249,7 +250,7 @@ class Flow {
           const out = isTrue(x.expression) ? null : copy(this.state);
           this.stmt(x.statement);
           return out;
-        });
+        }, false, loopLabelOf(x));
         return;
       }
       case K.DoStatement: {
@@ -260,7 +261,7 @@ class Flow {
           f.continues = [];
           this.ex(x.expression, "read");
           return isTrue(x.expression) ? null : copy(this.state);
-        }, x.expression.kind === K.FalseKeyword); // `do … while (false)` has no back edge
+        }, x.expression.kind === K.FalseKeyword, loopLabelOf(x)); // `do … while (false)` has no back edge
         return;
       }
       case K.ForStatement: {
@@ -275,7 +276,7 @@ class Flow {
           f.continues = [];
           if (x.incrementor) this.ex(x.incrementor, "read");
           return out;
-        });
+        }, false, loopLabelOf(x));
         return;
       }
       case K.ForOfStatement: {
@@ -288,7 +289,7 @@ class Flow {
           }
           this.stmt(x.statement);
           return out;
-        });
+        }, false, loopLabelOf(x));
         return;
       }
       case K.SwitchStatement: {
@@ -308,8 +309,8 @@ class Flow {
         this.state = f.breaks.reduce(join, x.caseBlock.clauses.length ? fall : s0);
         return;
       }
-      case K.BreakStatement: this.target(false)?.breaks.push(this.state); this.state = null; return;
-      case K.ContinueStatement: this.target(true)?.continues.push(this.state); this.state = null; return;
+      case K.BreakStatement: this.target(false, (s as ts.BreakStatement).label?.text)?.breaks.push(this.state); this.state = null; return;
+      case K.ContinueStatement: this.target(true, (s as ts.ContinueStatement).label?.text)?.continues.push(this.state); this.state = null; return;
       case K.ReturnStatement: {
         const r = (s as ts.ReturnStatement).expression;
         if (r) this.ex(r, "move");
@@ -320,13 +321,16 @@ class Flow {
     // P1 and P2 reject every other statement kind
   }
 
-  private push(loop: boolean): Frame {
-    const f: Frame = { loop, depth: this.loopDepth + (loop ? 1 : 0), breaks: [], continues: [], moves: [] };
+  private push(loop: boolean, label?: string): Frame {
+    const f: Frame = { loop, label, depth: this.loopDepth + (loop ? 1 : 0), breaks: [], continues: [], moves: [] };
     this.frames.push(f);
     return f;
   }
-  private target(loop: boolean): Frame | undefined {
-    for (let i = this.frames.length - 1; i >= 0; i--) if (!loop || this.frames[i]!.loop) return this.frames[i]!;
+  private target(loop: boolean, label?: string): Frame | undefined {
+    for (let i = this.frames.length - 1; i >= 0; i--) {
+      const f = this.frames[i]!;
+      if (label ? f.label === label : !loop || f.loop) return f;
+    }
     return undefined;
   }
 
@@ -334,8 +338,8 @@ class Flow {
    * One pass over a loop. `iter` runs the condition and the body, and returns the state that leaves through the condition.
    * The back edge (the body's end joined with its `continue`s) must not hold an outer local the loop moved (E3002, §5.3).
    */
-  private loop(iter: (f: Frame) => State, once = false): void {
-    const f = this.push(true);
+  private loop(iter: (f: Frame) => State, once = false, label?: string): void {
+    const f = this.push(true, label);
     const out = iter(f);
     const back = f.continues.reduce(join, this.state);
     if (!once) for (const mv of f.moves) {
@@ -552,7 +556,8 @@ class Flow {
       if (ctx !== "read" && (isId(l) || l.kind === K.PropertyAccessExpression)) this.ex(l, ctx); // the value of `x = v` is `x` (Q172)
       return;
     }
-    if (k === K.QuestionQuestionEqualsToken) {
+    if (k === K.QuestionQuestionEqualsToken || k === K.BarBarEqualsToken || k === K.AmpersandAmpersandEqualsToken) {
+      const logical = k !== K.QuestionQuestionEqualsToken;
       const l = assignTarget(b.left);
       if (isId(l)) {
         const sym = localOf.get(l);
@@ -567,7 +572,7 @@ class Flow {
           }
         }
         const s0 = copy(this.state);
-        this.ex(b.right, "move");
+        this.ex(b.right, logical ? "read" : "move");
         this.state = join(s0, this.state);
         return;
       }
@@ -577,7 +582,7 @@ class Flow {
       const struct = l.kind === K.PropertyAccessExpression && bt?.k === "record" && bt.struct;
       const vecElem = l.kind === K.ElementAccessExpression && (genName(bt) === "Vec" || genName(bt) === "Slice");
       const s0 = copy(this.state);
-      this.ex(b.right, struct ? "move" : vecElem ? "read" : "store");
+      this.ex(b.right, logical ? "read" : struct ? "move" : vecElem ? "read" : "store");
       this.state = join(s0, this.state);
       this.active.length = mark;
       return;
@@ -884,4 +889,5 @@ class Flow {
   }
 }
 
+const loopLabelOf = (n: Node): string | undefined => n.parent?.kind === K.LabeledStatement ? (n.parent as ts.LabeledStatement).label.text : undefined;
 const isTrue = (e: ts.Expression): boolean => e.kind === K.TrueKeyword;

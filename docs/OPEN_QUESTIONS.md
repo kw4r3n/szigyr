@@ -1937,29 +1937,29 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
   - (b) `managed` 限定またはトップレベル `function` のみ許可する。
 - 既定案: (a)。
 
-### Q303 論理代入演算子 `x ||= v` / `x &&= v` の解禁要否
-- 関連: §4、§3.5、Q297
-- 状況: 設計評価の指示 B は `boolean` に対する `x ||= v` / `x &&= v` の解禁を挙げていたが、既存テスト `conformance/reject/E1000-logical-assign.szigyr`（`expect: E1000 @ 4:5`）が `x ||= true;` を `E1000` として固定しており、停止条件（既存 conformance 期待変更禁止）により今回は見送った。
+### Q303 論理代入演算子 `x ||= v` / `x &&= v` の解禁要否 [決定: (b) 全層解禁]
+- 関連: §3.1、§3.5、Q297
+- 状況: 当初 `conformance/reject/E1000-logical-assign.szigyr` が `E1000` 固定だったため保留したが、承認後に同テストを非 `boolean` 左辺 `E2004` 検証へ更新して解禁した。
 - 選択肢:
-  - (a) 既存の禁止（`E1000`）を維持し、`x = x || v` / `x = x && v` への明示書き換え（`fix` / `explain`）を提供する。
-  - (b) `conformance/reject/E1000-logical-assign.szigyr` を更新して解禁する（`boolean` 左辺のみ、左辺 1 回評価・短絡評価、全層対応）。
-- 既定案: (b)（オーナー承認を得てテスト更新した上で解禁）。
+  - (a) 既存の禁止（`E1000`）を維持する。
+  - (b) 全層（`managed` / `strict` / `rt`）で解禁し、`boolean` 左右辺（`E2004`、`||=` 左辺誤りには `??=` ヒント付）・左辺 1 回評価・右辺短絡評価・契約禁止（`E6002`）・JS/C/Wasm 一致を保証する。
+- 決定: (b)（実装済み: `syntax.ts`, `expr.ts`, `checker.ts`, `ownership.ts`, `emit.ts`, `emit-c.ts`, `prove.ts`, `conformance/run/279-logical-assign*.szigyr`）。
 
-### Q304 ラベルおよびラベルつき `break` / `continue` の解禁要否
+### Q304 ラベルおよびラベルつき `break` / `continue` の解禁要否 [決定: (b) ループ専用・全層解禁]
 - 関連: §3.5、§4
-- 状況: 多重ループ脱出に用いられる `outer: for (...) { break outer; }` は JS/C/Wasm いずれにも写像可能だが、既存テスト `conformance/reject/E1000-label.szigyr`（`expect: E1000 @ 6:3`）が `outer: while (...)` を `E1000` として固定しているため停止条件により見送った（ループ専用ラベルであれば健全性上の障害はない）。
+- 状況: 多重ループ脱出に用いられるループラベルは JS/C/Wasm いずれにも健全に写像可能。承認後に `conformance/reject/E1000-label.szigyr` を非ループラベル拒否（`E1000 @ 6:3`）へ更新して解禁した。
 - 選択肢:
   - (a) `E1000` 禁止を維持する。
-  - (b) `conformance/reject/E1000-label.szigyr` を更新し、ループ文に対するラベル（シャドーイング禁止・ループ外ラベルやブロックラベルは引き続き拒否）を全層で解禁する。
-- 既定案: (b)（オーナー承認後にテスト更新して解禁）。
+  - (b) ループ文（`while` / `do..while` / `for` / `for..of`）限定で関数スコープのラベルおよび `break lbl;` / `continue lbl;` を全層解禁する（非ループ文・重複有効ラベル・未知/クロージャ越えラベルは `E1000`、中間 `using` スコープは LIFO 解放）。
+- 決定: (b)（実装済み: `syntax.ts`, `checker.ts`, `ownership.ts`, `emit.ts`, `emit-c.ts`, `prove.ts`, `conformance/run/280-labeled-loops.szigyr`）。
 
-### Q305 `String(x)` 関数形式変換の解禁要否
-- 関連: §5、§13、`docs/STDLIB.md`
-- 状況: 設計評価の実測 `probe-ts` では `String(n)` の使用例があり、`number.toString()` と並んで要望があるが、既存テスト `conformance/reject/E2000-bare-namespace-call.szigyr`（`expect: E2000 @ 5:10`）が `return String(x);` を組み込み名前空間 `String` の裸呼び出し禁止（`E2000`）として固定しているため停止条件により見送った。また現在 `String` は名前空間（`String.encodeUtf8` / `fromCodePoint`）かつ型キーワードでもある。
+### Q305 `String(x)` 関数形式変換の解禁要否 [決定: (b) `managed` 専用解禁]
+- 関連: §4、§5、§12、§13、`docs/STDLIB.md`
+- 状況: 承認後に `conformance/reject/E2000-bare-namespace-call.szigyr` を `return Math(x);`（`E2000 @ 5:10`）へ更新して解禁した。
 - 選択肢:
-  - (a) `String(x)` の禁止を維持し、診断で `${x}` テンプレート文字列または `.toString()` を案内する。
-  - (b) `conformance/reject/E2000-bare-namespace-call.szigyr` を更新し、`managed` 専用で `string | number | boolean` 引数の `String(x)` 呼び出しを許可する（`Math` / `Result` 等の非呼び出し名前空間とは独立）。
-- 既定案: (b)（`toString()` / `${x}` で代替可能だが TS 初見通過率向上のためオーナー承認次第解禁）。
+  - (a) `String(x)` の禁止を維持する。
+  - (b) `managed` 専用で単一引数（`string` / 数値 / `boolean`）の `String(x)` を解禁し、`${x}` と同一の変換結果（`i64`/`u64`/`-0`/`NaN`/`±Infinity` 含む）を返す。`strict` / `rt` は `E4001`、その他引数型・引数数誤り・スプレッド・型引数・`?.(` は `E2002`、値としての裸の `String` 参照は `E2000`、`String.*` は従来通り維持。
+- 決定: (b)（実装済み: `expr.ts`, `conformance/run/281-string-call.szigyr`）。
 
 ### Q306a `enum` 宣言（`E1000`）の扱い
 - 関連: §3.5、D181、`docs/Szigyr-design-v0.md:170`、`EVALUATION.md` §3

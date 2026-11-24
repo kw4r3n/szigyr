@@ -25,7 +25,6 @@ const UNSAFE_DIRECTIVE = "use unsafe";
 const CONTRACTS = new Set(["requires", "ensures", "invariant"]);
 /** Q054: annotation heads that make a module-level const mutable. */
 const MUTABLE_TYPES = new Set(["Array", "Map", "Set", "Vec", "Pool", "Arena", "OwnedStruct"]);
-// Logical assignments (&&=, ||=) are disallowed and fall to E1000.
 const BINARY_OPS = new Set<K>([
   K.PlusToken, K.MinusToken, K.AsteriskToken, K.SlashToken, K.PercentToken, K.AsteriskAsteriskToken,
   K.LessThanToken, K.LessThanEqualsToken, K.GreaterThanToken, K.GreaterThanEqualsToken, K.EqualsEqualsEqualsToken, K.ExclamationEqualsEqualsToken,
@@ -33,7 +32,7 @@ const BINARY_OPS = new Set<K>([
   K.AmpersandAmpersandToken, K.BarBarToken, K.QuestionQuestionToken,
   K.EqualsToken, K.PlusEqualsToken, K.MinusEqualsToken, K.AsteriskEqualsToken, K.SlashEqualsToken, K.PercentEqualsToken, K.AsteriskAsteriskEqualsToken,
   K.AmpersandEqualsToken, K.BarEqualsToken, K.CaretEqualsToken, K.LessThanLessThanEqualsToken, K.GreaterThanGreaterThanEqualsToken, K.GreaterThanGreaterThanGreaterThanEqualsToken,
-  K.QuestionQuestionEqualsToken,
+  K.QuestionQuestionEqualsToken, K.BarBarEqualsToken, K.AmpersandAmpersandEqualsToken,
 ]);
 const PREFIX_OPS = new Set<K>([K.MinusToken, K.ExclamationToken, K.TildeToken]);
 
@@ -79,7 +78,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
   /** Contract and `test` calls that sit in an allowed position (E6001 / E6003 otherwise). */
   const allowedCalls = new Set<Node>();
   /** Q120 / Q124 / §16.1: what the enclosing function allows. Arrows inherit `thisOk` and `inTest`. */
-  let fc = { thisOk: false, async: false, inTest: false, loops: 0, breaks: 0, layer: undefined as string | undefined };
+  let fc = { thisOk: false, async: false, inTest: false, loops: 0, breaks: 0, layer: undefined as string | undefined, labels: new Set<string>() };
 
   const calleeName = (s: Node): { call: ts.CallExpression; name: string } | undefined => {
     if (s.kind !== K.ExpressionStatement) return;
@@ -417,7 +416,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       ? peekLayer((n.body as ts.Block).statements, true).layer
       : undefined;
     const layer = fnLayer ?? (n.kind === K.ArrowFunction || n.kind === K.FunctionExpression ? fc.layer : fileLayer);
-    fc = { thisOk, async: !!n.modifiers?.some((m) => m.kind === K.AsyncKeyword), inTest, loops: 0, breaks: 0, layer };
+    fc = { thisOk, async: !!n.modifiers?.some((m) => m.kind === K.AsyncKeyword), inTest, loops: 0, breaks: 0, layer, labels: new Set<string>() };
     try { scoped(() => fn0(n, kind)); } finally { fc = saved; } // parameters and the top level of the body share one scope
   }
   function fn0(n: ts.FunctionDeclaration | ts.MethodDeclaration | ts.ArrowFunction | ts.FunctionExpression | ts.ConstructorDeclaration, kind: FnKind): void {
@@ -812,15 +811,40 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       }
       case K.BreakStatement: case K.ContinueStatement: {
         const l = (s as ts.BreakStatement).label;
-        if (l) e1000(l, "label", { kind: "label" });
-        else if (!(s.kind === K.BreakStatement ? fc.breaks : fc.loops)) e1000(s, `'${s.kind === K.BreakStatement ? "break" : "continue"}' outside a loop`, { kind: s.kind === K.BreakStatement ? "break-outside-loop" : "continue-outside-loop" }); // Q124
+        if (l) {
+          if (!fc.labels.has(l.text)) at("E1000", l, `unknown label '${l.text}'`, { kind: "label" });
+        } else if (!(s.kind === K.BreakStatement ? fc.breaks : fc.loops)) {
+          e1000(s, `'${s.kind === K.BreakStatement ? "break" : "continue"}' outside a loop`, { kind: s.kind === K.BreakStatement ? "break-outside-loop" : "continue-outside-loop" }); // Q124
+        }
         return;
       }
       case K.ReturnStatement: { const e = (s as ts.ReturnStatement).expression; if (e) expr(e); return; }
       case K.ThrowStatement: at("E1007", s, "'throw' is not allowed; return 'Result<T, E>' via 'Result.ok(...)' / 'Result.err(...)' or call 'panic(msg)'", { kind: "throw", syntax: "throw" }); return;
       case K.TryStatement: at("E1007", s, "'try' is not allowed; propagate errors via 'Result<T, E>' instead of exceptions", { kind: "try", syntax: "try" }); return;
       case K.ForInStatement: at("E1000", s, "'for..in' is not allowed; use 'for..of' or an index loop", { kind: "for-in" }); return;
-      case K.LabeledStatement: e1000(s, "labeled statement", { kind: "labeled-statement" }); return;
+      case K.LabeledStatement: {
+        const ls = s as ts.LabeledStatement;
+        const inner = ls.statement;
+        const isLoop = inner.kind === K.WhileStatement || inner.kind === K.DoStatement || inner.kind === K.ForStatement || inner.kind === K.ForOfStatement;
+        if (!isLoop) {
+          at("E1000", ls.label, "labeled statements are only allowed on loops", { kind: "labeled-statement" });
+          stmt(inner);
+          return;
+        }
+        const name = ls.label.text;
+        if (fc.labels.has(name)) {
+          at("E1000", ls.label, `duplicate label '${name}'`, { kind: "labeled-statement" });
+          stmt(inner);
+          return;
+        }
+        fc.labels.add(name);
+        try {
+          stmt(inner);
+        } finally {
+          fc.labels.delete(name);
+        }
+        return;
+      }
       case K.EnumDeclaration: at("E1000", s, "'enum' is not allowed; use a string literal union type (e.g. 'type Kind = \"a\" | \"b\"')", { kind: "enum" }); return;
       case K.EmptyStatement: e1000(s, "empty statement ';'", { kind: "empty-statement" }); return;
       case K.FunctionDeclaration: e1000(s, "nested function declaration", { kind: "nested-function" }); return;

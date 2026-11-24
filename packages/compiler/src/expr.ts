@@ -885,6 +885,20 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
     c.at("E2002", b.right, `expected '${show(inner)}', got '${show(rt)}'`);
     return ERROR;
   }
+  if (k === K.BarBarEqualsToken || k === K.AmpersandAmpersandEqualsToken) {
+    const op = k === K.BarBarEqualsToken ? "||=" : "&&=";
+    const lt = lvalue(c, b.left);
+    if (isErr(lt)) { c.branch(() => expr(c, b.right)); return ERROR; }
+    if (!isBool(lt)) {
+      const hint = k === K.BarBarEqualsToken ? "; for nullish fallback use '??='" : "";
+      c.at("E2004", b.left, `'${op}' expects 'boolean' left operand, got '${show(lt)}'${hint}`, { actual: show(lt) });
+      c.branch(() => expr(c, b.right));
+      return ERROR;
+    }
+    const rt = c.branch(() => expr(c, b.right, BOOL));
+    if (!isErr(rt) && !isBool(rt)) c.at("E2004", b.right, `'${op}' expects 'boolean' right operand, got '${show(rt)}'`, { actual: show(rt) });
+    return BOOL;
+  }
   const base = COMPOUND[k];
   if (base !== undefined) {
     const lt = lvalue(c, b.left);
@@ -1502,6 +1516,38 @@ function callFnSym(c: Checker, sym: FnSym, e: ts.CallExpression, anchor: Node, w
   return got;
 }
 
+function stringCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier): Type {
+  if (e.questionDotToken) {
+    c.at("E2002", callee, "'?.' cannot be used on 'String'");
+    for (const a of e.arguments) expr(c, a.kind === K.SpreadElement ? (a as ts.SpreadElement).expression : a);
+    return ERROR;
+  }
+  if (rejectSpread(c, e.arguments)) return ERROR;
+  if (!c.callAllowed("managed")) {
+    c.at("E4001", callee, "'String(...)' is managed-only", { callerLayer: c.fx.layer, calleeLayer: "managed" });
+    for (const a of e.arguments) expr(c, a);
+    return ERROR;
+  }
+  if (e.typeArguments) {
+    c.at("E2002", callee, "'String(...)' expects 0 type argument(s)");
+    for (const a of e.arguments) expr(c, a);
+    return ERROR;
+  }
+  if (e.arguments.length !== 1) {
+    c.at("E2002", callee, `'String(...)' expects 1 argument, got ${e.arguments.length}`);
+    for (const a of e.arguments) expr(c, a);
+    return ERROR;
+  }
+  const a0 = e.arguments[0]!;
+  const t = unref(expr(c, a0));
+  if (isErr(t)) return ERROR;
+  if (!(isStr(t) || isNum(t) || isBool(t))) {
+    c.at("E2002", a0, `'String(...)' expects 'string', number, or 'boolean', got '${show(t)}'`);
+    return ERROR;
+  }
+  return STR;
+}
+
 function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
   // `a?.m(args)`: the arguments may not run (Q133)
   if (e.flags & NodeFlags.OptionalChain && !optCall.has(e)) { optCall.add(e); try { return c.branch(() => call(c, e, want)); } finally { optCall.delete(e); } } // D161: the marker must not outlive this visit; a shared parser hands the next entry the same nodes
@@ -1511,6 +1557,7 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
     if (!sym && c.mod.nsImports.has(callee.text)) { c.at("E2002", callee, `module namespace '${callee.text}' is not callable`, { name: callee.text }); return ERROR; }
     if (!sym && c.prog.isTypeOnlyValue(c.mod, callee.text)) { c.at("E2002", callee, `'${callee.text}' is type-only and cannot be used as a value`, { kind: "type-only", name: callee.text }); return ERROR; }
     if (!sym && BUILTIN_FUNCTIONS.has(callee.text)) return builtinCall(c, e, callee, want);
+    if (!sym && callee.text === "String") return stringCall(c, e, callee);
     if (sym?.k === "fn") return callFnSym(c, sym, e, callee, want);
     if (sym?.k === "cfn") { // §14.1 / §14.3: unsafe callers only; rt + unsafe drops the Ffi argument
       c.noteUnsafeOp(callee); // §14.4.2
@@ -2187,8 +2234,11 @@ function bannedCall(c: Checker, p: ts.PropertyAccessExpression, recv: Type | und
 /** Q134: a contract only observes. Assignments and mutating builtin calls inside it are E6002; user calls are not analysed. */
 function observeOnly(c: Checker, root: Node): void {
   const walk = (n: Node): void => {
-    if (n.kind === K.BinaryExpression && (COMPOUND[(n as ts.BinaryExpression).operatorToken.kind] !== undefined || (n as ts.BinaryExpression).operatorToken.kind === K.EqualsToken || (n as ts.BinaryExpression).operatorToken.kind === K.QuestionQuestionEqualsToken)) {
-      c.at("E6002", n, "a contract cannot assign");
+    if (n.kind === K.BinaryExpression) {
+      const ok = (n as ts.BinaryExpression).operatorToken.kind;
+      if (COMPOUND[ok] !== undefined || ok === K.EqualsToken || ok === K.QuestionQuestionEqualsToken || ok === K.BarBarEqualsToken || ok === K.AmpersandAmpersandEqualsToken) {
+        c.at("E6002", n, "a contract cannot assign");
+      }
     } else if ((n.kind === K.PrefixUnaryExpression || n.kind === K.PostfixUnaryExpression) && [K.PlusPlusToken, K.MinusMinusToken].includes((n as ts.PrefixUnaryExpression).operator)) {
       c.at("E6002", n, "a contract cannot assign");
     } else if (n.kind === K.CallExpression && (n as ts.CallExpression).expression.kind === K.PropertyAccessExpression) {

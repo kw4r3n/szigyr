@@ -664,26 +664,30 @@ export class Checker {
         else if (a) this.narrow = endA;
         return a || b;
       }
+      case K.LabeledStatement: return this.stmt((s as ts.LabeledStatement).statement);
       case K.WhileStatement: {
         const x = s as ts.WhileStatement;
+        const lbl = loopLabelOf(x);
         this.loopEntry(x.statement, x.expression);
         const m0 = this.mark();
         cond(this, x.expression);
         const m1 = this.mark();
         this.loopBody(x.statement, this.facts(x.expression, true), undefined, m0);
-        if (isTrue(x.expression)) return hasBreak(x.statement);
-        if (!hasBreak(x.statement)) this.withFacts(this.facts(x.expression, false), m0, m1); // Q122: a break exits without the condition
+        if (isTrue(x.expression)) return hasBreak(x.statement, false, lbl);
+        if (!hasBreak(x.statement, false, lbl)) this.withFacts(this.facts(x.expression, false), m0, m1); // Q122: a break exits without the condition
         return true;
       }
       case K.DoStatement: {
         const x = s as ts.DoStatement;
+        const lbl = loopLabelOf(x);
         this.loopEntry(x.statement, x.expression);
         const r = this.loopBody(x.statement, new Map());
         cond(this, x.expression);
-        return (r && !isTrue(x.expression)) || hasBreak(x.statement);
+        return (r && !isTrue(x.expression)) || hasBreak(x.statement, false, lbl);
       }
       case K.ForStatement: {
         const x = s as ts.ForStatement;
+        const lbl = loopLabelOf(x);
         const saved = this.scope;
         this.scope = new Scope(saved);
         if (x.initializer?.kind === K.VariableDeclarationList) this.varList(x.initializer as ts.VariableDeclarationList);
@@ -695,7 +699,7 @@ export class Checker {
         this.loopBody(x.statement, x.condition ? this.facts(x.condition, true) : new Map(), () => { if (x.incrementor) this.discard(x.incrementor); }, m0);
         this.restore(outer, m1);
         this.scope = saved;
-        return (!x.condition || isTrue(x.condition)) ? hasBreak(x.statement) : true;
+        return (!x.condition || isTrue(x.condition)) ? hasBreak(x.statement, false, lbl) : true;
       }
       case K.ForOfStatement: {
         const x = s as ts.ForOfStatement;
@@ -1418,7 +1422,8 @@ function findPtrRef(n: Node): Node | undefined {
 }
 
 function isAssignOp(k: K): boolean {
-  return k === K.EqualsToken || k === K.QuestionQuestionEqualsToken || k === K.PlusEqualsToken || k === K.MinusEqualsToken || k === K.AsteriskEqualsToken || k === K.SlashEqualsToken || k === K.PercentEqualsToken || k === K.AsteriskAsteriskEqualsToken ||
+  return k === K.EqualsToken || k === K.QuestionQuestionEqualsToken || k === K.BarBarEqualsToken || k === K.AmpersandAmpersandEqualsToken ||
+    k === K.PlusEqualsToken || k === K.MinusEqualsToken || k === K.AsteriskEqualsToken || k === K.SlashEqualsToken || k === K.PercentEqualsToken || k === K.AsteriskAsteriskEqualsToken ||
     k === K.AmpersandEqualsToken || k === K.BarEqualsToken || k === K.CaretEqualsToken || k === K.LessThanLessThanEqualsToken || k === K.GreaterThanGreaterThanEqualsToken || k === K.GreaterThanGreaterThanGreaterThanEqualsToken;
 }
 /** An authority anywhere in `t`, looking through function types too (E4006 for Q189 (b) parameter types). */
@@ -1441,16 +1446,25 @@ const isPromise = hasPromise;
 const isDead = (k: string, dead: Set<string>): boolean => { for (let i = k.indexOf("."); i >= 0; i = k.indexOf(".", i + 1)) if (dead.has(k.slice(0, i))) return true; return dead.has(k); };
 
 /** Whether a `break` inside `n` targets `n` (not a nested loop or switch). */
-function hasBreak(n: Node, isSwitch = false): boolean {
+function loopLabelOf(n: Node): string | undefined {
+  return n.parent?.kind === K.LabeledStatement ? (n.parent as ts.LabeledStatement).label.text : undefined;
+}
+
+function hasBreak(n: Node, isSwitch = false, label?: string): boolean {
   let found = false;
-  const walk = (x: Node): void => {
+  const walk = (x: Node, nested: boolean): void => {
     if (found) return;
-    if (x.kind === K.BreakStatement) { found = true; return; }
-    if (x !== n && (x.kind === K.WhileStatement || x.kind === K.DoStatement || x.kind === K.ForStatement || x.kind === K.ForOfStatement || x.kind === K.SwitchStatement ||
-      x.kind === K.ArrowFunction || x.kind === K.FunctionExpression)) return;
-    x.forEachChild(walk);
+    if (x.kind === K.BreakStatement) {
+      const l = (x as ts.BreakStatement).label;
+      if (l ? (!isSwitch && l.text === label) : !nested) found = true;
+      return;
+    }
+    if (x.kind === K.ArrowFunction || x.kind === K.FunctionExpression) return;
+    const isNest = x !== n && (x.kind === K.WhileStatement || x.kind === K.DoStatement || x.kind === K.ForStatement || x.kind === K.ForOfStatement || x.kind === K.SwitchStatement);
+    if (isNest && (isSwitch || !label)) return;
+    x.forEachChild((c) => walk(c, nested || isNest));
   };
-  if (isSwitch) n.forEachChild(walk); else walk(n);
+  if (isSwitch) n.forEachChild((c) => walk(c, false)); else walk(n, false);
   return found;
 }
 

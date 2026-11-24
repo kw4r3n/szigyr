@@ -706,7 +706,7 @@ export function emitFile(
     const isIncDec = (u.kind === K.PrefixUnaryExpression || u.kind === K.PostfixUnaryExpression) &&
       ((u as ts.PrefixUnaryExpression | ts.PostfixUnaryExpression).operator === K.PlusPlusToken || (u as ts.PrefixUnaryExpression | ts.PostfixUnaryExpression).operator === K.MinusMinusToken);
     const deletable = u.kind === K.CallExpression || isIncDec || (u.kind === K.BinaryExpression &&
-      ((u as ts.BinaryExpression).operatorToken.kind === K.EqualsToken || (u as ts.BinaryExpression).operatorToken.kind === K.QuestionQuestionEqualsToken || COMPOUND[(u as ts.BinaryExpression).operatorToken.kind] !== undefined));
+      ((u as ts.BinaryExpression).operatorToken.kind === K.EqualsToken || (u as ts.BinaryExpression).operatorToken.kind === K.QuestionQuestionEqualsToken || (u as ts.BinaryExpression).operatorToken.kind === K.BarBarEqualsToken || (u as ts.BinaryExpression).operatorToken.kind === K.AmpersandAmpersandEqualsToken || COMPOUND[(u as ts.BinaryExpression).operatorToken.kind] !== undefined));
     if (!deletable) return orig;
     const et = typeOf(u);
     if (et?.k === "prim" && et.name === "never") return orig;
@@ -806,24 +806,27 @@ export function emitFile(
     const k = b.operatorToken.kind;
     const o = b.operatorToken.getText(sf);
     const anchor = (): string => at(b.operatorToken);
-    const left = k === K.EqualsToken || k === K.QuestionQuestionEqualsToken || COMPOUND[k] !== undefined ? assignTarget(b.left) : b.left; // Q133: the target without its parentheses
+    const left = k === K.EqualsToken || k === K.QuestionQuestionEqualsToken || k === K.BarBarEqualsToken || k === K.AmpersandAmpersandEqualsToken || COMPOUND[k] !== undefined ? assignTarget(b.left) : b.left; // Q133: the target without its parentheses
     if (k === K.EqualsToken && left.kind === K.ElementAccessExpression) {
       const e = left as ts.ElementAccessExpression;
       return `${RT}.setAt(${gen(e.expression)}, ${gen(e.argumentExpression)}, ${gen(b.right)}, ${at(e.argumentExpression)})`;
     }
-    if (k === K.QuestionQuestionEqualsToken) {
+    if (k === K.QuestionQuestionEqualsToken || k === K.BarBarEqualsToken || k === K.AmpersandAmpersandEqualsToken) {
+      const isNullish = k === K.QuestionQuestionEqualsToken;
+      const op = isNullish ? "??=" : k === K.BarBarEqualsToken ? "||=" : "&&=";
       if (left.kind === K.ElementAccessExpression) {
         needAp = true;
         const e = left as ts.ElementAccessExpression, ip = at(e.argumentExpression), aw = hasAwait(b.right);
         const fa = aw ? "async " : "", apCall = aw ? `(await ${AP}` : AP, close = aw ? ")" : "";
         const cur = `${RUNTIME_GLOBAL}_c`, nv = `${RUNTIME_GLOBAL}_v`;
-        return `${apCall}(${fa}(${O}, ${KEY}) => { let ${cur} = ${RT}.at(${O}, ${KEY}, ${ip}); if (${cur} == null) { const ${nv} = ${gen(b.right)}; ${RT}.setAt(${O}, ${KEY}, ${nv}, ${ip}); ${cur} = ${nv}; } return ${cur}; }, ${gen(e.expression)}, ${gen(e.argumentExpression)})${close}`;
+        const cond = isNullish ? `${cur} == null` : k === K.BarBarEqualsToken ? `!${cur}` : cur;
+        return `${apCall}(${fa}(${O}, ${KEY}) => { let ${cur} = ${RT}.at(${O}, ${KEY}, ${ip}); if (${cond}) { const ${nv} = ${gen(b.right)}; ${RT}.setAt(${O}, ${KEY}, ${nv}, ${ip}); ${cur} = ${nv}; } return ${cur}; }, ${gen(e.expression)}, ${gen(e.argumentExpression)})${close}`;
       }
       if (left.kind === K.PropertyAccessExpression) {
         const p = left as ts.PropertyAccessExpression;
-        return `(${gen(p.expression)}.${p.name.text} ??= ${gen(b.right)})`;
+        return `(${gen(p.expression)}.${p.name.text} ${op} ${gen(b.right)})`;
       }
-      return `(${gen(left)} ??= ${gen(b.right)})`;
+      return `(${gen(left)} ${op} ${gen(b.right)})`;
     }
     const base = COMPOUND[k];
     if (base !== undefined) {

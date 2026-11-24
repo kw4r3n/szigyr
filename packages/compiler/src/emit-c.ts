@@ -56,6 +56,8 @@ function canon(t: Type): Type {
 }
 const ckey = (t: Type): string => show(canon(t));
 const borrowMode = (t: Type): "Ref" | "Mut" | undefined => (t.k === "gen" && (t.name === "Ref" || t.name === "Mut") ? t.name : undefined);
+const loopLabelOf = (n: Node): string | undefined => n.parent?.kind === K.LabeledStatement ? (n.parent as ts.LabeledStatement).label.text : undefined;
+const findLoop = <T extends { label?: string }>(loops: T[], label: string): T | undefined => { for (let i = loops.length - 1; i >= 0; i--) if (loops[i]!.label === label) return loops[i]!; return undefined; };
 
 interface Local { c: string; t: Type; ptr: boolean }
 
@@ -605,7 +607,7 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
     tmp = 0; label = 0;
     hasUsing = false;
     fnDm: string | undefined;
-    loops: { cont: string; dm: string | undefined }[] = [];
+    loops: { label?: string; cont: string; dm: string | undefined; brk: string; brkDm: string | undefined; brkUsed: boolean }[] = [];
     breaks: (string | undefined)[] = [];
     ensures: ts.ArrowFunction[] = [];
     /** Inside a block-bodied ensures predicate: where its `return` goes. */
@@ -789,8 +791,9 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
           this.emit("}");
           return;
         }
+        case K.LabeledStatement: this.stmt((s as ts.LabeledStatement).statement); return;
         case K.WhileStatement: {
-          const w = s as ts.WhileStatement, cont = `sz_L${this.label++}`;
+          const w = s as ts.WhileStatement, cont = `sz_L${this.label++}`, brk = `sz_L${this.label++}`;
           const dmLoop = this.hasUsing ? `sz_dm_${this.tmp++}` : undefined;
           if (dmLoop) this.emit(`sz_defer *${dmLoop} = sz_defer_head;`);
           this.emit("for (;;) {");
@@ -798,22 +801,25 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
           const c = this.ex(w.expression); this.emit(`if (!${c}) break;`);
           const dmBody = this.hasUsing ? `sz_dm_${this.tmp++}` : undefined;
           if (dmBody) this.emit(`sz_defer *${dmBody} = sz_defer_head;`);
-          this.loops.push({ cont, dm: dmBody });
+          const lp = { label: loopLabelOf(w), cont, dm: dmBody, brk, brkDm: dmLoop, brkUsed: false };
+          this.loops.push(lp);
           this.breaks.push(dmLoop);
           this.block(() => this.stmt(w.statement));
           this.breaks.pop();
           this.loops.pop();
           this.emit("}");
+          if (lp.brkUsed) this.emit(`${brk}: ;`);
           return;
         }
         case K.DoStatement: {
-          const w = s as ts.DoStatement, cont = `sz_L${this.label++}`;
+          const w = s as ts.DoStatement, cont = `sz_L${this.label++}`, brk = `sz_L${this.label++}`;
           const dmLoop = this.hasUsing ? `sz_dm_${this.tmp++}` : undefined;
           if (dmLoop) this.emit(`sz_defer *${dmLoop} = sz_defer_head;`);
           this.emit("for (;;) {");
           const dmBody = this.hasUsing ? `sz_dm_${this.tmp++}` : undefined;
           if (dmBody) this.emit(`sz_defer *${dmBody} = sz_defer_head;`);
-          this.loops.push({ cont, dm: dmBody });
+          const lp = { label: loopLabelOf(w), cont, dm: dmBody, brk, brkDm: dmLoop, brkUsed: false };
+          this.loops.push(lp);
           this.breaks.push(dmLoop);
           this.block(() => this.stmt(w.statement));
           this.breaks.pop();
@@ -821,10 +827,11 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
           this.emit(`${cont}: ;`);
           const c = this.ex(w.expression); this.emit(`if (!${c}) break;`);
           this.emit("}");
+          if (lp.brkUsed) this.emit(`${brk}: ;`);
           return;
         }
         case K.ForStatement: {
-          const fo = s as ts.ForStatement, cont = `sz_L${this.label++}`;
+          const fo = s as ts.ForStatement, cont = `sz_L${this.label++}`, brk = `sz_L${this.label++}`;
           this.block(() => {
             if (fo.initializer) {
               if (fo.initializer.kind === K.VariableDeclarationList) for (const d of (fo.initializer as ts.VariableDeclarationList).declarations) this.varDecl(d);
@@ -836,7 +843,8 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
             if (fo.condition) { const c = this.ex(fo.condition); this.emit(`if (!${c}) break;`); }
             const dmBody = this.hasUsing ? `sz_dm_${this.tmp++}` : undefined;
             if (dmBody) this.emit(`sz_defer *${dmBody} = sz_defer_head;`);
-            this.loops.push({ cont, dm: dmBody });
+            const lp = { label: loopLabelOf(fo), cont, dm: dmBody, brk, brkDm: dmLoop, brkUsed: false };
+            this.loops.push(lp);
             this.breaks.push(dmLoop);
             this.block(() => this.stmt(fo.statement));
             this.breaks.pop();
@@ -844,17 +852,27 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
             this.emit(`${cont}: ;`);
             if (fo.incrementor) this.block(() => this.exVoid(fo.incrementor!));
             this.emit("}");
+            if (lp.brkUsed) this.emit(`${brk}: ;`);
           });
           return;
         }
         case K.BreakStatement: {
+          const lb = (s as ts.BreakStatement).label;
+          if (lb) {
+            const l = findLoop(this.loops, lb.text)!;
+            l.brkUsed = true;
+            if (l.brkDm) this.emit(`sz_defer_pop_run(${l.brkDm});`);
+            this.emit(`goto ${l.brk};`);
+            return;
+          }
           const dm = this.breaks.at(-1);
           if (dm) this.emit(`sz_defer_pop_run(${dm});`);
           this.emit("break;");
           return;
         }
         case K.ContinueStatement: {
-          const l = this.loops.at(-1)!;
+          const lb = (s as ts.ContinueStatement).label;
+          const l = lb ? findLoop(this.loops, lb.text)! : this.loops.at(-1)!;
           if (l.dm) this.emit(`sz_defer_pop_run(${l.dm});`);
           this.emit(`goto ${l.cont};`);
           return;
@@ -1212,6 +1230,28 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
           this.emit(`${p} = ${this.conv(this.ex(b.right), this.typeOf(b.right), decl)};`);
         });
         return this.t(resT, optVal(p, decl, resT), b);
+      }
+      if (k === K.BarBarEqualsToken || k === K.AmpersandAmpersandEqualsToken) {
+        const left = assignTarget(b.left), isOr = k === K.BarBarEqualsToken;
+        if (left.kind === K.ElementAccessExpression) {
+          const a = left as ts.ElementAccessExpression;
+          const { data, len, et } = this.seq(a.expression);
+          const i = this.ex(a.argumentExpression);
+          const el = elem(et, this.where);
+          if (!this.isProved(a.argumentExpression)) this.emit(`sz_chk(${i}, ${len}, ${this.pos(a.argumentExpression)});`);
+          const r = `t${this.tmp++}`;
+          this.emit(`bool ${r} = ${el.ld(data, i)};`);
+          this.emit(`if (${isOr ? "!" : ""}${r})`); this.block(() => {
+            this.emit(`${r} = ${this.ex(b.right)};`);
+            this.emit(el.st(data, i, r));
+          });
+          return this.t(this.typeOf(b), r, b);
+        }
+        const p = this.place(left);
+        this.emit(`if (${isOr ? "!" : ""}(${p}))`); this.block(() => {
+          this.emit(`${p} = ${this.ex(b.right)};`);
+        });
+        return this.t(this.typeOf(b), p, b);
       }
       const COMP: Partial<Record<K, string>> = {
         [K.PlusEqualsToken]: "+", [K.MinusEqualsToken]: "-", [K.AsteriskEqualsToken]: "*", [K.SlashEqualsToken]: "/", [K.PercentEqualsToken]: "%",

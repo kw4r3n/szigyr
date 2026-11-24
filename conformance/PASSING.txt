@@ -20,6 +20,7 @@ accept/19-destructure-spread.szigyr
 accept/193-traps-t015-literal.szigyr
 accept/194-key-equality-and-codec-generics.szigyr
 accept/195-ts-acceptance-part-b.szigyr
+accept/196-logical-assign-and-labels.szigyr
 accept/20-template-strings.szigyr
 accept/21-imports
 accept/22-class-across-files
@@ -116,6 +117,9 @@ reject/E1000-inc-in-value-pos.szigyr
 reject/E1000-interface-extends-method.szigyr
 reject/E1000-interface-mixed.szigyr
 reject/E1000-intersection-type.szigyr
+reject/E1000-label-cross-closure.szigyr
+reject/E1000-label-duplicate.szigyr
+reject/E1000-label-unknown.szigyr
 reject/E1000-label.szigyr
 reject/E1000-local-redeclares-parameter.szigyr
 reject/E1000-logical-assign.szigyr
@@ -355,6 +359,7 @@ reject/E2002-spread-builtin-fn.szigyr
 reject/E2002-spread-conversion.szigyr
 reject/E2002-spread-namespace.szigyr
 reject/E2002-spread-new.szigyr
+reject/E2002-string-call-invalid-arg.szigyr
 reject/E2002-string-lit-union-plus-assign.szigyr
 reject/E2002-string-plus-number.szigyr
 reject/E2002-stringify-map.szigyr
@@ -392,6 +397,7 @@ reject/E2003-i32-times-f64-const.szigyr
 reject/E2003-usize-compare-u32.szigyr
 reject/E2004-and-operand-number.szigyr
 reject/E2004-if-number-condition.szigyr
+reject/E2004-logical-assign-rhs.szigyr
 reject/E2004-not-operand-integer.szigyr
 reject/E2004-ternary-string-condition.szigyr
 reject/E2004-while-nullable-condition.szigyr
@@ -636,6 +642,8 @@ reject/E4001-strict-calls-managed-only-builtin.szigyr
 reject/E4001-strict-calls-managed.szigyr
 reject/E4001-strict-function-to-rt-param.szigyr
 reject/E4001-strict-param-forwarded-to-rt.szigyr
+reject/E4001-string-call-rt.szigyr
+reject/E4001-string-call-strict.szigyr
 reject/E4001-string-concat-in-rt.szigyr
 reject/E4001-string-relational-in-rt.szigyr
 reject/E4002-arena-alloc-owned.szigyr
@@ -762,6 +770,7 @@ reject/E6002-forAll-in-requires.szigyr
 reject/E6002-fs-readbytes-in-contract.szigyr
 reject/E6002-fs-remove-in-contract.szigyr
 reject/E6002-invariant-mutating-method.szigyr
+reject/E6002-logical-assign-in-contract.szigyr
 reject/E6002-proc-setexitcode-in-contract.szigyr
 reject/E6002-requires-arena-alloc.szigyr
 reject/E6002-requires-builtin-through-nullable.szigyr
@@ -986,7 +995,11 @@ run/275-rest-and-call-spread.szigyr
 run/276-param-destructuring.szigyr
 run/277-managed-stdlib-additions.szigyr
 run/278-param-destructure-cname.szigyr
+run/279-logical-assign-trap.szigyr
+run/279-logical-assign.szigyr
 run/28-trap-shift-range.szigyr
+run/280-labeled-loops.szigyr
+run/281-string-call.szigyr
 run/29-trap-invariant.szigyr
 run/30-int-no-negative-zero.szigyr
 run/40-trap-ensures-void.szigyr

@@ -51,8 +51,8 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
     const forIn = checkSrc("export function f(xs: Array<i32>): void { for (const k in xs) {} }\n").diags[0]!;
     expect(forIn).toMatchObject({ code: "E1000", message: "'for..in' is not allowed; use 'for..of' or an index loop", data: { kind: "for-in" } });
 
-    const logOrEq = checkSrc("export function f(x: boolean): void { x ||= true; }\n").diags[0]!;
-    expect(logOrEq).toMatchObject({ code: "E1000", message: "operator '||=' is not allowed", data: { kind: "operator", op: "||=" } });
+    const logOrEq = checkSrc("export function f(x: i32): void { x ||= true; }\n").diags[0]!;
+    expect(logOrEq).toMatchObject({ code: "E2004", data: { actual: "i32" } });
 
     const inter = checkSrc("type A = { readonly a: i32 };\ntype B = { readonly b: i32 };\ntype C = A & B;\n").diags[0]!;
     expect(inter).toMatchObject({ code: "E1000", data: { kind: "intersection-type" } });

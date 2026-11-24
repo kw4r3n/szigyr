@@ -1,0 +1,136 @@
+// expect-output: local:false:true:true:false:1:r1,r2,a1
+// expect-output: box:true:false:true:2:p1,b1,p2,p3,b3,p4
+// expect-output: arr:true:false:true:1:i0,ar0,i1,i2,ar2,i3
+// expect-output: vec:true:false:true:v0,vr0,v1,v2,vr2,v3
+// expect-output: strict:true:false:true:false:true:2
+// stage: 2
+
+class FlagBox {
+  flag: boolean;
+  constructor(v: boolean) {
+    this.flag = v;
+  }
+}
+
+function rhs(log: Array<string>, tag: string, val: boolean): boolean {
+  log.push(tag);
+  return val;
+}
+
+function pickBox(log: Array<string>, tag: string, b: FlagBox): FlagBox {
+  log.push(tag);
+  return b;
+}
+
+function pickIdx(log: Array<string>, tag: string, i: usize): usize {
+  log.push(tag);
+  return i;
+}
+
+function joinLog(log: Array<string>): string {
+  let out: string = "";
+  let i: usize = 0;
+  while (i < log.length) {
+    if (i > 0) out = `${out},${log[i]}`;
+    else out = log[i];
+    i += 1;
+  }
+  return out;
+}
+
+type RtFlags = OwnedStruct<{ a: boolean; b: boolean }>;
+
+function bumpIdx(log: Mut<Vec<i32>>, idx: usize): usize {
+  "use owned";
+  log.push(1);
+  return idx;
+}
+
+function strictRhs(log: Mut<Vec<i32>>, tag: i32, val: boolean): boolean {
+  "use owned";
+  log.push(tag);
+  return val;
+}
+
+function strictLogical(alloc: Alloc, log: Mut<Vec<i32>>): i32 {
+  "use owned";
+  let x: boolean = false;
+  let y: boolean = true;
+  let mask: i32 = 0;
+  const r1 = (x ||= true);
+  const r2 = (x ||= false);
+  const r3 = (y &&= true);
+  const r4 = (y &&= false);
+  const r5 = (y &&= true);
+  if (r1) mask |= 1;
+  if (r2) mask |= 2;
+  if (r3) mask |= 4;
+  if (r4) mask |= 8;
+  if (r5) mask |= 16;
+  const rf: RtFlags = { a: true, b: false };
+  const ra = (rf.a ||= strictRhs(log, 99, false));
+  const rb = (rf.b &&= strictRhs(log, 98, true));
+  const arr = Vec.create<boolean>(alloc, 2);
+  arr.push(false);
+  arr.push(true);
+  arr[bumpIdx(log, 0)] ||= strictRhs(log, 10, true);
+  arr[bumpIdx(log, 0)] ||= strictRhs(log, 11, false);
+  arr[bumpIdx(log, 1)] &&= strictRhs(log, 12, false);
+  arr[bumpIdx(log, 1)] &&= strictRhs(log, 13, true);
+  if (ra && !rb && arr[0] && !arr[1]) mask |= 32;
+  return mask;
+}
+
+export function main(sys: System): void {
+  const zero: i32 = 0;
+
+  // Local 1-eval + short-circuit + no RHS trap on short-circuit
+  const lLog: Array<string> = [];
+  let a: boolean = false;
+  const la1 = (a ||= rhs(lLog, "r1", false));
+  const la2 = (a ||= rhs(lLog, "r2", true));
+  const la3 = (a ||= rhs(lLog, "r3", false));
+  const la4 = (a ||= divTrunc(10, zero) > 0);
+  let b: boolean = true;
+  const lb1 = (b &&= rhs(lLog, "a1", false));
+  const lb2 = (b &&= rhs(lLog, "a2", true));
+  const lb3 = (b &&= divTrunc(10, zero) > 0);
+  const lCount: i32 = la4 && !lb3 ? 1 : 0;
+  sys.log.info(`local:${la1}:${la2}:${la3}:${lb1}:${!lb2 ? lCount : 0}:${joinLog(lLog)}`);
+
+  // Property access with side-effecting receiver (evaluated once even on short-circuit)
+  const pLog: Array<string> = [];
+  const box = new FlagBox(false);
+  const pb1 = (pickBox(pLog, "p1", box).flag ||= rhs(pLog, "b1", true));
+  const pb2 = (pickBox(pLog, "p2", box).flag ||= rhs(pLog, "b2", false));
+  const pb3 = (pickBox(pLog, "p3", box).flag &&= rhs(pLog, "b3", false));
+  const pb4 = (pickBox(pLog, "p4", box).flag &&= rhs(pLog, "b4", true));
+  const pOk: i32 = !pb4 && box.flag === false ? 2 : 0;
+  sys.log.info(`box:${pb1}:${pb3}:${pb2}:${pOk}:${joinLog(pLog)}`);
+
+  // Array<boolean> element 1-eval LHS + short-circuit
+  const aLog: Array<string> = [];
+  const arr: Array<boolean> = [false, true];
+  const ab1 = (arr[pickIdx(aLog, "i0", 0)] ||= rhs(aLog, "ar0", true));
+  const ab2 = (arr[pickIdx(aLog, "i1", 0)] ||= rhs(aLog, "ar1", false));
+  const ab3 = (arr[pickIdx(aLog, "i2", 1)] &&= rhs(aLog, "ar2", false));
+  const ab4 = (arr[pickIdx(aLog, "i3", 1)] &&= rhs(aLog, "ar3", true));
+  const aOk: i32 = ab1 && ab2 && !ab3 && !ab4 ? 1 : 0;
+  sys.log.info(`arr:${ab1}:${ab3}:${ab2}:${aOk}:${joinLog(aLog)}`);
+
+  // Vec<boolean> element 1-eval LHS + short-circuit
+  const vLog: Array<string> = [];
+  const vec = Vec.create<boolean>(sys.alloc, 2);
+  vec.push(false);
+  vec.push(true);
+  const vb1 = (vec[pickIdx(vLog, "v0", 0)] ||= rhs(vLog, "vr0", true));
+  const vb2 = (vec[pickIdx(vLog, "v1", 0)] ||= rhs(vLog, "vr1", false));
+  const vb3 = (vec[pickIdx(vLog, "v2", 1)] &&= rhs(vLog, "vr2", false));
+  const vb4 = (vec[pickIdx(vLog, "v3", 1)] &&= rhs(vLog, "vr3", true));
+  sys.log.info(`vec:${vb1}:${vb3}:${vb2 && !vb4}:${joinLog(vLog)}`);
+
+  const sLog = Vec.create<i32>(sys.alloc, 8);
+  const mask = strictLogical(sys.alloc, sLog);
+  const traceOk = sLog.length === 6 && sLog[0] === 1 && sLog[1] === 10 && sLog[2] === 1 && sLog[3] === 1 && sLog[4] === 12 && sLog[5] === 1;
+  sys.log.info(`strict:${(mask & 1) !== 0}:${(mask & 8) !== 0}:${(mask & 32) !== 0}:${(mask & 16) !== 0}:${traceOk}:2`);
+}

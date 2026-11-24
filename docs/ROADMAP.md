@@ -265,10 +265,11 @@
 ## TS 受理改善・診断・標準ライブラリ拡充（2026-11-24、`agy/ts-acceptance-20261124`）
 
 - [x] **破壊・構文受理の整理**: 分割代入代入の P3 クラッシュ修正（`E1000`）、`??=`、`?.[i]`、`f?.()` / `o?.f?.()`、末尾レスト引数 `...rest: Array<T>`、call spread `f(...xs)` / `Math.min|max(...xs)`、引数分割代入（レコード／`OwnedStruct` 全層＋タプル `managed`）を実装し、`conformance` 3 バックエンド一致を確認。
-- [x] **禁止理由と診断 (`D181`–`D183`, `Q303`–`Q309`)**: `docs/DECISIONS.md` に §3.5 禁止理由表と Group A/B 遡及記録を追記。既存 `conformance` 期待と衝突する `||=`/`&&=`・ラベルつき `break`/`continue`・`String(x)` は `OPEN_QUESTIONS.md` へ保留。`E1000`/`E1007`/`E4002`/`E4003` に `data.kind`・安全 `--fix`・`strict` 局所変数カスケード抑止・`explain` 種別別案内を追加。
-- [x] **managed 標準ライブラリ拡充＋`bench/probe-ts/`**: 数値 `.toString(radix?)` / `.toFixed(digits?)`（`i64`/`u64` は `toString` のみ、`Q309`）、`Array.at` / `.toSorted(cmp)` / `.splice`、`Promise.resolve`、`new Set(iterable?)`、`[...iterable]`（`Set`/`Map`/イテレータ）を追加。`bench/probe-ts/run.ts`（CI 外、31 本の Node 比較）の前後実測:
+- [x] **禁止理由と診断 (`D181`–`D183`, `Q303`–`Q309`)**: `docs/DECISIONS.md` に §3.5 禁止理由表と Group A/B 遡及記録を追記。`E1000`/`E1007`/`E4002`/`E4003` に `data.kind`・安全 `--fix`・`strict` 局所変数カスケード抑止・`explain` 種別別案内を追加。承認後に `Q303` (`||=`/`&&=`, 全層)・`Q304` (ループ限定ラベル, 全層)・`Q305` (`String(x)`, `managed` 専用) も解禁し JS/C/Wasm 一致を確認。
+- [x] **managed 標準ライブラリ拡充＋`bench/probe-ts/`**: 数値 `.toString(radix?)` / `.toFixed(digits?)`（`i64`/`u64` は `toString` のみ、`Q309`）、`Array.at` / `.toSorted(cmp)` / `.splice`、`Promise.resolve`、`new Set(iterable?)`、`[...iterable]`（`Set`/`Map`/イテレータ）、`String(x)` を追加。`bench/probe-ts/run.ts`（CI 外、31 本の Node 比較）の実測:
   - 作業前（`517a3f0`）: `accepted: 5/31`, `matched: 5/5`（`p31_generator` は未捕捉 `TypeError`）
-  - 作業後（`agy/ts-acceptance-20261124`）: `accepted: 8/31`（`p03_defaultrest`, `p05_spread`, `p27_tuple` が新規受理）, `matched: 8/8`（`p31_generator` は `E1000` 診断へ安定化）
+  - 途中（`2a68c91`、Q303–Q305 解禁前）: `accepted: 8/31`（`p03_defaultrest`, `p05_spread`, `p27_tuple` が新規受理）, `matched: 8/8`（`p31_generator` は `E1000` 診断へ安定化）
+  - Q303–Q305 解禁後: `accepted: 9/31`（`p30_labeled` が新規受理）, `matched: 9/9`
 
 ## 保留
 

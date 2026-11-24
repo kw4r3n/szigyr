@@ -1,6 +1,6 @@
-// expect: E1000 @ 4:5
-// stage: 1
-function f(x: boolean): boolean {
+// expect: E2004 @ 4:3
+// stage: 2
+function f(x: i32): i32 {
   x ||= true;
   return x;
 }

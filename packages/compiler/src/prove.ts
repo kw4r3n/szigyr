@@ -268,8 +268,7 @@ class FnProver {
   private readonly tagIds = new Map<string, bigint>();
   private localsById: Map<number, LocalSym> | undefined;
   private loopDepth = 0;
-  private loopBreaks: State[] = [];
-  private loopContinues: State[] = [];
+  private jumpFrames: { label?: string; breaks: State[]; continues?: State[] }[] = [];
 
   constructor(decls: Decls, f: FnSym, contracts: Map<FnSym, ExtractedContracts>) {
     this.decls = decls;
@@ -1004,6 +1003,39 @@ class FnProver {
         return { smt: `(ite ${nnCond} ${l.smt} ${r.smt})`, exact: nnExact && l.exact && r.exact };
       }
       return { smt: this.freshForType(t, "nullish"), exact: false };
+    }
+    if (k === K.BarBarEqualsToken || k === K.AmpersandAmpersandEqualsToken) {
+      const isOr = k === K.BarBarEqualsToken;
+      const left = this.assignTargetNode(b.left);
+      if (left.kind === K.ElementAccessExpression) {
+        const a = left as ts.ElementAccessExpression;
+        const arrVal = await this.checkExpr(a.expression, st);
+        const lenTerm = this.isLenCall(a.expression) ? arrVal : this.containerLen(a.expression, st);
+        const idx = await this.checkExpr(a.argumentExpression, st);
+        this.addObligation("T002", "index in bounds [0, length)", a.argumentExpression, mod, st, `(and (>= ${idx.smt} 0) (< ${idx.smt} ${lenTerm.smt}))`, idx.exact && lenTerm.exact);
+        st.assumptions.push(`(and (>= ${idx.smt} 0) (< ${idx.smt} ${lenTerm.smt}))`);
+        const baseLen = st.assumptions.length;
+        const lSmt = this.fresh("Bool", "log_elem");
+        const skipCond = isOr ? lSmt : `(not ${lSmt})`;
+        const skipSt = cloneState(st);
+        skipSt.assumptions.push(skipCond);
+        const runSt = cloneState(st);
+        runSt.assumptions.push(`(not ${skipCond})`);
+        await this.checkExpr(b.right, runSt);
+        this.joinInto(st, skipSt, runSt, skipCond, baseLen);
+        return { smt: this.freshForType(t, "logical_assign"), exact: false };
+      }
+      const l = await this.checkExpr(left, st);
+      const baseLen = st.assumptions.length;
+      const skipCond = isOr ? l.smt : `(not ${l.smt})`;
+      const skipSt = cloneState(st);
+      skipSt.assumptions.push(skipCond);
+      const runSt = cloneState(st);
+      runSt.assumptions.push(`(not ${skipCond})`);
+      const r = await this.checkExpr(b.right, runSt);
+      this.assignPlaceFromExpr(left, b.right, r, runSt);
+      this.joinInto(st, skipSt, runSt, skipCond, baseLen);
+      return { smt: isOr ? `(or ${l.smt} ${r.smt})` : `(and ${l.smt} ${r.smt})`, exact: l.exact && r.exact };
     }
     const comp = ARITH_ASSIGN[k];
     if (comp) return this.checkAssign(b, comp, st);
@@ -2033,7 +2065,7 @@ class FnProver {
       if (n.kind === K.BinaryExpression) {
         const b = n as ts.BinaryExpression;
         const k = b.operatorToken.kind;
-        if (k === K.EqualsToken || ARITH_ASSIGN[k] || k === K.SlashEqualsToken || k === K.PercentEqualsToken || BIT_ASSIGN.has(k)) {
+        if (k === K.EqualsToken || k === K.QuestionQuestionEqualsToken || k === K.BarBarEqualsToken || k === K.AmpersandAmpersandEqualsToken || ARITH_ASSIGN[k] || k === K.SlashEqualsToken || k === K.PercentEqualsToken || BIT_ASSIGN.has(k)) {
           const lt = strip(b.left);
           if (isId(lt)) {
             const sym = localOf.get(lt);
@@ -2341,15 +2373,21 @@ class FnProver {
     return { invs, rest: stmts.slice(i) };
   }
 
-  private hasBreak(n: Node): boolean {
+  private hasBreak(n: Node, label?: string): boolean {
     let found = false;
-    const walk = (x: Node): void => {
+    const walk = (x: Node, nested: boolean): void => {
       if (found) return;
-      if (x.kind === K.BreakStatement) { found = true; return; }
-      if (x.kind === K.ForStatement || x.kind === K.WhileStatement || x.kind === K.DoStatement || x.kind === K.SwitchStatement) return;
-      x.forEachChild(walk);
+      if (x.kind === K.BreakStatement) {
+        const l = (x as ts.BreakStatement).label;
+        if (l ? l.text === label : !nested) found = true;
+        return;
+      }
+      if (x.kind === K.ArrowFunction || x.kind === K.FunctionExpression) return;
+      const isNest = x !== n && (x.kind === K.ForStatement || x.kind === K.WhileStatement || x.kind === K.DoStatement || x.kind === K.ForOfStatement || x.kind === K.SwitchStatement);
+      if (isNest && !label) return;
+      x.forEachChild((c) => walk(c, nested || isNest));
     };
-    walk(n);
+    walk(n, false);
     return found;
   }
 
@@ -2438,12 +2476,16 @@ class FnProver {
         return;
       }
       case K.BreakStatement: {
-        this.loopBreaks.push(cloneState(st));
+        const lb = (s as ts.BreakStatement).label?.text;
+        const f = lb ? findJumpFrame(this.jumpFrames, lb) : this.jumpFrames.at(-1);
+        f?.breaks.push(cloneState(st));
         st.terminated = true;
         return;
       }
       case K.ContinueStatement: {
-        this.loopContinues.push(cloneState(st));
+        const lb = (s as ts.ContinueStatement).label?.text;
+        const f = lb ? findJumpFrame(this.jumpFrames, lb) : findInnerLoopFrame(this.jumpFrames);
+        f?.continues?.push(cloneState(st));
         st.terminated = true;
         return;
       }
@@ -2505,14 +2547,16 @@ class FnProver {
           pendingHasDefault = false;
           prevFall = undefined;
 
-          const savedBreaks = this.loopBreaks;
           const swBreaks: State[] = [];
-          this.loopBreaks = swBreaks;
-          for (const st2 of cl.statements) {
-            await this.checkStmt(st2, clSt);
-            if (clSt.terminated) break;
+          this.jumpFrames.push({ breaks: swBreaks });
+          try {
+            for (const st2 of cl.statements) {
+              await this.checkStmt(st2, clSt);
+              if (clSt.terminated) break;
+            }
+          } finally {
+            this.jumpFrames.pop();
           }
-          this.loopBreaks = savedBreaks;
           for (const br of swBreaks) { br.terminated = false; branchStates.push(br); }
           if (!clSt.terminated) prevFall = clSt;
         }
@@ -2533,6 +2577,10 @@ class FnProver {
         st.inexact = acc.inexact;
         st.assumptions = acc.assumptions;
         st.terminated = false;
+        return;
+      }
+      case K.LabeledStatement: {
+        await this.checkStmt((s as ts.LabeledStatement).statement, st);
         return;
       }
       case K.ForStatement:
@@ -2592,10 +2640,9 @@ class FnProver {
     }
 
     const bodySt = cloneState(loopSt);
-    const savedBreaks = this.loopBreaks;
-    const savedContinues = this.loopContinues;
-    this.loopBreaks = [];
-    this.loopContinues = [];
+    const breaks: State[] = [];
+    const continues: State[] = [];
+    this.jumpFrames.push({ label: loopLabelOf(loop), breaks, continues });
     this.loopDepth++;
     try {
       for (const stmt of rest) {
@@ -2604,10 +2651,8 @@ class FnProver {
       }
     } finally {
       this.loopDepth--;
+      this.jumpFrames.pop();
     }
-    const continues = this.loopContinues;
-    this.loopBreaks = savedBreaks;
-    this.loopContinues = savedContinues;
 
     const backEdges: State[] = [...continues];
     if (!bodySt.terminated) backEdges.push(bodySt);
@@ -2705,10 +2750,9 @@ class FnProver {
     const bodySt = cloneState(loopSt);
     if (!isDo && condExpr) bodySt.assumptions.push(condAfterHead.smt);
 
-    const savedBreaks = this.loopBreaks;
-    const savedContinues = this.loopContinues;
-    this.loopBreaks = [];
-    this.loopContinues = [];
+    const breaks: State[] = [];
+    const continues: State[] = [];
+    this.jumpFrames.push({ label: loopLabelOf(loop), breaks, continues });
     this.loopDepth++;
     try {
       for (const stmt of rest) {
@@ -2717,11 +2761,8 @@ class FnProver {
       }
     } finally {
       this.loopDepth--;
+      this.jumpFrames.pop();
     }
-    const breaks = this.loopBreaks;
-    const continues = this.loopContinues;
-    this.loopBreaks = savedBreaks;
-    this.loopContinues = savedContinues;
 
     // 4. Check back-edges (body end + continues): run for-incrementor and verify explicit invariant (step)
     const backEdges: State[] = [...continues];
@@ -2743,7 +2784,7 @@ class FnProver {
     // 5. Post-loop exit state (if loop broke mid-body, fall back to sound havoc across exits)
     if (breaks.length > 0 || isDo) {
       this.havocModSet(modSet, st);
-      if (!this.hasBreak(body) && isDo && condExpr) {
+      if (!this.hasBreak(body, loopLabelOf(loop)) && isDo && condExpr) {
         const dc = this.evalPureBool(condExpr, st, this.f.mod, new Map());
         st.assumptions.push(`(not ${dc.smt})`);
       }
@@ -3315,4 +3356,18 @@ export async function proveFile(entryFile: string, opts: ProveOptions = {}): Pro
     summary: { functions: fnResults.length, proved, failed, unknown, timeout, cached, skipped },
     proved: { anchors, provedPrivateRequires },
   };
+}
+
+function loopLabelOf(n: Node): string | undefined {
+  return n.parent?.kind === K.LabeledStatement ? (n.parent as ts.LabeledStatement).label.text : undefined;
+}
+
+function findJumpFrame<T extends { label?: string }>(frames: T[], label: string): T | undefined {
+  for (let i = frames.length - 1; i >= 0; i--) if (frames[i]!.label === label) return frames[i]!;
+  return undefined;
+}
+
+function findInnerLoopFrame<T extends { continues?: unknown }>(frames: T[]): T | undefined {
+  for (let i = frames.length - 1; i >= 0; i--) if (frames[i]!.continues) return frames[i]!;
+  return undefined;
 }
