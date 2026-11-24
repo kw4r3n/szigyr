@@ -84,6 +84,7 @@
 | E2002 | 初期化、代入、実引数、`return` の型の不一致 | 値の式の先頭 | Q002 |
 | E2002 | ユーザー型にないメンバ | メンバ名 | Q007 |
 | E2002 | 演算子と型の組み合わせが不正（E2003 / E2007 以外） | 演算子トークン | Q008, Q017–Q019 |
+| E2002 | 符号なし整数とリテラル `0` の比較が常に真または偽（`>= 0`、`< 0` と左右反転、`data.kind = "unsigned-compare-zero"`） | 演算子トークン | Q319 |
 | E2002 | 非 `void` 関数が末尾に到達しうる | 関数名。アロー関数なら `=>` | Q023, Q221 |
 | E2002 | `switch` の空でない `case` / `default` からの暗黙のフォールスルー | `case` / `default` キーワード | SPEC §4 |
 | E2002 | 未初期化の class フィールド | フィールド名 | Q029 |
@@ -181,7 +182,7 @@
 - **`E1000`** (`syntax.ts`): `"enum"`, `"public-modifier"`, `"modifier"`, `"duplicate-declaration"`, `"module-statement"`, `"directive"`, `"namespace"`, `"ambient-module"`, `"rest-param-layer"`, `"rest-param"`, `"param-destructuring"`, `"reserved-name"`, `"private-name"`, `"computed-property"`, `"member-name"`, `"class-extends"`, `"implements-clause"`, `"generator"`, `"duplicate-constructor"`, `"class-accessor"`, `"index-signature"`, `"class-member"`, `"interface-extends"`, `"interface-mixed"`, `"destructure-rest"`, `"destructure-property"`, `"nested-destructuring"`, `"misplaced-directive"`, `"label"`, `"break-outside-loop"`, `"continue-outside-loop"`, `"for-in"`, `"labeled-statement"`, `"empty-statement"`, `"nested-function"`, `"nested-class"`, `"nested-interface"`, `"nested-type"`, `"with"`, `"debugger"`, `"bigint-literal"`, `"await-outside-async"`, `"this-outside-method"`, `"instanceof"`, `"operator"`, `"destructuring-assignment"`, `"inc-dec"`, `"unary-operator"`, `"object-property-name"`, `"shorthand-initializer"`, `"object-method"`, `"object-accessor"`, `"object-member"`, `"regex-flag"`, `"regex-syntax"`, `"typeof"`, `"delete"`, `"void"`, `"tagged-template"`, `"super"`, `"yield"`, `"spread"`, `"array-hole"`, `"class-expression"`, `"empty-tuple"`, `"tuple-rest"`, `"intersection-type"`, `"type-operator"`, `"type-query"`, `"indexed-access-type"`, `"conditional-type"`, `"mapped-type"`, `"object-type"`, `"symbol-type"`, `"template-literal-type"`, `"syntax"`
 - **`E4002`** (`checker.ts`): `"managed-array"`, `"mutable-record"`, `"managed-string"`
 - **`E4003`** (`checker.ts` / `expr.ts`): `"strict-fn-type"`, `"strict-arrow"`, `"strict-fn-arg"`, `"cfn-arg"`, `"generic-fn"`, `"cfn-in-forAll"`
-- **その他の追加 `data.kind`**: `E2002` `"bad-rest-type"`, `"callback-extra-params"`, `"spread-non-rest"`, `"void-value"`、および `E3004` `"move-out-of-borrow"`
+- **その他の追加 `data.kind`**: `E2002` `"bad-rest-type"`, `"callback-extra-params"`, `"spread-non-rest"`, `"void-value"`, `"unsigned-compare-zero"`、および `E3004` `"move-out-of-borrow"`
 
 ### 付録 B の期待位置（既定案による）
 

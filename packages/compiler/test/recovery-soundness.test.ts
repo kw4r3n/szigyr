@@ -275,7 +275,7 @@ export function f(): i32 {
 export function good(v: Ref<Vec<i32>>): usize {
   let i: usize = 0;
   while (i < v.length) {
-    invariant(i >= 0 && i <= v.length);
+    invariant(i <= v.length);
     i = i + 1;
   }
   return i;
@@ -288,7 +288,7 @@ function nextRand(r: Random): u32 { return r.nextU32(); }
 export function bad(r: Random): i32 {
   let i: i32 = 0;
   while (i < 2) {
-    invariant(nextRand(r) >= 0);
+    invariant(nextRand(r) > 0);
     i = i + 1;
   }
   return i;

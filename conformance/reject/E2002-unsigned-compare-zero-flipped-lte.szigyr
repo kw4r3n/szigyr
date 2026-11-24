@@ -1,0 +1,6 @@
+// expect: E2002 @ 5:12
+// stage: 1
+// open-question: Q319
+export function f(n: usize): boolean {
+  return 0 <= n;
+}

@@ -1,0 +1,7 @@
+// expect: E2002 @ 5:14
+// stage: 1
+// open-question: Q319
+export function f(n: usize): usize {
+  requires(n >= 0);
+  return n;
+}

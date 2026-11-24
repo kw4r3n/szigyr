@@ -37,7 +37,7 @@ test("all generatable types", (t: Test) => {
     st: Set<i32>,
     mp: Map<string, i32>
   ): void => {
-    t.ok(arr.length >= 0);
+    t.ok(arr.length < 1000);
   });
   forAll((
     cs: CopyS,
@@ -46,7 +46,7 @@ test("all generatable types", (t: Test) => {
     vs: Vec<CopyS>,
     vo: Vec<i32 | null>
   ): void => {
-    t.ok(v.length >= 0);
+    t.ok(v.length < 1000);
   });
   forAll((
     r1: Ref<OwnedS>,
@@ -56,6 +56,6 @@ test("all generatable types", (t: Test) => {
     r3: Ref<Slice<i32>>,
     m3: Mut<Slice<i32>>
   ): void => {
-    t.ok(r3.length >= 0 && m3.length >= 0);
+    t.ok(r3.length < 1000 && m3.length < 1000);
   });
 });

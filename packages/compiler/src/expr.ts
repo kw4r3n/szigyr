@@ -1023,8 +1023,10 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
     case K.LessThanToken: case K.LessThanEqualsToken: case K.GreaterThanToken: case K.GreaterThanEqualsToken: {
       const [lt, rt] = operands(c, b.left, b.right, undefined);
       if (isErr(lt) || isErr(rt)) return BOOL;
-      if (isNum(lt) && isNum(rt)) { if (lt.name !== rt.name) c.at("E2003", op, `cannot compare '${lt.name}' and '${rt.name}'`, { left: lt.name, right: rt.name }); }
-      else if (isStr(lt) && isStr(rt)) {
+      if (isNum(lt) && isNum(rt)) {
+        if (lt.name !== rt.name) c.at("E2003", op, `cannot compare '${lt.name}' and '${rt.name}'`, { left: lt.name, right: rt.name });
+        else unsignedZero(c, op, b.left, b.right, lt.name, k);
+      } else if (isStr(lt) && isStr(rt)) {
         if (!c.callAllowed("managed")) c.at("E4001", op, "string relational comparison is managed-only", { callerLayer: c.fx.layer, calleeLayer: "managed" });
       }
       else c.at("E2002", op, "relational operators need numbers of the same type or strings"); // Q018
@@ -1065,6 +1067,31 @@ function eqable(t: Type): boolean {
 function trapCode(c: Checker, a: ts.Expression, name = "traps"): void {
   const ok = (a.kind === K.StringLiteral || a.kind === K.NoSubstitutionTemplateLiteral) && /^T(00[1-9]|01[0-5])$/.test((a as ts.StringLiteral).text);
   if (!ok) c.at("E2002", a, `the first argument of '${name}' must be a trap code literal "T001" - "T015"`);
+}
+
+function isZeroLit(e: ts.Expression): boolean {
+  const unwrap = (x: ts.Expression): ts.Expression => {
+    while (x.kind === K.ParenthesizedExpression) x = (x as ts.ParenthesizedExpression).expression;
+    return x;
+  };
+  let cur = unwrap(e);
+  if (cur.kind === K.PrefixUnaryExpression && (cur as ts.PrefixUnaryExpression).operator === K.MinusToken) {
+    cur = unwrap((cur as ts.PrefixUnaryExpression).operand);
+  }
+  return cur.kind === K.NumericLiteral && numValue(cur as ts.NumericLiteral) === 0;
+}
+
+/** Rejects unsigned `>= 0` / `< 0` (and flipped forms) whose result is determined by type alone (Q319). */
+function unsignedZero(c: Checker, op: Node, l: ts.Expression, r: ts.Expression, name: NumName, k: K): void {
+  if (name !== "u8" && name !== "u16" && name !== "u32" && name !== "u64" && name !== "usize") return;
+  const rz = isZeroLit(r), lz = isZeroLit(l);
+  if (rz === lz) return;
+  const always = rz
+    ? (k === K.GreaterThanEqualsToken ? true : k === K.LessThanToken ? false : undefined)
+    : (k === K.LessThanEqualsToken ? true : k === K.GreaterThanToken ? false : undefined);
+  if (always !== undefined) {
+    c.at("E2002", op, `'${name}' is never negative, so this comparison is always ${always}; remove it (for a descending loop, write 'for (let i = n; i > 0; i--)' and index with 'i - 1')`, { kind: "unsigned-compare-zero", type: name, always });
+  }
 }
 
 /** Q017: which types `===` / `!==` accept. */

@@ -22,6 +22,7 @@ accept/194-key-equality-and-codec-generics.szigyr
 accept/195-ts-acceptance-part-b.szigyr
 accept/196-logical-assign-and-labels.szigyr
 accept/197-do-while-continue-with-return.szigyr
+accept/198-unsigned-compare-zero-ok.szigyr
 accept/20-template-strings.szigyr
 accept/21-imports
 accept/22-class-across-files
@@ -415,6 +416,16 @@ reject/E2002-union-duplicate-kind.szigyr
 reject/E2002-union-i32-or-string.szigyr
 reject/E2002-union-nullable-mixed.szigyr
 reject/E2002-union-records-without-kind.szigyr
+reject/E2002-unsigned-compare-zero-flipped-gt.szigyr
+reject/E2002-unsigned-compare-zero-flipped-lte.szigyr
+reject/E2002-unsigned-compare-zero-lt.szigyr
+reject/E2002-unsigned-compare-zero-neg-zero.szigyr
+reject/E2002-unsigned-compare-zero-requires.szigyr
+reject/E2002-unsigned-compare-zero-rev-loop.szigyr
+reject/E2002-unsigned-compare-zero-u16.szigyr
+reject/E2002-unsigned-compare-zero-u32.szigyr
+reject/E2002-unsigned-compare-zero-u64.szigyr
+reject/E2002-unsigned-compare-zero-u8.szigyr
 reject/E2002-usize-init-from-u32.szigyr
 reject/E2002-vec-f32-to-slice-f64.szigyr
 reject/E2002-vec-for-of.szigyr

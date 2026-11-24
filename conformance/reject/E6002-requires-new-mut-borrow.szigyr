@@ -9,6 +9,6 @@ class K {
   }
 }
 function f(v: Mut<Vec<f32>>): usize {
-  requires(new K(v).n >= 0);
+  requires(new K(v).n > 0);
   return 1;
 }

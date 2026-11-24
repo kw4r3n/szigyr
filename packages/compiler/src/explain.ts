@@ -126,6 +126,7 @@ const ENTRIES: Record<string, ExplainEntry> = Object.fromEntries([
     "interface-extends-struct": "Do not extend an 'OwnedStruct' type from an interface; define a plain record interface or pass the 'OwnedStruct' directly.",
     "interface-field-conflict": "Ensure inherited and declared interface fields with the same name share identical types and 'readonly' modifiers.",
     "borrow-target": "Use 'Ref<T>' / 'Mut<T>' only with an Owned type or 'Slice<T>'.",
+    "unsigned-compare-zero": "An unsigned integer is never negative, so comparing it with 0 using '>=' or '<' (or the flipped forms) always gives the same answer. Remove the comparison. For a descending loop, write 'for (let i = n; i > 0; i--)' and index with 'i - 1'.",
     "missing-return": "Ensure every control-flow path in the function ends with a 'return' statement of the expected type.",
     "illegal-return-union": "Add an explicit return type annotation or return values forming a single type, string-literal union, tagged union, or 'T | null'.",
     "switch-fallthrough": "End every non-empty 'switch' case with 'break' or 'return' (empty stacked 'case' labels without statements may share a body).",

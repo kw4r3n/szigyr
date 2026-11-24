@@ -174,7 +174,7 @@ describe("Phase 3: Result<Owned, E> and OwnedCell.withRef / withMut", () => {
         `}`,
         ``,
         `function checkResVec(r: Result<Vec<i32>, i32>): boolean {`,
-        `  if (r.kind === "ok") return r.value.length >= 0;`,
+        `  if (r.kind === "ok") return r.value.length < 1000;`,
         `  return r.error === r.error;`,
         `}`,
         ``,

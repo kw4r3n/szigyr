@@ -356,4 +356,21 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
     expect(checkSrc("export function main(): void {\n  const f: (() => void) | null = (): void => {};\n  const r = f?.() ?? 1;\n}\n").diags.map((d) => d.code)).toEqual(["E2002"]);
     expect(checkSrc("class C { m(): void {} }\nexport function main(): void {\n  const c: C | null = new C();\n  const r = c?.m();\n}\n").diags.map((d) => d.code)).toEqual(["E2002"]);
   });
+
+  it("rejects unsigned integer comparisons with literal 0 that are constant by type (Q319)", () => {
+    for (const ty of ["u8", "u16", "u32", "u64", "usize"]) {
+      const ge = checkSrc(`export function f(n: ${ty}): boolean { return n >= 0; }\n`).diags;
+      expect(ge).toHaveLength(1);
+      expect(ge[0]).toMatchObject({ code: "E2002", data: { kind: "unsigned-compare-zero", type: ty, always: true } });
+      expect(ge[0]!.message).toContain("for (let i = n; i > 0; i--)");
+
+      const lt = checkSrc(`export function f(n: ${ty}): boolean { return n < -0; }\n`).diags;
+      expect(lt[0]).toMatchObject({ code: "E2002", data: { kind: "unsigned-compare-zero", type: ty, always: false } });
+    }
+    expect(checkSrc("export function f(n: usize): boolean { return (-0) <= n && 0 > n; }\n").diags.map((d) => d.data)).toEqual([
+      { kind: "unsigned-compare-zero", type: "usize", always: true },
+      { kind: "unsigned-compare-zero", type: "usize", always: false },
+    ]);
+    expect(explainCode("E2002")?.kinds?.["unsigned-compare-zero"]).toContain("i > 0");
+  });
 });

@@ -123,7 +123,7 @@ test("clampU8 boundary and forAll monotonicity", (t: Test) => {
     requires(Number.isFinite(a) && Number.isFinite(b));
     const ca = clampU8(a);
     const cb = clampU8(b);
-    const inRange = ca >= 0 && ca <= 255 && cb >= 0 && cb <= 255;
+    const inRange = ca <= 255 && cb <= 255;
     const mono = a <= b ? ca <= cb : cb <= ca;
     return inRange && mono;
   });
