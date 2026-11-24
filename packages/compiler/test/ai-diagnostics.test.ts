@@ -437,7 +437,7 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
     for (const [code, ks] of [
       ["E1000", ["utility-type", "no-initializer", "literal-type", "type-param-default"]],
       ["E1005", ["as", "as-const"]],
-      ["E2000", ["js-global"]],
+      ["E2000", ["js-global", "use-before-declaration"]],
       ["E2002", ["template-nullable", "iterate-string", "compare-structural"]],
       ["E2004", ["truthiness"]],
     ] as const) {
@@ -463,5 +463,201 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
       expect(d.message.toLowerCase()).toContain("rename");
       expect(d.fixes).toBeUndefined();
     }
+  });
+
+  it("rejects use before declaration within blocks with E2000 use-before-declaration across all value, type, and using paths (Q322)", () => {
+    const assertUbd = (src: string, name: string, declLine: number) => {
+      const ds = checkSrc(src).diags;
+      expect(ds.length, src).toBeGreaterThan(0);
+      expect(ds[0], src).toMatchObject({ code: "E2000", data: { kind: "use-before-declaration", name } });
+      expect(ds[0]!.message, src).toContain(`line ${declLine}`);
+      expect(ds[0]!.message, src).toContain("move the declaration above this use");
+      expect(ds[0]!.fixes, src).toBeUndefined();
+    };
+
+    // n6: no outer binding -> upgraded from unknown name to use-before-declaration
+    assertUbd([
+      "export function main(sys: System): void {",
+      "  function g(): i32 { return k; }",
+      "  const k: i32 = 3;",
+      "  sys.log.info(`${g()}`);",
+      "}",
+      "",
+    ].join("\n"), "k", 3);
+
+    // lvalue, compound assignment, and incDec
+    assertUbd("export function f(): void {\n  let x: i32 = 1;\n  {\n    x = 2;\n    let x: i32 = 3;\n  }\n}\n", "x", 5);
+    assertUbd("export function f(): void {\n  let x: i32 = 1;\n  {\n    x += 1;\n    let x: i32 = 3;\n  }\n}\n", "x", 5);
+    assertUbd("export function f(): void {\n  let x: i32 = 1;\n  {\n    x++;\n    let x: i32 = 3;\n  }\n}\n", "x", 5);
+
+    // special-form value paths: fnArgRef, fuzzContracts, forAll, Resource.own, spawn.isolate, audio.open, cfn, newExpr, static member, switch case
+    assertUbd([
+      'function dbl(x: i32): i32 { "use owned"; return x * 2; }',
+      'function apply(f: (x: i32) => i32, v: i32): i32 { "use owned"; return f(v); }',
+      "export function main(): i32 {",
+      "  const r = apply(dbl, 3);",
+      "  const dbl: i32 = 9;",
+      "  return r + dbl;",
+      "}",
+      "",
+    ].join("\n"), "dbl", 5);
+    assertUbd([
+      "function id(x: i32): i32 { requires(x >= 0); return x; }",
+      'test("fuzz", (t: Test) => {',
+      "  fuzzContracts(id);",
+      "  const id: i32 = 1;",
+      "  t.eq(id, 1);",
+      "});",
+      "",
+    ].join("\n"), "id", 4);
+    assertUbd([
+      "function id(x: i32): boolean { return x >= 0; }",
+      'test("fa", (t: Test) => {',
+      "  forAll(id);",
+      "  const id: i32 = 1;",
+      "  t.eq(id, 1);",
+      "});",
+      "",
+    ].join("\n"), "id", 4);
+    assertUbd([
+      'function dropV(v: Vec<i32>): void { "use owned"; }',
+      "export function f(a: Alloc): i32 {",
+      "  using r = Resource.own(Vec.create<i32>(a, 1), dropV);",
+      "  const dropV: i32 = 1;",
+      "  return dropV;",
+      "}",
+      "",
+    ].join("\n"), "dropV", 4);
+    assertUbd([
+      'function dropV(v: Vec<i32>): void { "use owned"; }',
+      "export function f(a: Alloc): void {",
+      "  using dropV = Resource.own(Vec.create<i32>(a, 1), dropV);",
+      "}",
+      "",
+    ].join("\n"), "dropV", 3);
+    assertUbd([
+      "function worker(p: Port<i32, i32>): void {}",
+      "export function main(sys: System): i32 {",
+      "  const p = sys.spawn.isolate(worker);",
+      "  const worker: i32 = 1;",
+      "  p.close();",
+      "  return worker;",
+      "}",
+      "",
+    ].join("\n"), "worker", 4);
+    assertUbd([
+      'function render(st: i32, out: Mut<Slice<f32>>, frames: usize): void { "use rt"; }',
+      "export async function main(sys: System): Promise<i32> {",
+      "  const s = await sys.audio.open({ sampleRate: 48000, channels: 2 }, 0, render);",
+      "  const render: i32 = 1;",
+      "  return render;",
+      "}",
+      "",
+    ].join("\n"), "render", 4);
+    assertUbd([
+      'function cb(x: i32): i32 { "use rt"; return x; }',
+      "export function f(): void {",
+      '  "use owned"; "use unsafe";',
+      "  const p = cfn(cb);",
+      "  const cb: i32 = 1;",
+      "}",
+      "",
+    ].join("\n"), "cb", 5);
+    assertUbd([
+      "class Box { static readonly V: i32 = 1; }",
+      "export function f(): i32 {",
+      "  const a = Box.V;",
+      "  const Box: i32 = 2;",
+      "  return a + Box;",
+      "}",
+      "",
+    ].join("\n"), "Box", 4);
+    assertUbd([
+      "const TAG: i32 = 1;",
+      "export function f(x: i32): i32 {",
+      "  switch (x) {",
+      "    case TAG: return 1;",
+      "    default: return 0;",
+      "  }",
+      "  const TAG: i32 = 2;",
+      "}",
+      "",
+    ].join("\n"), "TAG", 7);
+
+    // non-Checker.typeOf type paths: localTypeAlias (aliasBody), nestedFn & checkArrow constraints (resolveConstraint)
+    assertUbd([
+      "export function f(): void {",
+      "  type P = i32;",
+      "  {",
+      "    type A = P;",
+      "    type P = string;",
+      "  }",
+      "}",
+      "",
+    ].join("\n"), "P", 5);
+    assertUbd([
+      "export function f(): void {",
+      "  type P = i32;",
+      "  {",
+      "    function g<T extends P>(x: T): T { return x; }",
+      "    type P = string;",
+      "  }",
+      "}",
+      "",
+    ].join("\n"), "P", 5);
+    assertUbd([
+      "export function f(): void {",
+      "  const g = <T extends P>(x: T): T => x;",
+      "  type P = i32;",
+      "}",
+      "",
+    ].join("\n"), "P", 3);
+
+    // using & await using self-ref in initializer
+    assertUbd([
+      "class D implements Disposable { readonly id: i32; constructor(id: i32) { this.id = id; } dispose(): void {} }",
+      "function wrap(d: D): D { return new D(d.id + 1); }",
+      "export function f(): i32 {",
+      "  const r = new D(1);",
+      "  {",
+      "    using r = wrap(r);",
+      "    return r.id;",
+      "  }",
+      "}",
+      "",
+    ].join("\n"), "r", 6);
+    assertUbd([
+      "class AD implements AsyncDisposable { readonly id: i32; constructor(id: i32) { this.id = id; } async disposeAsync(): Promise<void> {} }",
+      "async function mk(d: AD): Promise<AD> { return new AD(d.id + 1); }",
+      "export async function f(): Promise<i32> {",
+      "  const r = new AD(1);",
+      "  {",
+      "    await using r = await mk(r);",
+      "    return r.id;",
+      "  }",
+      "}",
+      "",
+    ].join("\n"), "r", 6);
+
+    // multi-declarator, destructuring, for..of destructuring, contracts, default param TDZ
+    assertUbd("export function f(): i32 {\n  const b: i32 = 1;\n  {\n    const a: i32 = 1, b: i32 = b + 1;\n    return a + b;\n  }\n}\n", "b", 4);
+    assertUbd("export function f(): i32 {\n  const a: i32 = 1;\n  {\n    const { a }: { readonly a: i32 } = { a };\n    return a;\n  }\n}\n", "a", 4);
+    assertUbd("export function f(): i32 {\n  const a: Array<[i32, i32]> = [[1, 2]];\n  let s: i32 = 0;\n  for (const [a, b] of a) { s += a + b; }\n  return s;\n}\n", "a", 4);
+    assertUbd("export function f(x: i32): i32 {\n  requires(x > k);\n  const k: i32 = 0;\n  return x + k;\n}\n", "k", 3);
+    assertUbd("const x: i32 = 1;\nexport function f(x: i32 = x): i32 { return x; }\n", "x", 2);
+
+    // Own type parameter shadowing a later local type in the enclosing block stays valid
+    expect(checkSrc([
+      "export function f(): i32 {",
+      "  type A<P> = { readonly v: P };",
+      "  function g<P>(x: P): P { return x; }",
+      "  const h = <P>(x: P): P => x;",
+      "  const a: A<i32> = { v: g<i32>(1) + h<i32>(2) };",
+      "  type P = string;",
+      "  const s: P = \"ok\";",
+      "  return a.v + i32(s.length);",
+      "}",
+      "",
+    ].join("\n")).diags).toEqual([]);
   });
 });

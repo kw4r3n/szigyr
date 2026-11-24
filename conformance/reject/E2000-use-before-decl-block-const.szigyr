@@ -1,0 +1,11 @@
+// expect: E2000 @ 7:15
+// stage: 1
+// open-question: Q322
+export function main(sys: System): void {
+  const v: i32 = 1;
+  {
+    const r = v;
+    const v: i32 = 2;
+    sys.log.info(`${r}|${v}`);
+  }
+}

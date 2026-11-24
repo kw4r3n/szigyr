@@ -564,7 +564,14 @@ export class Program {
   /** Q022: parameters always annotated; return annotated for named functions and methods (anchor: the name). */
   signature(d: ts.SignatureDeclaration, name: Node | undefined, outer: TypeEnv, requireRet = true, owner: Layer = "managed", allowOwned = false): FnType {
     const tparams = tparamShells(d.typeParameters, owner, allowOwned);
-    const e: TypeEnv = { mod: outer.mod, tparams: new Map([...outer.tparams, ...tparams.map((p) => [p.name, p] as const)]), ...(outer.cscope ? { cscope: outer.cscope } : {}) };
+    const ownTps = tparams.length ? new Set(tparams.map((p) => p.name)) : undefined;
+    const e: TypeEnv = {
+      mod: outer.mod,
+      tparams: new Map([...outer.tparams, ...tparams.map((p) => [p.name, p] as const)]),
+      ...(outer.cscope ? { cscope: outer.cscope } : {}),
+      ...(outer.locals ? { locals: outer.locals } : {}),
+      ...(outer.checkPendingType ? { checkPendingType: ownTps ? (id) => !ownTps.has(id.text) && outer.checkPendingType!(id) : outer.checkPendingType } : {}),
+    };
     this.constraints(d.typeParameters, tparams, e);
     const params: Type[] = [];
     let rest: Type | undefined;
@@ -642,12 +649,18 @@ export class Program {
     decls?.forEach((d, i) => { if (d.constraint) this.resolveConstraint(d.constraint, ps[i]!, e); });
   }
 
-  aliasBody(a: Extract<TypeSym, { k: "alias" }>): Type {
+  aliasBody(a: Extract<TypeSym, { k: "alias" }>, extra?: Pick<TypeEnv, "checkPendingType">): Type {
     if (a.body) return a.body;
     if (a.busy) return ERROR; // typeRef reports the cycle (Q085); shortcut: recursive aliases stay unsupported, upgrade with a lazy alias type
     a.busy = true;
     a.tparams ??= tparamShells(a.decl.typeParameters);
-    const e: TypeEnv = { mod: a.mod, tparams: new Map(a.tparams.map((p) => [p.name, p])), ...(a.locals ? { locals: a.locals } : {}) };
+    const ownTps = a.tparams.length ? new Set(a.tparams.map((p) => p.name)) : undefined;
+    const e: TypeEnv = {
+      mod: a.mod,
+      tparams: new Map(a.tparams.map((p) => [p.name, p])),
+      ...(a.locals ? { locals: a.locals } : {}),
+      ...(extra?.checkPendingType ? { checkPendingType: ownTps ? (id) => !ownTps.has(id.text) && extra.checkPendingType!(id) : extra.checkPendingType } : {}),
+    };
     this.constraints(a.decl.typeParameters, a.tparams, e);
     a.body = this.typeOf(a.decl.type, e);
     a.busy = false;
@@ -979,6 +992,7 @@ export class Program {
 
   typeRef(id: ts.Identifier, argNodes: ts.NodeArray<ts.TypeNode> | undefined, whole: Node, e: TypeEnv): Type {
     const name = id.text;
+    if (e.checkPendingType?.(id)) return ERROR;
     const args = (argNodes ?? []).map((a) => (name === "OwnedStruct" || name === "CStruct" ? ERROR : this.typeOf(a, e, name === "Promise" || name === "Ptr" || name === "ConstPtr" || name === "CHandle"))); // `Promise<void>` (Q028); `Ptr<void>` (§14.4)
     const arity = (n: number): boolean => {
       if (args.length === n) return true;
@@ -1066,7 +1080,7 @@ export function legalUnion(u: Type): boolean {
   return isTaggedUnion(rest) && new Set(rest.members.map(kindOf)).size === rest.members.length;
 }
 
-export interface TypeEnv { mod: Module; tparams: Map<string, TParam>; cscope?: Map<string, CStructSym>; locals?: ReadonlyMap<string, TypeSym> }
+export interface TypeEnv { mod: Module; tparams: Map<string, TParam>; cscope?: Map<string, CStructSym>; locals?: ReadonlyMap<string, TypeSym>; checkPendingType?: (id: ts.Identifier) => boolean }
 
 export const tparamShells = (list: ts.NodeArray<ts.TypeParameterDeclaration> | undefined, owner?: Layer, allowOwned = false): TParam[] =>
   (list ?? []).map((d) => ({ ...newTParam(d.name.text), noPromise: true, ...(owner ? { owner } : {}), ...(allowOwned ? { allowOwned } : {}) }));

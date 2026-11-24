@@ -50,8 +50,21 @@ interface FnCtx {
 class Scope {
   readonly vars = new Map<string, LocalSym>();
   readonly types = new Map<string, TypeSym>();
+  readonly tparams = new Set<string>();
+  /** Names declared later in this block (value / type namespace) -> declaration line; removed once usable. */
+  readonly pendingVals = new Map<string, number>();
+  readonly pendingTypes = new Map<string, number>();
   readonly parent: Scope | undefined;
   constructor(parent?: Scope) { this.parent = parent; }
+  /** The declaration line when `name` resolves to a later declaration of an enclosing block (use before declaration). */
+  pending(name: string, types: boolean): number | undefined {
+    for (let s: Scope | undefined = this; s; s = s.parent) {
+      if (types ? (s.types.has(name) || s.tparams.has(name)) : s.vars.has(name)) return undefined;
+      const l = (types ? s.pendingTypes : s.pendingVals).get(name);
+      if (l !== undefined) return l;
+    }
+    return undefined;
+  }
   lookup(name: string): LocalSym | undefined { return this.vars.get(name) ?? this.parent?.lookup(name); }
   localTypes(): Map<string, TypeSym> | undefined {
     const p = this.parent?.localTypes();
@@ -121,20 +134,58 @@ export class Checker {
     const sym: LocalSym = { k: "local", id: ++localId, name: name.text, decl: name, type, declared: opts.declared ?? type, mutable: !!opts.mutable, param: !!opts.param, fnDepth: this.fx.depth };
     if (this.unstable.has(name)) sym.unstable = true;
     this.scope.vars.set(name.text, sym);
+    this.scope.pendingVals.delete(name.text);
     localOf.set(name, sym);
     return sym;
   }
   value(name: string): ValueSym | undefined { return this.scope.lookup(name) ?? this.prog.lookupValue(this.fx.mod, name); }
-  private typeEnv(tparams = this.fx.tparams): TypeEnv {
+  typeEnv(tparams = this.fx.tparams): TypeEnv {
     const locals = this.scope.localTypes();
-    return { mod: this.fx.mod, tparams, ...(locals ? { locals } : {}) };
+    return { mod: this.fx.mod, tparams, ...(locals ? { locals } : {}), checkPendingType: (id) => this.pendingUse(id, true) };
   }
   typeOf(t: ts.TypeNode, voidOk = false): Type { return this.prog.typeOf(t, this.typeEnv(), voidOk); }
+  /** Reports a reference to a name whose declaration comes later in an enclosing block (E2000, use-before-declaration). */
+  pendingUse(id: ts.Identifier, types = false): boolean {
+    const line = this.scope.pending(id.text, types);
+    if (line === undefined) return false;
+    this.at("E2000", id, `'${id.text}' is declared later in this block (line ${line}); move the declaration above this use, or rename one of them`, { kind: "use-before-declaration", name: id.text });
+    return true;
+  }
+  withTParamScope<R>(tps: readonly TParam[], f: () => R): R {
+    if (!tps.length) return f();
+    const saved = this.scope;
+    this.scope = new Scope(saved);
+    for (const p of tps) this.scope.tparams.add(p.name);
+    try { return f(); } finally { this.scope = saved; }
+  }
+  private line(id: ts.Identifier): number { const sf = this.fx.mod.sf; return sf.getLineAndCharacterOfPosition(id.getStart(sf)).line + 1; }
+  private hoistBinding(n: ts.BindingName): void {
+    if (isId(n)) { if (!this.scope.pendingVals.has(n.text)) this.scope.pendingVals.set(n.text, this.line(n)); return; }
+    for (const el of n.elements) if (el.kind === K.BindingElement && (el as ts.BindingElement).name) this.hoistBinding((el as ts.BindingElement).name!);
+  }
+  private hoistVars(dl: ts.VariableDeclarationList): void {
+    for (const d of dl.declarations) this.hoistBinding(d.name);
+  }
+  /** Registers the names a block declares so earlier references to them are caught (Q322). */
+  private hoist(list: readonly ts.Statement[], start = 0): void {
+    for (let i = start; i < list.length; i++) {
+      const st = list[i]!;
+      if (st.kind === K.VariableStatement) this.hoistVars((st as ts.VariableStatement).declarationList);
+      else if (st.kind === K.FunctionDeclaration) {
+        const f = st as ts.FunctionDeclaration;
+        if (f.name && f.body && !this.scope.pendingVals.has(f.name.text)) this.scope.pendingVals.set(f.name.text, this.line(f.name));
+      } else if (st.kind === K.TypeAliasDeclaration) {
+        const a = st as ts.TypeAliasDeclaration;
+        if (a.name && a.type && !this.scope.pendingTypes.has(a.name.text)) this.scope.pendingTypes.set(a.name.text, this.line(a.name));
+      }
+    }
+  }
 
   // ---- narrowing (Q025): keys are `<local id>` or `this`, then `.field` for readonly fields
   keyOf(e: ts.Expression): { key: string; type: Type } | undefined {
     if (e.kind === K.ParenthesizedExpression) return this.keyOf((e as ts.ParenthesizedExpression).expression);
     if (isId(e)) {
+      if (this.scope.pending(e.text, false) !== undefined) return undefined;
       const s = this.scope.lookup(e.text);
       return s && !s.unstable ? { key: `${s.id}`, type: this.narrow.get(`${s.id}`) ?? s.type } : undefined;
     }
@@ -502,6 +553,9 @@ export class Checker {
       node: d,
     };
     this.scope = new Scope(nested ? outer.scope : undefined);
+    for (const p of sig.tparams) this.scope.tparams.add(p.name);
+    if (!nested) for (const name of this.fx.tparams.keys()) this.scope.tparams.add(name);
+    for (const p of d.parameters) this.hoistBinding(p.name);
     this.narrow = nested ? new Map(outer.narrow) : new Map();
     let pi = 0;
     for (const p of d.parameters) {
@@ -649,6 +703,7 @@ export class Checker {
     let reach = true;
     let i = 0;
     if (fnTop) while (i < list.length && isStringStmt(list[i]!)) i++; // directives (Q039)
+    this.hoist(list, i);
     for (; i < list.length; i++) if (!this.stmt(list[i]!)) reach = false;
     this.scope = saved;
     return reach;
@@ -705,7 +760,10 @@ export class Checker {
         const lbl = loopLabelOf(x);
         const saved = this.scope;
         this.scope = new Scope(saved);
-        if (x.initializer?.kind === K.VariableDeclarationList) this.varList(x.initializer as ts.VariableDeclarationList);
+        if (x.initializer?.kind === K.VariableDeclarationList) {
+          this.hoistVars(x.initializer as ts.VariableDeclarationList);
+          this.varList(x.initializer as ts.VariableDeclarationList);
+        }
         else if (x.initializer) { this.discard(x.initializer as ts.Expression); this.assignNarrow(x.initializer as ts.Expression); }
         this.loopEntry(x.statement, x.incrementor, x.condition);
         const m0 = this.mark();
@@ -718,6 +776,9 @@ export class Checker {
       }
       case K.ForOfStatement: {
         const x = s as ts.ForOfStatement;
+        const saved = this.scope;
+        this.scope = new Scope(saved);
+        if (x.initializer.kind === K.VariableDeclarationList) this.hoistVars(x.initializer as ts.VariableDeclarationList);
         const t = unref(expr(this, x.expression));
         let elem: Type = ERROR;
         if (t.k === "gen" && (t.name === "Array" || t.name === "ReadonlyArray" || t.name === "Set")) elem = t.args[0]!;
@@ -725,8 +786,6 @@ export class Checker {
         else if (t.k === "iter") elem = t.elem;
         else if (isStr(t)) this.at("E2002", x.expression, `cannot iterate over '${show(t)}'; use an index loop with 's.charCodeAt(i)' (UTF-16 code units) or 's.codePointAt(i)'`, { kind: "iterate-string", actual: show(t) });
         else if (t.k !== "error") this.at("E2002", x.expression, `cannot iterate over '${show(t)}'`);
-        const saved = this.scope;
-        this.scope = new Scope(saved);
         if (x.initializer.kind === K.VariableDeclarationList) {
           const vl = x.initializer as ts.VariableDeclarationList;
           const d = vl.declarations[0];
@@ -762,11 +821,12 @@ export class Checker {
 
   private localTypeAlias(d: ts.TypeAliasDeclaration): void {
     if (!d.name || !d.type) return;
+    this.scope.pendingTypes.delete(d.name.text);
     const snap = new Map(this.scope.localTypes() ?? []);
     const sym: Extract<TypeSym, { k: "alias" }> = { k: "alias", decl: d, mod: this.fx.mod, locals: snap };
     snap.set(d.name.text, sym);
     this.scope.types.set(d.name.text, sym);
-    this.prog.aliasBody(sym);
+    this.prog.aliasBody(sym, { checkPendingType: (id) => this.pendingUse(id, true) });
     const savedTps = this.fx.tparams;
     this.fx.tparams = new Map((sym.tparams ?? []).map((p) => [p.name, p]));
     this.walkTypePos(d.type, "alias", { unsafe: false, cdecl: false });
@@ -775,41 +835,44 @@ export class Checker {
 
   private nestedFn(d: ts.FunctionDeclaration): void {
     if (!d.name || !d.body) return;
+    this.scope.pendingVals.delete(d.name.text);
     if (this.fx.layer !== "managed") {
       this.at("E4003", d, `a nested function declaration cannot be written in ${this.fx.layer} code; define a top-level function instead`, { layer: this.fx.layer, kind: "strict-arrow" });
     }
     const tps = tparamShells(d.typeParameters, "managed", true);
     const outerTps = this.fx.tparams;
     this.fx.tparams = new Map([...outerTps, ...tps.map((p) => [p.name, p] as const)]);
-    d.typeParameters?.forEach((tp, i) => {
-      if (tp.constraint) this.prog.resolveConstraint(tp.constraint, tps[i]!, this.typeEnv());
-    });
     const params: Type[] = [];
     let rest: Type | undefined;
-    for (let i = 0; i < d.parameters.length; i++) {
-      const p = d.parameters[i]!;
-      if (p.dotDotDotToken) {
-        let rt: Type;
-        if (!p.type) { this.at("E2006", p.name, "parameter needs a type annotation"); rt = ERROR; }
+    const ret = this.withTParamScope(tps, () => {
+      d.typeParameters?.forEach((tp, i) => {
+        if (tp.constraint) this.prog.resolveConstraint(tp.constraint, tps[i]!, this.typeEnv());
+      });
+      for (let i = 0; i < d.parameters.length; i++) {
+        const p = d.parameters[i]!;
+        if (p.dotDotDotToken) {
+          let rt: Type;
+          if (!p.type) { this.at("E2006", p.name, "parameter needs a type annotation"); rt = ERROR; }
+          else {
+            this.walkTypePos(p.type, "sig", { unsafe: this.fx.unsafe, cdecl: false });
+            rt = this.typeOf(p.type);
+            const u = unref(rt);
+            if (!isErr(u) && !restElem(u)) {
+              this.at("E2002", p.type, `rest parameter must have type 'Array<T>' or 'ReadonlyArray<T>', got '${show(rt)}'`, { kind: "bad-rest-type", actual: show(rt) });
+              rt = ERROR;
+            }
+          }
+          if (i === d.parameters.length - 1) rest = rt;
+          continue;
+        }
+        if (!p.type) { this.at("E2006", p.name, "parameter needs a type annotation"); params.push(ERROR); }
         else {
           this.walkTypePos(p.type, "sig", { unsafe: this.fx.unsafe, cdecl: false });
-          rt = this.typeOf(p.type);
-          const u = unref(rt);
-          if (!isErr(u) && !restElem(u)) {
-            this.at("E2002", p.type, `rest parameter must have type 'Array<T>' or 'ReadonlyArray<T>', got '${show(rt)}'`, { kind: "bad-rest-type", actual: show(rt) });
-            rt = ERROR;
-          }
+          params.push(this.typeOf(p.type));
         }
-        if (i === d.parameters.length - 1) rest = rt;
-        continue;
       }
-      if (!p.type) { this.at("E2006", p.name, "parameter needs a type annotation"); params.push(ERROR); }
-      else {
-        this.walkTypePos(p.type, "sig", { unsafe: this.fx.unsafe, cdecl: false });
-        params.push(this.typeOf(p.type));
-      }
-    }
-    const ret = d.type ? (this.walkTypePos(d.type, "sig", { unsafe: this.fx.unsafe, cdecl: false }), this.typeOf(d.type, true)) : undefined;
+      return d.type ? (this.walkTypePos(d.type, "sig", { unsafe: this.fx.unsafe, cdecl: false }), this.typeOf(d.type, true)) : undefined;
+    });
     this.fx.tparams = outerTps;
     const firstDef = d.parameters.findIndex((p) => !p.dotDotDotToken && !!p.initializer);
     const baseSig = (r: Type): FnType => ({ ...fn(params, r, tps, rest), ...(firstDef >= 0 ? { min: firstDef } : {}) });
@@ -849,7 +912,7 @@ export class Checker {
     const opk = b.operatorToken.kind;
     if (opk !== K.EqualsToken && opk !== K.QuestionQuestionEqualsToken) return;
     const l = assignTarget(b.left);
-    const s = isId(l) ? this.scope.lookup(l.text) : undefined;
+    const s = isId(l) && this.scope.pending(l.text, false) === undefined ? this.scope.lookup(l.text) : undefined;
     const inner = s && !s.unstable ? nonNull(s.type) : undefined;
     const rt = exprTypes.get(b.right);
     if (inner && rt && !isErr(rt) && !isNull(rt) && !nonNull(rt)) this.narrow.set(`${s!.id}`, inner);
@@ -898,6 +961,7 @@ export class Checker {
     wantType: Type,
     localLookup: (name: string) => LocalSym | undefined,
     visited = new Set<ts.Node>(),
+    isPending: (name: string) => boolean = () => false,
   ): CaseLit | undefined {
     let e = e0;
     while (e.kind === K.ParenthesizedExpression) e = (e as ts.ParenthesizedExpression).expression;
@@ -927,6 +991,7 @@ export class Checker {
     }
     if (e.kind === K.Identifier) {
       const id = e as ts.Identifier;
+      if (isPending(id.text)) return undefined;
       const loc = localLookup(id.text);
       if (loc) return this.localConstLits.get(loc.id);
       const sym = this.prog.lookupValue(mod, id.text);
@@ -938,7 +1003,7 @@ export class Checker {
     }
     if (e.kind === K.PropertyAccessExpression) {
       const p = e as ts.PropertyAccessExpression;
-      if (isId(p.expression) && !localLookup(p.expression.text)) {
+      if (isId(p.expression) && !isPending(p.expression.text) && !localLookup(p.expression.text)) {
         const ns = mod.nsImports.get(p.expression.text);
         if (ns && !ns.typeOnly) {
           const sym = this.prog.lookupExportedValue(ns.mod, p.name.text);
@@ -973,7 +1038,7 @@ export class Checker {
     const caseLits = new Set<string>();
     for (const c of clauses) {
       if (c.kind !== K.CaseClause) continue;
-      const cl = this.resolveCaseLit((c as ts.CaseClause).expression, this.mod, t, (n) => this.scope.lookup(n));
+      const cl = this.resolveCaseLit((c as ts.CaseClause).expression, this.mod, t, (n) => this.scope.lookup(n), undefined, (n) => this.scope.pending(n, false) !== undefined);
       if (cl?.kind === "str") caseLits.add(cl.value);
     }
     const saved = this.narrow, m0 = this.mark();
@@ -985,7 +1050,7 @@ export class Checker {
       else {
         const e = (c as ts.CaseClause).expression;
         const lt = expr(this, e, t.k === "error" ? undefined : t);
-        const lit = this.resolveCaseLit(e, this.mod, t.k === "error" ? lt : t, (n) => this.scope.lookup(n));
+        const lit = this.resolveCaseLit(e, this.mod, t.k === "error" ? lt : t, (n) => this.scope.lookup(n), undefined, (n) => this.scope.pending(n, false) !== undefined);
         if (t.k !== "error" && lt.k !== "error") {
           if (lit === undefined || !assignable(lt, t)) this.at("E2002", e, "case label must be a literal or literal constant of the discriminant type");
           else if (seen.has(caseKey(lit))) this.at("E2002", e, "duplicate case label");
@@ -1100,7 +1165,7 @@ export class Checker {
       }
       exprTypes.set(d.name, t); // the declared type, for the C backend (D102)
       if (isId(d.name)) {
-        const cl = !mutableDecl && !isUsing && init ? this.resolveCaseLit(init, this.mod, t, (n) => this.scope.lookup(n)) : undefined;
+        const cl = !mutableDecl && !isUsing && init ? this.resolveCaseLit(init, this.mod, t, (n) => this.scope.lookup(n), undefined, (n) => this.scope.pending(n, false) !== undefined) : undefined;
         const sym = this.declare(d.name, t, { mutable: mutableDecl });
         if (this.fx.layer !== "managed" && !isErr(t) && !layerOk(t)) this.badLayerLocals.add(sym.id);
         if (init && !d.type && t.k === "num" && isLitOnly(init)) this.litLets.set(sym.id, d.name);

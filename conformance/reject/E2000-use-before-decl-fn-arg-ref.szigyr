@@ -1,0 +1,10 @@
+// expect: E2000 @ 7:19
+// stage: 2
+// open-question: Q322
+function dbl(x: i32): i32 { "use owned"; return x * 2; }
+function apply(f: (x: i32) => i32, v: i32): i32 { "use owned"; return f(v); }
+export function main(sys: System): void {
+  const r = apply(dbl, 3);
+  const dbl: i32 = 9;
+  sys.log.info(`${r}|${dbl}`);
+}

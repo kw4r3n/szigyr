@@ -1,0 +1,11 @@
+// expect: E2000 @ 7:15
+// stage: 1
+// open-question: Q322
+export function main(sys: System): void {
+  const n: i32 = 2;
+  for (let i: i32 = 0; i < n; i++) {
+    const m = n;
+    const n: i32 = 5;
+    sys.log.info(`${m}|${n}`);
+  }
+}

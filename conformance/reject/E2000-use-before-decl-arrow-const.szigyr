@@ -1,0 +1,10 @@
+// expect: E2000 @ 6:27
+// stage: 1
+// open-question: Q322
+const k: string = "top";
+export function main(sys: System): void {
+  const g = (): string => k;
+  const k: i32 = 3;
+  const s = g();
+  sys.log.info(`${s}|${s.length}`);
+}

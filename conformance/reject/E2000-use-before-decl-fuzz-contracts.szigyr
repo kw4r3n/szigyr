@@ -1,0 +1,9 @@
+// expect: E2000 @ 6:17
+// stage: 4
+// open-question: Q322
+function id(x: i32): i32 { requires(x >= 0); return x; }
+test("fuzz", (t: Test) => {
+  fuzzContracts(id);
+  const id: i32 = 1;
+  t.eq(id, 1);
+});
