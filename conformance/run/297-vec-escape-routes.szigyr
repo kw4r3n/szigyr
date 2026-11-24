@@ -1,0 +1,48 @@
+// expect-output: 2 10 2 3 6 8 100
+// stage: 2
+type Box = OwnedStruct<{ data: Vec<u32>; n: u32 }>;
+function setField(b: Mut<Box>, alloc: Alloc): void {
+  "use owned";
+  const nv = Vec.create<u32>(alloc, 4);
+  nv.push(9);
+  nv.push(10);
+  b.data = nv;
+  b.n = 2;
+}
+function make(alloc: Alloc): Box {
+  "use owned";
+  const d = Vec.create<u32>(alloc, 2);
+  d.push(1);
+  return { data: d, n: 1 };
+}
+function tryMake(alloc: Alloc, ok: boolean): Result<Vec<u32>, i32> {
+  "use owned";
+  if (ok) {
+    const d = Vec.create<u32>(alloc, 2);
+    d.push(5);
+    d.push(6);
+    d.push(7);
+    return Result.ok(d);
+  }
+  return Result.err(-1);
+}
+function plain(alloc: Alloc, n: u32): Vec<u32> {
+  "use owned";
+  const tmp = Vec.create<u32>(alloc, 2);
+  const out = Vec.create<u32>(alloc, 2);
+  for (let i: u32 = 0; i < n; i += 1) {
+    tmp.push(i);
+    out.push(i * 2);
+  }
+  return out;
+}
+export function main(sys: System): void {
+  const b = make(sys.alloc);
+  setField(b, sys.alloc);
+  const r = tryMake(sys.alloc, true);
+  const p = plain(sys.alloc, 5);
+  p.push(100);
+  let rl: usize = 0;
+  if (r.kind === "ok") { rl = r.value.length; }
+  sys.log.info(`${b.data.length} ${b.data[1]} ${b.n} ${rl} ${p.length} ${p[4]} ${p[5]}`);
+}

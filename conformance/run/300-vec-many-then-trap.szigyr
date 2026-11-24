@@ -1,0 +1,21 @@
+// expect-trap: T002 @ 17:15
+// stage: 2
+function failAfterAlloc(alloc: Alloc, idx: usize): u32 {
+  "use owned";
+  let s: u32 = 0;
+  for (let i: u32 = 0; i < 500; i += 1) {
+    const small = Vec.create<u32>(alloc, 4);
+    small.push(i);
+    const grown = Vec.create<u32>(alloc, 2);
+    for (let j: u32 = 0; j < 20; j += 1) grown.push(j);
+    s = wrapAdd(s, wrapAdd(small[0], grown[19]));
+  }
+  const large = Vec.filled<u32>(alloc, 2048, 7);
+  const tail = Vec.create<u32>(alloc, 4);
+  tail.push(s);
+  tail.push(large[0]);
+  return tail[idx];
+}
+export function main(sys: System): void {
+  sys.log.info(`${failAfterAlloc(sys.alloc, 10)}`);
+}

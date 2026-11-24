@@ -1,0 +1,27 @@
+// expect-output: 5:37000:101:104
+// stage: 2
+function work(alloc: Alloc): Vec<u32> {
+  "use owned";
+  let acc: u32 = 0;
+  for (let i: u32 = 0; i < 4000; i += 1) {
+    const tmp = Vec.create<u32>(alloc, 8);
+    for (let j: u32 = 0; j < 10; j += 1) tmp.push(j);
+    acc = wrapAdd(acc, tmp[9]);
+  }
+  const big = Vec.create<u32>(alloc, 2048);
+  big.push(1000);
+  acc = wrapAdd(acc, big[0]);
+  const out = Vec.create<u32>(alloc, 2);
+  out.push(acc);
+  out.push(101);
+  out.push(102);
+  out.push(103);
+  out.push(104);
+  const sink = Vec.filled<u32>(alloc, 2000, acc);
+  if (sink[0] !== acc) return sink;
+  return out;
+}
+export function main(sys: System): void {
+  const v = work(sys.alloc);
+  sys.log.info(`${v.length}:${v[0]}:${v[1]}:${v[4]}`);
+}

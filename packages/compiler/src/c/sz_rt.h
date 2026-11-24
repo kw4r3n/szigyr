@@ -13,7 +13,11 @@
 typedef napi_value sz_val;
 static double sz_fmod(double a, double b) { return fmod(a, b); }
 
-typedef struct { napi_value obj; void *data; uint32_t len, cap, esize; napi_typedarray_type tt; } sz_vec;
+#define SZ_VEC_INLINE 1u /* data == (void *)(v + 1) inside a chunk; do not free(data) */
+#define SZ_VEC_CHUNK  2u /* v lives inside a chunk; do not free(v) */
+#define SZ_VEC_LISTED 4u /* v is recorded in sz_vecs[] */
+typedef struct { napi_value obj; void *data; uint32_t len, cap, esize, flags; } sz_vec;
+_Static_assert(sizeof(sz_vec) == 32 && sizeof(sz_vec) % 16 == 0, "sz_vec must be 32B / 16B-aligned");
 typedef struct { void *data; uint32_t len; } sz_slice;
 typedef struct { uint32_t pool, gen, idx; } sz_handle; // a Pool handle: three u32s, 12 bytes (Q188 (a))
 typedef struct { bool some; } sz_null; // a value of type `null`: never present, so `x === null` reads `!x.some` as for `T | null`
@@ -133,12 +137,41 @@ static void sz_tramp_stack_init(void) {
   sz_stack_lim = (uintptr_t)lo + margin;
 }
 
-// Vec handles live until the boundary call returns; the list is reset per entry.
+// Vec handles and native Vec chunks live until the boundary call returns; reset per entry.
+// shortcut: frees all non-escaping native Vecs at boundary exit until Stage 2 scope-end free.
+#define SZ_VCHUNK_SZ (64u * 1024u)
+#define SZ_VSMALL_MAX 4096u
+typedef struct sz_vchunk { struct sz_vchunk *next; uint64_t _pad; } sz_vchunk;
+_Static_assert(sizeof(sz_vchunk) == 16 && SZ_VCHUNK_SZ - sizeof(sz_vchunk) >= sizeof(sz_vec) + SZ_VSMALL_MAX + 15u, "sz_vchunk must be 16B-aligned and fit SZ_VSMALL_MAX");
 static _Thread_local sz_vec **sz_vecs; static _Thread_local size_t sz_nvecs, sz_capvecs;
+static _Thread_local sz_vchunk *sz_vchunks;
+static _Thread_local char *sz_vcur; static _Thread_local size_t sz_vrem;
+static inline void sz_vec_enter(void) { sz_nvecs = 0; sz_vchunks = 0; sz_vcur = 0; sz_vrem = 0; }
+static bool sz_vec_list(sz_vec *v) {
+  if (v->flags & SZ_VEC_LISTED) return true;
+  if (sz_nvecs == sz_capvecs) {
+    size_t c_ = sz_capvecs ? sz_capvecs * 2 : 16;
+    void *p_ = realloc(sz_vecs, c_ * sizeof *sz_vecs);
+    if (!p_) return false;
+    sz_vecs = p_; sz_capvecs = c_;
+  }
+  v->flags |= SZ_VEC_LISTED;
+  sz_vecs[sz_nvecs++] = v;
+  return true;
+}
+__attribute__((noinline, cold)) static char *sz_vec_alloc_chunk(int pos) {
+  sz_vchunk *ch = malloc(SZ_VCHUNK_SZ);
+  if (!ch) sz_trap(6, pos);
+  ch->next = sz_vchunks;
+  sz_vchunks = ch;
+  sz_vcur = (char *)ch + sizeof(sz_vchunk);
+  sz_vrem = SZ_VCHUNK_SZ - sizeof(sz_vchunk);
+  return sz_vcur;
+}
 static sz_vec *sz_vec_new(void) {
-  if (sz_nvecs == sz_capvecs) { size_t c_ = sz_capvecs ? sz_capvecs * 2 : 16; void *p_ = realloc(sz_vecs, c_ * sizeof *sz_vecs); if (!p_) sz_fail("out of memory"); sz_vecs = p_; sz_capvecs = c_; }
-  sz_vec *v = calloc(1, sizeof *v); if (!v) sz_fail("out of memory");
-  return sz_vecs[sz_nvecs++] = v;
+  sz_vec *v = calloc(1, sizeof *v);
+  if (!v || !sz_vec_list(v)) { free(v); sz_fail("out of memory"); }
+  return v;
 }
 static napi_value sz_get(napi_value o, const char *k) { napi_value r; SZ_OK(napi_get_named_property(sz_env, o, k, &r)); return r; }
 static void sz_set(napi_value o, const char *k, napi_value v) { SZ_OK(napi_set_named_property(sz_env, o, k, v)); }
@@ -156,9 +189,9 @@ static void sz_vec_load(sz_vec *v, const char *desc) {
     SZ_OK(napi_create_string_utf8(sz_env, desc, NAPI_AUTO_LENGTH, &args[1])); SZ_OK(napi_call_function(sz_env, host, f, 2, args, &r));
     buf = sz_get(v->obj, "buf"); SZ_OK(napi_is_typedarray(sz_env, buf, &ta)); if (!ta) sz_fail("Vec is not backed by a TypedArray");
   }
-  size_t n; napi_value ab; size_t off;
-  SZ_OK(napi_get_typedarray_info(sz_env, buf, &v->tt, &n, &v->data, &ab, &off));
-  size_t cap = n * sz_tbytes(v->tt) / v->esize; v->cap = cap > UINT32_MAX ? UINT32_MAX : (uint32_t)cap;
+  napi_typedarray_type tt; size_t n; napi_value ab; size_t off;
+  SZ_OK(napi_get_typedarray_info(sz_env, buf, &tt, &n, &v->data, &ab, &off));
+  size_t cap = n * sz_tbytes(tt) / v->esize; v->cap = cap > UINT32_MAX ? UINT32_MAX : (uint32_t)cap;
   double len; SZ_OK(napi_get_value_double(sz_env, sz_get(v->obj, "len"), &len));
   if (!(len >= 0 && len <= v->cap)) sz_fail("Vec length out of range"); v->len = (uint32_t)len;
 }
@@ -170,34 +203,98 @@ static void sz_alloc_ok(napi_status st, int pos) {
   sz_trap(6, pos);
 }
 static sz_vec *sz_vec_create(napi_value alloc, uint32_t cap, const char *elem, uint32_t es, int pos) {
+  (void)alloc; (void)elem;
   uint32_t acap = cap < 4u ? 4u : cap;
-  if ((uint64_t)acap * es >= 0x100000000ULL) sz_trap(6, pos);
-  napi_value host, f = sz_hostf("create", &host), args[3], r;
-  args[0] = alloc; SZ_OK(napi_create_uint32(sz_env, cap, &args[1])); SZ_OK(napi_create_string_utf8(sz_env, elem, NAPI_AUTO_LENGTH, &args[2]));
-  sz_alloc_ok(napi_call_function(sz_env, host, f, 3, args, &r), pos);
-  return sz_vec_in(r, es, elem);
+  uint64_t bytes64 = (uint64_t)acap * es;
+  if (bytes64 >= 0x100000000ULL) sz_trap(6, pos);
+  size_t bytes = bytes64 ? (size_t)bytes64 : 1;
+  if (bytes <= SZ_VSMALL_MAX) {
+    size_t need = (sizeof(sz_vec) + bytes + 15u) & ~(size_t)15u;
+    char *cur = sz_vcur;
+    if (__builtin_expect(sz_vrem < need, 0)) cur = sz_vec_alloc_chunk(pos);
+    sz_vcur = cur + need; sz_vrem -= need;
+    sz_vec *v = (sz_vec *)cur;
+    v->obj = 0; v->data = v + 1; v->len = 0; v->cap = acap; v->esize = es; v->flags = SZ_VEC_INLINE | SZ_VEC_CHUNK;
+    return v;
+  }
+  void *data = malloc(bytes); if (!data) sz_trap(6, pos);
+  sz_vec *v = calloc(1, sizeof *v);
+  if (!v || !sz_vec_list(v)) { free(data); free(v); sz_trap(6, pos); }
+  v->data = data; v->cap = acap; v->esize = es;
+  return v;
 }
 /** Growth keeps the length within usize: the capacity doubles up to 2^32 - 1 elements; past that, >= 2^32 bytes, or when the allocation fails, T006 (D106). */
-static void sz_vec_grow(sz_vec *v, int pos) {
+__attribute__((noinline, cold)) static void sz_vec_grow(sz_vec *v, int pos) {
   if (v->len == UINT32_MAX) sz_trap(6, pos);
   uint64_t c = (uint64_t)v->len * 2; uint32_t cap = c > UINT32_MAX ? UINT32_MAX : c < 4 ? 4 : (uint32_t)c, len = v->len;
-  if ((uint64_t)cap * v->esize >= 0x100000000ULL) sz_trap(6, pos);
+  uint64_t bytes64 = (uint64_t)cap * v->esize;
+  if (bytes64 >= 0x100000000ULL) sz_trap(6, pos);
+  if (!v->obj) {
+    size_t bytes = bytes64 ? (size_t)bytes64 : 1;
+    if (v->flags & SZ_VEC_INLINE) {
+      if (!sz_vec_list(v)) sz_trap(6, pos);
+      void *p = malloc(bytes); if (!p) sz_trap(6, pos);
+      size_t live = (size_t)len * v->esize;
+      if (live > 0) memcpy(p, v->data, live);
+      v->data = p; v->cap = cap; v->flags &= ~SZ_VEC_INLINE;
+    } else {
+      void *p = realloc(v->data, bytes); if (!p) sz_trap(6, pos);
+      v->data = p; v->cap = cap;
+    }
+    return;
+  }
   // through the host: napi_create_arraybuffer aborts the process when V8 is out of memory; a JS RangeError becomes T006 (D106)
   napi_value host, f = sz_hostf("reserve", &host), args[3] = { v->obj }, r;
   SZ_OK(napi_create_uint32(sz_env, cap, &args[1])); SZ_OK(napi_create_uint32(sz_env, len, &args[2]));
   sz_alloc_ok(napi_call_function(sz_env, host, f, 3, args, &r), pos);
-  size_t n; napi_value ab, buf = sz_get(v->obj, "buf"); size_t off;
-  SZ_OK(napi_get_typedarray_info(sz_env, buf, &v->tt, &n, &v->data, &ab, &off));
+  napi_typedarray_type tt; size_t n; napi_value ab, buf = sz_get(v->obj, "buf"); size_t off;
+  SZ_OK(napi_get_typedarray_info(sz_env, buf, &tt, &n, &v->data, &ab, &off));
   v->cap = cap; v->len = len;
 }
-/** Boundary exit: lengths changed in C go back to the JS objects. */
+/** Materializes a native Vec into a JS Vec at boundary exit (Stage 1 D188). */
+static napi_value sz_vec_out(sz_vec *v, const char *elem) {
+  if (v->obj) return v->obj;
+  napi_value host, f = sz_hostf("create", &host), args[3], r;
+  SZ_OK(napi_get_null(sz_env, &args[0]));
+  SZ_OK(napi_create_uint32(sz_env, v->len, &args[1]));
+  SZ_OK(napi_create_string_utf8(sz_env, elem, NAPI_AUTO_LENGTH, &args[2]));
+  if (napi_call_function(sz_env, host, f, 3, args, &r) != napi_ok) {
+    bool pend; napi_value x;
+    if (napi_is_exception_pending(sz_env, &pend) == napi_ok && pend) napi_get_and_clear_last_exception(sz_env, &x);
+    sz_trap(-6, -1); // surfaces as T006 at the managed call site unless an earlier trap claimed the record
+  }
+  napi_value buf = sz_get(r, "buf");
+  napi_typedarray_type tt; size_t n, off; void *dst; napi_value ab;
+  SZ_OK(napi_get_typedarray_info(sz_env, buf, &tt, &n, &dst, &ab, &off));
+  size_t bytes = (size_t)v->len * v->esize;
+  if (bytes > 0) memcpy(dst, v->data, bytes);
+  napi_value ln; SZ_OK(napi_create_uint32(sz_env, v->len, &ln)); sz_set(r, "len", ln);
+  if (!(v->flags & SZ_VEC_INLINE)) free(v->data);
+  size_t jcap = n * sz_tbytes(tt) / v->esize;
+  v->obj = r; v->data = dst;
+  v->cap = jcap > UINT32_MAX ? UINT32_MAX : (uint32_t)jcap;
+  v->flags &= ~SZ_VEC_INLINE;
+  if (!sz_vec_list(v)) sz_fail("out of memory");
+  return r;
+}
+/** Boundary exit: lengths changed in C go back to the JS objects; native Vec buffers and chunks are freed. */
 static void sz_vec_sync(void) {
-  for (size_t i = 0; i < sz_nvecs; i++) { napi_value n; if (napi_create_uint32(sz_env, sz_vecs[i]->len, &n) == napi_ok) napi_set_named_property(sz_env, sz_vecs[i]->obj, "len", n); free(sz_vecs[i]); }
+  for (size_t i = 0; i < sz_nvecs; i++) {
+    sz_vec *v = sz_vecs[i];
+    if (v->obj) {
+      napi_value n; if (napi_create_uint32(sz_env, v->len, &n) == napi_ok) napi_set_named_property(sz_env, v->obj, "len", n);
+    } else if (!(v->flags & SZ_VEC_INLINE)) {
+      free(v->data);
+    }
+    if (!(v->flags & SZ_VEC_CHUNK)) free(v);
+  }
   sz_nvecs = 0;
+  for (sz_vchunk *ch = sz_vchunks; ch; ) { sz_vchunk *nx = ch->next; free(ch); ch = nx; }
+  sz_vchunks = 0; sz_vcur = 0; sz_vrem = 0;
 }
 static sz_vec *sz_vec_detach(sz_vec *v) {
   sz_vec *d = calloc(1, sizeof *d); if (!d) sz_fail("out of memory");
-  d->obj = 0; d->len = v->len; d->cap = v->len; d->esize = v->esize; d->tt = v->tt;
+  d->obj = 0; d->len = v->len; d->cap = v->len; d->esize = v->esize;
   size_t n = (size_t)v->len * v->esize;
   d->data = malloc(n > 0 ? n : 1);
   if (!d->data) { free(d); sz_fail("out of memory"); }

@@ -1,0 +1,14 @@
+// expect-output: 1000000:0:37035:2999997:1498500000
+// stage: 2
+function build1M(alloc: Alloc): Vec<u32> {
+  "use owned";
+  const v = Vec.create<u32>(alloc, 4);
+  for (let i: u32 = 0; i < 1000000; i += 1) v.push(wrapMul(i, 3));
+  return v;
+}
+export function main(sys: System): void {
+  const v = build1M(sys.alloc);
+  let sum: i64 = 0;
+  for (let i: usize = 0; i < v.length; i += 1000) sum += i64(v[i]);
+  sys.log.info(`${v.length}:${v[0]}:${v[12345]}:${v[999999]}:${sum}`);
+}
