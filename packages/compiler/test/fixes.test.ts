@@ -150,7 +150,8 @@ it("attaches concrete-type, resource-escape, conflictAt, cycle, and CLI kind/mis
   // safe Part D fixes: public modifier on class member & mutable TypeLiteral in strict code
   const pubFile = join(dir, "pub.szigyr");
   writeFileSync(pubFile, "export class A {\n  public m(): i32 { return 1; }\n}\n");
-  expect(code).toBe(1);
+  const pubRc = await cliMain(["check", pubFile], () => {}, () => {});
+  expect(pubRc).toBe(1);
   let fixOut = "";
   const fixRc = await cliMain(["check", "--fix", pubFile], (s) => { fixOut += s; }, () => {});
   expect(fixRc).toBe(0);

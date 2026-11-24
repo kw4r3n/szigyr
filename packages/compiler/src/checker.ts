@@ -3,7 +3,7 @@ import { NodeFlags, SyntaxKind as K, hasMod, isId, isParamProp, type Node, type 
 import { Program, declBindings, legalUnion, type CStructSym, type ClassValueSym, type FnSym, type Layer, type LocalSym, type Module, type ValueSym } from "./modules.ts";
 import { PROMISE_CONTAINERS, assignTarget, checkTo, exprTypes, hasPromise, cond, expr, isLitOnly, localOf, promiseOk, usingInitExprs, type FnArgRef } from "./expr.ts";
 import {
-  ASYNC_DISPOSABLE, AUTHORITIES, DISPOSABLE, ERROR, NEVER, NULL, STR, VOID, assignable, hasAuthority, hasTParam, hasPtr, layerOk, crossOk, ptrTargetOk, field, isBool, isCopy, isErr, isInt, isNull, isTaggedUnion, kindOf, nonNull, parseExactInt, restElem, same, show, subst, bindTParams, unref, union, subUnion,
+  ASYNC_DISPOSABLE, AUTHORITIES, DISPOSABLE, ERROR, NEVER, NULL, STR, VOID, assignable, hasAuthority, hasTParam, hasPtr, layerOk, crossOk, ptrTargetOk, field, isBool, isCopy, isErr, isInt, isNull, isTaggedUnion, isVoid, kindOf, nonNull, parseExactInt, restElem, same, show, subst, bindTParams, unref, union, subUnion,
   type Capability, type ClassSym, type FnType, type TParam, type Type,
   hasLoneSurrogate,
 } from "./types.ts";
@@ -996,6 +996,7 @@ export class Checker {
         t = expr(this, init);
         if (t.k === "lit" || (t.k === "union" && t.members.every((m) => m.k === "lit") && mutableDecl)) t = mutableDecl ? STR : t;
         if (t.k === "iter") { this.at("E2002", init, "keys() / values() / entries() can only be iterated"); t = ERROR; }
+        if (isVoid(t)) { this.at("E2002", init, "a 'void' expression has no value", { kind: "void-value" }); t = ERROR; }
       }
       if (isAwaitUsing) {
         if (this.fx.layer !== "managed") this.at("E4002", d.name, `'await using' is only allowed in managed code`);
@@ -1440,7 +1441,7 @@ function hasAuthDeep(t: Type): boolean {
 }
 const isStringStmt = (s: ts.Statement): boolean => s.kind === K.ExpressionStatement && (s as ts.ExpressionStatement).expression.kind === K.StringLiteral;
 const isTrue = (e: ts.Expression): boolean => e.kind === K.TrueKeyword;
-const isVoidish = (t: Type): boolean => t.k === "prim" && t.name === "void";
+const isVoidish = isVoid;
 const isPromise = hasPromise;
 /** Whether narrowing key `k` is `d` or a path below it, for some `d` in `dead`. */
 const isDead = (k: string, dead: Set<string>): boolean => { for (let i = k.indexOf("."); i >= 0; i = k.indexOf(".", i + 1)) if (dead.has(k.slice(0, i))) return true; return dead.has(k); };

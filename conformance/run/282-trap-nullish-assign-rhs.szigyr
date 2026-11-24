@@ -1,0 +1,14 @@
+// expect-output: 7
+// expect-trap: T001 @ 8:19
+// stage: 2
+// open-question: Q297
+function testNullishTrap(init: i32 | null, a: i32, b: i32): i32 {
+  "use rt";
+  let x: i32 | null = init;
+  return x ??= (a + b);
+}
+
+export function main(sys: System): void {
+  sys.log.info(`${testNullishTrap(7, 2147483647, 1)}`);
+  sys.log.info(`${testNullishTrap(null, 2147483647, 1)}`);
+}

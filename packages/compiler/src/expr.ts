@@ -9,7 +9,7 @@ import { isDeterministic } from "./determinism.ts";
 import { isGeneratable } from "./gendesc.ts";
 import {
   AUDIO_CONFIG_RECORD, BOOL, ERROR, ERROR_RECORD, F64, NEVER, NULL, NUM_NAMES, STR, UNKNOWN, USIZE, VOID, assignable, audioStateOk, bindTParams, borrowOk, boxable, comparable, field, fn, gen, hasArenaBuf, hasAuthority, hasCap, hasInt64, hasLayout, hasPtr, hasRawPtr, hasTParam,
-  isAuthority, isBool, isCopy, isInt, isInt64, isNative, isNull, isNum, isOwned, isOwnedCap, isStr, movesLike, holdsOwned, ownedDeep, ptrTargetOk, isTaggedUnion, kindOf, keyOk, intLiteralFits, literalFits, nonNull, nullable, num, opaque, parseExactInt, result, resultParts, restElem,
+  isAuthority, isBool, isCopy, isInt, isInt64, isNative, isNull, isNum, isOwned, isOwnedCap, isStr, isVoid, movesLike, holdsOwned, ownedDeep, ptrTargetOk, isTaggedUnion, kindOf, keyOk, intLiteralFits, literalFits, nonNull, nullable, num, opaque, parseExactInt, result, resultParts, restElem,
   same, sendable, show, subst, tparamHasCap, tuple, unify, union, unref, castable, collectTParams, layerOk, type ClassSym, type FnType, type NumName, type Type,
   hasLoneSurrogate,
 } from "./types.ts";
@@ -538,7 +538,7 @@ function member(c: Checker, p: ts.PropertyAccessExpression, inCall: boolean): Me
     if (!nn) { c.at("E2002", name, "'?.' needs a nullable receiver"); return MERR; }
     const r = lookupMember(c, unref(nn), name, inCall);
     if (r.kind === "value") return { ...r, optRaw: r.type, type: nullable(r.type) };
-    if (r.kind === "method") return { ...r, sig: { ...r.sig, ret: nullable(r.sig.ret) } };
+    if (r.kind === "method") return { ...r, sig: { ...r.sig, ret: optRet(r.sig.ret) } };
     return r;
   }
   recv = unref(recv);
@@ -869,6 +869,8 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
   const op = b.operatorToken;
   const k = op.kind;
   if (k === K.EqualsToken) {
+    const lhs = assignTarget(b.left);
+    if (lhs.kind === K.ArrayLiteralExpression || lhs.kind === K.ObjectLiteralExpression) return ERROR; // P1 already emitted E1000
     const lt = lvalue(c, b.left);
     if (isErr(lt)) { expr(c, b.right); return ERROR; }
     checkTo(c, b.right, lt); // narrowing by the assignment is a statement's (Checker.assignNarrow, Q133)
@@ -1057,7 +1059,7 @@ function conditional(c: Checker, e: ts.ConditionalExpression, want: Type | undef
   if (isErr(a) || isErr(b)) return ERROR;
   if (assignable(a, b)) return b;
   if (assignable(b, a)) return a;
-  if (isNull(a) || isNull(b) || (isStr(a) && isStr(b))) {
+  if (((isNull(a) && !isVoid(b)) || (isNull(b) && !isVoid(a))) || (isStr(a) && isStr(b))) {
     const u = union([a, b]);
     if (u.k === "union" && hasRawPtr(u)) { c.at("E4008", e, "'Ptr' / 'ConstPtr' cannot be a member of a union or 'T | null'"); return ERROR; }
     return u;
@@ -1142,8 +1144,10 @@ function arrLit(c: Checker, e: ts.ArrayLiteralExpression, want: Type | undefined
   } else if (!e.elements.length) { c.at("E2006", e, "an empty array literal needs a type from its context"); return ERROR; }
   else {
     const first = e.elements.find((x) => x.kind !== K.SpreadElement && !deferrable(x));
-    if (first) elem = expr(c, first);
-    else if (e.elements.every((x) => isLitOnly(x))) elem = F64;
+    if (first) {
+      elem = expr(c, first);
+      if (isVoid(elem)) { c.at("E2002", first, "a 'void' expression has no value", { kind: "void-value" }); return ERROR; }
+    } else if (e.elements.every((x) => isLitOnly(x))) elem = F64;
     else if (e.elements.every((x) => x.kind === K.StringLiteral || x.kind === K.NoSubstitutionTemplateLiteral)) elem = STR;
     else { // only spreads: the element type comes from the first spread
       const sp = e.elements.find((x) => x.kind === K.SpreadElement) as ts.SpreadElement | undefined;
@@ -1498,6 +1502,8 @@ function floatPolyArg(c: Checker, a: ts.Expression, wantFloat: FloatNum): Type {
   return ERROR;
 }
 
+const optRet = (r: Type): Type => (isErr(r) ? ERROR : isVoid(r) ? VOID : nullable(r));
+
 function callFnSym(c: Checker, sym: FnSym, e: ts.CallExpression, anchor: Node, want: Type | undefined): Type {
   callFns.set(e, sym);
   if (!c.callCheck(sym)) {
@@ -1727,14 +1733,14 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
       const fnT = unref(nn);
       if (fnT.k === "fn") {
         const r = callSig(c, fnT, e, p.name, want);
-        return isErr(r) ? ERROR : nullable(r);
+        return optRet(r);
       }
       if (!isErr(fnT)) c.at("E2002", p.name, `'${show(m.type)}' is not callable`);
       return ERROR;
     }
     if (p.questionDotToken && (e.flags & NodeFlags.OptionalChain) && m.optRaw && unref(m.optRaw).k === "fn") {
       const r = callSig(c, unref(m.optRaw) as FnType, e, p.name, want);
-      return isErr(r) ? ERROR : nullable(r);
+      return optRet(r);
     }
     if (m.type.k === "fn") return callSig(c, m.type, e, p.name, want);
     if (!isErr(m.type)) c.at("E2002", p.name, `'${show(m.type)}' is not callable`);
@@ -1749,7 +1755,7 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
     const fnT = nn ? unref(nn) : ERROR;
     if (fnT.k === "fn") {
       const r = callSig(c, fnT, e, callee, want);
-      return isErr(r) ? ERROR : nullable(r);
+      return optRet(r);
     }
     if (!isErr(fnT)) c.at("E2002", callee, `'${show(t0)}' is not callable`);
     return ERROR;

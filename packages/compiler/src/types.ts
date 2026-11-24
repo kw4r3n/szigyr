@@ -101,6 +101,7 @@ export function nonNull(t: Type): Type | undefined {
   return union(t.members.filter((m) => !isNull(m)));
 }
 export const isNull = (t: Type): boolean => t.k === "prim" && t.name === "null";
+export const isVoid = (t: Type): boolean => t.k === "prim" && t.name === "void";
 export const isNum = (t: Type): t is { k: "num"; name: NumName } => t.k === "num";
 export const isInt = (t: Type): boolean => t.k === "num" && t.name !== "f64" && t.name !== "f32";
 export const isBool = (t: Type): boolean => t.k === "prim" && t.name === "boolean";

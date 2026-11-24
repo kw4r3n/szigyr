@@ -264,4 +264,36 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
     // Allowed variadic/rest spreads keep working
     expect(checkSrc("export function f(xs: Array<f64>, ys: Array<i32>): f64 {\n  const a = Math.min(...xs) + Math.max(...xs);\n  const b = ys.splice(0, 1, ...[2, 3]);\n  return a + f64(b.length);\n}\n").diags).toEqual([]);
   });
+
+  it("suppresses E2002/E4002 cascade after destructuring assignment E1000", () => {
+    const d4 = checkSrc("export function main(sys: System): void { let a = 0; let b = 0; let c = 0; [a, [b, c]] = [1, [2, 3]]; sys.log.info(`${a}`); }\n").diags;
+    expect(d4.map((d) => d.code)).toEqual(["E1000"]);
+
+    const strictArr = checkSrc("export function f(): void {\n  \"use owned\";\n  let a: i32 = 0;\n  let b: i32 = 0;\n  [a, b] = [1, 2];\n}\n").diags;
+    expect(strictArr.map((d) => d.code)).toEqual(["E1000"]);
+
+    const objAssign = checkSrc("export function f(): void {\n  let a: i32 = 0;\n  let b: i32 = 0;\n  ({ a, b } = { a: 1, b: 2 });\n}\n").diags;
+    expect(objAssign.map((d) => d.code)).toEqual(["E1000"]);
+  });
+
+  it("allows void optional calls as statements and rejects them in value positions with E2002", () => {
+    const stmtOk = checkSrc([
+      "class C { m(): void {} readonly f: (() => void) | null = null; }",
+      "export function main(): void {",
+      "  const f: (() => void) | null = (): void => {};",
+      "  const c: C | null = new C();",
+      "  const c0 = new C();",
+      "  f?.();",
+      "  c0.f?.();",
+      "  c?.f?.();",
+      "  c?.m();",
+      "}",
+      "",
+    ].join("\n")).diags;
+    expect(stmtOk).toEqual([]);
+
+    expect(checkSrc("export function main(): void {\n  const f: (() => void) | null = (): void => {};\n  const r = f?.();\n}\n").diags.map((d) => d.code)).toEqual(["E2002"]);
+    expect(checkSrc("export function main(): void {\n  const f: (() => void) | null = (): void => {};\n  const r = f?.() ?? 1;\n}\n").diags.map((d) => d.code)).toEqual(["E2002"]);
+    expect(checkSrc("class C { m(): void {} }\nexport function main(): void {\n  const c: C | null = new C();\n  const r = c?.m();\n}\n").diags.map((d) => d.code)).toEqual(["E2002"]);
+  });
 });
