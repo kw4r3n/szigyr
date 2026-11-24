@@ -271,6 +271,13 @@
   - 途中（`2a68c91`、Q303–Q305 解禁前）: `accepted: 8/31`（`p03_defaultrest`, `p05_spread`, `p27_tuple` が新規受理）, `matched: 8/8`（`p31_generator` は `E1000` 診断へ安定化）
   - Q303–Q305 解禁後: `accepted: 9/31`（`p30_labeled` が新規受理）, `matched: 9/9`
 
+## 設計評価 2 回目の指摘対応（2026-11-24、`agy/eval-followups-20261124`）
+
+- [x] **A. 符号なし整数とリテラル `0` の比較拒否（`Q319`）**: `u8`/`u16`/`u32`/`u64`/`usize` とリテラル `0`（括弧・`-0` 含む）の恒真・恒偽比較（`>= 0`/`0 <=`/`< 0`/`0 >`）を契約内含め `E2002`（`kind: "unsigned-compare-zero"`）で拒否し、降順ループ書き換え案内・`DIAGNOSTICS.md`・`explain.ts`・`SPEC.md` §4・適合テスト（10 reject + 1 accept）・既存 9 箇所置換を更新。
+- [x] **B1–B4. `managed` 層の TS 受理拡大（`Q320`–`Q321`）**: (B1) `Map` の直接 `for..of`、（B2）`managed` オブジェクトリテラルのメソッド省略記法（既存 `reject/E1000-object-method.szigyr` 等 3 箇所整理）、（B3）`managed` 入れ子関数宣言（自己再帰可・戻り値注釈必須・巻き上げなし）、（B4）ブロック局所 `type` 別名（全層）を `SPEC.md`（28,258 B、`builtins.test.ts:68` 上限を `28_300` へ調整）・コンパイラ全段・JS/C/Wasm 実行で整合。
+- [x] **C・D. 診断の代替形案内・安全 `--fix`・`builtinKind`（`D185`）**: `E1005`（`as`/`as-const`）・`E1000`（`utility-type`/`no-initializer`/`literal-type`/`type-param-default`/`class-extends`/`interface-mixed`/`typeof`/`instanceof`/`unary-operator`）・`E2000`（`js-global`）・`E2002`（`template-nullable`/`iterate-string`/`compare-structural`）・`E2004`（`truthiness`）に代替形メッセージ／`data.kind`／`explain`／`DIAGNOSTICS.md`・意味不変箇所のみの `--fix` を追加。さらに `reserved-name` へ `builtinKind`（`namespace` | `function` | `type` | `capability`）と改名案内を付与。
+- **検証**: `pnpm typecheck` 通過、`pnpm verify:conformance` 通過（`accept=92 reject=798 run=246`、`ok`）、`pnpm conformance` 通過（`1547 passed`）、`pnpm test` 失敗 0 件（`60 files / 632 passed`、変更前からの vitest ワーカー `Timeout calling "onTaskUpdate"` 1 件あり）、`node bench/probe-ts/run.ts` は `accepted: 9/31`, `matched: 9/9`。
+
 ## 保留
 
 - **ネイティブモバイル殻（iOS / Android）**（Q279）: モバイル専用ターゲットの必要が出たときに着手する（ブラウザ版 Wasm 成果物自体はモバイルブラウザでも動く）。
