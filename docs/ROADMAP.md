@@ -297,6 +297,26 @@
   - `m` 境界・伸長計測（修正後 `pnpm bench:workloads`）: `push_grow` C `4.80 ns (96 ms)` / Wasm `7.00 ns (140 ms)` / Rust `0.98 ns (19.665 ms)`、`call_scalar` C `42.00 ns (84 ms)` / Wasm `221.5 ns (443 ms)`、`call_slice_small` C `438.0 ns (438 ms)` / Wasm `447.0 ns (447 ms)` / Rust `2.69 ns (2.692 ms)`、`call_slice_large` C `0.00 ns (0 ms)` / Wasm `2,735,000.0 ns (547 ms)` / Rust `3.15 ns (0.001 ms)`。
 - **検証（段階 0 コード実装後）**: 開始時ベースライン（`854a30f`）は `pnpm typecheck` 通過、`pnpm verify:conformance` `accept=92 reject=817 run=248`、`pnpm conformance` `1,568 passed`、`pnpm test` `60 files / 634 passed`。段階 0 コード実装後は `pnpm typecheck` 通過、`pnpm verify:conformance` `accept=92 reject=817 run=249`、`pnpm conformance` `1,571 passed`（`294-many-small-allocs` の JS/C/Wasm 含む）、`pnpm test` 失敗 0 件（`60 files / 634 passed`）、`docs/SPEC.md` 変更なし。
 
+## 確保のネイティブ化 段階 1（`D188`、2026-11-25）
+
+- [x] **衛生チェック基盤と Wasm ファズのテスト化**（`package.json`、`packages/compiler/test/wasm-alloc.test.ts`、`packages/compiler/test/fixtures/alloc_fuzz.c`）:
+  - `pnpm conformance:asan`（`ASan + UBSan`、CI 非組込）を追加し、`d7bc586` ベースライン（`1,571 passed`、`232.03 s`）および段階 1 実装後（`1,598 passed`、`248.13 s`）とも検出 0 件で通過。
+  - `wasm-alloc.test.ts` は 4 シード×150,000 ステップ＋`burst(40,000, 64)` を `6.83 s` で実行し全不変条件を通過。
+- [x] **確保上限（2^32 バイト以上 `T006`）の 3 バックエンド統一**（`docs/SPEC.md` §6、`docs/DIAGNOSTICS.md`、`collections.ts`、`sz_wasm_rt.h`、`sz_rt.h`）:
+  - `SPEC.md` §6（`27,860 <= 28,000` バイト）と `DIAGNOSTICS.md` を更新。適合テスト `295-vec-create-4gib-limit`・`296-vec-filled-4gib-limit` は修正前 JS/C/Wasm 全 6 件失敗（`got none`）から修正後全バックエンド通過。
+- [x] **C バックエンドの `Vec` ネイティブ確保**（`sz_rt.h`、`emit-c.ts`）:
+  - strict 内で生成した `Vec` は 64 KiB チャンクのバンプ確保（4,096 B 以下）または `malloc`/`realloc` で完結し、`outConv` の `sz_vec_out` でのみ JS `Vec` を具象化、境界退出・トラップ時に `sz_vec_sync` で解放。適合テスト `297`〜`303`（脱出 4 経路、`Mut` トラップ書戻し、大量一時確保、packed/i64/空/Result 返却、100 万要素伸長返却、関数間ムーブ）を追加し全バックエンド通過。
+- **段階 1 前後の計測比較**（`pnpm bench:workloads`、ワークステーション負荷下 `load average: 15.96` のため同実行の `rust-same` 比も併記）:
+  - `alloc_small`（1,000,000 回）: 段階 0 以前 C `1,576 ns`（`1,589 ms`） -> 段階 1 C **`51.00 ns`（`51 ms`、31 倍高速化、目標 60 ns 以下達成）**（Rust `7.76 ns`）
+  - `push_grow`（20,000,000 回）: 段階 0 C `4.80 ns`（`96 ms`） -> 段階 1 C **`1.05 ns`（`21 ms`、4.5 倍高速化、目標 1.5 ns 以下達成）**（Rust `1.01 ns`）
+  - 非数値 5 課題（チェックサム全変種一致、括弧内は同実行の `rust-same` 比）:
+    - `t1`: C dev `86.0 ms (1.24x)` / C rel `86.0 ms (1.24x)` / Wasm `134.0 ms (1.94x)` / `rust-same` `69.2 ms`（段階 0: C `83.0/85.0 ms`、`rust-same` `67.4 ms` `1.23x/1.26x`）
+    - `t2`: C dev `81.0 ms (1.05x)` / C rel `83.0 ms (1.08x)` / Wasm `101.0 ms (1.31x)` / `rust-same` `77.2 ms`（段階 0: C `70.0/71.0 ms`、`rust-same` `63.4 ms` `1.10x/1.12x`。`t2` 内の新規 `Vec` 確保は 0 回で背景負荷により `rust-same` も +21.8%、対比は `1.10x -> 1.05x` に改善）
+    - `t3`: C dev `184.0 ms (0.96x)` / C rel `180.0 ms (0.94x)` / Wasm `213.0 ms (1.11x)` / `rust-same` `192.1 ms`（段階 0: C `186.0/183.0 ms` `1.06x/1.04x`）
+    - `t4`: C dev `43.0 ms (1.09x)` / C rel `40.0 ms (1.01x)` / Wasm `65.0 ms (1.65x)` / `rust-same` `39.4 ms`（段階 0: C `40.0/40.0 ms` `1.22x/1.22x`）
+    - `t5`: C dev `64.0 ms (0.92x)` / C rel `65.0 ms (0.94x)` / Wasm `112.0 ms (1.61x)` / `rust-same` `69.5 ms`（段階 0: C `62.0/62.0 ms` `0.92x/0.92x`）
+- **検証**: 開始時 `d7bc586`（`typecheck` 通過、`verify:conformance` `accept=92 reject=817 run=249`、`conformance` `1,571 passed`、`conformance:asan` `1,571 passed` 検出 0 件、`test` `60 files / 634 passed`＋既存 RPC timeout 1 件）に対し、段階 1 完了時 `7fe39c4` では `typecheck` 通過、`verify:conformance` `accept=92 reject=817 run=258`、`conformance` `1,598 passed`、`conformance:asan` `1,598 passed`（検出 0 件）、`test` `61 files / 635 passed`（エラー 0 件）。
+
 ## 保留
 
 - **ネイティブモバイル殻（iOS / Android）**（Q279）: モバイル専用ターゲットの必要が出たときに着手する（ブラウザ版 Wasm 成果物自体はモバイルブラウザでも動く）。

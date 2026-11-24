@@ -1100,3 +1100,18 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
   - `packages/compiler/src/c/sz_wasm_rt.h` の線形メモリアロケータを、`sz_heap_head` から使用中ブロックを含めて先頭走査する first-fit から、32 ビン分離双方向連結フリーリスト（`sz_free_bins[32]`＋32 ビット空塞ビットマスク `sz_free_mask`）へ変更した。
   - ビン 0〜6 は要求サイズ 16〜112 バイトの 16 バイト刻み厳密一致、ビン 7〜31 は 2 のべき乗区間とし、より大きい非空ビンは `__builtin_ctz` で $O(1)$ 選択する（同一の非厳密ビン内のみ最大 16 個まで探索する `shortcut:` を置き、長大化時の $O(N)$ 退化を防ぐ）。`sz_blk` ヘッダは 16 バイトを保ったまま、解放中ブロックのペイロード先頭に侵入型ノード `sz_fnode`（`fprev` / `fnext`）を格納し、`sizeof(sz_fnode) <= 16`・`_Alignof(sz_fnode) <= 16` の `_Static_assert` を追加した。
   - **選んだ理由**: (1) 境界呼び出し内で解放されない使用中ブロックが N 個増えても `sz_malloc` が使用中ブロックを一切たどらず 1 回あたり $O(1)$ となり、2 乗の遅延を解消できるため、(2) 境界終了時の連続 `sz_free` による前後結合でも双方向リンクから $O(1)$ で切り離せるため、(3) ヘッダサイズを増やさず追加メモリも要らないため、16 バイト整列・前後結合・`sz_heap_cur` の末尾巻き戻し・OOM 時 `NULL` 返却など既存の外部仕様をそのまま維持できるため。
+
+
+## D188: 確保のネイティブ化 段階 1（C バックエンドの `Vec` と `2^32` バイト上限）（2026-11-25）
+
+- **C バックエンドでの `Vec` ネイティブ確保**（`packages/compiler/src/c/sz_rt.h`、`packages/compiler/src/emit-c.ts`）:
+  - `sz_vec_create` はホスト JS の `create` を呼ばず、ネイティブメモリへ直接確保する。`sz_vec` 構造体は未使用だった `napi_typedarray_type tt` を `uint32_t flags` へ置き換えて 32 バイト・16 バイト整列を維持した。
+  - 小容量確保（`max(cap, 4) * esize <= 4096` バイト）はスレッドローカルの 64 KiB チャンク配列 `sz_vchunks` からバンプ確保し、ペイロードを `sz_vec` 直後（`v + 1`）にインライン配置する（16 バイト整列、`sz_sub` の `NULL + 0` UB を避けるため最小容量 4 相当を確保）。`4096` バイト超の確保と、`push` 成長時（`!v->obj` 経路）のバッファ再確保は `malloc` / `realloc` を用い、`sz_vec_grow` は `__attribute__((noinline, cold))`、呼出側は `__builtin_expect` とローカル `len` キャッシュとした。
+  - managed から渡された既存の `Vec`（`v->obj != NULL`）の伸長は性質 5 に従い従来どおりホスト `reserve` を維持する。
+- **具象化関数と解放のタイミング**:
+  - 境界退出で JS 側へ渡る `Vec` のみを `emit-c.ts` の `outConv`（`target !== "wasm"`）経由で `sz_vec_out(v, elem)` により具象化する（`v->obj` が既にあればそのまま返し、ネイティブ `Vec` のときのみ `host.create(null, v->len, elem)` で JS `Vec` を作って `memcpy` と `len` 同期を行い、ヒープ上のネイティブバッファがあれば解放する）。`sz_vec_out` の `create` が OOM の場合は JS 例外をクリアして `sz_trap(-6, -1)` を呼び、`sz_throw` 前に先行トラップ（`sz_take_ftrap`）がなければ `napi_throw_range_error` により managed 側呼び出し位置の `T006` として表面化させる。
+  - 境界から脱出しないネイティブ `Vec` と `sz_vchunks` は、通常復帰とトラップ復帰の双方で境界終了時に `sz_vec_sync()` で一括解放する（すべてのネイティブ入口 `w_<fn>`・`sz_audio_open_*`・`sz_audio_fake_init_*`・`sz_audio_fake_render_*` は `sz_vec_enter()` で初期化）。スコープ終端での局所解放は段階 2 とする。
+- **`2^32` バイト上限の 3 バックエンド統一**（`docs/SPEC.md` §6、`docs/DIAGNOSTICS.md`）:
+  - `Vec.create`・`Vec.filled`・`push` 成長について、実確保バイト数（`create` / `filled` は `max(cap, 4) * esize`、`push` / `reserve` は `nextCap * esize`）が `>= 2^32` バイトとなる場合に確保を試みる前に `T006` でトラップする規則を `packages/runtime-js/src/collections.ts`・`packages/compiler/src/c/sz_wasm_rt.h`・`packages/compiler/src/c/sz_rt.h` のすべてに実装した。
+- **検証とベンチマーク**:
+  - サニタイザ（`pnpm conformance:asan`、`ASan + UBSan`）・Wasm 線形メモリアロケータファズ（`packages/compiler/test/wasm-alloc.test.ts`）・`295`〜`303` の適合テスト、`pnpm bench:workloads` により、性質 1〜5・`alloc_small` `51.00 ns`（目標 60 ns 以下）・`push_grow` `1.05 ns`（目標 1.5 ns 以下）を確認した（詳細は `docs/ROADMAP.md` および `bench/workloads/README.md`）。
