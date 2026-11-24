@@ -1101,6 +1101,8 @@ run/291-local-type-alias.szigyr
 run/292-closure-outer-shadow.szigyr
 run/293-nested-fn-inner-shadow.szigyr
 run/294-many-small-allocs.szigyr
+run/295-vec-create-4gib-limit.szigyr
+run/296-vec-filled-4gib-limit.szigyr
 run/30-int-no-negative-zero.szigyr
 run/40-trap-ensures-void.szigyr
 run/47-map-literal-key.szigyr

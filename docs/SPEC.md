@@ -92,7 +92,7 @@ Defaults: `managed` `<T>` => `!Owned` (`Owned` arg `E3007`); `strict`/`rt` `<T>`
 - **`using` / `await using`**: LIFO cleanup on any exit (normal/`break`/`continue`/`return`/trap). `managed` `using`: `Disposable`; `await using`: `AsyncDisposable`. `Resource.own`/`ownWith` only in `using r = ...` (`rt`: zero-alloc stack defer; `T`: `Owned` or unsafe `Ptr`/`ConstPtr`; `strict`/`rt` cleanup is top non-generic `strict`/`rt` fn, unsafe iff caller unsafe; `ctx`: `Ffi`/`Alloc` `strict`-only or `Native & Copy`). `Resource<T>` cannot escape (`E3004`); `r.borrow()`/`r.get()`/`r.take()` (disarms cleanup; post-take `E3001`).
 
 ## 6. Native Containers (`strict` / `rt`)
-OOB `T002`; `.create`/`.filled` OOM `T006`; process-unique Pool/Arena IDs; `u32` gens (Pool LIFO `T011`; `Arena.view` `T012`).
+OOB `T002`; `.create`/`.filled`/`push` OOM or `Vec` alloc `>=2^32`B `T006`; process-unique Pool/Arena IDs; `u32` gens (Pool LIFO `T011`; `Arena.view` `T012`).
 `Vec` (alloc: `.create`/`.filled`/`push` `E4004`), `Slice`, `Pool`, `Arena`, `Ring` (`Ring.create` alloc; `cap` 2^k in `1..2^31` `T014`; `RingPair<T>`=`OwnedStruct<{tx:RingTx<T>;rx:RingRx<T>}>`).
 
 ## 7. Capabilities, Effects, Purity & `npm:`

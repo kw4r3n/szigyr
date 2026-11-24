@@ -170,15 +170,18 @@ static void sz_alloc_ok(napi_status st, int pos) {
   sz_trap(6, pos);
 }
 static sz_vec *sz_vec_create(napi_value alloc, uint32_t cap, const char *elem, uint32_t es, int pos) {
+  uint32_t acap = cap < 4u ? 4u : cap;
+  if ((uint64_t)acap * es >= 0x100000000ULL) sz_trap(6, pos);
   napi_value host, f = sz_hostf("create", &host), args[3], r;
   args[0] = alloc; SZ_OK(napi_create_uint32(sz_env, cap, &args[1])); SZ_OK(napi_create_string_utf8(sz_env, elem, NAPI_AUTO_LENGTH, &args[2]));
   sz_alloc_ok(napi_call_function(sz_env, host, f, 3, args, &r), pos);
   return sz_vec_in(r, es, elem);
 }
-/** Growth keeps the length within usize: the capacity doubles up to 2^32 - 1 elements; past that, or when the allocation fails, T006 (D106). */
+/** Growth keeps the length within usize: the capacity doubles up to 2^32 - 1 elements; past that, >= 2^32 bytes, or when the allocation fails, T006 (D106). */
 static void sz_vec_grow(sz_vec *v, int pos) {
   if (v->len == UINT32_MAX) sz_trap(6, pos);
   uint64_t c = (uint64_t)v->len * 2; uint32_t cap = c > UINT32_MAX ? UINT32_MAX : c < 4 ? 4 : (uint32_t)c, len = v->len;
+  if ((uint64_t)cap * v->esize >= 0x100000000ULL) sz_trap(6, pos);
   // through the host: napi_create_arraybuffer aborts the process when V8 is out of memory; a JS RangeError becomes T006 (D106)
   napi_value host, f = sz_hostf("reserve", &host), args[3] = { v->obj }, r;
   SZ_OK(napi_create_uint32(sz_env, cap, &args[1])); SZ_OK(napi_create_uint32(sz_env, len, &args[2]));
