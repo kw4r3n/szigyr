@@ -448,4 +448,20 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
       }
     }
   });
+
+  it("reports builtinKind and a rename hint on reserved-name declarations without fixes", () => {
+    const cases = [
+      ["class Ring { x: i32 = 1; }\n", "Ring", "namespace"],
+      ["class Result { x: i32 = 1; }\n", "Result", "type"],
+      ["export function panic(): i32 { return 1; }\n", "panic", "function"],
+      ["type Copy = { x: i32 };\n", "Copy", "capability"],
+    ] as const;
+    for (const [src, name, builtinKind] of cases) {
+      const d = checkSrc(src).diags[0]!;
+      expect(d, src).toMatchObject({ code: "E1000", data: { kind: "reserved-name", name, builtinKind } });
+      expect(d.message).toContain(builtinKind);
+      expect(d.message.toLowerCase()).toContain("rename");
+      expect(d.fixes).toBeUndefined();
+    }
+  });
 });

@@ -1,7 +1,7 @@
 // Phase P1 (Q003): the syntax allowlist. Every node kind is accepted only by an explicit case below;
 // anything else falls to a default branch that reports E1000. Anchors follow docs/DIAGNOSTICS.md.
 import { dirname } from "node:path";
-import { BUILTIN_NAMES, CAPABILITY_NAMES } from "./builtins.ts";
+import { BUILTIN_FUNCTIONS, BUILTIN_NAMES, CAPABILITY_NAMES, NAMESPACES } from "./builtins.ts";
 import { isValidCHeader } from "./cdecl.ts";
 import type { Diagnostic } from "./diagnostics.ts";
 import { DETMATH_PATH } from "./detmath.ts";
@@ -93,8 +93,16 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     return { call: c as ts.CallExpression, name: ((c as ts.CallExpression).expression as ts.Identifier).text };
   };
   const declName = (id: ts.Identifier): void => {
-    if (BUILTIN_NAMES.has(id.text) || CAPABILITY_NAMES.has(id.text)) at("E1000", id, `'${id.text}' is a builtin name`, { kind: "reserved-name", name: id.text });
-    else if (RESERVED_WORDS.has(id.text)) at("E1000", id, `'${id.text}' is a reserved word`, { kind: "reserved-name", name: id.text });
+    if (BUILTIN_NAMES.has(id.text) || CAPABILITY_NAMES.has(id.text)) {
+      const builtinKind = CAPABILITY_NAMES.has(id.text)
+        ? "capability"
+        : NAMESPACES.has(id.text)
+          ? "namespace"
+          : BUILTIN_FUNCTIONS.has(id.text)
+            ? "function"
+            : "type";
+      at("E1000", id, `'${id.text}' is a builtin ${builtinKind} name; rename the declaration`, { kind: "reserved-name", name: id.text, builtinKind });
+    } else if (RESERVED_WORDS.has(id.text)) at("E1000", id, `'${id.text}' is a reserved word`, { kind: "reserved-name", name: id.text });
     else if (id.text.startsWith(RUNTIME_GLOBAL)) at("E1000", id, `names starting with '${RUNTIME_GLOBAL}' are reserved`, { kind: "reserved-name", name: id.text });
   };
   const mods = (n: Node, allowed: K[]): void => {
