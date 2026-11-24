@@ -188,7 +188,7 @@ export function same(a: Type, b: Type): boolean {
     case "record":
       return b.k === "record" && a.struct === b.struct && sameFields(a.fields, b.fields);
     case "union": return b.k === "union" && a.members.length === b.members.length && a.members.every((m) => b.members.some((n) => same(m, n)));
-    case "fn": return b.k === "fn" && a.params.length === b.params.length && a.params.every((p, i) => same(p, b.params[i]!)) && Boolean(a.rest) === Boolean(b.rest) && (!a.rest || same(a.rest, b.rest!)) && same(a.ret, b.ret);
+    case "fn": return b.k === "fn" && a.params.length === b.params.length && (a.min ?? a.params.length) === (b.min ?? b.params.length) && a.params.every((p, i) => same(p, b.params[i]!)) && Boolean(a.rest) === Boolean(b.rest) && (!a.rest || same(a.rest, b.rest!)) && same(a.ret, b.ret);
     case "class": return b.k === "class" && a.cls === b.cls && sameArgs(a.args, b.args);
     case "iface": return b.k === "iface" && a.iface === b.iface && sameArgs(a.args, b.args);
     case "tparam": return b.k === "tparam" && a.p.id === b.p.id;
@@ -225,8 +225,8 @@ export function assignable(s: Type, t: Type, arg = false): boolean {
   if (s.k === "tuple" && t.k === "gen" && t.name === "ReadonlyArray") return s.elems.every((e) => assignable(e, t.args[0]!));
   if (s.k === "fn" && t.k === "fn") {
     if (!t.rest && (s.rest !== undefined || s.params.length > t.params.length)) return false;
-    const sMin = s.min ?? s.params.length;
-    if (sMin > t.params.length) return false;
+    const sMin = s.min ?? s.params.length, tMin = t.min ?? t.params.length;
+    if (sMin > tMin) return false;
     if (t.rest) {
       const tRestEl = restElem(t.rest), sRestEl = s.rest ? restElem(s.rest) : undefined;
       if (!tRestEl || !sRestEl || !assignable(tRestEl, sRestEl)) return false;
@@ -254,8 +254,8 @@ export function assignable(s: Type, t: Type, arg = false): boolean {
 /** True iff `s` fails assignment to non-rest `t` solely because `s` has a rest param or more params than `t`. */
 export function fnExtraParamsOnly(s: FnType, t: FnType): boolean {
   if (t.rest || (s.rest === undefined && s.params.length <= t.params.length)) return false;
-  const sMin = s.min ?? s.params.length;
-  if (sMin > t.params.length) return false;
+  const sMin = s.min ?? s.params.length, tMin = t.min ?? t.params.length;
+  if (sMin > tMin || tMin < t.params.length) return false;
   const sRestEl = s.rest ? restElem(s.rest) : undefined;
   for (let i = 0; i < t.params.length; i++) {
     const sp = i < s.params.length ? s.params[i]! : sRestEl;
@@ -478,7 +478,11 @@ export function show(t: Type): string {
     case "lit": return JSON.stringify(t.value);
     case "record": return `${t.struct ? "OwnedStruct<" : ""}{ ${t.fields.map((f) => `${f.readonly ? "readonly " : ""}${f.name}: ${show(f.type)}`).join("; ")} }${t.struct ? ">" : ""}`;
     case "union": return t.members.map(show).join(" | ");
-    case "fn": return `(${[...t.params.map(show), ...(t.rest ? [`...${show(t.rest)}`] : [])].join(", ")}) => ${show(t.ret)}`;
+    case "fn": {
+      const min = t.min ?? t.params.length;
+      const ps = t.params.map((p, i) => i >= min ? (p.k === "union" || p.k === "fn" ? `(${show(p)})?` : `${show(p)}?`) : show(p));
+      return `(${[...ps, ...(t.rest ? [`...${show(t.rest)}`] : [])].join(", ")}) => ${show(t.ret)}`;
+    }
     case "class": return t.cls.name + (t.args.length ? `<${t.args.map(show).join(", ")}>` : "");
     case "iface": return t.iface.name + (t.args.length ? `<${t.args.map(show).join(", ")}>` : "");
     case "tparam": return t.p.name;

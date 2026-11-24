@@ -227,6 +227,33 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
       expect(ds[0]!.message).not.toMatch(/Q\d{2,3}/);
       expect(ds[0]!.message).not.toContain("§");
     }
+
+    // Required-arity widening must reject assigning fewer optional params into more optional params, with distinct show()
+    const minArityCases = [
+      "function keep(x: i32, d: i32 = 10): i32 { return d; }\nfunction keep2(x: i32, d: i32): i32 { return d; }\nexport function f(): i32 { let h = keep; h = keep2; return h(5); }\n",
+      "function keep(x: i32, d: i32 = 10): i32 { return d; }\nfunction keep2(x: i32, d: i32): i32 { return d; }\nexport function f(): i32 { const fs = [keep, keep2]; return fs[1](5); }\n",
+      "function keep(x: i32, d: i32 = 10): i32 { return d; }\nfunction keep2(x: i32, d: i32): i32 { return d; }\nexport function f(): i32 { const fs = [keep]; fs.push(keep2); return fs[1](5); }\n",
+      "function keep(x: i32, d: i32 = 10): i32 { return d; }\nfunction keep2(x: i32, d: i32): i32 { return d; }\nfunction pick<T>(a: T, b: T, c: boolean): T { return c ? a : b; }\nexport function f(): i32 { const h = pick(keep, keep2, false); return h(5); }\n",
+      "function v(x: i32 = 1, ...r: Array<i32>): i32 { return x + i32(r.length); }\nfunction w2(x: i32, ...r: Array<i32>): i32 { return x * 2 + i32(r.length); }\nexport function f(): i32 { let h = v; h = w2; return h(); }\n",
+      "function add(x: i32, d: i32): string { return `${d}`; }\nfunction wb(x: i32, d: i32 = 1): string { return `${d}`; }\nexport function f(): string { let a = [wb]; const q: Array<(x: i32, d: i32) => string> = [add]; a = q; return a[0](5); }\n",
+      "function keep(x: i32, d: i32 = 10): i32 { return d; }\nfunction keep2(x: i32, d: i32): i32 { return d; }\nexport function f(c: boolean): i32 { const h = (c ? keep : null) ?? keep2; return h(5); }\n",
+    ];
+    for (const src of minArityCases) {
+      const ds = checkSrc(src).diags;
+      expect(ds.length, src).toBeGreaterThan(0);
+      expect(ds[0]!.code, src).toBe("E2002");
+      const m = /expected '([^']+)', got '([^']+)'/.exec(ds[0]!.message);
+      expect(m, ds[0]!.message).toBeTruthy();
+      expect(m![1], ds[0]!.message).not.toBe(m![2]);
+      expect(m![1], ds[0]!.message).toContain("?");
+      const data = ds[0]!.data as { expected?: string; actual?: string } | undefined;
+      if (data?.expected && data?.actual) expect(data.expected, src).not.toBe(data.actual);
+    }
+    const condRev = checkSrc("function keep(x: i32, d: i32 = 10): i32 { return d; }\nfunction keep2(x: i32, d: i32): i32 { return d; }\nexport function f(c: boolean): i32 { const h = c ? keep2 : keep; return h(5); }\n").diags;
+    expect(condRev.map((d) => d.code)).toEqual(["E2002"]);
+
+    // Reverse assignment and calling joined fn with all required arguments remain valid
+    expect(checkSrc("function keep(x: i32, d: i32 = 10): i32 { return d; }\nfunction keep2(x: i32, d: i32): i32 { return d; }\nexport function f(c: boolean): i32 { let h = keep2; h = keep; const g = c ? keep2 : keep; return h(5, 6) + g(5, 6); }\n").diags).toEqual([]);
   });
 
   it("rejects spread arguments in non-rest builtins and new with E2002 spread-non-rest and never emits internal-error-type", () => {
