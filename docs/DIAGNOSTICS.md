@@ -16,7 +16,7 @@
 
 | コード | 意味 | フェーズ | アンカー（`range.start`） | Q |
 | --- | --- | --- | --- | --- |
-| E1000 | 仕様にない構文（値位置の `++`/`--`、論理代入 `&&=`/`||=`、非 managed の残余引数 `...rest`、ブロック/`switch` 節外の単文 `using`/`await using` 等を含む） | P1 | その構文のノードの先頭。キーワードがあればキーワード。二項演算子の形（`in`、`instanceof`、論理代入、カンマ）は演算子トークン。指示子は文字列リテラル。組み込み名と同名の宣言は宣言された名前。パーサの構文エラーはその位置 | Q002, Q004, Q010, Q011, Q039, Q070, Q071, Q225, Q231, Q300 |
+| E1000 | 仕様にない構文（値位置の `++`/`--`、論理代入 `&&=`/`||=`、分割代入代入 `[a, b] = ...` / `({ a } = ...)`、非 managed の残余引数 `...rest`、ブロック/`switch` 節外の単文 `using`/`await using` 等を含む） | P1 | その構文のノードの先頭。キーワードがあればキーワード。二項演算子の形（`in`、`instanceof`、論理代入、カンマ）は演算子トークン。分割代入代入は左辺の先頭。指示子は文字列リテラル。組み込み名と同名の宣言は宣言された名前。パーサの構文エラーはその位置 | Q002, Q004, Q010, Q011, Q039, Q070, Q071, Q225, Q231, Q300 |
 | E1001 | `var` | P1 | `var` キーワード | Q002 |
 | E1002 | `==` / `!=` | P1 | 演算子トークン | Q002 |
 | E1003 | default export、`export *` | P1 | `export` キーワード | Q009 |
@@ -27,7 +27,7 @@
 | E1008 | 省略可能なプロパティや引数、分割代入の既定値、非末尾・シグネチャのみの既定引数（末尾の既定引数は許可） | P1 | 下の「形ごとのアンカー」 | Q002, Q005 |
 | E1009 | `"use unsafe"` の位置が不正（ファイルの先頭、managed の関数、アロー関数や関数式、2 回目） | P1 | 指示子の文字列リテラル | Q198 |
 | E2000 | 仕様にない大域名 | P2 | 解決できない識別子（型名も含む） | Q006, Q011, Q034 |
-| E2001 | 仕様にない組み込みメンバ | P2 | メンバ名の識別子（ドットの後）。添字アクセスなら添字の式 | Q007 |
+| E2001 | 仕様にない組み込みメンバ（`i64`/`u64` の `toFixed`、`ReadonlyArray` の `splice` 等を含む） | P2 | メンバ名の識別子（ドットの後）。添字アクセスなら添字の式 | Q007, Q309 |
 | E2002 | 型の不一致 | P2 | 下の「形ごとのアンカー」 | Q007, Q008 ほか |
 | E2003 | 数値型の混在 | P2 | 演算子トークン（二項、比較、複合代入） | Q008, Q014 |
 | E2004 | 条件式が `boolean` でない | P2 | 条件の式の先頭。`&&`、`||`、`!` では違反したオペランドの先頭 | Q002 |
@@ -42,13 +42,13 @@
 | E2013 | 音声コールバックの入口・型が不正（`state` は `Native & Send` から `Result<Owned, E>` / `Ptr*` / `ArenaBuf` を除く。`render` は非ジェネリック安全な `"use rt"`、SPEC §8） | P2 | 引数数・型引数誤りはメソッド名 `open`、`state` 不正は第 2 引数（または型引数）、`render` 不正は第 3 引数 | Q283 |
 | E3001 | 移動済みの値の使用 | P3 | 移動済みの変数を使っている識別子。`data.movedAt` は移動した式の先頭 | Q220 |
 | E3002 | ループ内での外側の変数の移動 | P3 | ループ内で移動している識別子 | Q002, Q150 |
-| E3003 | 部分移動（メンバアクセスによる `Owned` フィールドの移動、または `Owned` フィールドを省略した `Owned` `Struct` の部分分割代入） | P3 | プロパティアクセス式の先頭（`s.buf` の `s`）、または部分分割代入の束縛パターン `{ ... }` の先頭（`data.field` / `data.fields`） | Q002 |
-| E3004 | 借用の二級性の違反 | P3 | 下の「形ごとのアンカー」 | Q012, Q013, SPEC §5, §9 |
+| E3003 | 部分移動（メンバアクセスによる `Owned` フィールドの移動、またはローカル束縛・関数引数の分割代入で `Owned` フィールドを省略した部分分割代入） | P3 | プロパティアクセス式の先頭（`s.buf` の `s`）、または部分分割代入の束縛パターン `{ ... }` の先頭（`data.field` / `data.fields`） | Q002, Q302 |
+| E3004 | 借用の二級性の違反 | P3 | 下の「形ごとのアンカー」 | Q012, Q013, Q302, SPEC §5, §9 |
 | E3005 | 排他性の違反 | P3 | 衝突する実引数のうち、評価順で後のものの先頭。評価順は受け手、実引数の左から右。実引数の式の内側の一時的な `Ref` の借用は対象外。内側の `Mut` と移動は下の「形ごとのアンカー」 | Q002, Q065, Q067, Q170 |
 | E3006 | `Ref` から `Mut` への変換 | P3 | 実引数の式の先頭。書き込みなら代入先の式の先頭。受け手ならメンバ名 | Q050, SPEC §5, §9 |
 | E3007 | 所有型の値を managed のコンテナやクロージャに入れた | P3 | 格納される値の式の先頭。捕捉なら、関数本体の中で最初に参照している識別子 | Q012, Q048, Q174 |
 | E3008 | 借用の実引数が場所式でない | P3 | 実引数の式の先頭 | Q002 |
-| E4001 | 層の呼び出し規則の違反 | P2 | 呼び出し先の名前トークン（`f(x)` の `f`、`a.b(x)` の `b`）。strict / rt の `**` と `**=` は演算子トークン | Q002, Q044, Q180 |
+| E4001 | 層の呼び出し規則の違反 | P2 | 呼び出し先の名前トークン（`f(x)` の `f`、`a.b(x)` の `b`）。そのほかは下の「形ごとのアンカー」 | Q002, Q044, Q180, Q299, Q301 |
 | E4002 | strict / rt で使えない型 | P2 | 下の「形ごとのアンカー」 | Q040–Q043, Q229, Q233 |
 | E4003 | strict / rt でのクロージャや関数値 | P2 | 下の「形ごとのアンカー」 | Q012, Q045 |
 | E4004 | rt でのメモリ確保（Vec/Pool/Arena/Ring.create、Vec.push、Ptr.box/unbox。`using` / `Resource` はゼロアロケーションで許可） | P2 | 呼び出し先の名前トークン（`v.push` の `push`、`Vec.create` の `create`） | Q002 |
@@ -91,7 +91,11 @@
 | E2002 | 実引数・型引数の個数の誤り | 呼び出し先の名前 | Q075 |
 | E2002 | `implements` した interface を実装していない | `implements` 句の型参照の先頭 | Q075 |
 | E2002 | `readonly` のフィールドや `const` への代入 | メンバ名、または変数の識別子 | Q075 |
-| E2002 | `T \| null` の受け手へのメンバアクセス、非 null の受け手への `?.` / `?.[` / `?.(`、書き込み `a?.[i] = v` | メンバ名または `?.` トークン | Q075, Q298, Q299 |
+| E2002 | `T \| null` の受け手への通常のメンバアクセス、または非 null の受け手への `o?.m` / `o.m?.()` | メンバ名 | Q075, Q298, Q299 |
+| E2002 | 非 null の受け手・呼び出し対象への `a?.[i]` / `f?.()`、または書き込み `a?.[i] = v` | `a?.[i]` は受け手の式の先頭、`f?.()` は呼び出し対象の式の先頭。書き込み `a?.[i] = v` は添字アクセス式全体の先頭 | Q298, Q299 |
+| E2002 | `??=` の左辺が `T \| null` でない | `??=` 代入式全体の先頭 | Q297 |
+| E2002 | 残余引数 `...rest: T` の型が `Array` / `ReadonlyArray` でない（`data.kind = "bad-rest-type"`） | 残余引数の型注釈の先頭 | Q300 |
+| E2002 | 残余引数以外・固定引数位置へのスプレッド呼び出し（`data.kind = "spread-non-rest"`）、`Math.min`/`max` の非配列スプレッド、`new Set` へのスプレッド | スプレッド実引数 `...xs` の先頭 | Q301 |
 | E2002 | 型参照の型引数の個数の誤り | 型参照の先頭 | Q075 |
 | E2002 | `Struct` の型引数が型リテラル（`{ … }`）でない | `Struct` の型参照の先頭 | SPEC §3.3 |
 | E2002 | 型引数が制約 `T extends I` を満たさない | 明示した型引数の先頭。推論なら呼び出し先の名前 | Q075 |
@@ -136,6 +140,7 @@
 | E3004 | `a.view(b)` を実引数・受け手以外に書いた（代入の左辺の添字を含む） | メンバ名 `view` | Q188, Q222 |
 | E3004 | `Ref` / `Mut` の引数に再代入した | 代入先の識別子 | Q151 |
 | E3004 | `using` で束縛した `Resource<T>` を変数代入・返却・引数渡し・クロージャ捕捉等でエスケープした（`.borrow()`/`.get()`/`.take()` の直接呼び出し以外） | 違反した識別子（`data.kind = "resource-escape"`） | SPEC §5 |
+| E3004 | 引数の分割代入で `Ref` / `Mut` 借用から `Owned` フィールドをムーブした（`data.kind = "move-out-of-borrow"`） | 違反した束縛識別子 | Q302 |
 | E3005 | 同じ変数を、借用の実引数と値渡しの実引数の両方に使った | 評価順で後の実引数の先頭 | Q152 |
 | E3005 | 呼び出しの受け手や借用の実引数にした変数を、後の実引数の中で移動した | 移動した識別子 | Q170 |
 | E3005 | 外側の呼び出し・添字アクセス・代入先が使っている変数を、内側で `Mut` に渡した | その実引数の先頭 | Q170 |
@@ -159,6 +164,10 @@
 | E4003 | 関数型パラメータへの実引数が、モジュール直下の関数の名前でも呼び出し元の関数型パラメータでもない（アロー関数・関数式、ジェネリックな関数の名前を含む） | その実引数の先頭 | Q189 |
 | E4003 | 関数型パラメータを、呼ぶことと別の関数型パラメータへ渡すこと以外に使った | その識別子 | Q189 |
 | E4001 | 関数型パラメータへの実引数の層が合わない（managed の関数、rt のパラメータへの strict の関数、rt のパラメータへの strict のパラメータの転送） | 実引数の名前 | Q189, Q212 |
+| E4001 | strict / rt での `**` と `**=` | 演算子トークン | Q002 |
+| E4001 | strict / rt でのオプショナル呼び出し `f?.()` / `o.m?.()` | 呼び出し式全体の先頭 | Q299 |
+| E4001 | strict / rt でのスプレッド呼び出し `f(...xs)` / `Math.min\|max(...xs)` | スプレッド実引数 `...xs` の先頭 | Q301 |
+| E4001 | strict / rt での数値メンバ `toString` / `toFixed` | メンバ名 | Q007 |
 | E5001 | 大域名（`console` など） | 識別子 | Q006 |
 | E5001 | `Math.random` | メンバ名 `random` | Q006 |
 | E5001 | `new Date` | `Date` | Q006, Q029 |
@@ -166,6 +175,13 @@
 | E7001 | `require(...)` | `require` の識別子 | Q009 |
 | E7001 | 動的 `import(...)` | `import` キーワード | Q009 |
 | E7001 | 不正なモジュール指定子、存在しない名前 | 指定子の文字列リテラル、または名前の識別子 | Q009 |
+
+### 主な `data.kind` 値（JSON 診断・`explain` 種別案内用）
+
+- **`E1000`** (`syntax.ts`): `"enum"`, `"public-modifier"`, `"modifier"`, `"duplicate-declaration"`, `"module-statement"`, `"directive"`, `"namespace"`, `"ambient-module"`, `"rest-param-layer"`, `"rest-param"`, `"param-destructuring"`, `"reserved-name"`, `"private-name"`, `"computed-property"`, `"member-name"`, `"class-extends"`, `"implements-clause"`, `"generator"`, `"duplicate-constructor"`, `"class-accessor"`, `"index-signature"`, `"class-member"`, `"interface-extends"`, `"interface-mixed"`, `"destructure-rest"`, `"destructure-property"`, `"nested-destructuring"`, `"misplaced-directive"`, `"label"`, `"break-outside-loop"`, `"continue-outside-loop"`, `"for-in"`, `"labeled-statement"`, `"empty-statement"`, `"nested-function"`, `"nested-class"`, `"nested-interface"`, `"nested-type"`, `"with"`, `"debugger"`, `"bigint-literal"`, `"await-outside-async"`, `"this-outside-method"`, `"instanceof"`, `"operator"`, `"destructuring-assignment"`, `"inc-dec"`, `"unary-operator"`, `"object-property-name"`, `"shorthand-initializer"`, `"object-method"`, `"object-accessor"`, `"object-member"`, `"regex-flag"`, `"regex-syntax"`, `"typeof"`, `"delete"`, `"void"`, `"tagged-template"`, `"super"`, `"yield"`, `"spread"`, `"array-hole"`, `"class-expression"`, `"empty-tuple"`, `"tuple-rest"`, `"intersection-type"`, `"type-operator"`, `"type-query"`, `"indexed-access-type"`, `"conditional-type"`, `"mapped-type"`, `"object-type"`, `"symbol-type"`, `"template-literal-type"`, `"syntax"`
+- **`E4002`** (`checker.ts`): `"managed-array"`, `"mutable-record"`, `"managed-string"`
+- **`E4003`** (`checker.ts` / `expr.ts`): `"strict-fn-type"`, `"strict-arrow"`, `"strict-fn-arg"`, `"cfn-arg"`, `"generic-fn"`, `"cfn-in-forAll"`
+- **その他の追加 `data.kind`**: `E2002` `"bad-rest-type"`, `"spread-non-rest"`、および `E3004` `"move-out-of-borrow"`
 
 ### 付録 B の期待位置（既定案による）
 

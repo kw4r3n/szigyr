@@ -1961,13 +1961,53 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
   - (b) `conformance/reject/E2000-bare-namespace-call.szigyr` を更新し、`managed` 専用で `string | number | boolean` 引数の `String(x)` 呼び出しを許可する（`Math` / `Result` 等の非呼び出し名前空間とは独立）。
 - 既定案: (b)（`toString()` / `${x}` で代替可能だが TS 初見通過率向上のためオーナー承認次第解禁）。
 
-### Q306 理由未記載または managed 層に不整合な禁止 TS 項目群の扱い
-- 関連: §3.5、D181、`docs/Szigyr-design-v0.md:161-164`
-- 状況: D181 の分類で「理由なし」または「固定レイアウト理由が `managed` には当てはまらない」として残った項目（`enum`、`instanceof`、`managed` の `class extends`・getter/setter、再帰する `interface`、構造的部分型）。今回は実装しない。
+### Q306a `enum` 宣言（`E1000`）の扱い
+- 関連: §3.5、D181、`docs/Szigyr-design-v0.md:170`、`EVALUATION.md` §3
+- 状況: `Szigyr-design-v0.md:170` の一般列挙には含まれるが、文字列リテラル union 等と比較して禁止する個別根拠が docs に未記載（`syntax.ts:stmt` `kind: "enum"`）。
 - 選択肢:
-  - (a) 現状維持（文字列リテラル union、tagged union、`interface implements` 等で代替し、診断・`explain` で案内を補強）。
-  - (b) `managed` 専用の表現力拡張として、安全で曖昧さのない一部（例: `readonly` getter、非互換性のない再帰 `interface`、あるいは安全な `enum`）から段階的に検討・解禁する。
-- 既定案: (a) を短期基準とし、オーナー判断で必要な項目のみ個別設計。
+  - (a) `E1000` 禁止を維持し、文字列リテラル union と網羅的 `switch` へ誘導する（診断・`explain` で案内）。
+  - (b) 非網羅性や暗黙数値割当の扱いなど安全要件を定めたうえで、`enum`（文字列/固定値）を解禁する。
+- 既定案: (a) 現状の `E1000` 禁止を維持し、文字列リテラル union を推奨する。
+
+### Q306b `instanceof` 演算子（`E1000`）の扱い
+- 関連: §3.5、D181、`EVALUATION.md` §3
+- 状況: 禁止理由が docs に未記載であり、`managed` 層には `class` があるため実行時型判別の需要と衝突しやすい（`syntax.ts:expr` `kind: "instanceof"`）。
+- 選択肢:
+  - (a) `E1000` 禁止を維持し、tagged union（`.kind === "..."`）へ誘導する。
+  - (b) `managed` 層の `class` に対してのみ、型絞り込み付きの `instanceof` を許可する（`strict`/`rt` は引き続き不可）。
+- 既定案: (a) 現状の `E1000` 禁止を維持し、判別は tagged union に統一する。
+
+### Q306c `managed` 層の `class extends`（継承、`E1000`）の扱い
+- 関連: §3.5、D181、`docs/Szigyr-design-v0.md:164`、`EVALUATION.md` §3
+- 状況: `Szigyr-design-v0.md:164` は固定レイアウトを根拠に `extends` を禁止しているが、`class` は `managed` 専用のため根拠が噛み合わない（`syntax.ts:classDecl` `kind: "class-extends"`）。
+- 選択肢:
+  - (a) `E1000` 禁止を維持し、`interface implements` とコンポジションに統一する。
+  - (b) `managed` 専用に単一継承 `extends`（`super` 呼び出し・メソッド上書き規則含む）を解禁する。
+- 既定案: (a) 現状の `E1000` 禁止を維持し、実装再利用はコンポジションと `implements` に限定する。
+
+### Q306d `managed` 層の getter / setter アクセサ（`E1000`）の扱い
+- 関連: §3.5、D181、`docs/Szigyr-design-v0.md:164`、`EVALUATION.md` §3
+- 状況: `Szigyr-design-v0.md:164` は固定レイアウト節で getter/setter 禁止を挙げているが、`class` は `managed` 専用である（`syntax.ts:classDecl` `kind: "class-accessor"`、`syntax.ts:expr` `kind: "object-accessor"`）。
+- 選択肢:
+  - (a) `E1000` 禁止を維持し、明示的なフィールドとメソッド呼び出しに限定する（プロパティアクセスが副作用やトラップを隠さないようにする）。
+  - (b) `managed` の `class`（または `readonly` な `get` のみ）で getter/setter を許可する。
+- 既定案: (a) 現状の `E1000` 禁止を維持し、明示的なメソッド／フィールドに統一する。
+
+### Q306e 再帰的 `interface` 定義（`E2002`）の扱い
+- 関連: §3.5、D181、`EVALUATION.md` §3、`Q085`
+- 状況: `class` は再帰定義できる一方、`interface` の再帰参照は `E2002`（`modules.ts:recIfaceBody` / `modules.ts:instantiateTypeSym` `kind: "cyclic-interface"`）となり、`Q085` の型別名と違い `interface` だけを不可とする理由記録が docs にない。
+- 選択肢:
+  - (a) `E2002` 禁止を維持し、再帰データ構造は `class` に統一する（構造的レコードと同等の簡潔な同一性検査を保つ）。
+  - (b) 遅延・名目的比較を導入して再帰的 `interface` を解禁する。
+- 既定案: (a) 現状の `E2002` 禁止を維持し、再帰型には `class` を使う。
+
+### Q306f 構造的部分型・レコードの幅部分型（`E2002`）の扱い
+- 関連: §3.5、D181、`docs/Szigyr-design-v0.md:161`、`EVALUATION.md` §3
+- 状況: `Szigyr-design-v0.md:161` は固定レイアウトを理由に閉じた厳密なオブジェクト型（幅部分型なし）を定めているが、`managed` 層のレコードには固定レイアウト制約が当てはまらない（`EVALUATION.md` §3）。
+- 選択肢:
+  - (a) 閉じた厳密なレコード型（幅部分型なし）を全層で維持し、互換性が必要ならジェネリクスまたは明示的変換を使う。
+  - (b) `managed` 層に限り余剰フィールドを許す構造的幅部分型を許可する（`strict`/`rt` は閉じたまま維持）。
+- 既定案: (a) 閉じた厳密なレコード型を全層で維持し、型同一性規則と層移行の一貫性を優先する。
 
 ### Q307 `satisfies` 演算子の削除経緯と再評価
 - 関連: §3.5、D181、D182
@@ -1975,7 +2015,7 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
 - 選択肢:
   - (a) 型注釈一本化のため `E1000` 禁止（`use a type annotation instead`）を正式仕様として確定する。
   - (b) TS 互換（リテラル型・精密型を保ったまま形状検査する用途）を重視し再解禁を検討する。
-- 既定案: (a) 維持または (b) をオーナー判断に委ねる（当面は理由未確定の現状維持）。
+- 既定案: (a) 型注釈一本化のため `E1000` 禁止を維持する。
 
 ### Q308 `docs/SPEC.md:100` の `Pure` 表記と `query deterministic` の呼称不整合
 - 関連: §7、`docs/STDLIB.md`、D182
