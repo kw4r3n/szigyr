@@ -482,7 +482,7 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
   }
 
   function paramCName(p: ts.ParameterDeclaration, k: number): string {
-    return p.name.kind === K.Identifier ? `u_${(p.name as ts.Identifier).text}` : `u_p${k}`;
+    return p.name.kind === K.Identifier ? `u_${(p.name as ts.Identifier).text}` : `sz_dp_${k}`;
   }
   function proto(i: Inst): string {
     const where = `${i.f.mod.file}: ${i.f.name}`;

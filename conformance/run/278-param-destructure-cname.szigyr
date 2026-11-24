@@ -1,0 +1,35 @@
+// expect-output: 33|20:22|14:16
+// stage: 2
+
+type Pt = { readonly x: i32; readonly y: i32 };
+type Box = OwnedStruct<{ data: Vec<i32>; tag: i32 }>;
+
+function sumRt({ x, y }: Pt, p0: i32, p1: i32): i32 {
+  "use rt";
+  return x + y + p0 + p1;
+}
+
+function sumStrict(p0: i32, { x, y }: Pt, p1: i32 = 5): i32 {
+  "use owned";
+  return p0 + x * 2 + y + p1;
+}
+
+function sumOwnedRef({ tag }: Ref<Box>, p0: i32, p1: i32): i32 {
+  "use owned";
+  return tag + p0 - p1;
+}
+
+function sumOwnedVal({ data, tag }: Box, p0: i32, p1: i32): i32 {
+  "use owned";
+  return tag + i32(data.length) + p0 + p1;
+}
+
+export function main(sys: System): void {
+  const r = sumRt({ x: 1, y: 2 }, 10, 20);
+  const s1 = sumStrict(4, { x: 3, y: 5 });
+  const s2 = sumStrict(4, { x: 3, y: 5 }, 7);
+  const box: Box = { data: Vec.filled<i32>(sys.alloc, 3, 1), tag: 10 };
+  const br = sumOwnedRef(box, 6, 2);
+  const bv = sumOwnedVal(box, 1, 2);
+  sys.log.info(`${r}|${s1}:${s2}|${br}:${bv}`);
+}

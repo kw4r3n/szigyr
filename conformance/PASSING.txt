@@ -981,6 +981,7 @@ run/274-optional-index-and-call.szigyr
 run/275-rest-and-call-spread.szigyr
 run/276-param-destructuring.szigyr
 run/277-managed-stdlib-additions.szigyr
+run/278-param-destructure-cname.szigyr
 run/28-trap-shift-range.szigyr
 run/29-trap-invariant.szigyr
 run/30-int-no-negative-zero.szigyr
