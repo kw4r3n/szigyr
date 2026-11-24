@@ -1,0 +1,26 @@
+// expect: ok
+// stage: 1
+type Ops = {
+  readonly f: () => i32;
+  readonly inc: (x: i32) => i32;
+  readonly opt: ((x: i32) => i32) | null;
+};
+
+type AsyncOps = {
+  readonly load: () => Promise<i32>;
+};
+
+export function make(base: i32): Ops {
+  let k: i32 = base;
+  return {
+    f() { return 1; },
+    inc(x) { k += 1; return x + k; },
+    opt(x) { return x * 2; },
+  };
+}
+
+export function makeAsync(): AsyncOps {
+  return {
+    async load() { return 42; },
+  };
+}

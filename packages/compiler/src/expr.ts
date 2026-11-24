@@ -142,7 +142,7 @@ function reportMismatch(c: Checker, e: ts.Expression, t: Type, want: Type, arg =
   const wantFn = wantFn0?.k === "fn" ? wantFn0 : undefined;
   if (t.k === "fn" && wantFn && fnExtraParamsOnly(t, wantFn)) {
     const extraDesc = t.rest !== undefined ? "a rest parameter" : `${t.params.length} parameters`;
-    const isInline = isFnExpr(assignTarget(e));
+    const isInline = isFnExpr(assignTarget(e)) || e.kind === K.MethodDeclaration;
     const arityStr = wantFn.params.length === 0 ? "0 parameters" : `at most ${wantFn.params.length} parameter(s)`;
     const hint = isInline ? `use ${arityStr}` : `wrap in an arrow function taking ${wantFn.params.length} parameter(s)`;
     c.at("E2002", e, `function '${show(t)}' accepts ${extraDesc}, exceeding expected '${show(wantFn)}' (${hint})`, {
@@ -1189,14 +1189,21 @@ function objLit(c: Checker, e: ts.ObjectLiteralExpression, want: Type | undefine
       for (const f of st.fields) given.add(f.name);
       continue;
     }
-    if (p.kind !== K.PropertyAssignment && p.kind !== K.ShorthandPropertyAssignment) { bad = true; continue; }
+    if (p.kind !== K.PropertyAssignment && p.kind !== K.ShorthandPropertyAssignment && p.kind !== K.MethodDeclaration) { bad = true; continue; }
     if (!isId(p.name) || p.name.text === "__proto__") { bad = true; continue; }
     const name = p.name;
     const f = field(rec, name.text);
     if (!f) { c.at("E2002", e, `'${show(rec)}' has no field '${name.text}'`); return ERROR; }
     given.add(name.text);
     if (p.kind === K.PropertyAssignment) { if (isErr(checkTo(c, (p as ts.PropertyAssignment).initializer, f.type))) bad = true; }
-    else {
+    else if (p.kind === K.MethodDeclaration) {
+      const md = p as ts.MethodDeclaration;
+      if (!md.body) { bad = true; continue; }
+      const w = unref(nonNull(f.type) ?? f.type);
+      const mt = checkArrow(c, md, w.k === "fn" ? w : undefined, false);
+      exprTypes.set(md, mt);
+      if (!reportMismatch(c, md as unknown as ts.Expression, mt, f.type)) bad = true;
+    } else {
       const vt = ident(c, name);
       exprTypes.set(name, vt); // the narrowed type, for the C backend (a shorthand name is not typed through expr)
       if (!assignable(vt, f.type)) { c.at("E2002", name, `expected '${show(f.type)}', got '${show(vt)}'`); bad = true; }
@@ -1266,7 +1273,7 @@ function arrLit(c: Checker, e: ts.ArrayLiteralExpression, want: Type | undefined
 }
 
 /** Arrow functions and function expressions (parameter types inferred from contextual fn type when present, else E2006; return inferred when not annotated). */
-function checkArrow(c: Checker, e: ts.ArrowFunction | ts.FunctionExpression, want: FnType | undefined, inferRet: boolean, openIds?: Set<number>): FnType {
+function checkArrow(c: Checker, e: ts.ArrowFunction | ts.FunctionExpression | ts.MethodDeclaration, want: FnType | undefined, inferRet: boolean, openIds?: Set<number>): FnType {
   if (c.fx.layer !== "managed" && !ensuresArgs.has(e)) c.at("E4003", e, `a function expression cannot be written in ${c.fx.layer} code; define a top-level function and pass its name instead`, { layer: c.fx.layer, kind: "strict-arrow" }); // §2, Q012
   const tps = tparamShells(e.typeParameters, "managed", true);
   const outerTps = c.fx.tparams;

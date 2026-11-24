@@ -471,7 +471,10 @@ export class Checker {
     const isAsync = hasMod(d, K.AsyncKeyword);
     let ret: Type | undefined = o.inferRet ? undefined : sig.ret;
     if (ret && isAsync) ret = ret.k === "gen" && ret.name === "Promise" ? ret.args[0] : ret.k === "error" ? ERROR : (this.at("E2002", d.type ?? d, "an async function must return Promise<T>"), ERROR);
-    const nested = d.kind === K.ArrowFunction || d.kind === K.FunctionExpression;
+    const nested = d.kind === K.ArrowFunction
+      || d.kind === K.FunctionExpression
+      || (d.kind === K.MethodDeclaration && d.parent?.kind === K.ObjectLiteralExpression)
+      || (d.kind === K.FunctionDeclaration && d.parent?.kind !== K.SourceFile);
     const tparams = new Map(outer.fx.tparams);
     for (const p of sig.tparams) tparams.set(p.name, p);
     this.fx = {

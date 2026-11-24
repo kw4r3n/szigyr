@@ -1,0 +1,7 @@
+// expect: E1000 @ 5:31
+// stage: 1
+type O = { readonly f: () => i32 };
+export function g(): i32 {
+  const o: O = { f() { return this; } };
+  return o.f();
+}

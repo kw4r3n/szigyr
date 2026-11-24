@@ -461,6 +461,7 @@ class Flow {
         for (const p of (e as ts.ObjectLiteralExpression).properties) {
           if (p.kind === K.PropertyAssignment) this.ex((p as ts.PropertyAssignment).initializer, fieldCtx);
           else if (p.kind === K.ShorthandPropertyAssignment) this.ident((p as ts.ShorthandPropertyAssignment).name as ts.Identifier, fieldCtx);
+          else if (p.kind === K.MethodDeclaration) new Flow(this.m, this.depth + 1).body(p as ts.MethodDeclaration);
           else if (p.kind === K.SpreadAssignment) this.ex((p as ts.SpreadAssignment).expression, fieldCtx); // Q053
         }
         return;

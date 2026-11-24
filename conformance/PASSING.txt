@@ -25,6 +25,7 @@ accept/197-do-while-continue-with-return.szigyr
 accept/198-unsigned-compare-zero-ok.szigyr
 accept/199-map-for-of.szigyr
 accept/20-template-strings.szigyr
+accept/200-object-method-shorthand.szigyr
 accept/21-imports
 accept/22-class-across-files
 accept/23-rt-mixinto.szigyr
@@ -135,7 +136,8 @@ reject/E1000-namespace-decl.szigyr
 reject/E1000-object-accessor.szigyr
 reject/E1000-object-destructuring-assignment.szigyr
 reject/E1000-object-literal-proto.szigyr
-reject/E1000-object-method.szigyr
+reject/E1000-object-method-generator.szigyr
+reject/E1000-object-method-this.szigyr
 reject/E1000-object-type.szigyr
 reject/E1000-param-prop-dup-field.szigyr
 reject/E1000-pre-dec-in-value-pos.szigyr
@@ -462,6 +464,7 @@ reject/E2006-js-callback-plain-parameter.szigyr
 reject/E2006-module-const-without-annotation.szigyr
 reject/E2006-module-destructuring-without-type.szigyr
 reject/E2006-object-literal-without-context.szigyr
+reject/E2006-object-method-no-context.szigyr
 reject/E2006-ok-without-result-context.szigyr
 reject/E2006-parameter-without-annotation.szigyr
 reject/E2006-return-without-annotation.szigyr
@@ -646,6 +649,7 @@ reject/E3007-map-returns-owned.szigyr
 reject/E3007-nested-alias-map-of-owned.szigyr
 reject/E3007-nested-container-of-owned-parameter.szigyr
 reject/E3007-new-generic-class-holds-owned.szigyr
+reject/E3007-object-method-capture-owned.szigyr
 reject/E3007-owned-captured-by-closure.szigyr
 reject/E3007-owned-in-array-literal.szigyr
 reject/E3007-owned-in-class-field.szigyr
@@ -699,6 +703,7 @@ reject/E4002-array-param-in-strict.szigyr
 reject/E4002-async-in-strict.szigyr
 reject/E4002-lone-surrogate-value-to-strict-generic.szigyr
 reject/E4002-managed-type-parameter-into-strict-generic.szigyr
+reject/E4002-object-method-strict.szigyr
 reject/E4002-owned-cell-in-strict.szigyr
 reject/E4002-pool-create-string.szigyr
 reject/E4002-pool-element-owned-struct.szigyr
@@ -1054,6 +1059,7 @@ run/285-fn-min-arity-sound.szigyr
 run/286-fn-default-arg-rt.szigyr
 run/287-fn-default-arg-owned.szigyr
 run/288-map-for-of.szigyr
+run/289-object-method-shorthand.szigyr
 run/29-trap-invariant.szigyr
 run/30-int-no-negative-zero.szigyr
 run/40-trap-ensures-void.szigyr

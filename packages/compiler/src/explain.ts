@@ -38,7 +38,6 @@ const ENTRIES: Record<string, ExplainEntry> = Object.fromEntries([
     generator: "Replace generator functions/methods ('function*', '*m()') with functions returning an array or explicit state.",
     "interface-extends": "Use a field-only interface for 'extends', or implement multiple method interfaces on a class.",
     "interface-mixed": "Split fields and methods into separate interfaces; an interface must contain only properties or only methods.",
-    "object-method": "Use plain data fields in record literals or declare a 'class' with methods.",
     "object-accessor": "Replace accessors in object literals with plain fields or functions.",
     "object-property-name": "Use plain identifier keys in object literals, or use 'Map<string, V>' for dynamic keys.",
     "shorthand-initializer": "Write explicit 'key: value' entries instead of shorthand object initializers '{ a = 1 }'.",

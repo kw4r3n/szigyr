@@ -1,0 +1,27 @@
+// expect-output: 1|12|13|20|42
+// stage: 1
+type Ops = {
+  readonly f: () => i32;
+  readonly inc: (x: i32) => i32;
+  readonly load: () => Promise<i32>;
+  readonly opt: ((x: i32) => i32) | null;
+};
+
+export async function main(sys: System): Promise<void> {
+  let k: i32 = 1;
+  const o: Ops = {
+    f() { return 1; },
+    inc(x) {
+      k += 1;
+      return x + k;
+    },
+    async load() { return 42; },
+    opt(x) { return x * 2; },
+  };
+  const a = o.f();
+  const b = o.inc(10);
+  const c = o.inc(10);
+  const d = o.opt?.(10) ?? 0;
+  const e = await o.load();
+  sys.log.info(`${a}|${b}|${c}|${d}|${e}`);
+}

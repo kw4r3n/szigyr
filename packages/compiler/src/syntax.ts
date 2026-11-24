@@ -408,21 +408,22 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
   // ---- declarations
   function fn(n: ts.FunctionDeclaration | ts.MethodDeclaration | ts.ArrowFunction | ts.FunctionExpression | ts.ConstructorDeclaration, kind: FnKind): void {
     const saved = fc;
-    const thisOk = n.kind === K.ArrowFunction ? fc.thisOk : n.kind === K.Constructor || (n.kind === K.MethodDeclaration && !n.modifiers?.some((m) => m.kind === K.StaticKeyword));
+    const isFnExprLike = n.kind === K.ArrowFunction || n.kind === K.FunctionExpression || (kind === "other" && (n.kind === K.MethodDeclaration || n.kind === K.FunctionDeclaration));
+    const thisOk = n.kind === K.ArrowFunction ? fc.thisOk : n.kind === K.Constructor || (kind === "method" && !n.modifiers?.some((m) => m.kind === K.StaticKeyword));
     const isTestCb = (n.kind === K.ArrowFunction || n.kind === K.FunctionExpression) && n.parent?.kind === K.CallExpression &&
       allowedCalls.has(n.parent) && (n.parent as ts.CallExpression).arguments[1] === n;
     const inTest = (n.kind === K.ArrowFunction || n.kind === K.FunctionExpression) && (fc.inTest || isTestCb);
     const fnLayer = kind === "function" && n.body?.kind === K.Block
       ? peekLayer((n.body as ts.Block).statements, true).layer
       : undefined;
-    const layer = fnLayer ?? (n.kind === K.ArrowFunction || n.kind === K.FunctionExpression ? fc.layer : fileLayer);
+    const layer = fnLayer ?? (isFnExprLike ? fc.layer : fileLayer);
     fc = { thisOk, async: !!n.modifiers?.some((m) => m.kind === K.AsyncKeyword), inTest, loops: 0, breaks: 0, layer, labels: new Set<string>() };
     try { scoped(() => fn0(n, kind)); } finally { fc = saved; } // parameters and the top level of the body share one scope
   }
   function fn0(n: ts.FunctionDeclaration | ts.MethodDeclaration | ts.ArrowFunction | ts.FunctionExpression | ts.ConstructorDeclaration, kind: FnKind): void {
     const isAsync = !!n.modifiers?.some((m) => m.kind === K.AsyncKeyword);
     if (n.kind === K.FunctionDeclaration || n.kind === K.FunctionExpression) {
-      if (n.kind === K.FunctionDeclaration) { mods(n, [K.ExportKeyword, K.AsyncKeyword]); if (n.name) declName(n.name); }
+      if (n.kind === K.FunctionDeclaration) { mods(n, kind === "function" ? [K.ExportKeyword, K.AsyncKeyword] : [K.AsyncKeyword]); if (n.name) declName(n.name); }
       else { mods(n, [K.AsyncKeyword]); if (n.name) declName(n.name); }
       if (n.asteriskToken) { // Q004: anchor `function`; the body is not walked (no cascade from `yield`)
         const m = n.modifiers;
@@ -430,7 +431,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         report("E1000", kw, kw + "function".length, "generator is not allowed");
         return;
       }
-    } else if (n.kind === K.MethodDeclaration) mods(n, [K.PrivateKeyword, K.StaticKeyword, K.AsyncKeyword]);
+    } else if (n.kind === K.MethodDeclaration) mods(n, kind === "method" ? [K.PrivateKeyword, K.StaticKeyword, K.AsyncKeyword] : [K.AsyncKeyword]);
     else if (n.kind === K.ArrowFunction) mods(n, [K.AsyncKeyword]);
     else if (n.kind === K.Constructor) mods(n, []);
     typeParams(n.typeParameters);
@@ -977,8 +978,16 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
             if (sp.objectAssignmentInitializer) e1000(sp, "shorthand initializer", { kind: "shorthand-initializer" });
             expr(sp.name as ts.Identifier);
           } else if (p.kind === K.SpreadAssignment) expr((p as ts.SpreadAssignment).expression);
-          else if (p.kind === K.MethodDeclaration) e1000(p, "method shorthand in object literal", { kind: "object-method" });
-          else if (p.kind === K.GetAccessor || p.kind === K.SetAccessor) e1000(p, "getter/setter in object literal", { kind: "object-accessor" });
+          else if (p.kind === K.MethodDeclaration) {
+            const md = p as ts.MethodDeclaration;
+            if (md.asteriskToken) { e1000(md.asteriskToken, "generator method", { kind: "generator" }); continue; }
+            if (!isId(md.name)) e1000(md.name, "this property name", { kind: md.name.kind === K.ComputedPropertyName ? "computed-property" : "object-property-name" });
+            else if (md.name.text === "__proto__") e1000(md.name, "property name '__proto__'", { kind: "reserved-name", name: "__proto__" });
+            else claim(keys, md.name);
+            const qTok = (md as Node & { questionToken?: Node; postfixToken?: Node }).questionToken ?? (md as Node & { postfixToken?: Node }).postfixToken;
+            if (qTok?.kind === K.QuestionToken) at("E1008", md.name, "optional member is not allowed", { kind: "optional-member", ...(isId(md.name) ? { name: md.name.text } : {}) });
+            fn(md, "other");
+          } else if (p.kind === K.GetAccessor || p.kind === K.SetAccessor) e1000(p, "getter/setter in object literal", { kind: "object-accessor" });
           else e1000(p, "this object literal member", { kind: "object-member" });
         }
         return;
