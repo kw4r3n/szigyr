@@ -1,0 +1,13 @@
+// expect: E2000 @ 7:14
+// stage: 1
+// open-question: Q322
+export function main(sys: System): void {
+  type P = i32;
+  {
+    type A = P;
+    type P = string;
+    const x: A = 1;
+    const y: P = "a";
+    sys.log.info(`${x}|${y}`);
+  }
+}

@@ -1,0 +1,30 @@
+// expect: ok
+// stage: 1
+// open-question: Q320
+export function nestedCases(base: i32): i32 {
+  let acc: i32 = base;
+  function add(x: i32) {
+    acc += x;
+    return acc;
+  }
+  function fact(n: i32): i32 {
+    return n <= 1 ? 1 : n * fact(n - 1);
+  }
+  function id<T>(v: T): T {
+    return v;
+  }
+  for (let i: i32 = 0; i < 3; i++) {
+    function step(k: i32): i32 {
+      return k + i;
+    }
+    acc += step(1);
+  }
+  return id<i32>(add(fact(4)));
+}
+
+export async function nestedAsync(): Promise<i32> {
+  async function fetchOne(x: i32): Promise<i32> {
+    return x + 1;
+  }
+  return await fetchOne(10);
+}

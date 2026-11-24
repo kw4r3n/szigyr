@@ -43,7 +43,7 @@ export interface LocalSym {
 export type ValueSym = FnSym | ConstSym | ClassValueSym | CFnSym | CConstSym | { k: "jsref" } | { k: "error" } | LocalSym;
 
 export type TypeSym =
-  | { k: "alias"; decl: ts.TypeAliasDeclaration; mod: Module; tparams?: TParam[]; body?: Type; busy?: boolean }
+  | { k: "alias"; decl: ts.TypeAliasDeclaration; mod: Module; tparams?: TParam[]; body?: Type; busy?: boolean; locals?: ReadonlyMap<string, TypeSym> }
   | { k: "rec-iface"; decl: ts.InterfaceDeclaration; mod: Module; tparams?: TParam[]; body?: Type; busy?: boolean }
   | { k: "class"; cls: ClassSym; mod: Module }
   | { k: "iface"; iface: IfaceSym; decl: ts.InterfaceDeclaration; mod: Module }
@@ -564,7 +564,15 @@ export class Program {
   /** Q022: parameters always annotated; return annotated for named functions and methods (anchor: the name). */
   signature(d: ts.SignatureDeclaration, name: Node | undefined, outer: TypeEnv, requireRet = true, owner: Layer = "managed", allowOwned = false): FnType {
     const tparams = tparamShells(d.typeParameters, owner, allowOwned);
-    const e: TypeEnv = { mod: outer.mod, tparams: new Map([...outer.tparams, ...tparams.map((p) => [p.name, p] as const)]), ...(outer.cscope ? { cscope: outer.cscope } : {}) };
+    const ownTps = tparams.length ? new Set(tparams.map((p) => p.name)) : undefined;
+    const e: TypeEnv = {
+      mod: outer.mod,
+      tparams: new Map([...outer.tparams, ...tparams.map((p) => [p.name, p] as const)]),
+      ...(outer.cscope ? { cscope: outer.cscope } : {}),
+      ...(outer.locals ? { locals: outer.locals } : {}),
+      ...(outer.checkPendingType ? { checkPendingType: ownTps ? (id) => !ownTps.has(id.text) && outer.checkPendingType!(id) : outer.checkPendingType } : {}),
+      ...(outer.outerTParams ? { outerTParams: outer.outerTParams } : {}),
+    };
     this.constraints(d.typeParameters, tparams, e);
     const params: Type[] = [];
     let rest: Type | undefined;
@@ -642,12 +650,19 @@ export class Program {
     decls?.forEach((d, i) => { if (d.constraint) this.resolveConstraint(d.constraint, ps[i]!, e); });
   }
 
-  aliasBody(a: Extract<TypeSym, { k: "alias" }>): Type {
+  aliasBody(a: Extract<TypeSym, { k: "alias" }>, extra?: Pick<TypeEnv, "checkPendingType" | "outerTParams">): Type {
     if (a.body) return a.body;
     if (a.busy) return ERROR; // typeRef reports the cycle (Q085); shortcut: recursive aliases stay unsupported, upgrade with a lazy alias type
     a.busy = true;
     a.tparams ??= tparamShells(a.decl.typeParameters);
-    const e: TypeEnv = { mod: a.mod, tparams: new Map(a.tparams.map((p) => [p.name, p])) };
+    const ownTps = a.tparams.length ? new Set(a.tparams.map((p) => p.name)) : undefined;
+    const e: TypeEnv = {
+      mod: a.mod,
+      tparams: new Map(a.tparams.map((p) => [p.name, p])),
+      ...(a.locals ? { locals: a.locals } : {}),
+      ...(extra?.checkPendingType ? { checkPendingType: ownTps ? (id) => !ownTps.has(id.text) && extra.checkPendingType!(id) : extra.checkPendingType } : {}),
+      ...(extra?.outerTParams ? { outerTParams: extra.outerTParams } : {}),
+    };
     this.constraints(a.decl.typeParameters, a.tparams, e);
     a.body = this.typeOf(a.decl.type, e);
     a.busy = false;
@@ -827,9 +842,21 @@ export class Program {
         return ERROR;
       case K.UnknownKeyword: return builtinType("unknown")!;
       case K.NeverKeyword: return builtinType("never")!;
-      case K.BigIntKeyword: case K.UndefinedKeyword: {
+      case K.BigIntKeyword: {
         const name = t.getText(e.mod.sf);
         this.rep.at(e.mod, "E2000", t, `'${name}' does not exist`, { name });
+        return ERROR;
+      }
+      case K.UndefinedKeyword: {
+        const before = this.rep.out.length;
+        this.rep.at(e.mod, "E2000", t, "'undefined' does not exist; use 'null'", { kind: "js-global", name: "undefined" });
+        if (this.rep.out.length > before) {
+          const s = t.getStart(e.mod.sf);
+          this.rep.out.at(-1)!.fixes = [{
+            title: "use 'null'",
+            edits: [{ range: { start: e.mod.pf.position(s), end: e.mod.pf.position(t.end) }, newText: "null" }],
+          }];
+        }
         return ERROR;
       }
       case K.LiteralType: {
@@ -967,6 +994,17 @@ export class Program {
 
   typeRef(id: ts.Identifier, argNodes: ts.NodeArray<ts.TypeNode> | undefined, whole: Node, e: TypeEnv): Type {
     const name = id.text;
+    if (e.checkPendingType?.(id)) return ERROR;
+    if (!e.tparams.has(name) && e.outerTParams?.has(name)) {
+      this.rep.at(
+        e.mod,
+        "E2000",
+        id,
+        `type parameter '${name}' of an enclosing function cannot be used in a local type alias; declare a type parameter on the alias (e.g. 'type B<U> = ...') and pass '${name}' at the use site`,
+        { kind: "outer-type-param", name },
+      );
+      return ERROR;
+    }
     const args = (argNodes ?? []).map((a) => (name === "OwnedStruct" || name === "CStruct" ? ERROR : this.typeOf(a, e, name === "Promise" || name === "Ptr" || name === "ConstPtr" || name === "CHandle"))); // `Promise<void>` (Q028); `Ptr<void>` (§14.4)
     const arity = (n: number): boolean => {
       if (args.length === n) return true;
@@ -975,7 +1013,7 @@ export class Program {
     };
     const tp = e.tparams.get(name);
     if (tp) return arity(0) ? { k: "tparam", p: tp } : ERROR;
-    const sym = e.cscope?.get(name) ?? this.lookupType(e.mod, name);
+    const sym = e.locals?.get(name) ?? e.cscope?.get(name) ?? this.lookupType(e.mod, name);
     if (sym) return this.instantiateTypeSym(sym, name, argNodes, args, whole, e);
     if (name === "OwnedStruct") {
       const a = argNodes?.[0];
@@ -1054,7 +1092,7 @@ export function legalUnion(u: Type): boolean {
   return isTaggedUnion(rest) && new Set(rest.members.map(kindOf)).size === rest.members.length;
 }
 
-export interface TypeEnv { mod: Module; tparams: Map<string, TParam>; cscope?: Map<string, CStructSym> }
+export interface TypeEnv { mod: Module; tparams: Map<string, TParam>; cscope?: Map<string, CStructSym>; locals?: ReadonlyMap<string, TypeSym>; checkPendingType?: (id: ts.Identifier) => boolean; outerTParams?: ReadonlyMap<string, TParam> }
 
 export const tparamShells = (list: ts.NodeArray<ts.TypeParameterDeclaration> | undefined, owner?: Layer, allowOwned = false): TParam[] =>
   (list ?? []).map((d) => ({ ...newTParam(d.name.text), noPromise: true, ...(owner ? { owner } : {}), ...(allowOwned ? { allowOwned } : {}) }));

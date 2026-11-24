@@ -1,0 +1,9 @@
+// expect: E1000 @ 5:8
+// stage: 1
+// open-question: Q321
+export function f(): i32 {
+  type Top = { readonly x: i32 };
+  const p: Top = { x: 1 };
+  return p.x;
+}
+type Top = { readonly x: i32 };

@@ -142,7 +142,7 @@ function reportMismatch(c: Checker, e: ts.Expression, t: Type, want: Type, arg =
   const wantFn = wantFn0?.k === "fn" ? wantFn0 : undefined;
   if (t.k === "fn" && wantFn && fnExtraParamsOnly(t, wantFn)) {
     const extraDesc = t.rest !== undefined ? "a rest parameter" : `${t.params.length} parameters`;
-    const isInline = isFnExpr(assignTarget(e));
+    const isInline = isFnExpr(assignTarget(e)) || e.kind === K.MethodDeclaration;
     const arityStr = wantFn.params.length === 0 ? "0 parameters" : `at most ${wantFn.params.length} parameter(s)`;
     const hint = isInline ? `use ${arityStr}` : `wrap in an arrow function taking ${wantFn.params.length} parameter(s)`;
     c.at("E2002", e, `function '${show(t)}' accepts ${extraDesc}, exceeding expected '${show(wantFn)}' (${hint})`, {
@@ -158,7 +158,7 @@ function reportMismatch(c: Checker, e: ts.Expression, t: Type, want: Type, arg =
         const calleeText = sf.text.slice(s, e.end);
         const pNames: string[] = [];
         for (let i = 0, idx = 0; i < wantFn.params.length; i++) {
-          while (c.scope.lookup(`p${idx}`) || c.prog.lookupValue(c.mod, `p${idx}`) || c.mod.nsImports.has(`p${idx}`)) idx++;
+          while (c.scope.lookup(`p${idx}`) || c.scope.pending(`p${idx}`, false) !== undefined || c.prog.lookupValue(c.mod, `p${idx}`) || c.mod.nsImports.has(`p${idx}`)) idx++;
           pNames.push(`p${idx++}`);
         }
         const newText = pNames.length === 0
@@ -181,25 +181,62 @@ export function checkTo(c: Checker, e: ts.Expression, want: Type, arg = false): 
   const t = expr(c, e, want);
   return reportMismatch(c, e, t, want, arg) ? t : ERROR;
 }
-function attachNonNullCondFix(c: Checker, e: ts.Expression, t: Type): void {
+const LOOSE_BIN = new Set<K>([
+  K.AmpersandAmpersandToken, K.BarBarToken, K.QuestionQuestionToken,
+  K.EqualsToken, K.AmpersandAmpersandEqualsToken, K.BarBarEqualsToken, K.QuestionQuestionEqualsToken,
+]);
+const STRUCTURAL_GENS = new Set(["Array", "ReadonlyArray", "Vec", "Slice", "Map", "Set"]);
+
+function wrapOperand(sf: ts.SourceFile, e: ts.Expression): string {
+  const txt = sf.text.slice(e.getStart(sf), e.end);
+  return e.kind === K.BinaryExpression || e.kind === K.ConditionalExpression ? `(${txt})` : txt;
+}
+function wrapNotFix(u: ts.PrefixUnaryExpression, exprStr: string): string {
+  const p = u.parent;
+  if (!p) return exprStr;
+  if (p.kind === K.BinaryExpression && LOOSE_BIN.has((p as ts.BinaryExpression).operatorToken.kind)) return exprStr;
+  if (
+    p.kind === K.PrefixUnaryExpression || p.kind === K.BinaryExpression || p.kind === K.PostfixUnaryExpression ||
+    p.kind === K.PropertyAccessExpression || p.kind === K.ElementAccessExpression || p.kind === K.CallExpression
+  ) return `(${exprStr})`;
+  return exprStr;
+}
+function attachFix(c: Checker, before: number, start: number, end: number, title: string, newText: string): void {
+  if (c.prog.rep.out.length <= before) return;
+  c.prog.rep.out.at(-1)!.fixes = [{
+    title,
+    edits: [{ range: { start: c.fx.mod.pf.position(start), end: c.fx.mod.pf.position(end) }, newText }],
+  }];
+}
+function attachNonNullCondFix(c: Checker, before: number, e: ts.Expression, t: Type): void {
   const nn = nonNull(t);
   if (!nn || isBool(nn)) return;
-  const d = c.prog.rep.out.at(-1);
-  if (d?.code !== "E2004") return;
-  const sf = c.fx.mod.sf, s = e.getStart(sf), txt = sf.text.slice(s, e.end);
-  const wrapped = e.kind === K.BinaryExpression || e.kind === K.ConditionalExpression ? `(${txt})` : txt;
-  d.fixes = [{
-    title: "compare with '!== null'",
-    edits: [{ range: { start: c.fx.mod.pf.position(s), end: c.fx.mod.pf.position(e.end) }, newText: `${wrapped} !== null` }],
-  }];
+  const sf = c.fx.mod.sf;
+  attachFix(c, before, e.getStart(sf), e.end, "compare with '!== null'", `${wrapOperand(sf, e)} !== null`);
+}
+function truthyHint(t: Type, neg: boolean): { hint: string; cmp?: string } {
+  const op = neg ? "===" : "!==";
+  if (isStr(t)) { const cmp = `${op} ""`; return { hint: `; compare with '${cmp}'`, cmp }; }
+  if (isInt(t)) { const cmp = `${op} 0`; return { hint: `; compare with '${cmp}'`, cmp }; }
+  if (isNum(t)) {
+    const cmp = `${op} 0`;
+    return { hint: `; compare with '${cmp}' (note: for 'NaN', 'n ${cmp}' is ${neg ? "false" : "true"}, whereas JS treats 'NaN' as falsy)` };
+  }
+  return { hint: "" };
 }
 
 /** E2004: conditions are boolean only (§3.1). */
 export function cond(c: Checker, e: ts.Expression): void {
   const t = expr(c, e);
   if (!isBool(t) && !isErr(t)) {
-    c.at("E2004", e, `condition must be boolean, got '${show(t)}'`, { actual: show(t) });
-    attachNonNullCondFix(c, e, t);
+    const before = c.prog.rep.out.length;
+    const { hint, cmp } = truthyHint(t, false);
+    c.at("E2004", e, `condition must be boolean, got '${show(t)}'${hint}`, { kind: "truthiness", actual: show(t) });
+    attachNonNullCondFix(c, before, e, t);
+    if (cmp) {
+      const sf = c.fx.mod.sf;
+      attachFix(c, before, e.getStart(sf), e.end, `compare with '${cmp}'`, `${wrapOperand(sf, e)} ${cmp}`);
+    }
   }
 }
 
@@ -274,7 +311,14 @@ function exprUnrecorded(c: Checker, e: ts.Expression, want?: Type): Type {
     case K.TemplateExpression:
       for (const sp of (e as ts.TemplateExpression).templateSpans) {
         const t = expr(c, sp.expression);
-        if (!isErr(t) && !isStr(t) && !isNum(t) && !isBool(t)) c.at("E2002", sp.expression, `cannot embed '${show(t)}' in a template`); // Q027
+        if (!isErr(t) && !isStr(t) && !isNum(t) && !isBool(t)) {
+          const nn = nonNull(t);
+          if (nn && (isStr(nn) || isNum(nn) || isBool(nn))) {
+            c.at("E2002", sp.expression, `cannot embed '${show(t)}' in a template; narrow with '!== null' first or provide a fallback with '??'`, { kind: "template-nullable", actual: show(t) });
+          } else {
+            c.at("E2002", sp.expression, `cannot embed '${show(t)}' in a template`); // Q027
+          }
+        }
       }
       return STR;
     case K.AwaitExpression: {
@@ -333,6 +377,7 @@ function strLit(value: string, want: Type | undefined): Type {
 // ---- names
 function ident(c: Checker, id: ts.Identifier): Type {
   const name = id.text;
+  if (c.pendingUse(id)) return ERROR;
   const local = c.scope.lookup(name);
   if (local) {
     localOf.set(id, local); contractLocal(c, id, local);
@@ -377,6 +422,17 @@ function ident(c: Checker, id: ts.Identifier): Type {
   return ERROR;
 }
 
+const JS_GLOBAL_HINTS: Record<string, { msg: string; fixTitle?: string; fixText?: string }> = {
+  NaN: { msg: "'NaN' is not defined; use 'Number.NaN'", fixTitle: "use 'Number.NaN'", fixText: "Number.NaN" },
+  Infinity: { msg: "'Infinity' is not defined; use 'Number.POSITIVE_INFINITY'", fixTitle: "use 'Number.POSITIVE_INFINITY'", fixText: "Number.POSITIVE_INFINITY" },
+  isNaN: { msg: "'isNaN' is not defined; use 'Number.isNaN(x)'", fixTitle: "use 'Number.isNaN'", fixText: "Number.isNaN" },
+  parseFloat: { msg: "'parseFloat' is not defined; use 'Number.parseFloat(s)'", fixTitle: "use 'Number.parseFloat'", fixText: "Number.parseFloat" },
+  undefined: { msg: "'undefined' does not exist; use 'null'", fixTitle: "use 'null'", fixText: "null" },
+  parseInt: { msg: "'parseInt' is not defined; use 'Number.parseI32(s)' (returns 'Result')" },
+  Object: { msg: "'Object' is not defined; list fields explicitly or use 'Map<K, V>'" },
+  Array: { msg: "'Array' cannot be used as a value; use '[...xs]' to copy an array" },
+};
+
 /** E2000 / E5001 for a name that is not declared (Q006, Q011, Q034). */
 function unresolved(c: Checker, id: ts.Identifier): void {
   const name = id.text;
@@ -389,8 +445,22 @@ function unresolved(c: Checker, id: ts.Identifier): void {
   if (name === "Resource") { c.at("E2002", id, "'Resource' is a namespace", { name }); return; }
   if (name === "Result") { c.at("E2002", id, "'Result' is a namespace", { name }); return; }
   if (name === "ok" || name === "err") { c.at("E2000", id, `unknown name '${name}'; use 'Result.${name}(...)'`, { name }); return; }
+  if (name === "Number") {
+    c.at("E2000", id, "'Number' can only be used as a member access receiver; use 'Number.parseFloat(s)' for strings or 'f64(x)' for numbers", { kind: "js-global", name });
+    return;
+  }
   if (NAMESPACES.has(name) && !RESERVED.has(name)) { c.at("E2000", id, `'${name}' can only be used as a member access receiver`, { name }); return; }
   if (BUILTIN_FUNCTIONS.has(name)) { c.at("E2002", id, `builtin '${name}' can only be called`, { name }); return; }
+  const hint = JS_GLOBAL_HINTS[name];
+  if (hint) {
+    const before = c.prog.rep.out.length;
+    c.at("E2000", id, hint.msg, { kind: "js-global", name });
+    if (hint.fixTitle && hint.fixText !== undefined) {
+      const sf = c.fx.mod.sf;
+      attachFix(c, before, id.getStart(sf), id.end, hint.fixTitle, hint.fixText);
+    }
+    return;
+  }
   c.at("E2000", id, `unknown name '${name}'`, { name });
 }
 
@@ -407,10 +477,10 @@ type MemberResult = { kind: "value"; type: Type; readonly: boolean; optRaw?: Typ
 const MERR: MemberResult = { kind: "error" };
 
 /** True when `id` names a builtin namespace object, not shadowed by a declaration. */
-const isNamespace = (c: Checker, id: ts.Identifier): boolean => NAMESPACES.has(id.text) && !c.scope.lookup(id.text) && !c.prog.lookupValue(c.mod, id.text) && !c.mod.nsImports.has(id.text) && !c.prog.isTypeOnlyValue(c.mod, id.text);
+const isNamespace = (c: Checker, id: ts.Identifier): boolean => NAMESPACES.has(id.text) && c.scope.pending(id.text, false) === undefined && !c.scope.lookup(id.text) && !c.prog.lookupValue(c.mod, id.text) && !c.mod.nsImports.has(id.text) && !c.prog.isTypeOnlyValue(c.mod, id.text);
 
 const lookupNs = (c: Checker, id: ts.Identifier) =>
-  !c.scope.lookup(id.text) ? c.mod.nsImports.get(id.text) : undefined;
+  c.scope.pending(id.text, false) === undefined && !c.scope.lookup(id.text) ? c.mod.nsImports.get(id.text) : undefined;
 
 function classStaticMember(c: Checker, cls: ClassSym, name: ts.Identifier, inCall: boolean): MemberResult {
   const f = cls.fields.get(name.text), me = cls.methods.get(name.text);
@@ -420,8 +490,9 @@ function classStaticMember(c: Checker, cls: ClassSym, name: ts.Identifier, inCal
   return MERR;
 }
 
-function lookupModuleFn(c: Checker, e: ts.Expression): { sym?: FnSym; nonFn?: ValueSym; typeOnly?: string; missingProp?: ts.PropertyAccessExpression } {
+function lookupModuleFn(c: Checker, e: ts.Expression): { sym?: FnSym; nonFn?: ValueSym; typeOnly?: string; missingProp?: ts.PropertyAccessExpression; pending?: ts.Identifier } {
   if (isId(e)) {
+    if (c.scope.pending(e.text, false) !== undefined) return { pending: e };
     if (c.scope.lookup(e.text)) return {};
     const sym = c.prog.lookupValue(c.mod, e.text);
     if (sym) return sym.k === "fn" ? { sym } : { nonFn: sym };
@@ -431,6 +502,7 @@ function lookupModuleFn(c: Checker, e: ts.Expression): { sym?: FnSym; nonFn?: Va
   if (e.kind === K.PropertyAccessExpression) {
     const p = e as ts.PropertyAccessExpression;
     if (!isId(p.expression)) return {};
+    if (c.scope.pending(p.expression.text, false) !== undefined) return { pending: p.expression };
     const ns = lookupNs(c, p.expression);
     if (!ns) return {};
     if (p.questionDotToken) return { missingProp: p };
@@ -503,6 +575,7 @@ function reportUnknownBuiltinMember(c: Checker, name: ts.Identifier, t: Type, av
 function member(c: Checker, p: ts.PropertyAccessExpression, inCall: boolean): MemberResult {
   const name = p.name as ts.Identifier; // private names are E1000 in P1
   const recvNode = p.expression;
+  if (isId(recvNode) && c.pendingUse(recvNode)) return MERR;
   if (isId(recvNode) && recvNode.text === "Resource" && !c.scope.lookup("Resource") && !c.prog.lookupValue(c.mod, "Resource")) {
     if (name.text === "own" || name.text === "ownWith") c.at("E2002", name, "a method can only be called");
     else {
@@ -757,6 +830,7 @@ export function assignTarget(e: ts.Expression): ts.Expression {
 function lvalue(c: Checker, e0: ts.Expression): Type {
   const e = c.assigned(e0).node; // ends the target's narrowings, a `this.f` path included (Q133)
   if (isId(e)) {
+    if (c.pendingUse(e)) return ERROR;
     const s = c.scope.lookup(e.text);
     if (s) {
       localOf.set(e, s);
@@ -960,12 +1034,12 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
     if (isErr(lt)) { c.branch(() => expr(c, b.right)); return ERROR; }
     if (!isBool(lt)) {
       const hint = k === K.BarBarEqualsToken ? "; for nullish fallback use '??='" : "";
-      c.at("E2004", b.left, `'${op}' expects 'boolean' left operand, got '${show(lt)}'${hint}`, { actual: show(lt) });
+      c.at("E2004", b.left, `'${op}' expects 'boolean' left operand, got '${show(lt)}'${hint}`, { kind: "truthiness", actual: show(lt) });
       c.branch(() => expr(c, b.right));
       return ERROR;
     }
     const rt = c.branch(() => expr(c, b.right, BOOL));
-    if (!isErr(rt) && !isBool(rt)) c.at("E2004", b.right, `'${op}' expects 'boolean' right operand, got '${show(rt)}'`, { actual: show(rt) });
+    if (!isErr(rt) && !isBool(rt)) c.at("E2004", b.right, `'${op}' expects 'boolean' right operand, got '${show(rt)}'`, { kind: "truthiness", actual: show(rt) });
     return BOOL;
   }
   const base = COMPOUND[k];
@@ -996,10 +1070,19 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
   switch (k) {
     case K.AmpersandAmpersandToken: case K.BarBarToken: {
       const m0 = c.mark();
+      const checkOp = (n: ts.Expression, t: Type): void => {
+        if (isBool(t) || isErr(t)) return;
+        const before = c.prog.rep.out.length;
+        const defaultHint = k === K.BarBarToken && (isNum(t) || isStr(t))
+          ? "; for a default value, use '??' on 'T | null' or a conditional expression"
+          : "";
+        c.at("E2004", n, `operand must be boolean, got '${show(t)}'${defaultHint}`, { kind: "truthiness", actual: show(t) });
+        attachNonNullCondFix(c, before, n, t);
+      };
       const lt = expr(c, b.left);
-      if (!isBool(lt) && !isErr(lt)) { c.at("E2004", b.left, "operand must be boolean", { actual: show(lt) }); attachNonNullCondFix(c, b.left, lt); }
+      checkOp(b.left, lt);
       const rt = c.branch(() => expr(c, b.right), c.facts(b.left, k === K.AmpersandAmpersandToken), m0);
-      if (!isBool(rt) && !isErr(rt)) { c.at("E2004", b.right, "operand must be boolean", { actual: show(rt) }); attachNonNullCondFix(c, b.right, rt); }
+      checkOp(b.right, rt);
       return BOOL;
     }
     case K.QuestionQuestionToken: {
@@ -1023,8 +1106,10 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
     case K.LessThanToken: case K.LessThanEqualsToken: case K.GreaterThanToken: case K.GreaterThanEqualsToken: {
       const [lt, rt] = operands(c, b.left, b.right, undefined);
       if (isErr(lt) || isErr(rt)) return BOOL;
-      if (isNum(lt) && isNum(rt)) { if (lt.name !== rt.name) c.at("E2003", op, `cannot compare '${lt.name}' and '${rt.name}'`, { left: lt.name, right: rt.name }); }
-      else if (isStr(lt) && isStr(rt)) {
+      if (isNum(lt) && isNum(rt)) {
+        if (lt.name !== rt.name) c.at("E2003", op, `cannot compare '${lt.name}' and '${rt.name}'`, { left: lt.name, right: rt.name });
+        else unsignedZero(c, op, b.left, b.right, lt.name, k);
+      } else if (isStr(lt) && isStr(rt)) {
         if (!c.callAllowed("managed")) c.at("E4001", op, "string relational comparison is managed-only", { callerLayer: c.fx.layer, calleeLayer: "managed" });
       }
       else c.at("E2002", op, "relational operators need numbers of the same type or strings"); // Q018
@@ -1067,6 +1152,31 @@ function trapCode(c: Checker, a: ts.Expression, name = "traps"): void {
   if (!ok) c.at("E2002", a, `the first argument of '${name}' must be a trap code literal "T001" - "T015"`);
 }
 
+function isZeroLit(e: ts.Expression): boolean {
+  const unwrap = (x: ts.Expression): ts.Expression => {
+    while (x.kind === K.ParenthesizedExpression) x = (x as ts.ParenthesizedExpression).expression;
+    return x;
+  };
+  let cur = unwrap(e);
+  if (cur.kind === K.PrefixUnaryExpression && (cur as ts.PrefixUnaryExpression).operator === K.MinusToken) {
+    cur = unwrap((cur as ts.PrefixUnaryExpression).operand);
+  }
+  return cur.kind === K.NumericLiteral && numValue(cur as ts.NumericLiteral) === 0;
+}
+
+/** Rejects unsigned `>= 0` / `< 0` (and flipped forms) whose result is determined by type alone (Q319). */
+function unsignedZero(c: Checker, op: Node, l: ts.Expression, r: ts.Expression, name: NumName, k: K): void {
+  if (name !== "u8" && name !== "u16" && name !== "u32" && name !== "u64" && name !== "usize") return;
+  const rz = isZeroLit(r), lz = isZeroLit(l);
+  if (rz === lz) return;
+  const always = rz
+    ? (k === K.GreaterThanEqualsToken ? true : k === K.LessThanToken ? false : undefined)
+    : (k === K.LessThanEqualsToken ? true : k === K.GreaterThanToken ? false : undefined);
+  if (always !== undefined) {
+    c.at("E2002", op, `'${name}' is never negative, so this comparison is always ${always}; remove it (for a descending loop, write 'for (let i = n; i > 0; i--)' and index with 'i - 1')`, { kind: "unsigned-compare-zero", type: name, always });
+  }
+}
+
 /** Q017: which types `===` / `!==` accept. */
 function equality(c: Checker, op: Node, lt: Type, rt: Type): void {
   if (isNull(lt) || isNull(rt)) {
@@ -1078,6 +1188,11 @@ function equality(c: Checker, op: Node, lt: Type, rt: Type): void {
   const a = nonNull(lt) ?? lt, b = nonNull(rt) ?? rt;
   if (isNum(a) && isNum(b)) { if (a.name !== b.name) c.at("E2003", op, `cannot compare '${a.name}' and '${b.name}'`, { left: a.name, right: b.name }); return; }
   if ((isBool(a) && isBool(b)) || (isStr(a) && isStr(b)) || ((a.k === "class" || (a.k === "gen" && a.name === "Handle") || (a.k === "tparam" && tparamHasCap(a.p, "Key"))) && same(a, b))) return;
+  const isStructType = (t: Type): boolean => t.k === "record" || t.k === "tuple" || (t.k === "gen" && STRUCTURAL_GENS.has(t.name));
+  if (isStructType(a) && isStructType(b)) {
+    c.at("E2002", op, `cannot compare '${show(lt)}' and '${show(rt)}' structurally; compare elements or fields explicitly (in tests, use 't.eq(a, b)')`, { kind: "compare-structural", left: show(lt), right: show(rt) });
+    return;
+  }
   c.at("E2002", op, `cannot compare '${show(lt)}' and '${show(rt)}'`);
 }
 
@@ -1090,7 +1205,15 @@ function prefix(c: Checker, u: ts.PrefixUnaryExpression, want: Type | undefined)
   }
   if (u.operator === K.ExclamationToken) {
     const t = expr(c, u.operand);
-    if (!isBool(t) && !isErr(t)) c.at("E2004", u.operand, "operand must be boolean", { actual: show(t) });
+    if (!isBool(t) && !isErr(t)) {
+      const before = c.prog.rep.out.length;
+      const { hint, cmp } = truthyHint(t, true);
+      c.at("E2004", u.operand, `operand must be boolean, got '${show(t)}'${hint}`, { kind: "truthiness", actual: show(t) });
+      if (cmp) {
+        const sf = c.fx.mod.sf;
+        attachFix(c, before, u.getStart(sf), u.end, `compare with '${cmp}'`, wrapNotFix(u, `${wrapOperand(sf, u.operand)} ${cmp}`));
+      }
+    }
     return BOOL;
   }
   const t = expr(c, u.operand, want);
@@ -1162,14 +1285,21 @@ function objLit(c: Checker, e: ts.ObjectLiteralExpression, want: Type | undefine
       for (const f of st.fields) given.add(f.name);
       continue;
     }
-    if (p.kind !== K.PropertyAssignment && p.kind !== K.ShorthandPropertyAssignment) { bad = true; continue; }
+    if (p.kind !== K.PropertyAssignment && p.kind !== K.ShorthandPropertyAssignment && p.kind !== K.MethodDeclaration) { bad = true; continue; }
     if (!isId(p.name) || p.name.text === "__proto__") { bad = true; continue; }
     const name = p.name;
     const f = field(rec, name.text);
     if (!f) { c.at("E2002", e, `'${show(rec)}' has no field '${name.text}'`); return ERROR; }
     given.add(name.text);
     if (p.kind === K.PropertyAssignment) { if (isErr(checkTo(c, (p as ts.PropertyAssignment).initializer, f.type))) bad = true; }
-    else {
+    else if (p.kind === K.MethodDeclaration) {
+      const md = p as ts.MethodDeclaration;
+      if (!md.body) { bad = true; continue; }
+      const w = unref(nonNull(f.type) ?? f.type);
+      const mt = checkArrow(c, md, w.k === "fn" ? w : undefined, false);
+      exprTypes.set(md, mt);
+      if (!reportMismatch(c, md as unknown as ts.Expression, mt, f.type)) bad = true;
+    } else {
       const vt = ident(c, name);
       exprTypes.set(name, vt); // the narrowed type, for the C backend (a shorthand name is not typed through expr)
       if (!assignable(vt, f.type)) { c.at("E2002", name, `expected '${show(f.type)}', got '${show(vt)}'`); bad = true; }
@@ -1239,46 +1369,48 @@ function arrLit(c: Checker, e: ts.ArrayLiteralExpression, want: Type | undefined
 }
 
 /** Arrow functions and function expressions (parameter types inferred from contextual fn type when present, else E2006; return inferred when not annotated). */
-function checkArrow(c: Checker, e: ts.ArrowFunction | ts.FunctionExpression, want: FnType | undefined, inferRet: boolean, openIds?: Set<number>): FnType {
+function checkArrow(c: Checker, e: ts.ArrowFunction | ts.FunctionExpression | ts.MethodDeclaration, want: FnType | undefined, inferRet: boolean, openIds?: Set<number>): FnType {
   if (c.fx.layer !== "managed" && !ensuresArgs.has(e)) c.at("E4003", e, `a function expression cannot be written in ${c.fx.layer} code; define a top-level function and pass its name instead`, { layer: c.fx.layer, kind: "strict-arrow" }); // §2, Q012
   const tps = tparamShells(e.typeParameters, "managed", true);
   const outerTps = c.fx.tparams;
   c.fx.tparams = new Map([...outerTps, ...tps.map((p) => [p.name, p] as const)]);
-  e.typeParameters?.forEach((d, i) => { if (d.constraint) c.prog.resolveConstraint(d.constraint, tps[i]!, { mod: c.mod, tparams: c.fx.tparams }); });
   const params: Type[] = [];
   let rest: Type | undefined;
-  let pi = 0;
-  for (let i = 0; i < e.parameters.length; i++) {
-    const p = e.parameters[i]!;
-    if (p.dotDotDotToken) {
-      let rt: Type;
+  let ret = c.withTParamScope(tps, () => {
+    e.typeParameters?.forEach((d, i) => { if (d.constraint) c.prog.resolveConstraint(d.constraint, tps[i]!, c.typeEnv()); });
+    let pi = 0;
+    for (let i = 0; i < e.parameters.length; i++) {
+      const p = e.parameters[i]!;
+      if (p.dotDotDotToken) {
+        let rt: Type;
+        if (!p.type) {
+          const wt = want && !want.tparams.length ? want.rest : undefined;
+          if (wt && !isErr(wt) && !(openIds && hasTParam(wt, openIds))) rt = wt;
+          else { c.at("E2006", p.name, "parameter needs a type annotation"); rt = ERROR; }
+        } else {
+          c.walkTypePos(p.type, "sig", { unsafe: c.fx.unsafe, cdecl: false });
+          rt = c.typeOf(p.type);
+          const u = unref(rt);
+          if (!isErr(u) && !restElem(u)) {
+            c.at("E2002", p.type, `rest parameter must have type 'Array<T>' or 'ReadonlyArray<T>', got '${show(rt)}'`, { kind: "bad-rest-type", actual: show(rt) });
+            rt = ERROR;
+          }
+        }
+        if (i === e.parameters.length - 1) rest = rt;
+        continue;
+      }
+      const idx = pi++;
       if (!p.type) {
-        const wt = want && !want.tparams.length ? want.rest : undefined;
-        if (wt && !isErr(wt) && !(openIds && hasTParam(wt, openIds))) rt = wt;
-        else { c.at("E2006", p.name, "parameter needs a type annotation"); rt = ERROR; }
+        const wt = want && !want.tparams.length ? want.params[idx] : undefined;
+        if (wt && !isErr(wt) && !(openIds && hasTParam(wt, openIds))) params.push(wt);
+        else { c.at("E2006", p.name, "parameter needs a type annotation"); params.push(ERROR); }
       } else {
         c.walkTypePos(p.type, "sig", { unsafe: c.fx.unsafe, cdecl: false });
-        rt = c.typeOf(p.type);
-        const u = unref(rt);
-        if (!isErr(u) && !restElem(u)) {
-          c.at("E2002", p.type, `rest parameter must have type 'Array<T>' or 'ReadonlyArray<T>', got '${show(rt)}'`, { kind: "bad-rest-type", actual: show(rt) });
-          rt = ERROR;
-        }
+        params.push(c.typeOf(p.type));
       }
-      if (i === e.parameters.length - 1) rest = rt;
-      continue;
     }
-    const idx = pi++;
-    if (!p.type) {
-      const wt = want && !want.tparams.length ? want.params[idx] : undefined;
-      if (wt && !isErr(wt) && !(openIds && hasTParam(wt, openIds))) params.push(wt);
-      else { c.at("E2006", p.name, "parameter needs a type annotation"); params.push(ERROR); }
-    } else {
-      c.walkTypePos(p.type, "sig", { unsafe: c.fx.unsafe, cdecl: false });
-      params.push(c.typeOf(p.type));
-    }
-  }
-  let ret = e.type ? (c.walkTypePos(e.type, "sig", { unsafe: c.fx.unsafe, cdecl: false }), c.typeOf(e.type, true)) : undefined;
+    return e.type ? (c.walkTypePos(e.type, "sig", { unsafe: c.fx.unsafe, cdecl: false }), c.typeOf(e.type, true)) : undefined;
+  });
   c.fx.tparams = outerTps;
   if (!ret && want && !inferRet) ret = want.ret;
   const firstDef = e.parameters.findIndex((p) => !p.dotDotDotToken && !!p.initializer);
@@ -1336,6 +1468,7 @@ function audioOpenCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExp
   const a = args[2]!;
   const bad = (msg: string, reason = "invalid-callback"): Type => { c.at("E2013", a, msg, { reason }); return ERROR; };
   const fnRef = lookupModuleFn(c, a);
+  if (fnRef.pending) { c.pendingUse(fnRef.pending); return ERROR; }
   if (!fnRef.sym) {
     if (fnRef.typeOnly) return bad(`'${fnRef.typeOnly}' is type-only and cannot be used as an audio callback`);
     if (fnRef.nonFn || fnRef.missingProp) return bad(`'${a.getText(c.fx.mod.sf)}' is not a module-level function`);
@@ -1474,7 +1607,10 @@ function resourceCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpr
     if (sym.layer !== "managed") c.fnSites.push({ from: c.fn, callee: sym, refs: new Map(), node: cleanupArg, mod: c.mod });
     return sym;
   };
-  if (fnRef.sym) {
+  if (fnRef.pending) {
+    c.pendingUse(fnRef.pending);
+    return ERROR;
+  } else if (fnRef.sym) {
     cleanupFn = checkCleanupSym(fnRef.sym);
   } else if (fnRef.typeOnly) {
     c.at("E2002", cleanupArg, `'${fnRef.typeOnly}' is type-only and cannot be used as a value`, { kind: "type-only", name: fnRef.typeOnly });
@@ -1524,6 +1660,7 @@ function isolateCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpre
     if (isErr(S) || isErr(R)) return ERROR;
   }
   const isoFnRef = lookupModuleFn(c, a);
+  if (isoFnRef.pending) { c.pendingUse(isoFnRef.pending); return ERROR; }
   if (!isoFnRef.sym) {
     if (isoFnRef.typeOnly) return bad(`'${isoFnRef.typeOnly}' is type-only and cannot be an isolate entry`, "not-module-fn");
     return bad(`'isolate' takes the name of a module-level managed function`, "not-module-fn");
@@ -1625,6 +1762,7 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
   // `a?.m(args)`: the arguments may not run (Q133)
   if (e.flags & NodeFlags.OptionalChain && !optCall.has(e)) { optCall.add(e); try { return c.branch(() => call(c, e, want)); } finally { optCall.delete(e); } } // D161: the marker must not outlive this visit; a shared parser hands the next entry the same nodes
   const callee = e.expression;
+  if (isId(callee) && c.pendingUse(callee)) return ERROR;
   if (isId(callee) && !c.scope.lookup(callee.text)) {
     const sym = c.prog.lookupValue(c.mod, callee.text);
     if (!sym && c.mod.nsImports.has(callee.text)) { c.at("E2002", callee, `module namespace '${callee.text}' is not callable`, { name: callee.text }); return ERROR; }
@@ -1645,6 +1783,7 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
   if (callee.kind === K.PropertyAccessExpression) {
     const p = callee as ts.PropertyAccessExpression;
     if (isId(p.expression)) {
+      if (c.pendingUse(p.expression)) return ERROR;
       const nsMod = lookupNs(c, p.expression);
       if (nsMod) {
         if (p.questionDotToken) { c.at("E2002", p.name, "'?.' cannot be used on a module namespace"); return ERROR; }
@@ -2030,6 +2169,7 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
  * strict parameter into an rt parameter is E4001 too (Q212). Anything else is E4003. */
 function fnArgRef(c: Checker, a: ts.Expression, target: Layer): { ref: FnArgRef; t: Type } | undefined {
   if (isId(a)) {
+    if (c.pendingUse(a)) return undefined;
     const local = c.scope.lookup(a.text);
     if (local?.param && local.declared.k === "fn" && c.fx.layer !== "managed" && c.fn) {
       if (target === "rt" && c.fx.layer !== "rt")
@@ -2039,6 +2179,7 @@ function fnArgRef(c: Checker, a: ts.Expression, target: Layer): { ref: FnArgRef;
     }
   }
   const fnRef = lookupModuleFn(c, a);
+  if (fnRef.pending) { c.pendingUse(fnRef.pending); return undefined; }
   if (fnRef.sym) {
     const sym = fnRef.sym;
     if (sym.sig.tparams.length) { c.at("E4003", a, `the generic function '${sym.name}' cannot be used as a function argument`); return undefined; }
@@ -2129,6 +2270,7 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
       const boundary = (t: Type): boolean =>
         t.k === "num" || isBool(t) || (t.k === "gen" && (t.name === "Ptr" || t.name === "ConstPtr") && pointeeOk(t));
       const fnRef = lookupModuleFn(c, a);
+      if (fnRef.pending) { c.pendingUse(fnRef.pending); return ERROR; }
       if (!fnRef.sym) {
         if (fnRef.typeOnly) c.at("E2002", a, `'${fnRef.typeOnly}' is type-only and cannot be used as a value`, { kind: "type-only", name: fnRef.typeOnly });
         else c.at("E4003", a, "'cfn' takes the name of a module-level rt function", { kind: "cfn-arg" });
@@ -2235,6 +2377,7 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
         return VOID;
       }
       const fnRef = lookupModuleFn(c, a);
+      if (fnRef.pending) { c.pendingUse(fnRef.pending); return VOID; }
       if (fnRef.typeOnly) { c.at("E2002", a, `'${fnRef.typeOnly}' is type-only and cannot be used as a value`, { kind: "type-only", name: fnRef.typeOnly }); return VOID; }
       if (fnRef.missingProp) {
         c.at("E2001", fnRef.missingProp.name, `module '${(fnRef.missingProp.expression as ts.Identifier).text}' has no exported value '${fnRef.missingProp.name.text}'`, { receiver: (fnRef.missingProp.expression as ts.Identifier).text, member: fnRef.missingProp.name.text });
@@ -2293,6 +2436,7 @@ function bannedCall(c: Checker, p: ts.PropertyAccessExpression, recv: Type | und
   if (!recv) {
     if (isId(p.expression)) {
       const id = p.expression.text;
+      if (c.scope.pending(id, false) !== undefined) return false;
       if (c.mod.nsImports.has(id)) return false;
       if (NAMESPACES.has(id)) return bad(nsMember(id, n)); // a namespace (`Vec`, `Math`) has no type
       return c.prog.lookupValue(c.mod, id)?.k === "class" ? false : contractBanned().has(n); // a static call on a user class (Q232)
@@ -2347,6 +2491,7 @@ function newExpr(c: Checker, e: ts.NewExpression, want: Type | undefined): Type 
   };
   if (id.kind === K.PropertyAccessExpression && isId((id as ts.PropertyAccessExpression).expression)) {
     const p = id as ts.PropertyAccessExpression;
+    if (c.pendingUse(p.expression as ts.Identifier)) return ERROR;
     const ns = lookupNs(c, p.expression as ts.Identifier);
     if (ns) {
       if (p.questionDotToken) { c.at("E2002", p.name, "'?.' cannot be used on a module namespace"); return ERROR; }
@@ -2361,6 +2506,7 @@ function newExpr(c: Checker, e: ts.NewExpression, want: Type | undefined): Type 
     }
   }
   if (!isId(id)) { c.at("E2002", id, "'new' needs a class name"); return ERROR; }
+  if (c.pendingUse(id)) return ERROR;
   const sym = c.scope.lookup(id.text) ? undefined : c.prog.lookupValue(c.mod, id.text);
   if (sym) return checkClass(sym, id, id.text);
   if (!c.scope.lookup(id.text) && c.prog.isTypeOnlyValue(c.mod, id.text)) {

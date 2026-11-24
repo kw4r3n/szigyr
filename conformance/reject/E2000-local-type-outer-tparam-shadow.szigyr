@@ -1,0 +1,12 @@
+// expect: E2000 @ 6:12
+// stage: 1
+// open-question: Q321
+type T = string;
+function f<T extends Copy>(a: T): string {
+  type B = T;
+  const b: B = "x";
+  return b;
+}
+export function main(sys: System): void {
+  sys.log.info(f<i32>(1));
+}

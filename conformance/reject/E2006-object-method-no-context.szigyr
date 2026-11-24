@@ -1,0 +1,6 @@
+// expect: E2006 @ 4:9
+// stage: 1
+export function g(): i32 {
+  const o = { f() { return 1; } };
+  return 1;
+}

@@ -1,0 +1,9 @@
+// expect: E2006 @ 5:12
+// stage: 1
+// open-question: Q320
+export function f(): i32 {
+  function fact(n: i32) {
+    return n <= 1 ? 1 : n * fact(n - 1);
+  }
+  return fact(5);
+}

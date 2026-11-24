@@ -1,0 +1,13 @@
+// expect-output: 1|2
+// expect-output: 1
+// stage: 1
+// open-question: Q322
+export function main(sys: System): void {
+  function g(): i32 { return 1; }
+  const a = g();
+  {
+    function g(): i32 { return 2; }
+    sys.log.info(`${a}|${g()}`);
+  }
+  sys.log.info(`${g()}`);
+}

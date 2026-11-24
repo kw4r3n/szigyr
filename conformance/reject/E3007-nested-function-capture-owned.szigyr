@@ -1,0 +1,10 @@
+// expect: E3007 @ 7:12
+// stage: 2
+// open-question: Q320
+export function f(a: Alloc): usize {
+  const v = Vec.create<i32>(a, 1);
+  function g(): usize {
+    return v.length;
+  }
+  return g();
+}

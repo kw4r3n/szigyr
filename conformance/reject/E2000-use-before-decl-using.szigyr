@@ -1,0 +1,16 @@
+// expect: E2000 @ 12:15
+// stage: 2
+// open-question: Q322
+class D implements Disposable {
+  readonly id: i32;
+  constructor(id: i32) { this.id = id; }
+  dispose(): void {}
+}
+export function main(sys: System): void {
+  const r = new D(1);
+  {
+    const a = r.id;
+    using r = new D(2);
+    sys.log.info(`${a}|${r.id}`);
+  }
+}

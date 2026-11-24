@@ -1,7 +1,0 @@
-// expect: E1000 @ 6:24
-// stage: 1
-// open-question: Q004
-type R = { readonly a: i32 };
-function f(): void {
-  const o: R = { a: 1, m(): i32 { return 1; } };
-}

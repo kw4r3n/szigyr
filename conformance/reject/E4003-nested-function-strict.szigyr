@@ -1,0 +1,10 @@
+// expect: E4003 @ 6:3
+// stage: 1
+// open-question: Q320
+export function f(): i32 {
+  "use owned";
+  function g(x: i32): i32 {
+    return x;
+  }
+  return g(1);
+}

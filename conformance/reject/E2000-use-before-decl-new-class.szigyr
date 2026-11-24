@@ -1,0 +1,9 @@
+// expect: E2000 @ 6:17
+// stage: 1
+// open-question: Q322
+class Box { readonly v: i32; constructor(v: i32) { this.v = v; } }
+export function main(sys: System): void {
+  const b = new Box(1);
+  const Box: i32 = 2;
+  sys.log.info(`${b.v}|${Box}`);
+}

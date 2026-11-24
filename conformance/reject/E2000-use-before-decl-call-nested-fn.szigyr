@@ -1,0 +1,9 @@
+// expect: E2000 @ 6:13
+// stage: 1
+// open-question: Q322
+function g(x: i32): i32 { return x + 100; }
+export function main(sys: System): void {
+  const r = g(1);
+  function g(x: i32): i32 { return x; }
+  sys.log.info(`${r}|${g(1)}`);
+}

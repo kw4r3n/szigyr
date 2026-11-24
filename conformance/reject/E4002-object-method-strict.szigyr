@@ -1,0 +1,8 @@
+// expect: E4002 @ 6:12
+// stage: 1
+type O = { readonly f: () => i32 };
+export function g(): i32 {
+  "use owned";
+  const o: O = { f() { return 1; } };
+  return 1;
+}

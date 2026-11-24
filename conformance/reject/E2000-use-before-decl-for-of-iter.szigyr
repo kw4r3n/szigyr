@@ -1,0 +1,11 @@
+// expect: E2000 @ 7:19
+// stage: 1
+// open-question: Q322
+export function main(sys: System): void {
+  const x: Array<i32> = [1, 2];
+  let n: i32 = 0;
+  for (const x of x) {
+    n = n + x;
+  }
+  sys.log.info(`${n}`);
+}

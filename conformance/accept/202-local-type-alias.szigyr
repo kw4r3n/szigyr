@@ -1,0 +1,40 @@
+// expect: ok
+// stage: 2
+// open-question: Q321
+export function managedLocalTypes(): i32 {
+  type Pt = { readonly x: i32; readonly y: i32 };
+  type Wrap<T> = { readonly v: T };
+  type WrappedPt = Wrap<Pt>;
+  const w: WrappedPt = { v: { x: 1, y: 2 } };
+  let sum: i32 = w.v.x + w.v.y;
+  if (sum > 0) {
+    type Res = { readonly kind: "ok"; readonly val: i32 } | { readonly kind: "err" };
+    const r: Res = { kind: "ok", val: sum };
+    if (r.kind === "ok") sum += r.val;
+  }
+  if (sum > 0) {
+    type Res = i32;
+    const x: Res = 4;
+    sum += x;
+  }
+  function helper(p: Pt): i32 {
+    return p.x + p.y;
+  }
+  return sum + helper(w.v);
+}
+
+export function strictAndRtLocalTypes(a: Alloc): i32 {
+  "use owned";
+  type Item = { readonly v: i32 };
+  type Arr = Vec<Item>;
+  const xs: Arr = Vec.create<Item>(a, 2);
+  xs.push({ v: 10 });
+  return rtLocalHelper(xs[0].v);
+}
+
+function rtLocalHelper(n: i32): i32 {
+  "use rt";
+  type Pair = { readonly a: i32; readonly b: i32 };
+  const p: Pair = { a: n, b: 5 };
+  return p.a + p.b;
+}

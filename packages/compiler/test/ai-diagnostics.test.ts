@@ -44,9 +44,10 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
     const ifaceMixed = checkSrc("interface Foo { readonly x: i32; m(): void; }\n").diags[0]!;
     expect(ifaceMixed).toMatchObject({
       code: "E1000",
-      message: "interface cannot mix fields and methods",
       data: { kind: "interface-mixed" },
     });
+    expect(ifaceMixed.message).toContain("interface cannot mix fields and methods");
+    expect(ifaceMixed.message).toContain("class");
 
     const forIn = checkSrc("export function f(xs: Array<i32>): void { for (const k in xs) {} }\n").diags[0]!;
     expect(forIn).toMatchObject({ code: "E1000", message: "'for..in' is not allowed; use 'for..of' or an index loop", data: { kind: "for-in" } });
@@ -161,7 +162,6 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
     expect(checkSrc("class A { public m(): void {} }\n").diags[0]).toMatchObject({ code: "E1000", data: { kind: "public-modifier" } });
     expect(checkSrc("class A { get x(): i32 { return 1; } }\n").diags[0]).toMatchObject({ code: "E1000", data: { kind: "class-accessor" } });
     expect(checkSrc("class A { [k: string]: i32; }\n").diags[0]).toMatchObject({ code: "E1000", data: { kind: "index-signature" } });
-    expect(checkSrc("export function f(): void { const o = { m(): i32 { return 1; } }; }\n").diags[0]).toMatchObject({ code: "E1000", data: { kind: "object-method" } });
     expect(checkSrc("export function f(xs: Array<i32>): void { \"use owned\"; }\n").diags[0]).toMatchObject({ code: "E4002", data: { kind: "managed-array" } });
     expect(checkSrc("export function f(p: { x: i32; y: i32 }): i32 { \"use owned\"; return p.x + p.y; }\n").diags[0]).toMatchObject({ code: "E4002", data: { kind: "mutable-record" } });
     expect(checkSrc("export function f(): void { \"use owned\"; const g = (x: i32): i32 => x; }\n").diags[0]).toMatchObject({ code: "E4003", data: { kind: "strict-arrow" } });
@@ -355,5 +355,406 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
     expect(checkSrc("export function main(): void {\n  const f: (() => void) | null = (): void => {};\n  const r = f?.();\n}\n").diags.map((d) => d.code)).toEqual(["E2002"]);
     expect(checkSrc("export function main(): void {\n  const f: (() => void) | null = (): void => {};\n  const r = f?.() ?? 1;\n}\n").diags.map((d) => d.code)).toEqual(["E2002"]);
     expect(checkSrc("class C { m(): void {} }\nexport function main(): void {\n  const c: C | null = new C();\n  const r = c?.m();\n}\n").diags.map((d) => d.code)).toEqual(["E2002"]);
+  });
+
+  it("rejects unsigned integer comparisons with literal 0 that are constant by type (Q319)", () => {
+    for (const ty of ["u8", "u16", "u32", "u64", "usize"]) {
+      const ge = checkSrc(`export function f(n: ${ty}): boolean { return n >= 0; }\n`).diags;
+      expect(ge).toHaveLength(1);
+      expect(ge[0]).toMatchObject({ code: "E2002", data: { kind: "unsigned-compare-zero", type: ty, always: true } });
+      expect(ge[0]!.message).toContain("for (let i = n; i > 0; i--)");
+
+      const lt = checkSrc(`export function f(n: ${ty}): boolean { return n < -0; }\n`).diags;
+      expect(lt[0]).toMatchObject({ code: "E2002", data: { kind: "unsigned-compare-zero", type: ty, always: false } });
+    }
+    expect(checkSrc("export function f(n: usize): boolean { return (-0) <= n && 0 > n; }\n").diags.map((d) => d.data)).toEqual([
+      { kind: "unsigned-compare-zero", type: "usize", always: true },
+      { kind: "unsigned-compare-zero", type: "usize", always: false },
+    ]);
+    expect(explainCode("E2002")?.kinds?.["unsigned-compare-zero"]).toContain("i > 0");
+  });
+
+  it("includes replacement hints, data.kind, and safe fixes for common JS/TS mistakes", () => {
+    const checkOne = (src: string, code: string, kind: string, hints: string[], hasFix: boolean) => {
+      const ds = checkSrc(src).diags;
+      const d = ds.find((x) => x.code === code)!;
+      expect(d, src).toMatchObject({ code, data: { kind } });
+      for (const h of hints) expect(d.message, `${src} -> ${h}`).toContain(h);
+      if (hasFix) expect(d.fixes?.length ?? 0, src).toBeGreaterThan(0);
+      else expect(d.fixes, src).toBeUndefined();
+      return { ds, d };
+    };
+
+    checkOne("export function f(x: number): i32 { return x as i32; }\n", "E1005", "as", ["i32(x)", "cast<T>(x)"], false);
+    checkOne('export function f(): Array<string> { const y = ["a", "b"] as const; return y; }\n', "E1005", "as-const", ["readonly"], false);
+    checkOne("export function f(v: Array<number>): string { return `${v.find((n) => n > 1)}`; }\n", "E2002", "template-nullable", ["!== null", "??"], false);
+    checkOne('export function f(m: Map<string, number>, k: string): string { return `${m.get(k)}`; }\n', "E2002", "template-nullable", ["!== null", "??"], false);
+    checkOne('export function f(s: string): string { return `${s.indexOf("a")}`; }\n', "E2002", "template-nullable", ["!== null", "??"], false);
+
+    checkOne("export function f(): number { return NaN; }\n", "E2000", "js-global", ["Number.NaN"], true);
+    checkOne("export function f(): number { return Infinity; }\n", "E2000", "js-global", ["Number.POSITIVE_INFINITY"], true);
+    checkOne("export function f(x: number): boolean { return isNaN(x); }\n", "E2000", "js-global", ["Number.isNaN(x)"], true);
+    checkOne("export function f(s: string): number { return parseFloat(s); }\n", "E2000", "js-global", ["Number.parseFloat(s)"], true);
+    checkOne("export function f(x: number | null): boolean { return x === undefined; }\n", "E2000", "js-global", ["null"], true);
+    checkOne("export function f(x: number | undefined): i32 { return x === null ? 0 : 1; }\n", "E2000", "js-global", ["null"], true);
+    checkOne("export function f(s: string): i32 { return parseInt(s, 10); }\n", "E2000", "js-global", ["Number.parseI32(s)", "Result"], false);
+    checkOne("export function f(s: string): number { return Number(s); }\n", "E2000", "js-global", ["Number.parseFloat(s)", "f64(x)"], false);
+    checkOne("export function f(r: Map<string, number>): Array<string> { return Object.keys(r); }\n", "E2000", "js-global", ["Map<K, V>"], false);
+    checkOne("export function f(xs: Array<number>): Array<number> { return Array.from(xs); }\n", "E2000", "js-global", ["[...xs]"], false);
+
+    const mathVal = checkSrc("export function f(): number { return Math; }\n").diags[0]!;
+    expect(mathVal).toMatchObject({ code: "E2000", data: { name: "Math" } });
+    expect(mathVal.data?.kind).toBeUndefined();
+
+    checkOne("export function f(s: string): i32 { if (s) return 1; return 0; }\n", "E2004", "truthiness", ['!== ""'], true);
+    checkOne("export function f(i: i32): i32 { if (i) return 1; return 0; }\n", "E2004", "truthiness", ["!== 0"], true);
+    checkOne("export function f(n: number): i32 { if (n) return 1; return 0; }\n", "E2004", "truthiness", ["!== 0", "NaN"], false);
+    checkOne("export function f(s: string): boolean { return !s; }\n", "E2004", "truthiness", ['=== ""'], true);
+    checkOne("export function f(i: i32): boolean { return !i; }\n", "E2004", "truthiness", ["=== 0"], true);
+    checkOne("export function f(n: number): boolean { return !n; }\n", "E2004", "truthiness", ["=== 0", "NaN"], false);
+    expect(applyFirstFix("export function f(i: i32): boolean { return !i === false; }\n").fixed).toContain("(i === 0) === false");
+
+    const orNum = checkOne("export function f(a: number, b: number): number { return a || b; }\n", "E2004", "truthiness", ["??", "T | null"], false);
+    expect(orNum.ds.map((d) => d.code)).toEqual(["E2004", "E2004", "E2002"]);
+
+    checkOne("export function f(r: Record<string, number>): i32 { return 1; }\n", "E1000", "utility-type", ["Map<K, V>"], false);
+    checkOne("type T = { readonly a: number }; export function f(r: Partial<T>): i32 { return 1; }\n", "E1000", "utility-type", ["T | null"], false);
+    checkOne("type T = { a: number }; export function f(r: Readonly<T>): i32 { return 1; }\n", "E1000", "utility-type", ["readonly"], false);
+    checkOne('type T = { a: number; b: number }; export function f(r: Pick<T, "a">): i32 { return 1; }\n', "E1000", "utility-type", ["record"], false);
+    checkOne('type T = { a: number; b: number }; export function f(r: Omit<T, "b">): i32 { return 1; }\n', "E1000", "utility-type", ["'Omit'"], false);
+
+    checkOne("class A { x: i32 = 1; } class B extends A {}\n", "E1000", "class-extends", ["implements"], false);
+    checkOne('export function f(x: unknown): boolean { return typeof x === "string"; }\n', "E1000", "typeof", [".kind", "cast<T>(x)"], false);
+    checkOne("class C { x: i32 = 1; } export function f(x: unknown): boolean { return x instanceof C; }\n", "E1000", "instanceof", [".kind ==="], false);
+    checkOne("export function f(n: number): number { return +n; }\n", "E1000", "unary-operator", ["Number.parseFloat(s)"], false);
+    checkOne("export function f(): i32 { let x: i32; x = 1; return x; }\n", "E1000", "no-initializer", ["initialize"], false);
+    checkOne("type D = 1 | 2 | 3;\n", "E1000", "literal-type", ["i32", "requires"], false);
+    checkOne("export function f<T = number>(x: T): T { return x; }\n", "E1000", "type-param-default", ["explicitly"], false);
+    checkOne("export function f(s: string): i32 { let n: i32 = 0; for (const ch of s) { n += 1; } return n; }\n", "E2002", "iterate-string", ["s.charCodeAt(i)", "s.codePointAt(i)"], false);
+    checkOne("export function f(a: Array<i32>, b: Array<i32>): boolean { return a === b; }\n", "E2002", "compare-structural", ["t.eq(a, b)"], false);
+    checkOne("type R = { a: i32 }; export function f(a: R, b: R): boolean { return a === b; }\n", "E2002", "compare-structural", ["t.eq(a, b)"], false);
+
+    for (const [code, ks] of [
+      ["E1000", ["utility-type", "no-initializer", "literal-type", "type-param-default"]],
+      ["E1005", ["as", "as-const"]],
+      ["E2000", ["js-global", "use-before-declaration", "outer-type-param"]],
+      ["E2002", ["template-nullable", "iterate-string", "compare-structural"]],
+      ["E2004", ["truthiness"]],
+    ] as const) {
+      for (const k of ks) {
+        const msg = explainCode(code)?.kinds?.[k] ?? "";
+        expect(msg.length, `${code}.${k}`).toBeGreaterThan(0);
+        expect(msg).not.toMatch(/§|SPEC|Q\d{2,3}|use strict|\b(Eq|Hash|Ord)\b/);
+      }
+    }
+  });
+
+  it("reports builtinKind and a rename hint on reserved-name declarations without fixes", () => {
+    const cases = [
+      ["class Ring { x: i32 = 1; }\n", "Ring", "namespace"],
+      ["class Result { x: i32 = 1; }\n", "Result", "type"],
+      ["export function panic(): i32 { return 1; }\n", "panic", "function"],
+      ["type Copy = { x: i32 };\n", "Copy", "capability"],
+    ] as const;
+    for (const [src, name, builtinKind] of cases) {
+      const d = checkSrc(src).diags[0]!;
+      expect(d, src).toMatchObject({ code: "E1000", data: { kind: "reserved-name", name, builtinKind } });
+      expect(d.message).toContain(builtinKind);
+      expect(d.message.toLowerCase()).toContain("rename");
+      expect(d.fixes).toBeUndefined();
+    }
+  });
+
+  it("rejects use before declaration within blocks with E2000 use-before-declaration across all value, type, and using paths (Q322)", () => {
+    const assertUbd = (src: string, name: string, declLine: number) => {
+      const ds = checkSrc(src).diags;
+      expect(ds.length, src).toBeGreaterThan(0);
+      expect(ds[0], src).toMatchObject({ code: "E2000", data: { kind: "use-before-declaration", name } });
+      expect(ds[0]!.message, src).toContain(`line ${declLine}`);
+      expect(ds[0]!.message, src).toContain("move the declaration above this use");
+      expect(ds[0]!.fixes, src).toBeUndefined();
+    };
+
+    // n6: no outer binding -> upgraded from unknown name to use-before-declaration
+    assertUbd([
+      "export function main(sys: System): void {",
+      "  function g(): i32 { return k; }",
+      "  const k: i32 = 3;",
+      "  sys.log.info(`${g()}`);",
+      "}",
+      "",
+    ].join("\n"), "k", 3);
+
+    // lvalue, compound assignment, and incDec
+    assertUbd("export function f(): void {\n  let x: i32 = 1;\n  {\n    x = 2;\n    let x: i32 = 3;\n  }\n}\n", "x", 5);
+    assertUbd("export function f(): void {\n  let x: i32 = 1;\n  {\n    x += 1;\n    let x: i32 = 3;\n  }\n}\n", "x", 5);
+    assertUbd("export function f(): void {\n  let x: i32 = 1;\n  {\n    x++;\n    let x: i32 = 3;\n  }\n}\n", "x", 5);
+
+    // special-form value paths: fnArgRef, fuzzContracts, forAll, Resource.own, spawn.isolate, audio.open, cfn, newExpr, static member, switch case
+    assertUbd([
+      'function dbl(x: i32): i32 { "use owned"; return x * 2; }',
+      'function apply(f: (x: i32) => i32, v: i32): i32 { "use owned"; return f(v); }',
+      "export function main(): i32 {",
+      "  const r = apply(dbl, 3);",
+      "  const dbl: i32 = 9;",
+      "  return r + dbl;",
+      "}",
+      "",
+    ].join("\n"), "dbl", 5);
+    assertUbd([
+      "function id(x: i32): i32 { requires(x >= 0); return x; }",
+      'test("fuzz", (t: Test) => {',
+      "  fuzzContracts(id);",
+      "  const id: i32 = 1;",
+      "  t.eq(id, 1);",
+      "});",
+      "",
+    ].join("\n"), "id", 4);
+    assertUbd([
+      "function id(x: i32): boolean { return x >= 0; }",
+      'test("fa", (t: Test) => {',
+      "  forAll(id);",
+      "  const id: i32 = 1;",
+      "  t.eq(id, 1);",
+      "});",
+      "",
+    ].join("\n"), "id", 4);
+    assertUbd([
+      'function dropV(v: Vec<i32>): void { "use owned"; }',
+      "export function f(a: Alloc): i32 {",
+      "  using r = Resource.own(Vec.create<i32>(a, 1), dropV);",
+      "  const dropV: i32 = 1;",
+      "  return dropV;",
+      "}",
+      "",
+    ].join("\n"), "dropV", 4);
+    assertUbd([
+      'function dropV(v: Vec<i32>): void { "use owned"; }',
+      "export function f(a: Alloc): void {",
+      "  using dropV = Resource.own(Vec.create<i32>(a, 1), dropV);",
+      "}",
+      "",
+    ].join("\n"), "dropV", 3);
+    assertUbd([
+      "function worker(p: Port<i32, i32>): void {}",
+      "export function main(sys: System): i32 {",
+      "  const p = sys.spawn.isolate(worker);",
+      "  const worker: i32 = 1;",
+      "  p.close();",
+      "  return worker;",
+      "}",
+      "",
+    ].join("\n"), "worker", 4);
+    assertUbd([
+      'function render(st: i32, out: Mut<Slice<f32>>, frames: usize): void { "use rt"; }',
+      "export async function main(sys: System): Promise<i32> {",
+      "  const s = await sys.audio.open({ sampleRate: 48000, channels: 2 }, 0, render);",
+      "  const render: i32 = 1;",
+      "  return render;",
+      "}",
+      "",
+    ].join("\n"), "render", 4);
+    assertUbd([
+      'function cb(x: i32): i32 { "use rt"; return x; }',
+      "export function f(): void {",
+      '  "use owned"; "use unsafe";',
+      "  const p = cfn(cb);",
+      "  const cb: i32 = 1;",
+      "}",
+      "",
+    ].join("\n"), "cb", 5);
+    assertUbd([
+      "class Box { static readonly V: i32 = 1; }",
+      "export function f(): i32 {",
+      "  const a = Box.V;",
+      "  const Box: i32 = 2;",
+      "  return a + Box;",
+      "}",
+      "",
+    ].join("\n"), "Box", 4);
+    assertUbd([
+      "const TAG: i32 = 1;",
+      "export function f(x: i32): i32 {",
+      "  switch (x) {",
+      "    case TAG: return 1;",
+      "    default: return 0;",
+      "  }",
+      "  const TAG: i32 = 2;",
+      "}",
+      "",
+    ].join("\n"), "TAG", 7);
+
+    // non-Checker.typeOf type paths: localTypeAlias (aliasBody), nestedFn & checkArrow constraints (resolveConstraint)
+    assertUbd([
+      "export function f(): void {",
+      "  type P = i32;",
+      "  {",
+      "    type A = P;",
+      "    type P = string;",
+      "  }",
+      "}",
+      "",
+    ].join("\n"), "P", 5);
+    assertUbd([
+      "export function f(): void {",
+      "  type P = i32;",
+      "  {",
+      "    function g<T extends P>(x: T): T { return x; }",
+      "    type P = string;",
+      "  }",
+      "}",
+      "",
+    ].join("\n"), "P", 5);
+    assertUbd([
+      "export function f(): void {",
+      "  const g = <T extends P>(x: T): T => x;",
+      "  type P = i32;",
+      "}",
+      "",
+    ].join("\n"), "P", 3);
+
+    // using & await using self-ref in initializer
+    assertUbd([
+      "class D implements Disposable { readonly id: i32; constructor(id: i32) { this.id = id; } dispose(): void {} }",
+      "function wrap(d: D): D { return new D(d.id + 1); }",
+      "export function f(): i32 {",
+      "  const r = new D(1);",
+      "  {",
+      "    using r = wrap(r);",
+      "    return r.id;",
+      "  }",
+      "}",
+      "",
+    ].join("\n"), "r", 6);
+    assertUbd([
+      "class AD implements AsyncDisposable { readonly id: i32; constructor(id: i32) { this.id = id; } async disposeAsync(): Promise<void> {} }",
+      "async function mk(d: AD): Promise<AD> { return new AD(d.id + 1); }",
+      "export async function f(): Promise<i32> {",
+      "  const r = new AD(1);",
+      "  {",
+      "    await using r = await mk(r);",
+      "    return r.id;",
+      "  }",
+      "}",
+      "",
+    ].join("\n"), "r", 6);
+
+    // multi-declarator, destructuring, for..of destructuring, contracts, default param TDZ
+    assertUbd("export function f(): i32 {\n  const b: i32 = 1;\n  {\n    const a: i32 = 1, b: i32 = b + 1;\n    return a + b;\n  }\n}\n", "b", 4);
+    assertUbd("export function f(): i32 {\n  const a: i32 = 1;\n  {\n    const { a }: { readonly a: i32 } = { a };\n    return a;\n  }\n}\n", "a", 4);
+    assertUbd("export function f(): i32 {\n  const a: Array<[i32, i32]> = [[1, 2]];\n  let s: i32 = 0;\n  for (const [a, b] of a) { s += a + b; }\n  return s;\n}\n", "a", 4);
+    assertUbd("export function f(x: i32): i32 {\n  requires(x > k);\n  const k: i32 = 0;\n  return x + k;\n}\n", "k", 3);
+    assertUbd("const x: i32 = 1;\nexport function f(x: i32 = x): i32 { return x; }\n", "x", 2);
+
+    // Own type parameter shadowing a later local type in the enclosing block stays valid (including inside CHandle/walkTypePos)
+    expect(checkSrc([
+      "export function f(): i32 {",
+      "  type A<P> = { readonly v: P };",
+      "  type H<P extends Copy & Native> = CHandle<P>;",
+      "  function g<P>(x: P): P { return x; }",
+      "  const h = <P>(x: P): P => x;",
+      "  const a: A<i32> = { v: g<i32>(1) + h<i32>(2) };",
+      "  type P = string;",
+      "  const s: P = \"ok\";",
+      "  return a.v + i32(s.length);",
+      "}",
+      "",
+    ].join("\n")).diags).toEqual([]);
+    expect(checkSrc([
+      "export function main(sys: System): void {",
+      "  type B<P extends Copy & Native> = CHandle<P>;",
+      "  type P = i32;",
+      "  const x: P = 7;",
+      "  sys.log.info(`${x}`);",
+      "}",
+      "",
+    ].join("\n")).diags).toEqual([]);
+    expect(checkSrc([
+      "export function f<T extends Copy & Native>(x: T): T {",
+      "  type B<T extends Copy & Native> = CHandle<T>;",
+      "  type T = i32;",
+      "  return x;",
+      "}",
+      "",
+    ].join("\n")).diags).toEqual([]);
+  });
+
+  it("rejects outer type parameters inside local type aliases with E2000 outer-type-param even when shadowed at module level", () => {
+    const assertOuterTp = (src: string, name: string) => {
+      const ds = checkSrc(src).diags;
+      expect(ds.length, src).toBeGreaterThan(0);
+      expect(ds[0], src).toMatchObject({ code: "E2000", data: { kind: "outer-type-param", name } });
+      expect(ds[0]!.message, src).toContain("type B<U> = ...");
+      expect(ds[0]!.fixes, src).toBeUndefined();
+    };
+
+    // t2: module-level type T shadowed by enclosing function<T>
+    assertOuterTp([
+      "type T = string;",
+      "export function f<T extends Copy>(a: T): string {",
+      "  type B = T;",
+      '  const b: B = "x";',
+      "  return b;",
+      "}",
+      "",
+    ].join("\n"), "T");
+
+    // CHandle<T> with outer tparam shadowed by module-level non-Native type T emits only E2000 outer-type-param (no spurious E4007)
+    const chDs = checkSrc([
+      "type T = string;",
+      "export function f<T extends Copy & Native>(x: T): void {",
+      "  type B = CHandle<T>;",
+      "}",
+      "",
+    ].join("\n")).diags;
+    expect(chDs).toHaveLength(1);
+    expect(chDs[0]).toMatchObject({ code: "E2000", data: { kind: "outer-type-param", name: "T" } });
+    expect(chDs[0]!.fixes).toBeUndefined();
+
+    // Existing E2000-local-type-outer-tparam shape (no module-level T)
+    assertOuterTp([
+      "export function f<T>(x: T): T {",
+      "  type Box = { readonly v: T };",
+      "  const b: Box = { v: x };",
+      "  return b.v;",
+      "}",
+      "",
+    ].join("\n"), "T");
+
+    // Nested generic functions
+    assertOuterTp([
+      "export function outer<T>(a: T): T {",
+      "  function inner<U>(b: U): T {",
+      "    type Pair = { readonly first: T; readonly second: U };",
+      "    return a;",
+      "  }",
+      "  return inner<i32>(1);",
+      "}",
+      "",
+    ].join("\n"), "T");
+
+    // Enclosing generic class method
+    assertOuterTp([
+      "export class Box<T> {",
+      "  m(x: T): T {",
+      "    type Alias = T;",
+      "    return x;",
+      "  }",
+      "}",
+      "",
+    ].join("\n"), "T");
+
+    // Alias's own type parameter shadowing outer T, and w3 passing outer T to B<U>, stay accepted
+    expect(checkSrc([
+      "type T = string;",
+      "export function f<T extends Copy>(a: T): T {",
+      "  type Self<T> = { readonly v: T };",
+      "  type B<U> = { readonly v: U };",
+      "  const s: Self<T> = { v: a };",
+      "  const b: B<T> = { v: s.v };",
+      "  return b.v;",
+      "}",
+      "",
+    ].join("\n")).diags).toEqual([]);
   });
 });

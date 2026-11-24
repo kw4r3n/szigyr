@@ -1,0 +1,9 @@
+// expect: E4008 @ 7:12
+// stage: 1
+// open-question: Q321
+export function f(): i32 {
+  "use owned";
+  "use unsafe";
+  type P = Ptr<i32>;
+  return 1;
+}

@@ -1,0 +1,20 @@
+// expect: ok
+// stage: 1
+// open-question: Q319
+const ZERO: usize = 0;
+
+export function sumRev(a: ReadonlyArray<i32>): i32 {
+  let s: i32 = 0;
+  for (let i = a.length; i > 0; i--) {
+    s += a[i - 1];
+  }
+  return s;
+}
+
+export function signedAndFloat(s: i32, f: f64): boolean {
+  return s >= 0 && s < 0 && 0 <= s && 0 > s && f >= 0 && f < 0;
+}
+
+export function allowedUnsigned(n: usize, u: u32): boolean {
+  return n > 0 && n <= 0 && n === 0 && n !== 0 && 0 < n && 0 >= u && u >= 1 && n >= ZERO;
+}

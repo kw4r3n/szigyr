@@ -227,7 +227,7 @@ test("composite types and Vec<Struct> agree on JS and C", (t: Test) => {
     t.ok(total === total);
     t.ok(r.kind === "ok" || r.kind === "err");
     t.ok(opt === null || opt === opt);
-    t.ok(m.size >= 0 && s.size >= 0);
+    t.ok(m.size < 1000 && s.size < 1000);
   });
 });
 `,

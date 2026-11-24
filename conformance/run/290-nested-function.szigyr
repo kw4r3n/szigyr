@@ -1,0 +1,38 @@
+// expect-output: 4|120|22|6|abc|11
+// stage: 1
+// open-question: Q320
+export async function main(sys: System): Promise<void> {
+  function sq(x: i32): i32 {
+    return x * x;
+  }
+  function fact(n: i32): i32 {
+    return n <= 1 ? 1 : n * fact(n - 1);
+  }
+  let acc: i32 = 10;
+  function bump(d: i32) {
+    acc += d;
+    return acc;
+  }
+  const b1 = bump(5);
+  const b2 = bump(7);
+
+  let loopSum: i32 = 0;
+  for (let i: i32 = 0; i < 3; i++) {
+    function inc(x: i32): i32 {
+      return x + i;
+    }
+    loopSum += inc(1);
+  }
+
+  function id<T>(v: T): T {
+    return v;
+  }
+  async function wrapAsync(v: i32): Promise<i32> {
+    return v + 1;
+  }
+  const s = id<string>("abc");
+  const aw = await wrapAsync(10);
+  if (b1 === 15) {
+    sys.log.info(`${sq(2)}|${fact(5)}|${b2}|${loopSum}|${s}|${aw}`);
+  }
+}

@@ -1,0 +1,7 @@
+// expect: E2002 @ 5:32
+// stage: 1
+// open-question: Q321
+export function f(): i32 {
+  type Node = { readonly next: Node | null };
+  return 1;
+}

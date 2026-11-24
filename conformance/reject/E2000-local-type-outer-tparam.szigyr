@@ -1,0 +1,8 @@
+// expect: E2000 @ 5:28
+// stage: 1
+// open-question: Q321
+export function f<T>(x: T): T {
+  type Box = { readonly v: T };
+  const b: Box = { v: x };
+  return b.v;
+}

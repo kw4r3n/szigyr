@@ -1,0 +1,8 @@
+// expect: E2000 @ 5:12
+// stage: 1
+// open-question: Q321
+export function f(): i32 {
+  const p: P = { x: 1 };
+  type P = { readonly x: i32 };
+  return p.x;
+}

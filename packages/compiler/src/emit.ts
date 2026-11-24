@@ -652,6 +652,7 @@ export function emitFile(
       case K.Block: return block(n as ts.Block);
       case K.FunctionDeclaration: {
         const f = n as ts.FunctionDeclaration;
+        if (n.parent?.kind !== K.SourceFile && f.name && f.body) return `const ${f.name.text} = ${splice(n)};`;
         if (mut?.unsafeDecls.has(n)) return `function ${f.name!.text}() { ${RT}.cOnly(); }`; // Q275: C-only stub
         const key = native?.get(n);
         const isTop = n.parent?.kind === K.SourceFile && !f.typeParameters?.length && !f.modifiers?.some((m) => m.kind === K.AsyncKeyword) && !!f.name && !!f.body;

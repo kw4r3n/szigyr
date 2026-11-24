@@ -1,0 +1,16 @@
+// expect-output: 11
+// expect-output: 3
+// stage: 1
+// open-question: Q322
+export function main(sys: System): void {
+  let k: i32 = 1;
+  const bump = (): void => { k = k + 1; };
+  bump();
+  {
+    bump();
+    let k: i32 = 10;
+    k = k + 1;
+    sys.log.info(`${k}`);
+  }
+  sys.log.info(`${k}`);
+}

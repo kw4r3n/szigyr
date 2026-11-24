@@ -1,0 +1,9 @@
+// expect: E2006 @ 5:14
+// stage: 1
+// open-question: Q320
+export function f(): i32 {
+  function g(x): i32 {
+    return 1;
+  }
+  return g(1);
+}

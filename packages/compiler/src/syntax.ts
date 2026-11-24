@@ -1,7 +1,7 @@
 // Phase P1 (Q003): the syntax allowlist. Every node kind is accepted only by an explicit case below;
 // anything else falls to a default branch that reports E1000. Anchors follow docs/DIAGNOSTICS.md.
 import { dirname } from "node:path";
-import { BUILTIN_NAMES, CAPABILITY_NAMES } from "./builtins.ts";
+import { BUILTIN_FUNCTIONS, BUILTIN_NAMES, CAPABILITY_NAMES, NAMESPACES } from "./builtins.ts";
 import { isValidCHeader } from "./cdecl.ts";
 import type { Diagnostic } from "./diagnostics.ts";
 import { DETMATH_PATH } from "./detmath.ts";
@@ -15,6 +15,12 @@ const E1000_TYPE_NAMES = new Set([
   "ConstructorParameters", "ReturnType", "InstanceType", "ThisParameterType", "OmitThisParameter", "ThisType", "Awaited",
   "Uppercase", "Lowercase", "Capitalize", "Uncapitalize", "NoInfer",
 ]);
+const E1000_TYPE_HINTS: Record<string, string> = {
+  Record: "use 'Map<K, V>', or a closed record type when keys are fixed",
+  Partial: "declare a record type with each field typed as 'T | null'",
+  Readonly: "mark each field with 'readonly'",
+  Pick: "declare a record type with only the required fields",
+};
 /** Q123: names the emitted strict-mode ESM cannot bind (reserved words, `eval` / `arguments`). */
 const RESERVED_WORDS = new Set(["implements", "interface", "let", "package", "private", "protected", "public", "static", "yield", "await", "enum", "using", "eval", "arguments"]);
 /** Q123: member names with a special meaning on JS objects and classes. */
@@ -87,8 +93,16 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     return { call: c as ts.CallExpression, name: ((c as ts.CallExpression).expression as ts.Identifier).text };
   };
   const declName = (id: ts.Identifier): void => {
-    if (BUILTIN_NAMES.has(id.text) || CAPABILITY_NAMES.has(id.text)) at("E1000", id, `'${id.text}' is a builtin name`, { kind: "reserved-name", name: id.text });
-    else if (RESERVED_WORDS.has(id.text)) at("E1000", id, `'${id.text}' is a reserved word`, { kind: "reserved-name", name: id.text });
+    if (BUILTIN_NAMES.has(id.text) || CAPABILITY_NAMES.has(id.text)) {
+      const builtinKind = CAPABILITY_NAMES.has(id.text)
+        ? "capability"
+        : NAMESPACES.has(id.text)
+          ? "namespace"
+          : BUILTIN_FUNCTIONS.has(id.text)
+            ? "function"
+            : "type";
+      at("E1000", id, `'${id.text}' is a builtin ${builtinKind} name; rename the declaration`, { kind: "reserved-name", name: id.text, builtinKind });
+    } else if (RESERVED_WORDS.has(id.text)) at("E1000", id, `'${id.text}' is a reserved word`, { kind: "reserved-name", name: id.text });
     else if (id.text.startsWith(RUNTIME_GLOBAL)) at("E1000", id, `names starting with '${RUNTIME_GLOBAL}' are reserved`, { kind: "reserved-name", name: id.text });
   };
   const mods = (n: Node, allowed: K[]): void => {
@@ -127,13 +141,28 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
   const cDeclares = new Map<string, Set<string>>();
   const cImports = new Set<string>();
   const localNsImports = new Set<string>();
+  const allTopNames = new Set<string>();
   const stmts = sf.statements;
   for (const s0 of stmts) {
     if (s0.kind === K.ModuleDeclaration) moduleDecl(s0 as ts.ModuleDeclaration); // §14.1: before imports resolve against it
     else if (s0.kind === K.ImportDeclaration) {
-      const d = s0 as ts.ImportDeclaration, nb = d.importClause?.namedBindings;
+      const d = s0 as ts.ImportDeclaration, ic = d.importClause, nb = ic?.namedBindings;
       if (d.moduleSpecifier.kind === K.StringLiteral && (d.moduleSpecifier as ts.StringLiteral).text.startsWith("c:") && nb?.kind === K.NamedImports) {
         for (const e of (nb as ts.NamedImports).elements) cImports.add(e.name.text);
+      }
+      if (ic?.name && isId(ic.name)) allTopNames.add(ic.name.text);
+      if (nb?.kind === K.NamespaceImport && isId((nb as ts.NamespaceImport).name)) allTopNames.add((nb as ts.NamespaceImport).name.text);
+      else if (nb?.kind === K.NamedImports) for (const e of (nb as ts.NamedImports).elements) if (isId(e.name)) allTopNames.add(e.name.text);
+    } else if (s0.kind === K.FunctionDeclaration) {
+      const f = s0 as ts.FunctionDeclaration;
+      if (f.body && f.name) allTopNames.add(f.name.text);
+    } else if (s0.kind === K.ClassDeclaration || s0.kind === K.InterfaceDeclaration || s0.kind === K.TypeAliasDeclaration) {
+      const n = (s0 as ts.ClassDeclaration | ts.InterfaceDeclaration | ts.TypeAliasDeclaration).name;
+      if (n) allTopNames.add(n.text);
+    } else if (s0.kind === K.VariableStatement) {
+      for (const vd of (s0 as ts.VariableStatement).declarationList.declarations) {
+        if (isId(vd.name)) allTopNames.add(vd.name.text);
+        else if (vd.name.kind === K.ObjectBindingPattern) for (const el of (vd.name as ts.ObjectBindingPattern).elements) if (isId(el.name)) allTopNames.add(el.name.text);
       }
     }
   }
@@ -408,21 +437,22 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
   // ---- declarations
   function fn(n: ts.FunctionDeclaration | ts.MethodDeclaration | ts.ArrowFunction | ts.FunctionExpression | ts.ConstructorDeclaration, kind: FnKind): void {
     const saved = fc;
-    const thisOk = n.kind === K.ArrowFunction ? fc.thisOk : n.kind === K.Constructor || (n.kind === K.MethodDeclaration && !n.modifiers?.some((m) => m.kind === K.StaticKeyword));
+    const isFnExprLike = n.kind === K.ArrowFunction || n.kind === K.FunctionExpression || (kind === "other" && (n.kind === K.MethodDeclaration || n.kind === K.FunctionDeclaration));
+    const thisOk = n.kind === K.ArrowFunction ? fc.thisOk : n.kind === K.Constructor || (kind === "method" && !n.modifiers?.some((m) => m.kind === K.StaticKeyword));
     const isTestCb = (n.kind === K.ArrowFunction || n.kind === K.FunctionExpression) && n.parent?.kind === K.CallExpression &&
       allowedCalls.has(n.parent) && (n.parent as ts.CallExpression).arguments[1] === n;
-    const inTest = (n.kind === K.ArrowFunction || n.kind === K.FunctionExpression) && (fc.inTest || isTestCb);
+    const inTest = isFnExprLike && (fc.inTest || isTestCb);
     const fnLayer = kind === "function" && n.body?.kind === K.Block
       ? peekLayer((n.body as ts.Block).statements, true).layer
       : undefined;
-    const layer = fnLayer ?? (n.kind === K.ArrowFunction || n.kind === K.FunctionExpression ? fc.layer : fileLayer);
+    const layer = fnLayer ?? (isFnExprLike ? fc.layer : fileLayer);
     fc = { thisOk, async: !!n.modifiers?.some((m) => m.kind === K.AsyncKeyword), inTest, loops: 0, breaks: 0, layer, labels: new Set<string>() };
     try { scoped(() => fn0(n, kind)); } finally { fc = saved; } // parameters and the top level of the body share one scope
   }
   function fn0(n: ts.FunctionDeclaration | ts.MethodDeclaration | ts.ArrowFunction | ts.FunctionExpression | ts.ConstructorDeclaration, kind: FnKind): void {
     const isAsync = !!n.modifiers?.some((m) => m.kind === K.AsyncKeyword);
     if (n.kind === K.FunctionDeclaration || n.kind === K.FunctionExpression) {
-      if (n.kind === K.FunctionDeclaration) { mods(n, [K.ExportKeyword, K.AsyncKeyword]); if (n.name) declName(n.name); }
+      if (n.kind === K.FunctionDeclaration) { mods(n, kind === "function" ? [K.ExportKeyword, K.AsyncKeyword] : [K.AsyncKeyword]); if (n.name) declName(n.name); }
       else { mods(n, [K.AsyncKeyword]); if (n.name) declName(n.name); }
       if (n.asteriskToken) { // Q004: anchor `function`; the body is not walked (no cascade from `yield`)
         const m = n.modifiers;
@@ -430,7 +460,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         report("E1000", kw, kw + "function".length, "generator is not allowed");
         return;
       }
-    } else if (n.kind === K.MethodDeclaration) mods(n, [K.PrivateKeyword, K.StaticKeyword, K.AsyncKeyword]);
+    } else if (n.kind === K.MethodDeclaration) mods(n, kind === "method" ? [K.PrivateKeyword, K.StaticKeyword, K.AsyncKeyword] : [K.AsyncKeyword]);
     else if (n.kind === K.ArrowFunction) mods(n, [K.AsyncKeyword]);
     else if (n.kind === K.Constructor) mods(n, []);
     typeParams(n.typeParameters);
@@ -475,7 +505,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
           for (const c of (p.constraint as ts.IntersectionTypeNode).types) type(c);
         } else e1000(p.constraint, "this type parameter constraint");
       }
-      if (p.defaultType) e1000(p.defaultType, "default type argument");
+      if (p.defaultType) at("E1000", p.defaultType, "default type argument is not allowed; pass type arguments explicitly at the call site", { kind: "type-param-default" });
     }
   }
 
@@ -549,7 +579,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     if (c.name) declName(c.name);
     typeParams(c.typeParameters);
     for (const h of c.heritageClauses ?? []) {
-      if (h.token !== K.ImplementsKeyword) { e1000(h, "'extends' on a class", { kind: "class-extends" }); continue; }
+      if (h.token !== K.ImplementsKeyword) { at("E1000", h, "'extends' on a class is not allowed; use 'implements' and hold the base in a field", { kind: "class-extends" }); continue; }
       for (const t of h.types) {
         const exp = t.expression;
         const ok = isId(exp) || (exp.kind === K.PropertyAccessExpression && isId((exp as ts.PropertyAccessExpression).expression) && isId((exp as ts.PropertyAccessExpression).name));
@@ -611,7 +641,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       for (const h of d.heritageClauses ?? []) e1000(h, "'extends' on a method interface", { kind: "interface-extends" });
       for (const m of d.members) {
         if (m.kind === K.PropertySignature) {
-          at("E1000", m, "interface cannot mix fields and methods", { kind: "interface-mixed" });
+          at("E1000", m, "interface cannot mix fields and methods; split into a field-only interface and a method-only interface, or use a 'class'", { kind: "interface-mixed" });
           continue;
         }
         if (m.kind !== K.MethodSignature) { e1000(m, "interface member other than a method signature"); continue; }
@@ -647,8 +677,8 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     }
   }
 
-  function typeAlias(d: ts.TypeAliasDeclaration): void {
-    mods(d, [K.ExportKeyword]);
+  function typeAlias(d: ts.TypeAliasDeclaration, local = false): void {
+    mods(d, local ? [] : [K.ExportKeyword]);
     declName(d.name);
     typeParams(d.typeParameters);
     type(d.type);
@@ -667,7 +697,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         if (isId(d.name)) { declName(d.name); bind(d.name); }
         else e1000(d.name, "this destructuring");
         if (d.type) type(d.type);
-        if (!d.initializer) { e1000(d.name, "declaration without initializer"); continue; }
+        if (!d.initializer) { at("E1000", d.name, "declaration without initializer is not allowed; initialize at declaration, or use a conditional expression for branched values", { kind: "no-initializer" }); continue; }
         expr(d.initializer);
       }
       return;
@@ -687,7 +717,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       else if (d.name.kind === K.ArrayBindingPattern && (where === "local" || where === "for-of")) arrayBindingPattern(d.name as ts.ArrayBindingPattern);
       else e1000(d.name, "this destructuring");
       if (d.type) type(d.type);
-      if (!d.initializer) { if (where !== "for-of") e1000(d.name, "declaration without initializer"); continue; }
+      if (!d.initializer) { if (where !== "for-of") at("E1000", d.name, "declaration without initializer is not allowed; initialize at declaration, or use a conditional expression for branched values", { kind: "no-initializer" }); continue; }
       if (where === "module" && !immutable(d.initializer, d.type)) at("E5002", d.initializer, "module-level const must be an immutable literal", { kind: "module-nonliteral-const" });
       expr(d.initializer);
     }
@@ -847,10 +877,26 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       }
       case K.EnumDeclaration: at("E1000", s, "'enum' is not allowed; use a string literal union type (e.g. 'type Kind = \"a\" | \"b\"')", { kind: "enum" }); return;
       case K.EmptyStatement: e1000(s, "empty statement ';'", { kind: "empty-statement" }); return;
-      case K.FunctionDeclaration: e1000(s, "nested function declaration", { kind: "nested-function" }); return;
+      case K.FunctionDeclaration: {
+        const fd = s as ts.FunctionDeclaration;
+        const inStmtList = !!s.parent && (s.parent.kind === K.Block || s.parent.kind === K.CaseClause || s.parent.kind === K.DefaultClause);
+        if (!inStmtList) { e1000(s, "function declaration outside a block"); return; }
+        if (!fd.name) { e1000(fd, "unnamed function declaration"); return; }
+        bind(fd.name);
+        fn(fd, "other");
+        return;
+      }
       case K.ClassDeclaration: e1000(s, "nested class declaration", { kind: "nested-class" }); return;
       case K.InterfaceDeclaration: e1000(s, "nested interface declaration", { kind: "nested-interface" }); return;
-      case K.TypeAliasDeclaration: e1000(s, "nested type alias", { kind: "nested-type" }); return;
+      case K.TypeAliasDeclaration: {
+        const ta = s as ts.TypeAliasDeclaration;
+        const inStmtList = !!s.parent && (s.parent.kind === K.Block || s.parent.kind === K.CaseClause || s.parent.kind === K.DefaultClause);
+        if (!inStmtList) { e1000(s, "type alias outside a block"); return; }
+        if (allTopNames.has(ta.name.text)) at("E1000", ta.name, `local type '${ta.name.text}' shadows a module-level declaration`, { kind: "duplicate-declaration", name: ta.name.text });
+        bind(ta.name);
+        typeAlias(ta, true);
+        return;
+      }
       case K.WithStatement: e1000(s, "'with' statement", { kind: "with" }); return;
       case K.DebuggerStatement: e1000(s, "'debugger' statement", { kind: "debugger" }); return;
       default: e1000(s, "this statement");
@@ -901,9 +947,11 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
           const repStr = op.kind === K.EqualsEqualsToken ? "===" : "!==";
           at("E1002", op, "use '===' / '!=='", { op: opStr });
           fix(`use '${repStr}'`, op.getStart(sf), op.end, repStr);
+        } else if (op.kind === K.InstanceOfKeyword) {
+          at("E1000", op, "operator 'instanceof' is not allowed; discriminate a tagged union with '.kind === \"...\"'", { kind: "instanceof", op: "instanceof" });
         } else if (!BINARY_OPS.has(op.kind)) {
           const opText = op.getText(sf);
-          e1000(op, `operator '${opText}'`, { kind: op.kind === K.InstanceOfKeyword ? "instanceof" : "operator", op: opText });
+          e1000(op, `operator '${opText}'`, { kind: "operator", op: opText });
         }
         let lhs = b.left;
         while (lhs.kind === K.ParenthesizedExpression) lhs = (lhs as ts.ParenthesizedExpression).expression;
@@ -921,7 +969,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
               at("E1000", u, `'${op}' is only allowed as a statement or for-loop incrementor`, { kind: "inc-dec", op });
             }
           } else if (u.operator === K.PlusToken) {
-            e1000(u, "unary '+'", { kind: "unary-operator", op: "+" });
+            at("E1000", u, "unary '+' is not allowed; remove '+', or use 'Number.parseFloat(s)' to parse a string", { kind: "unary-operator", op: "+" });
           } else {
             e1000(u, "this unary operator");
           }
@@ -977,8 +1025,16 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
             if (sp.objectAssignmentInitializer) e1000(sp, "shorthand initializer", { kind: "shorthand-initializer" });
             expr(sp.name as ts.Identifier);
           } else if (p.kind === K.SpreadAssignment) expr((p as ts.SpreadAssignment).expression);
-          else if (p.kind === K.MethodDeclaration) e1000(p, "method shorthand in object literal", { kind: "object-method" });
-          else if (p.kind === K.GetAccessor || p.kind === K.SetAccessor) e1000(p, "getter/setter in object literal", { kind: "object-accessor" });
+          else if (p.kind === K.MethodDeclaration) {
+            const md = p as ts.MethodDeclaration;
+            if (md.asteriskToken) { e1000(md.asteriskToken, "generator method", { kind: "generator" }); continue; }
+            if (!isId(md.name)) e1000(md.name, "this property name", { kind: md.name.kind === K.ComputedPropertyName ? "computed-property" : "object-property-name" });
+            else if (md.name.text === "__proto__") e1000(md.name, "property name '__proto__'", { kind: "reserved-name", name: "__proto__" });
+            else claim(keys, md.name);
+            const qTok = (md as Node & { questionToken?: Node; postfixToken?: Node }).questionToken ?? (md as Node & { postfixToken?: Node }).postfixToken;
+            if (qTok?.kind === K.QuestionToken) at("E1008", md.name, "optional member is not allowed", { kind: "optional-member", ...(isId(md.name) ? { name: md.name.text } : {}) });
+            fn(md, "other");
+          } else if (p.kind === K.GetAccessor || p.kind === K.SetAccessor) e1000(p, "getter/setter in object literal", { kind: "object-accessor" });
           else e1000(p, "this object literal member", { kind: "object-member" });
         }
         return;
@@ -993,7 +1049,17 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       case K.FunctionExpression: fn(e as ts.FunctionExpression, "other"); return;
       case K.AsExpression: {
         const a = e as ts.AsExpression;
-        const s = pf.tokenAfter(a.expression.end); report("E1005", s, s + 2, "'as' is not allowed", { syntax: "as" }); // including `as const` (Q026)
+        const s = pf.tokenAfter(a.expression.end);
+        const isAsConst = a.type.getText(sf) === "const";
+        report(
+          "E1005",
+          s,
+          s + 2,
+          isAsConst
+            ? "'as const' is not allowed; annotate the binding with a 'readonly' type or string-literal union"
+            : "'as' is not allowed; for numeric conversion call the type name as a function (e.g. 'i32(x)', 'f64(x)'), for 'unknown' use 'cast<T>(x)', otherwise use a type annotation",
+          { kind: isAsConst ? "as-const" : "as", syntax: "as" },
+        ); // including `as const` (Q026)
         expr(a.expression);
         return;
       }
@@ -1039,7 +1105,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         }
         return;
       }
-      case K.TypeOfExpression: e1000(e, "'typeof' operator", { kind: "typeof" }); return;
+      case K.TypeOfExpression: at("E1000", e, "'typeof' operator is not allowed; narrow a tagged union via '.kind', or use 'cast<T>(x)' for 'unknown'", { kind: "typeof" }); return;
       case K.DeleteExpression: e1000(e, "'delete' operator", { kind: "delete" }); return;
       case K.VoidExpression: e1000(e, "'void' operator", { kind: "void" }); return;
       case K.TaggedTemplateExpression: e1000(e, "tagged template expression", { kind: "tagged-template" }); return;
@@ -1061,14 +1127,20 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       case K.BigIntKeyword: case K.UndefinedKeyword: return; // names, not syntax: E2000 in P2 (Q011)
       case K.LiteralType: {
         const l = (t as ts.LiteralTypeNode).literal;
-        if (l.kind !== K.StringLiteral && l.kind !== K.NullKeyword) e1000(t, "this literal type");
+        if (l.kind !== K.StringLiteral && l.kind !== K.NullKeyword) {
+          at("E1000", t, "this literal type is not allowed; use a numeric type (such as 'i32') or 'boolean' and express range bounds with 'requires'", { kind: "literal-type" });
+        }
         return;
       }
       case K.TypeReference: {
         const r = t as ts.TypeReferenceNode;
         const qOk = r.typeName.kind === K.QualifiedName && isId((r.typeName as ts.QualifiedName).left) && isId((r.typeName as ts.QualifiedName).right);
         if (!isId(r.typeName) && !qOk) e1000(r.typeName, "qualified type name");
-        else if (isId(r.typeName) && E1000_TYPE_NAMES.has(r.typeName.text)) e1000(r.typeName, `'${r.typeName.text}'`);
+        else if (isId(r.typeName) && E1000_TYPE_NAMES.has(r.typeName.text)) {
+          const name = r.typeName.text;
+          const hint = E1000_TYPE_HINTS[name];
+          at("E1000", r.typeName, hint ? `'${name}' is not allowed; ${hint}` : `'${name}' is not allowed`, { kind: "utility-type", name });
+        }
         for (const a of r.typeArguments ?? []) type(a);
         return;
       }

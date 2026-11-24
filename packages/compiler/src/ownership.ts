@@ -309,6 +309,13 @@ class Flow {
         this.state = f.breaks.reduce(join, x.caseBlock.clauses.length ? fall : s0);
         return;
       }
+      case K.TypeAliasDeclaration: return;
+      case K.FunctionDeclaration: {
+        const fd = s as ts.FunctionDeclaration;
+        if (fd.name) this.declared(fd.name);
+        new Flow(this.m, this.depth + 1).body(fd);
+        return;
+      }
       case K.BreakStatement: this.target(false, (s as ts.BreakStatement).label?.text)?.breaks.push(this.state); this.state = null; return;
       case K.ContinueStatement: this.target(true, (s as ts.ContinueStatement).label?.text)?.continues.push(this.state); this.state = null; return;
       case K.ReturnStatement: {
@@ -461,6 +468,7 @@ class Flow {
         for (const p of (e as ts.ObjectLiteralExpression).properties) {
           if (p.kind === K.PropertyAssignment) this.ex((p as ts.PropertyAssignment).initializer, fieldCtx);
           else if (p.kind === K.ShorthandPropertyAssignment) this.ident((p as ts.ShorthandPropertyAssignment).name as ts.Identifier, fieldCtx);
+          else if (p.kind === K.MethodDeclaration) new Flow(this.m, this.depth + 1).body(p as ts.MethodDeclaration);
           else if (p.kind === K.SpreadAssignment) this.ex((p as ts.SpreadAssignment).expression, fieldCtx); // Q053
         }
         return;
