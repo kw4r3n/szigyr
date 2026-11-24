@@ -1,0 +1,160 @@
+type Tok = { readonly kind: u8; readonly start: u32; readonly end: u32 };
+type Summ = { readonly idents: u32; readonly numbers: u32; readonly symbols: u32; readonly sum: u32 };
+
+function lcg(x: u32): u32 {
+  "use rt";
+  return wrapAdd(wrapMul(x, 1664525), 1013904223);
+}
+
+function genInput(alloc: Alloc, n: usize): Vec<u8> {
+  "use owned";
+  const v = Vec.create<u8>(alloc, n + 32);
+  let x: u32 = 12345;
+  while (v.length < n) {
+    if (v.length > 0) v.push(32);
+    x = lcg(x);
+    const k = rem(x >>> 16, 10);
+    if (k < 5) {
+      x = lcg(x);
+      const len = 1 + rem(x >>> 16, 8);
+      for (let q: u32 = 0; q < len; q += 1) {
+        x = lcg(x);
+        if (q === 0) {
+          const r = rem(x >>> 16, 27);
+          v.push(r < 26 ? u8(97 + r) : 95);
+        } else {
+          const r = rem(x >>> 16, 37);
+          v.push(r < 26 ? u8(97 + r) : (r < 36 ? u8(48 + (r - 26)) : 95));
+        }
+      }
+    } else if (k < 8) {
+      x = lcg(x);
+      const len = 1 + rem(x >>> 16, 6);
+      for (let q: u32 = 0; q < len; q += 1) {
+        x = lcg(x);
+        v.push(u8(48 + rem(x >>> 16, 10)));
+      }
+    } else {
+      x = lcg(x);
+      const r = rem(x >>> 16, 17);
+      if (r < 13) {
+        v.push(symChar(r));
+      } else {
+        const t = r - 13;
+        v.push(t === 0 ? 62 : (t === 1 ? 60 : (t === 2 ? 61 : 33)));
+        v.push(61);
+      }
+    }
+  }
+  return v;
+}
+
+function symChar(r: u32): u8 {
+  "use rt";
+  // + - * / = ; ( ) { } < > !
+  switch (r) {
+    case 0: return 43;
+    case 1: return 45;
+    case 2: return 42;
+    case 3: return 47;
+    case 4: return 61;
+    case 5: return 59;
+    case 6: return 40;
+    case 7: return 41;
+    case 8: return 123;
+    case 9: return 125;
+    case 10: return 60;
+    case 11: return 62;
+    default: return 33;
+  }
+}
+
+function isIdStart(c: u8): boolean {
+  "use rt";
+  return (c >= 97 && c <= 122) || c === 95;
+}
+
+function isDigit(c: u8): boolean {
+  "use rt";
+  return c >= 48 && c <= 57;
+}
+
+function tokenize(alloc: Alloc, bytes: Ref<Slice<u8>>): Vec<Tok> {
+  "use owned";
+  const out = Vec.create<Tok>(alloc, 1024);
+  const n = bytes.length;
+  let i: usize = 0;
+  while (i < n) {
+    const c = bytes[i];
+    if (c === 32) {
+      i += 1;
+    } else if (isIdStart(c)) {
+      let j = i + 1;
+      while (j < n && (isIdStart(bytes[j]) || isDigit(bytes[j]))) j += 1;
+      out.push({ kind: 0, start: u32(i), end: u32(j) });
+      i = j;
+    } else if (isDigit(c)) {
+      let j = i + 1;
+      while (j < n && isDigit(bytes[j])) j += 1;
+      out.push({ kind: 1, start: u32(i), end: u32(j) });
+      i = j;
+    } else {
+      let j = i + 1;
+      if ((c === 62 || c === 60 || c === 61 || c === 33) && j < n && bytes[j] === 61) j += 1;
+      out.push({ kind: 2, start: u32(i), end: u32(j) });
+      i = j;
+    }
+  }
+  return out;
+}
+
+function summarize(bytes: Ref<Slice<u8>>, toks: Ref<Vec<Tok>>): Summ {
+  "use owned";
+  let a: u32 = 0;
+  let b: u32 = 0;
+  let s: u32 = 0;
+  let sum: u32 = 0;
+  for (let k: usize = 0; k < toks.length; k += 1) {
+    const t = toks[k];
+    if (t.kind === 0) {
+      a += 1;
+    } else if (t.kind === 1) {
+      b += 1;
+      let val: u32 = 0;
+      for (let p: usize = usize(t.start); p < usize(t.end); p += 1) {
+        val = wrapAdd(wrapMul(val, 10), u32(bytes[p]) - 48);
+      }
+      sum = wrapAdd(sum, val);
+    } else {
+      s += 1;
+    }
+  }
+  return { idents: a, numbers: b, symbols: s, sum };
+}
+
+const N: usize = 16000000;
+const RUNS: u32 = 7;
+
+export function main(sys: System): void {
+  const clock = sys.clock;
+  const bytes = genInput(sys.alloc, N);
+  const times: Array<f64> = [];
+  let checksum: u32 = 0;
+  for (let r: u32 = 0; r < RUNS; r += 1) {
+    const t0 = clock.nowMs();
+    const toks = tokenize(sys.alloc, bytes);
+    const s = summarize(bytes, toks);
+    const t1 = clock.nowMs();
+    times.push(t1 - t0);
+    let h: u32 = 2166136261;
+    h = wrapMul(h ^ s.idents, 16777619);
+    h = wrapMul(h ^ s.numbers, 16777619);
+    h = wrapMul(h ^ s.symbols, 16777619);
+    h = wrapMul(h ^ s.sum, 16777619);
+    checksum = h;
+  }
+  const sorted = times.toSorted((a: f64, b: f64): f64 => a - b);
+  const best = sorted[0];
+  const median = sorted[3];
+  sys.log.info(`task=t1 variant=szigyr n=${N} checksum=${checksum} best_ms=${best} median_ms=${median}`);
+}

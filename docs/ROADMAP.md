@@ -280,6 +280,23 @@
 - [x] **取り込み前健全性修正（`D186`、`Q322`、`Q321` 追記、2026-11-25）**: ブロック内の宣言より前の参照（`const`/`let`/`using`/`await using`/入れ子 `function`/局所 `type`、`for`/`for..of` 頭部、代入先・特殊フォーム・型制約・局所 `type` 別名本体を含む全経路）を外側同名の有無によらず `E2000`（`data.kind = "use-before-declaration"`）で拒否し、局所 `type` 本体からの外側型パラメータ名参照もモジュール直下に同名型がある場合を含め `E2000`（`data.kind = "outer-type-param"`）で拒否するよう修正。`docs/SPEC.md` は **27,828 バイト**（`28_000` 上限維持、`builtins.test.ts:68` 変更なし）。
 - **追検証（`D186`）**: `pnpm typecheck` 通過、`pnpm verify:conformance` 通過（`accept=92 reject=817 run=248`、`ok`、`PASSING.txt` 削除 0 行）、`pnpm conformance` 通過（`1568 passed`）、`pnpm test` 失敗 0 件（`60 files / 634 passed`、既存 vitest ワーカー `Timeout calling "onTaskUpdate"` 1 件あり）、`node bench/probe-ts/run.ts` は `accepted: 9/31`, `matched: 9/9`、`probes/review/` 全拒否（17 件）・全実行（`e4`/`e5`/`b3d`/`b4b`/`w1`/`w3` および `b4a` の JS/C/Wasm）一致を確認。
 
+## 確保のネイティブ化 段階 0（`D187`、`Q323`、2026-11-25）
+
+- [x] **Wasm アロケータの 2 乗遅延解消**（`packages/compiler/src/c/sz_wasm_rt.h`）: 32 ビン分離双方向連結フリーリスト＋ビットマスクへ変更（`sz_blk` 16 バイト維持、`sz_fnode` の `_Static_assert` 追加）。適合テスト `conformance/run/294-many-small-allocs.szigyr`（1 回の strict 呼び出しで 16 要素 `Vec<u32>` を 200,000 回確保）は、修正前の Wasm で 30 秒制限超過（156,113 ms でタイムアウト失敗）から、修正後は JS `369 ms` / C `268 ms` / Wasm `314 ms` で全バックエンド通過。
+- [x] **非数値 5 課題と確保・境界ベンチマーク取り込み**（`bench/workloads/`、`pnpm bench:workloads`、CI 外）: `t1`〜`t5`（各 `tN.szigyr`・`tN_same.rs`・`tN_idiom.rs`）と `m`（`m.szigyr` は実行時引数で `alloc_small` 回数を指定可能、および `m.rs`）、実行スクリプト `bench/workloads/run.ts`（`rustc` 省略フォールバック対応）、`bench/workloads/README.md` を追加。
+- **段階 0 前後の計測比較**（`pnpm bench:workloads` 実測。修正前の Wasm 5 課題は `eval-20261125-bench/RESULTS.md` より、負荷のある環境で各 1 回実行）:
+  - Wasm `alloc_small`（`m.szigyr`）:
+    - 修正前: 5,000 回 `77 ms`、10,000 回 `275 ms`、20,000 回 `1,003 ms`、40,000 回 `3,934 ms`（2 乗増加）
+    - 修正後: 10,000 回 `23 ms`（`1.00x`）、20,000 回 `52 ms`（`2.26x`）、40,000 回 `88 ms`（`3.83x`、1 万回の 5 倍以下）、1,000,000 回 `1,488 ms`（`1,488.0 ns/op`、`64.70x`；同実行の C は `1,589 ms`、Rust は `8.213 ms`）
+  - 5 課題（全変種でチェックサム一致、`t1=1282472460` / `t2=4274193343` / `t3=2574783783` / `t4=2207450853` / `t5=3321175533`。括弧内は `rust-same` 比）:
+    - `t1`: C dev `83.0 ms (1.23x)` / C rel `85.0 ms (1.26x)` / Wasm `125.0 ms (1.85x)`（修正前 Wasm `131.0 ms`） / `rust-same` `67.4 ms` / `rust-idiom` `78.3 ms (1.16x)`
+    - `t2`: C dev `70.0 ms (1.10x)` / C rel `71.0 ms (1.12x)` / Wasm `85.0 ms (1.34x)`（修正前 Wasm `91.0 ms`） / `rust-same` `63.4 ms` / `rust-idiom` `157.0 ms (2.48x)`
+    - `t3`: C dev `186.0 ms (1.06x)` / C rel `183.0 ms (1.04x)` / Wasm `180.0 ms (1.03x)`（修正前 Wasm `186.0 ms`） / `rust-same` `175.5 ms` / `rust-idiom` `305.7 ms (1.74x)`
+    - `t4`: C dev `40.0 ms (1.22x)` / C rel `40.0 ms (1.22x)` / Wasm `59.0 ms (1.81x)`（修正前 Wasm `61.0 ms`） / `rust-same` `32.7 ms` / `rust-idiom` `88.5 ms (2.71x)`
+    - `t5`: C dev `62.0 ms (0.92x)` / C rel `62.0 ms (0.92x)` / Wasm `110.0 ms (1.63x)`（修正前 Wasm `112.0 ms`） / `rust-same` `67.6 ms` / `rust-idiom` `71.9 ms (1.06x)`
+  - `m` 境界・伸長計測（修正後 `pnpm bench:workloads`）: `push_grow` C `4.80 ns (96 ms)` / Wasm `7.00 ns (140 ms)` / Rust `0.98 ns (19.665 ms)`、`call_scalar` C `42.00 ns (84 ms)` / Wasm `221.5 ns (443 ms)`、`call_slice_small` C `438.0 ns (438 ms)` / Wasm `447.0 ns (447 ms)` / Rust `2.69 ns (2.692 ms)`、`call_slice_large` C `0.00 ns (0 ms)` / Wasm `2,735,000.0 ns (547 ms)` / Rust `3.15 ns (0.001 ms)`。
+- **検証（段階 0 コード実装後）**: 開始時ベースライン（`854a30f`）は `pnpm typecheck` 通過、`pnpm verify:conformance` `accept=92 reject=817 run=248`、`pnpm conformance` `1,568 passed`、`pnpm test` `60 files / 634 passed`。段階 0 コード実装後は `pnpm typecheck` 通過、`pnpm verify:conformance` `accept=92 reject=817 run=249`、`pnpm conformance` `1,571 passed`（`294-many-small-allocs` の JS/C/Wasm 含む）、`pnpm test` 失敗 0 件（`60 files / 634 passed`）、`docs/SPEC.md` 変更なし。
+
 ## 保留
 
 - **ネイティブモバイル殻（iOS / Android）**（Q279）: モバイル専用ターゲットの必要が出たときに着手する（ブラウザ版 Wasm 成果物自体はモバイルブラウザでも動く）。

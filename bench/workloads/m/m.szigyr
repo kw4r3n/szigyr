@@ -1,0 +1,71 @@
+function allocSmall(alloc: Alloc, n: u32): u32 {
+  "use owned";
+  let sum: u32 = 0;
+  for (let i: u32 = 0; i < n; i += 1) {
+    const v = Vec.create<u32>(alloc, 16);
+    for (let j: u32 = 0; j < 16; j += 1) v.push(wrapAdd(i, j));
+    for (let j: usize = 0; j < v.length; j += 1) sum = wrapAdd(sum, v[j]);
+  }
+  return sum;
+}
+
+function pushGrow(alloc: Alloc, n: u32): u32 {
+  "use owned";
+  const v = Vec.create<u32>(alloc, 16);
+  for (let i: u32 = 0; i < n; i += 1) v.push(i);
+  return wrapAdd(v[v.length - 1], u32(v.length));
+}
+
+function add1(x: i32): i32 {
+  "use rt";
+  return wrapAdd(x, 1);
+}
+
+function first(s: Ref<Slice<f32>>): f32 {
+  "use rt";
+  requires(s.length >= 1);
+  return s[0];
+}
+
+function mk(alloc: Alloc, n: usize): Vec<f32> {
+  "use owned";
+  const v = Vec.create<f32>(alloc, n);
+  for (let i: usize = 0; i < n; i += 1) v.push(f32(rem(u32(i), 7)));
+  return v;
+}
+
+function line(sys: System, name: string, n: u32, ms: f64, chk: f64): void {
+  sys.log.info(`micro=${name} n=${n} total_ms=${ms} per_op_ns=${ms * 1000000 / f64(n)} chk=${chk}`);
+}
+
+export function main(sys: System): void {
+  const clock = sys.clock;
+  const args = sys.proc.args();
+  let allocN: u32 = 1000000;
+  if (args.length >= 1) {
+    const parsed = Number.parseU32(args[0]);
+    if (parsed.kind === "err") panic(`invalid alloc_small count: ${args[0]}`);
+    allocN = parsed.value;
+  }
+  let t0: f64 = clock.nowMs();
+  const r1 = allocSmall(sys.alloc, allocN);
+  line(sys, "alloc_small", allocN, clock.nowMs() - t0, f64(r1));
+  if (args.length >= 2 && args[1] === "alloc_small") return;
+  t0 = clock.nowMs();
+  const r2 = pushGrow(sys.alloc, 20000000);
+  line(sys, "push_grow", 20000000, clock.nowMs() - t0, f64(r2));
+  let acc: i32 = 0;
+  t0 = clock.nowMs();
+  for (let i: u32 = 0; i < 2000000; i += 1) { acc = add1(acc); }
+  line(sys, "call_scalar", 2000000, clock.nowMs() - t0, f64(acc));
+  const small = mk(sys.alloc, 16);
+  let f: f64 = 0;
+  t0 = clock.nowMs();
+  for (let i: u32 = 0; i < 1000000; i += 1) { f += f64(first(small)); }
+  line(sys, "call_slice_small", 1000000, clock.nowMs() - t0, f);
+  const big = mk(sys.alloc, 4000000);
+  f = 0;
+  t0 = clock.nowMs();
+  for (let i: u32 = 0; i < 200; i += 1) { f += f64(first(big)); }
+  line(sys, "call_slice_large", 200, clock.nowMs() - t0, f);
+}

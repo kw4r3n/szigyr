@@ -1,0 +1,69 @@
+const N: usize = 800000;
+
+function genKeys(alloc: Alloc, n: usize): Vec<i32> {
+  "use owned";
+  const v = Vec.create<i32>(alloc, n);
+  let x: u32 = 12345;
+  for (let i: usize = 0; i < n; i += 1) {
+    x = wrapAdd(wrapMul(x, 1664525), 1013904223);
+    v.push(i32(x >>> 1) - 1073741824);
+  }
+  return v;
+}
+
+function core(alloc: Alloc, keys: Ref<Slice<i32>>): u32 {
+  "use owned";
+  const n = keys.length;
+  const left = Vec.filled<i32>(alloc, n, -1);
+  const right = Vec.filled<i32>(alloc, n, -1);
+  for (let i: usize = 1; i < n; i += 1) {
+    const k = keys[i];
+    let cur: usize = 0;
+    while (true) {
+      if (k < keys[cur]) {
+        const l = left[cur];
+        if (l < 0) { left[cur] = i32(i); break; }
+        cur = usize(l);
+      } else {
+        const r = right[cur];
+        if (r < 0) { right[cur] = i32(i); break; }
+        cur = usize(r);
+      }
+    }
+  }
+  const nodes = Vec.create<u32>(alloc, 64);
+  const depths = Vec.create<u32>(alloc, 64);
+  let sum: i64 = 0;
+  let levels: u32 = 0;
+  if (n > 0) { nodes.push(0); depths.push(0); }
+  while (nodes.length > 0) {
+    const nd = nodes.pop();
+    const dp = depths.pop();
+    if (nd !== null && dp !== null) {
+      const node = usize(nd);
+      if (dp + 1 > levels) levels = dp + 1;
+      if (rem(dp, 2) === 0) sum += i64(keys[node]);
+      const l = left[node];
+      const r = right[node];
+      if (l >= 0) { nodes.push(u32(l)); depths.push(dp + 1); }
+      if (r >= 0) { nodes.push(u32(r)); depths.push(dp + 1); }
+    }
+  }
+  const low = u32(sum & 4294967295);
+  return low ^ levels;
+}
+
+export function main(sys: System): void {
+  const keys = genKeys(sys.alloc, N);
+  const times: Array<f64> = [];
+  let checksum: u32 = 0;
+  for (let r: u32 = 0; r < 7; r += 1) {
+    const t0 = sys.clock.nowMs();
+    checksum = core(sys.alloc, keys);
+    times.push(sys.clock.nowMs() - t0);
+  }
+  const sorted = times.toSorted((a: f64, b: f64): f64 => a - b);
+  const best = sorted[0];
+  const med = sorted[3];
+  sys.log.info(`task=t3 variant=szigyr n=${N} checksum=${checksum} best_ms=${best} median_ms=${med}`);
+}

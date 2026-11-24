@@ -1,0 +1,129 @@
+// t2 word frequency: strict-layer FNV-1a open-addressing table. Optional first program arg overrides the word count.
+const CAP: usize = 524288;
+const MASK: u32 = 524287;
+const VOCAB: u32 = 200000;
+const N_DEFAULT: usize = 4000000;
+
+function lcg(x: u32): u32 {
+  "use rt";
+  return wrapAdd(wrapMul(x, 1664525), 1013904223);
+}
+
+function build(alloc: Alloc, n: usize): Vec<u8> {
+  "use owned";
+  const buf = Vec.create<u8>(alloc, n * 9);
+  let x: u32 = 12345;
+  for (let i: usize = 0; i < n; i += 1) {
+    x = lcg(x);
+    let id: u32 = rem(x >>> 14, VOCAB);
+    x = lcg(x);
+    const b: u32 = rem(x >>> 14, VOCAB);
+    if (b < id) id = b;
+    x = lcg(x);
+    const c: u32 = rem(x >>> 14, VOCAB);
+    if (c < id) id = c;
+    let s: u32 = wrapAdd(wrapMul(id, 2654435761), 12345);
+    s = lcg(s);
+    const len: u32 = 1 + (s >>> 29);
+    if (i > 0) buf.push(32);
+    for (let k: u32 = 0; k < len; k += 1) {
+      s = lcg(s);
+      buf.push(u8(97 + rem(s >>> 16, 26)));
+    }
+  }
+  return buf;
+}
+
+function countWords(buf: Ref<Slice<u8>>, off: Mut<Slice<u32>>, len: Mut<Slice<u32>>, cnt: Mut<Slice<u32>>, out: Mut<Slice<u32>>): void {
+  "use rt";
+  requires(off.length === CAP && len.length === CAP && cnt.length === CAP && out.length === 7);
+  off.fill(0);
+  len.fill(0);
+  cnt.fill(0);
+  let distinct: u32 = 0;
+  const n = buf.length;
+  let i: usize = 0;
+  while (i < n) {
+    const start = i;
+    let h: u32 = 2166136261;
+    while (i < n && buf[i] !== 32) {
+      h = wrapMul(h ^ u32(buf[i]), 16777619);
+      i += 1;
+    }
+    const l: u32 = u32(i - start);
+    let idx: u32 = h & MASK;
+    let done = false;
+    while (!done) {
+      const slot = usize(idx);
+      const c = cnt[slot];
+      if (c === 0) {
+        off[slot] = u32(start);
+        len[slot] = l;
+        cnt[slot] = 1;
+        distinct += 1;
+        done = true;
+      } else if (len[slot] === l) {
+        const o = usize(off[slot]);
+        const ll = usize(l);
+        let k: usize = 0;
+        while (k < ll && buf[o + k] === buf[start + k]) k += 1;
+        if (k === ll) {
+          cnt[slot] = c + 1;
+          done = true;
+        }
+      }
+      if (!done) idx = (idx + 1) & MASK;
+    }
+    i += 1;
+  }
+  let c1: u32 = 0;
+  let o1: u32 = 0;
+  let c2: u32 = 0;
+  let o2: u32 = 0;
+  let c3: u32 = 0;
+  let o3: u32 = 0;
+  for (let s: usize = 0; s < CAP; s += 1) {
+    const c = cnt[s];
+    if (c === 0) continue;
+    const o = off[s];
+    if (c > c1 || (c === c1 && o < o1)) {
+      c3 = c2; o3 = o2; c2 = c1; o2 = o1; c1 = c; o1 = o;
+    } else if (c > c2 || (c === c2 && o < o2)) {
+      c3 = c2; o3 = o2; c2 = c; o2 = o;
+    } else if (c > c3 || (c === c3 && o < o3)) {
+      c3 = c; o3 = o;
+    }
+  }
+  out[0] = distinct;
+  out[1] = c1; out[2] = o1; out[3] = c2; out[4] = o2; out[5] = c3; out[6] = o3;
+}
+
+function fold(out: Ref<Slice<u32>>): u32 {
+  "use rt";
+  let h: u32 = 0;
+  for (let i: usize = 0; i < out.length; i += 1) h = wrapAdd(wrapMul(h, 16777619), out[i]);
+  return h;
+}
+
+export function main(sys: System): void {
+  let n: usize = N_DEFAULT;
+  const args = sys.proc.args();
+  if (args.length > 0) {
+    const r = Number.parseU32(args[0]);
+    if (r.kind === "ok") n = usize(r.value);
+  }
+  const buf = build(sys.alloc, n);
+  const off = Vec.filled<u32>(sys.alloc, CAP, 0);
+  const len = Vec.filled<u32>(sys.alloc, CAP, 0);
+  const cnt = Vec.filled<u32>(sys.alloc, CAP, 0);
+  const out = Vec.filled<u32>(sys.alloc, 7, 0);
+  const times: Array<f64> = [];
+  for (let r: u32 = 0; r < 7; r += 1) {
+    const t0 = sys.clock.nowMs();
+    countWords(buf, off, len, cnt, out);
+    times.push(sys.clock.nowMs() - t0);
+  }
+  const sum: u32 = fold(out);
+  const sorted = times.toSorted((a: f64, b: f64): f64 => a - b);
+  sys.log.info(`task=t2 variant=szigyr n=${n} checksum=${sum} best_ms=${sorted[0]} median_ms=${sorted[3]}`);
+}
