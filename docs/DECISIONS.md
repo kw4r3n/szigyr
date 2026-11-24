@@ -993,11 +993,9 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 | 可変モジュール状態 `let` 等（`E5002`） | 健全性 | 大域状態をなくす（`Szigyr-design-v0.md:172`、`Q054`、`SPEC.md` §3.5/§10、`syntax.ts:varList` `kind: "module-let"`、`explain.ts` `E5002`） |
 | `var`（`E1001`） | 曖昧さ | 関数ホイスティングの罠を避け `const`/`let` に限定（`SPEC.md` §3.5、`explain.ts` `E1001`、`syntax.ts:varList` / `syntax.ts:moduleDecl`） |
 | `==` / `!=`（`E1002`） | 曖昧さ | 暗黙型変換を含む等価比較を禁止し `===`/`!==` に統一（`SPEC.md` §3.5、`explain.ts` `E1002`、`syntax.ts:expr`） |
-| 暗黙の truthiness（`E2004`） | 曖昧さ | 条件式を `boolean` のみに限定（`SPEC.md` §4、`explain.ts` `E2004`、`expr.ts:cond`） |
 | `?` 省略可能プロパティ・引数・タプル要素、`undefined`（`E1008` / `E2000`） | 曖昧さ | 書き方を 1 通りに統一し `undefined` と `null` の二重化を排除（`Szigyr-design-v0.md:163`、`EVALUATION.md` §3；構文・診断は `syntax.ts:params` `kind: "optional-param"`、`syntax.ts:memberName` `kind: "optional-member"`、`syntax.ts:type` `kind: "optional-tuple-elem"`、`modules.ts:typeOf`；※ `Q005` は `E1008` コード割当のみで理由の根拠ではない） |
 | 分割代入の既定値 `{ a = 1 }` / `[a = 1]`・非末尾/シグネチャ既定引数（`E1008`） | 曖昧さ | 書き方を 1 通りに統一する方針（`?` / `undefined` との関連：`EVALUATION.md` §3、`Szigyr-design-v0.md:163`；構文は `syntax.ts:bindingPattern` / `syntax.ts:arrayBindingPattern` `kind: "destructure-default"`、`syntax.ts:params` `kind: "default-param"` / `"non-trailing-default"`；`Q005` はコード割当） |
-| `bigint` 型・`1n` リテラル（`E2000` / `E1000`） | 曖昧さ | 固定幅整数型 `i64`/`u64` に一本化し `n` なし数値リテラルで記述（`Szigyr-design-v0.md:166`、`SPEC.md` §3.1/§3.5、`explain.ts` `E1000`、`syntax.ts:expr` `kind: "bigint-literal"`、`modules.ts:typeOf`） |
-| 正規表現の `imsu` 以外のフラグ・重複フラグ（`E1000`） | 曖昧さ | `lastIndex` 等の可変状態を持たないステートレス `RegExp` とし、`matchAll` 相当を `findAll` に分離（`STDLIB.md` §5、`syntax.ts:expr` `kind: "regex-flag"`） |
+| 正規表現の `imsu` 以外のフラグ・重複フラグ（`E1000`） | 曖昧さ | `g` / `y` を持たないステートレス `RegExp` として設計（`STDLIB.md:94`「stateless — no `g`/`y`」、`syntax.ts:expr` `kind: "regex-flag"`；重複フラグやその他フラグの個別理由は未記録） |
 | `new RegExp(...)`（`E2002`） | 曖昧さ | 例外を投げず `RegExp.compile(pat, flags): Result<RegExp, CastError>` へ統一（`Szigyr-design-v0.md:165` `throw` 排除、`STDLIB.md` §5、`SPEC.md` §3.5、`expr.ts:newExpr`） |
 | 置場所を誤った指示子・`'use strict'`（`E1000`） | 曖昧さ | 不正配置の指示子を黙って無視せず報告し、層指示子は `"use owned"` / `"use rt"` または省略に限定（`Q176`、`syntax.ts:stmt` `kind: "misplaced-directive"`、`syntax.ts:checkSyntax` `kind: "directive"`、`explain.ts` `E1000`） |
 | `strict` / `rt` での関数値・アロー関数・関数式（`E4003`） | 実装都合・バックエンド | クロージャなし・GC なしの設計（`managed` のみクロージャ可：`Szigyr-design-v0.md:77`、`EVALUATION.md` §3、`SPEC.md` §2、`checker.ts` `kind: "strict-fn-type"`、`expr.ts:checkArrow` `kind: "strict-arrow"`、`expr.ts:fnArgRef` `kind: "strict-fn-arg"`、`explain.ts` `E4003`） |
@@ -1006,11 +1004,13 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 | `namespace` 宣言（`E1000`） | 実装都合・バックエンド | 列挙順などの実装依存を除く項目に列挙（`Szigyr-design-v0.md:170`、`SPEC.md` §3.5、`syntax.ts:moduleDecl` `kind: "namespace"`） |
 | `for..in`（`E1000`） | 実装都合・バックエンド | 列挙順などの実装依存を除く・プロパティ列挙順に依存しない（`Szigyr-design-v0.md:170,248`、`SPEC.md` §3.5、`syntax.ts:stmt` `kind: "for-in"`） |
 | `eval`・予約名束縛としての `eval` / `arguments`（`E1000`） | 実装都合・バックエンド | `eval` は実装依存機能排除の一覧に列挙（`Szigyr-design-v0.md:170`）；`eval`/`arguments` を含む厳格 ESM 予約語の束縛禁止は `Q123`（`syntax.ts:RESERVED_WORDS` `kind: "reserved-name"`）。※式位置の `arguments` 自体の禁止理由は docs 未記載（`syntax.ts:expr` `kind: "reserved-name"`） |
-| `declare`（`declare module "c:..."` 以外、`E1000`） | 実装都合・バックエンド | 環境グローバル・ambient 宣言を持たず `.d.ts` にも依存しない（`Szigyr-design-v0.md:182,275`、`SPEC.md` §3.5、`syntax.ts:moduleDecl` `kind: "ambient-module"`） |
 | 無スコープの `this`（インスタンスメソッド・constructor 外、`E1000`） | 実装都合・バックエンド | 固定レイアウトのため動的な `this` を持たない方針（`Szigyr-design-v0.md:164`、`Q120`、`syntax.ts:expr` `kind: "this-outside-method"`） |
 | `typeof` 演算子（`E1000`） | 実装都合・バックエンド | 静的型付けによりランタイム `typeof` を持たず tagged union 等を使う（`SPEC.md` §3.5、`explain.ts` `E1000` `typeof`、`syntax.ts:expr` `kind: "typeof"`） |
 | 構造的部分型（レコードの幅部分型、`E2002`） | 実装都合・バックエンド（managed 不整合） | 固定レイアウトのため閉じた厳密オブジェクト型を採用（`Szigyr-design-v0.md:161`）；ただし `EVALUATION.md` §3 指摘のとおり `managed` 層には固定レイアウト根拠が当てはまらない（`Q306f`） |
 | `class extends`・`get`/`set` アクセサ・インデクサ（`E1000`） | 実装都合・バックエンド（managed 不整合） | `Szigyr-design-v0.md:161,164` で固定レイアウト・動的 `this`/getter/setter 排除由来だが、`EVALUATION.md` §3 指摘のとおり `class` は `managed` 専用のため根拠と不整合（`Q306c`・`Q306d`、`syntax.ts:classDecl` `kind: "class-extends"` / `"class-accessor"` / `"index-signature"`、`syntax.ts:type` `TypeLiteral`） |
+| 暗黙の truthiness（`E2004`） | 理由なし | `SPEC.md` §4・`explain.ts` `E2004`・`expr.ts:cond` に「条件式は `boolean` のみ」の規定はあるが、設計上の禁止理由は未記録 |
+| `bigint` 型・`1n` リテラル（`E2000` / `E1000`） | 理由なし | §13・`Q011`・`Q015`・`Q231` に禁止・コード割当はあるが、設計上の禁止理由は未記録（`Szigyr-design-v0.md:166` は strict 整数型の速度記載のみ） |
+| `declare`（`declare module "c:..."` 以外、`E1000`） | 理由なし | `SPEC.md` §3.5・`Q004`・`Q011` に禁止規定はあるが、設計上の禁止理由は未記録（`Szigyr-design-v0.md:182,275` は大域権限排除と `.d.ts` 実行時検査のみ記載） |
 | `abstract`・`#private`・`public` 修飾子（`E1000`） | 理由なし | `class` メンバは既定で公開である旨の案内のみあり（`explain.ts` `"public-modifier"`）、禁止理由自体の設計記録なし（`syntax.ts:mods` `kind: "public-modifier"` / `"modifier"`、`syntax.ts:classDecl` `kind: "private-name"` / `"class-member"`） |
 | `object` 型（`E1000`） | 理由なし | §3.5 および `Q004` の閉じた拒否表にあるが設計理由の記録なし（`SPEC.md` §3.5、`syntax.ts:type` `kind: "object-type"`） |
 | `Function` 型（`E1000`） | 理由なし | §3.5 および `Q004` の閉じた拒否表にあるが設計理由の記録なし（`SPEC.md` §3.5、`syntax.ts:E1000_TYPE_NAMES`、`syntax.ts:type`） |
@@ -1024,8 +1024,6 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 | `export default` / `export *` / `export =` / `import =`（`E1003`/`E7001`） | 理由なし | `Q009` に拒否仕様の記述はあるが設計理由の記録なし（`syntax.ts:moduleDecl` / `syntax.ts:importDecl` / `syntax.ts:exportDecl` `kind: "default-export"` / `"export-star"` / `"export-equals"` / `"import-equals"`） |
 | `enum`（`E1000`） | 理由なし | `Szigyr-design-v0.md:170` の一般項目には列挙されているが、`EVALUATION.md` §3 指摘のとおり独立した禁止根拠の記録なし（`SPEC.md` §3.5、`syntax.ts:stmt` `kind: "enum"`、`Q306a`） |
 | `instanceof`（`E1000`） | 理由なし | `EVALUATION.md` §3 指摘のとおり禁止理由の記録なし（`SPEC.md` §3.5、`syntax.ts:expr` `kind: "instanceof"`、`Q306b`） |
-| ラベル・ラベルつき `break`/`continue`（`E1000`） | 理由なし | `EVALUATION.md` §3 指摘のとおり禁止理由の記録なし（`SPEC.md` §3.5、`syntax.ts:stmt` `kind: "label"` / `"labeled-statement"`、`Q304`） |
-| `x \|\|=`・`x &&=`（`E1000`） | 理由なし | `EVALUATION.md` §3 指摘のとおり禁止理由の記録なし（`syntax.ts:BINARY_OPS`・`syntax.ts:expr` `kind: "operator"`、`Q303`） |
 | 分割代入代入 `[a, b] = ...` / `({ a } = ...)`（`E1000`） | 理由なし | P3 不具合修正として `D183` で `E1000` に明文化したが、構文禁止自体の設計理由記録なし（`SPEC.md` §3.5、`syntax.ts:expr` `kind: "destructuring-assignment"`） |
 | `delete`・`in`・カンマ演算子・`void` 演算子（`E1000`） | 理由なし | 設計書・評価文書に個別理由の記録なし（`SPEC.md` §3.5、`Q004`、`syntax.ts:expr` `kind: "delete"` / `"operator"` / `"void"`） |
 | `with`・`debugger` 文（`E1000`） | 理由なし | 設計書・評価文書に個別理由の記録なし（`SPEC.md` §3.5、`syntax.ts:stmt` `kind: "with"` / `"debugger"`） |
@@ -1050,13 +1048,14 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
    - `QuerySymbol.pure` → `deterministic` 改名: 副作用がない「純粋関数」という誤解（ローカル変数・`this` 変更は許容される）を避け「決定性・能力」を表す名称へ揃えたと推測される（`index.ts`, `lsp.ts`, `mcp.ts`, `STDLIB.md`；ただし `SPEC.md` §10 見出し `Pure` の同期漏れ → `Q308`）。
    - `forAll` / `fuzzContracts` 分離: インライン述語テスト（`forAll((x) => ...)`）と既存関数の契約・トラップファジング（`fuzzContracts(fn)`）を 1 関数に混ぜた場合のシグネチャ混乱・誤用を解消するためと推測される（`syntax.ts`, `expr.ts`, `emit.ts`, `explain.ts`）。
 
-## D183: 設計評価改善ブランチ（`agy/ts-acceptance-20261124`）の方針と停止条件による延期項目（2026-11-24）
+## D183: 設計評価改善ブランチ（`agy/ts-acceptance-20261124`）の方針と承認事項（2026-11-24）
 
-- **決定**: 2026-11-24 の設計評価（`probe-ts` 初回受理 5/31 等）に基づき、`agy/ts-acceptance-20261124` 上で 5 段階の改善を実施：
+- **決定**: 2026-11-24 の設計評価（`probe-ts` 初回受理 5/31 等）に基づき、`agy/ts-acceptance-20261124` 上で 5 段階の初回改善＋2 回のレビュー修正を実施：
   - A: `[a, b] = [b, a + b]` / オブジェクト分割代入代入の P3 `ownership.ts` クラッシュ修正（`E1000` `destructuring-assignment`）。
   - B: 理由なき禁止のうち既存 conformance 期待と衝突しない 6 項目（`x ??= v`、`a?.[i]`、`f?.()`、`...rest` 引数、`f(...xs)` / `Math.min|max(...xs)`、引数の分割代入）を解禁・全層/3バックエンド整合（`Q297`–`Q302`）。
   - C: §3.5 Forbidden の分類表（`D181`）、Group A/B の遡及記録（`D182`）、および未決論点（`Q303`–`Q308`、`Q306a`–`Q306f`）を文書化。
   - D: 拒否構文・制約違反の `data.kind`・安全 `--fix`・`szigyr explain` 種別案内を整備。
-  - E: `managed` 標準メソッド拡充（`String(x)` を除く 8 項目）と `bench/probe-ts` 計測基盤を追加。
-  - **なお、`agy/ts-acceptance-20261124` における受理構文・`managed` 標準メソッド一覧（B・E による追加項目および停止条件による延期 3 件の切り分け）は、評価時に Claude が提案した既定案（Claude の既定案）に基づくものであり、オーナーによる項目ごとの承認は受けていない。**
-- **停止条件による延期**: 既存 `conformance/reject/` の期待値を変えてはならない停止条件により、`x ||= v` / `x &&= v`（`Q004`/`Q303`: `conformance/reject/E1000-logical-assign.szigyr` と衝突）、ラベルつき `break`/`continue`（`Q304`: `conformance/reject/E1000-label.szigyr` と衝突）、`String(x)`（`Q305`: `conformance/reject/E2000-bare-namespace-call.szigyr` と衝突）の 3 件は実装せず論点化した（`[..."ab"]` は `conformance/reject/E2002-array-spread-not-array.szigyr` を維持して反復可能オブジェクトの spread と両立）。
+  - E: `managed` 標準メソッド拡充（初回 cleanup 時点では `String(x)` を除く 8 項目を実装し、その後のオーナー承認を受けて `0092775` で `String(x)` も含め全 9 項目を実装）と `bench/probe-ts` 計測基盤を追加。
+- **オーナー承認（2026-11-24）**:
+  - 初回 cleanup（`2a68c91` 時点）では、既存 `conformance/reject/` の期待変更禁止により保留していた `x ||= v` / `x &&= v`（`Q303`: `E1000-logical-assign.szigyr`）、ラベルつきループの `break`/`continue`（`Q304`: `E1000-label.szigyr`）、`String(x)`（`Q305`: `E2000-bare-namespace-call.szigyr`）の 3 件を、`20261124-1036-ts-acceptance-review-fixes` にてオーナーが解禁承認し、`0092775` で実装・期待更新・全層/全バックエンド整合を完了した（`[..."ab"]` は `conformance/reject/E2002-array-spread-not-array.szigyr` を維持して反復可能オブジェクトの spread と両立）。
+  - 続いて `20261124-1212-ts-acceptance-arity-fixes` にて、非 `rest` 関数型への代入全般（`SPEC.md` §3.5 Subtyping 改定および `run/267` のアローラップ書換えを含む `Q310`）もオーナー承認のうえ実装した（未決論点 `Q306a`–`Q306f`, `Q307`, `Q308`, `Q309`, `Q311`–`Q314` は引き続き未承認・未着手）。
