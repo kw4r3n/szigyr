@@ -104,7 +104,8 @@ const runCli = async (argv: string[]): Promise<{ code: number; out: string; err:
 };
 
 const portableDemo = join(import.meta.dirname, "../../../examples/audio-portable/main.szigyr");
-const ffiDemo = join(import.meta.dirname, "../../../examples/audio/main.szigyr");
+// not examples/audio: without SDL3 installed its c: module stops with E2009 before E4009
+const cOnly = join(import.meta.dirname, "../../../conformance/reject/E4009-c-module.szigyr");
 const pw = findPlaywright();
 
 describe("browser target builder & CLI", () => {
@@ -141,7 +142,7 @@ describe("browser target builder & CLI", () => {
 
   it("rejects C-only program with E4009 and invalid build flags with exit 2", async () => {
     const outDir = mkdtempSync(join(tmpdir(), "szigyr-bconly-"));
-    const r1 = await runCli(["build", "--target=browser", "-o", outDir, ffiDemo]);
+    const r1 = await runCli(["build", "--target=browser", "-o", outDir, cOnly]);
     expect(r1.code).toBe(1);
     expect(r1.err).toContain("E4009");
     expect((await runCli(["build", portableDemo])).code).toBe(2);

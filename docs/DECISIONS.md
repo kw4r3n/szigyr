@@ -662,7 +662,7 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 ## D150: `CC` は空白で区切って、コマンドと先頭の引数にする。キャッシュの作れない場合は CBuildError（2026-11-20）
 
 - `cdecl.ts` の `ccCommand()` が `$CC`（既定 `cc`）を `splitFlags` で分ける。`native.ts` と `headercheck.ts` が使う。`CC="ccache cc"` や `CC="cc -m64"` が使える。キャッシュのキーは `$CC` の文字列そのまま。
-- ネイティブのキャッシュの作成と所有者の確認が失敗したら（`XDG_CACHE_HOME=/proc/nope` など）、生の ENOENT でなく `CBuildError`（終了コード 2）にする。
+- ネイティブのキャッシュの作成と所有者の確認が失敗したら（`XDG_CACHE_HOME=/dev/null` など）、生の例外でなく `CBuildError`（終了コード 2）にする。Node 24 で `/proc` の下を指す場合は `Q317`。
 - `splitFlags`（`pkg-config` の出力を C コンパイラの引数にする）の単体テストを `cdecl.test.ts` に足した。単引用符、二重引用符、バックスラッシュ、空白の連続、末尾の改行、空入力を調べて、欠陥は見つからなかった。
 
 ## D149: ネイティブのキャッシュは使われなくなったものから消す（2026-11-20）
