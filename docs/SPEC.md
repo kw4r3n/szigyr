@@ -11,7 +11,7 @@ Normative core spec (`szigyr`, `.szigyr`). Full stdlib/caps/flags/examples: `doc
 
 ## 1. Modules & Top-Level
 - **ESM only**: Named `import`/`export` (`import {a as b} from "./x.szigyr"`, `export {a}`, inline `export`), named re-exports (`export {a,b as c} from "./x.szigyr"`), ns imports (`import * as ns from "./x.szigyr"`, `ns.T` type/`ns.v` val; export `ns` `E7001`), `import type`/`export type` (`import {type T,v}`) on `.szigyr`/`c:` (value use `E2002`). Paths: `./`/`../` ending `.szigyr` (canonical realpath), `"npm:<pkg>"` (§7), `"c:<pkg>:<header>"` (§9). Acyclic chains any depth; cycles fail at use (`E2000`). Forbidden: `export default`/`export *` (`E1003`), `import()`, `require()`, local default/side-effect imports, `import type` on `npm:`, `c:`/`npm:` re-exports, missing target (`E7001`).
-- **Top-level**: `import`/`export`, `function`, `type`, `interface`, `class`, `const` (typed `E2006`; lit or immutable rec/arr lit incl. `const {a,b:c}:T={...}`; `Native & Copy` readable in `strict`/`rt`), `test(...)`, `declare module "c:..."`. Top `let` or mut/non-lit `const`/`static`: `E5002`.
+- **Top-level**: `import`/`export`, `function`, `type`, `interface`, `class`, `const` (typed `E2006`; lit or immutable rec/arr lit incl. `const {a,b:c}:T={...}`; `Native & Copy` readable in `strict`/`rt`), `test(...)`, `declare module "c:..."`. Top `let` or mut/non-lit `const`/`static`: `E5002`. Local `type` aliases allowed in blocks (all layers, block-scoped, no outer tparams or top-level shadowing).
 - **Reserved (`E1000` decl)**: §12 globals, §13 reserved, `__szigyr_rt*`, `__proto__`/`constructor`/`prototype`/`toString`/`valueOf`. Values/types share dup check (`E1000`).
 
 ## 2. Layers, Directives & Functions

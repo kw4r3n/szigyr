@@ -1,0 +1,34 @@
+// expect-output: 6|15|42
+// stage: 2
+// open-question: Q321
+function managedCase(): i32 {
+  type A = { readonly x: i32 };
+  type B = { readonly a: A; readonly y: i32 };
+  const b: B = { a: { x: 2 }, y: 4 };
+  return b.a.x + b.y;
+}
+
+function strictCase(a: Alloc): i32 {
+  "use owned";
+  type Box = OwnedStruct<{ v: i32 }>;
+  type Num = i32;
+  const b: Box = { v: 10 };
+  const c: Num = b.v;
+  const v = Vec.create<Num>(a, 1);
+  v.push(5);
+  return c + v[0];
+}
+
+function rtCase(n: i32): i32 {
+  "use rt";
+  type Pair = { readonly p: i32; readonly q: i32 };
+  const x: Pair = { p: n, q: 2 };
+  return x.p * x.q;
+}
+
+export function main(sys: System): void {
+  const m = managedCase();
+  const s = strictCase(sys.alloc);
+  const r = rtCase(21);
+  sys.log.info(`${m}|${s}|${r}`);
+}

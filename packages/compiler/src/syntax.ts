@@ -127,13 +127,28 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
   const cDeclares = new Map<string, Set<string>>();
   const cImports = new Set<string>();
   const localNsImports = new Set<string>();
+  const allTopNames = new Set<string>();
   const stmts = sf.statements;
   for (const s0 of stmts) {
     if (s0.kind === K.ModuleDeclaration) moduleDecl(s0 as ts.ModuleDeclaration); // §14.1: before imports resolve against it
     else if (s0.kind === K.ImportDeclaration) {
-      const d = s0 as ts.ImportDeclaration, nb = d.importClause?.namedBindings;
+      const d = s0 as ts.ImportDeclaration, ic = d.importClause, nb = ic?.namedBindings;
       if (d.moduleSpecifier.kind === K.StringLiteral && (d.moduleSpecifier as ts.StringLiteral).text.startsWith("c:") && nb?.kind === K.NamedImports) {
         for (const e of (nb as ts.NamedImports).elements) cImports.add(e.name.text);
+      }
+      if (ic?.name && isId(ic.name)) allTopNames.add(ic.name.text);
+      if (nb?.kind === K.NamespaceImport && isId((nb as ts.NamespaceImport).name)) allTopNames.add((nb as ts.NamespaceImport).name.text);
+      else if (nb?.kind === K.NamedImports) for (const e of (nb as ts.NamedImports).elements) if (isId(e.name)) allTopNames.add(e.name.text);
+    } else if (s0.kind === K.FunctionDeclaration) {
+      const f = s0 as ts.FunctionDeclaration;
+      if (f.body && f.name) allTopNames.add(f.name.text);
+    } else if (s0.kind === K.ClassDeclaration || s0.kind === K.InterfaceDeclaration || s0.kind === K.TypeAliasDeclaration) {
+      const n = (s0 as ts.ClassDeclaration | ts.InterfaceDeclaration | ts.TypeAliasDeclaration).name;
+      if (n) allTopNames.add(n.text);
+    } else if (s0.kind === K.VariableStatement) {
+      for (const vd of (s0 as ts.VariableStatement).declarationList.declarations) {
+        if (isId(vd.name)) allTopNames.add(vd.name.text);
+        else if (vd.name.kind === K.ObjectBindingPattern) for (const el of (vd.name as ts.ObjectBindingPattern).elements) if (isId(el.name)) allTopNames.add(el.name.text);
       }
     }
   }
@@ -648,8 +663,8 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     }
   }
 
-  function typeAlias(d: ts.TypeAliasDeclaration): void {
-    mods(d, [K.ExportKeyword]);
+  function typeAlias(d: ts.TypeAliasDeclaration, local = false): void {
+    mods(d, local ? [] : [K.ExportKeyword]);
     declName(d.name);
     typeParams(d.typeParameters);
     type(d.type);
@@ -859,7 +874,15 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       }
       case K.ClassDeclaration: e1000(s, "nested class declaration", { kind: "nested-class" }); return;
       case K.InterfaceDeclaration: e1000(s, "nested interface declaration", { kind: "nested-interface" }); return;
-      case K.TypeAliasDeclaration: e1000(s, "nested type alias", { kind: "nested-type" }); return;
+      case K.TypeAliasDeclaration: {
+        const ta = s as ts.TypeAliasDeclaration;
+        const inStmtList = !!s.parent && (s.parent.kind === K.Block || s.parent.kind === K.CaseClause || s.parent.kind === K.DefaultClause);
+        if (!inStmtList) { e1000(s, "type alias outside a block"); return; }
+        if (allTopNames.has(ta.name.text)) at("E1000", ta.name, `local type '${ta.name.text}' shadows a module-level declaration`, { kind: "duplicate-declaration", name: ta.name.text });
+        bind(ta.name);
+        typeAlias(ta, true);
+        return;
+      }
       case K.WithStatement: e1000(s, "'with' statement", { kind: "with" }); return;
       case K.DebuggerStatement: e1000(s, "'debugger' statement", { kind: "debugger" }); return;
       default: e1000(s, "this statement");

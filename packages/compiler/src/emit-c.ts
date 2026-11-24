@@ -754,6 +754,7 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
     // ---- statements
     stmt(s: ts.Statement): void {
       switch (s.kind) {
+        case K.TypeAliasDeclaration: return;
         case K.ExpressionStatement: {
           const e = (s as ts.ExpressionStatement).expression;
           if (e.kind === K.StringLiteral) return; // directive

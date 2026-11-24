@@ -309,6 +309,7 @@ class Flow {
         this.state = f.breaks.reduce(join, x.caseBlock.clauses.length ? fall : s0);
         return;
       }
+      case K.TypeAliasDeclaration: return;
       case K.FunctionDeclaration: {
         const fd = s as ts.FunctionDeclaration;
         if (fd.name) this.declared(fd.name);

@@ -43,7 +43,7 @@ export interface LocalSym {
 export type ValueSym = FnSym | ConstSym | ClassValueSym | CFnSym | CConstSym | { k: "jsref" } | { k: "error" } | LocalSym;
 
 export type TypeSym =
-  | { k: "alias"; decl: ts.TypeAliasDeclaration; mod: Module; tparams?: TParam[]; body?: Type; busy?: boolean }
+  | { k: "alias"; decl: ts.TypeAliasDeclaration; mod: Module; tparams?: TParam[]; body?: Type; busy?: boolean; locals?: ReadonlyMap<string, TypeSym> }
   | { k: "rec-iface"; decl: ts.InterfaceDeclaration; mod: Module; tparams?: TParam[]; body?: Type; busy?: boolean }
   | { k: "class"; cls: ClassSym; mod: Module }
   | { k: "iface"; iface: IfaceSym; decl: ts.InterfaceDeclaration; mod: Module }
@@ -647,7 +647,7 @@ export class Program {
     if (a.busy) return ERROR; // typeRef reports the cycle (Q085); shortcut: recursive aliases stay unsupported, upgrade with a lazy alias type
     a.busy = true;
     a.tparams ??= tparamShells(a.decl.typeParameters);
-    const e: TypeEnv = { mod: a.mod, tparams: new Map(a.tparams.map((p) => [p.name, p])) };
+    const e: TypeEnv = { mod: a.mod, tparams: new Map(a.tparams.map((p) => [p.name, p])), ...(a.locals ? { locals: a.locals } : {}) };
     this.constraints(a.decl.typeParameters, a.tparams, e);
     a.body = this.typeOf(a.decl.type, e);
     a.busy = false;
@@ -975,7 +975,7 @@ export class Program {
     };
     const tp = e.tparams.get(name);
     if (tp) return arity(0) ? { k: "tparam", p: tp } : ERROR;
-    const sym = e.cscope?.get(name) ?? this.lookupType(e.mod, name);
+    const sym = e.locals?.get(name) ?? e.cscope?.get(name) ?? this.lookupType(e.mod, name);
     if (sym) return this.instantiateTypeSym(sym, name, argNodes, args, whole, e);
     if (name === "OwnedStruct") {
       const a = argNodes?.[0];
@@ -1054,7 +1054,7 @@ export function legalUnion(u: Type): boolean {
   return isTaggedUnion(rest) && new Set(rest.members.map(kindOf)).size === rest.members.length;
 }
 
-export interface TypeEnv { mod: Module; tparams: Map<string, TParam>; cscope?: Map<string, CStructSym> }
+export interface TypeEnv { mod: Module; tparams: Map<string, TParam>; cscope?: Map<string, CStructSym>; locals?: ReadonlyMap<string, TypeSym> }
 
 export const tparamShells = (list: ts.NodeArray<ts.TypeParameterDeclaration> | undefined, owner?: Layer, allowOwned = false): TParam[] =>
   (list ?? []).map((d) => ({ ...newTParam(d.name.text), noPromise: true, ...(owner ? { owner } : {}), ...(allowOwned ? { allowOwned } : {}) }));

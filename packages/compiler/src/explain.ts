@@ -55,7 +55,6 @@ const ENTRIES: Record<string, ExplainEntry> = Object.fromEntries([
     "empty-statement": "Remove stray ';' empty statements.",
     "nested-class": "Declare classes at module top level instead of inside blocks or functions.",
     "nested-interface": "Declare interfaces at module top level instead of inside blocks or functions.",
-    "nested-type": "Declare type aliases at module top level instead of inside blocks or functions.",
     with: "Remove 'with' statements and access object fields directly.",
     debugger: "Remove 'debugger' statements.",
     "await-outside-async": "Mark the enclosing function/method/arrow 'async' (returning 'Promise<T>') before using 'await'.",

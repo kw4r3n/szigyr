@@ -1,0 +1,7 @@
+// expect: E1000 @ 5:3
+// stage: 1
+// open-question: Q321
+export function f(): i32 {
+  export type P = i32;
+  return 1;
+}

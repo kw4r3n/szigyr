@@ -2594,6 +2594,7 @@ class FnProver {
         return;
       }
       case K.EmptyStatement:
+      case K.TypeAliasDeclaration:
         return;
       default:
         // Fail closed on any unhandled statement kind so stale assumptions cannot survive.

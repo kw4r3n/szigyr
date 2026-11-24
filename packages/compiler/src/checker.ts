@@ -1,6 +1,6 @@
 // P2 checker (D012): declarations, statements, control flow, narrowing. Expressions live in expr.ts.
 import { NodeFlags, SyntaxKind as K, hasMod, isId, isParamProp, type Node, type ts } from "./parse.ts";
-import { Program, declBindings, legalUnion, tparamShells, type CStructSym, type ClassValueSym, type FnSym, type Layer, type LocalSym, type Module, type TypeEnv, type ValueSym } from "./modules.ts";
+import { Program, declBindings, legalUnion, tparamShells, type CStructSym, type ClassValueSym, type FnSym, type Layer, type LocalSym, type Module, type TypeEnv, type TypeSym, type ValueSym } from "./modules.ts";
 import { PROMISE_CONTAINERS, assignTarget, checkTo, exprTypes, hasPromise, cond, expr, isLitOnly, localOf, promiseOk, usingInitExprs, type FnArgRef } from "./expr.ts";
 import {
   ASYNC_DISPOSABLE, AUTHORITIES, DISPOSABLE, ERROR, NEVER, NULL, STR, VOID, assignable, fn, hasAuthority, hasTParam, hasPtr, layerOk, crossOk, ptrTargetOk, field, isBool, isCopy, isErr, isInt, isNull, isTaggedUnion, isVoid, kindOf, nonNull, parseExactInt, restElem, same, show, subst, bindTParams, tuple, unref, union, subUnion,
@@ -49,9 +49,17 @@ interface FnCtx {
 
 class Scope {
   readonly vars = new Map<string, LocalSym>();
+  readonly types = new Map<string, TypeSym>();
   readonly parent: Scope | undefined;
   constructor(parent?: Scope) { this.parent = parent; }
   lookup(name: string): LocalSym | undefined { return this.vars.get(name) ?? this.parent?.lookup(name); }
+  localTypes(): Map<string, TypeSym> | undefined {
+    const p = this.parent?.localTypes();
+    if (!this.types.size) return p;
+    const m = p ?? new Map<string, TypeSym>();
+    for (const [k, v] of this.types) m.set(k, v);
+    return m;
+  }
 }
 
 let localId = 0;
@@ -117,7 +125,10 @@ export class Checker {
     return sym;
   }
   value(name: string): ValueSym | undefined { return this.scope.lookup(name) ?? this.prog.lookupValue(this.fx.mod, name); }
-  private typeEnv(tparams = this.fx.tparams): TypeEnv { return { mod: this.fx.mod, tparams }; }
+  private typeEnv(tparams = this.fx.tparams): TypeEnv {
+    const locals = this.scope.localTypes();
+    return { mod: this.fx.mod, tparams, ...(locals ? { locals } : {}) };
+  }
   typeOf(t: ts.TypeNode, voidOk = false): Type { return this.prog.typeOf(t, this.typeEnv(), voidOk); }
 
   // ---- narrowing (Q025): keys are `<local id>` or `this`, then `.field` for readonly fields
@@ -741,10 +752,24 @@ export class Checker {
       }
       case K.SwitchStatement: return this.switchStmt(s as ts.SwitchStatement);
       case K.FunctionDeclaration: this.nestedFn(s as ts.FunctionDeclaration); return true;
+      case K.TypeAliasDeclaration: this.localTypeAlias(s as ts.TypeAliasDeclaration); return true;
       case K.BreakStatement: case K.ContinueStatement: return false;
       case K.ReturnStatement: this.returnStmt(s as ts.ReturnStatement); return false;
     }
     return false; // P1 reports bad statement syntax; avoid false missing-return cascade
+  }
+
+  private localTypeAlias(d: ts.TypeAliasDeclaration): void {
+    if (!d.name || !d.type) return;
+    const snap = new Map(this.scope.localTypes() ?? []);
+    const sym: Extract<TypeSym, { k: "alias" }> = { k: "alias", decl: d, mod: this.fx.mod, locals: snap };
+    snap.set(d.name.text, sym);
+    this.scope.types.set(d.name.text, sym);
+    this.prog.aliasBody(sym);
+    const savedTps = this.fx.tparams;
+    this.fx.tparams = new Map((sym.tparams ?? []).map((p) => [p.name, p]));
+    this.walkTypePos(d.type, "alias", { unsafe: false, cdecl: false });
+    this.fx.tparams = savedTps;
   }
 
   private nestedFn(d: ts.FunctionDeclaration): void {
@@ -1726,7 +1751,7 @@ export function capturedAssigned(root: Node): Set<Node> {
       }
       case K.PropertyAccessExpression: walk((n as ts.PropertyAccessExpression).expression, sc); return;
       case K.PropertyAssignment: walk((n as ts.PropertyAssignment).initializer, sc); return;
-      case K.TypeReference: return;
+      case K.TypeReference: case K.TypeAliasDeclaration: return;
       case K.BinaryExpression: {
         const b = n as ts.BinaryExpression;
         if (isAssignOp(b.operatorToken.kind)) {
