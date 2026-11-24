@@ -10,7 +10,10 @@ ensureSzcb();
 
 const root = fileURLToPath(new URL("../../../conformance", import.meta.url));
 const stage = parseStage(process.env.SZIGYR_STAGE);
-const cases = filterByStage(loadCases(root), stage);
+// CI spreads the cases over parallel jobs: SZIGYR_CONF_SHARD=i/n keeps every n-th case, starting at the i-th.
+const [shardI, shardN] = (process.env.SZIGYR_CONF_SHARD ?? "1/1").split("/").map(Number) as [number, number];
+if (!(Number.isInteger(shardI) && Number.isInteger(shardN) && shardI >= 1 && shardI <= shardN)) throw new Error(`SZIGYR_CONF_SHARD: expected i/n, got '${process.env.SZIGYR_CONF_SHARD}'`);
+const cases = filterByStage(loadCases(root), stage).filter((_, k) => k % shardN === shardI - 1);
 
 /** §14.7: a `// backend: c` case needs the pkg-config packages its `c:` specifiers name.
  * Where one is unavailable the case is skipped (and counted below), never failed. */
