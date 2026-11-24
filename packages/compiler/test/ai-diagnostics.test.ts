@@ -293,6 +293,20 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
 
     const objAssign = checkSrc("export function f(): void {\n  let a: i32 = 0;\n  let b: i32 = 0;\n  ({ a, b } = { a: 1, b: 2 });\n}\n").diags;
     expect(objAssign.map((d) => d.code)).toEqual(["E1000"]);
+
+    // While suppressing LHS/literal cascades, destructuring RHS expressions are still type-checked (p13-cascade shape)
+    const rhsDiags = checkSrc([
+      "function rtf(): i32 { \"use rt\"; return 1; }",
+      "export function main(sys: System): void {",
+      "  let a: i32 = 0;",
+      "  let b: i32 = 0;",
+      "  [a, b] = [nope, sys.secret(), rtf() + \"x\"];",
+      "  ({ a } = { a: undefinedThing });",
+      "  sys.log.info(`${a}${b}`);",
+      "}",
+      "",
+    ].join("\n")).diags;
+    expect(rhsDiags.map((d) => d.code)).toEqual(["E1000", "E1000", "E2000", "E2001", "E2002", "E2000"]);
   });
 
   it("allows void optional calls as statements and rejects them in value positions with E2002", () => {

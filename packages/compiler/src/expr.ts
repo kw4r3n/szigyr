@@ -869,12 +869,30 @@ function attachIntOpFix(c: Checker, b: ts.BinaryExpression, op: Node, code: stri
   }
 }
 
+function checkDestructRhs(c: Checker, e: ts.Expression): void {
+  const inner = assignTarget(e);
+  if (inner.kind === K.ArrayLiteralExpression) {
+    for (const el of (inner as ts.ArrayLiteralExpression).elements) {
+      if (el.kind === K.OmittedExpression) continue;
+      checkDestructRhs(c, el.kind === K.SpreadElement ? (el as ts.SpreadElement).expression : el);
+    }
+  } else if (inner.kind === K.ObjectLiteralExpression) {
+    for (const p of (inner as ts.ObjectLiteralExpression).properties) {
+      if (p.kind === K.PropertyAssignment) checkDestructRhs(c, (p as ts.PropertyAssignment).initializer);
+      else if (p.kind === K.ShorthandPropertyAssignment) { const pn = (p as ts.ShorthandPropertyAssignment).name; if (isId(pn)) expr(c, pn); }
+      else if (p.kind === K.SpreadAssignment) expr(c, (p as ts.SpreadAssignment).expression);
+    }
+  } else {
+    expr(c, e);
+  }
+}
+
 function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Type {
   const op = b.operatorToken;
   const k = op.kind;
   if (k === K.EqualsToken) {
     const lhs = assignTarget(b.left);
-    if (lhs.kind === K.ArrayLiteralExpression || lhs.kind === K.ObjectLiteralExpression) return ERROR; // P1 already emitted E1000
+    if (lhs.kind === K.ArrayLiteralExpression || lhs.kind === K.ObjectLiteralExpression) { checkDestructRhs(c, b.right); return ERROR; } // P1 already emitted E1000
     const lt = lvalue(c, b.left);
     if (isErr(lt)) { expr(c, b.right); return ERROR; }
     checkTo(c, b.right, lt); // narrowing by the assignment is a statement's (Checker.assignNarrow, Q133)
