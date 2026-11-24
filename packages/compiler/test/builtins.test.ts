@@ -62,10 +62,10 @@ it("documents every builtin global name in SPEC and keeps BUILTIN_NAMES complete
   expect([...BUILTIN_NAMES].sort()).toEqual([...expected].sort());
 });
 
-it("keeps docs/SPEC.md compact (<= 28.3 KB) and provides docs/STDLIB.md reference entries", () => {
+it("keeps docs/SPEC.md compact (<= 28 KB) and provides docs/STDLIB.md reference entries", () => {
   const spec = readFileSync(new URL("../../../docs/SPEC.md", import.meta.url), "utf8");
   const stdlib = readFileSync(new URL("../../../docs/STDLIB.md", import.meta.url), "utf8");
-  expect(Buffer.byteLength(spec, "utf8")).toBeLessThanOrEqual(28_300);
+  expect(Buffer.byteLength(spec, "utf8")).toBeLessThanOrEqual(28_000);
   for (const key of ["DisplayEvent", "HttpServerRawResponse", "FakeNet", "DetMath", "fromTypedArray"]) {
     expect(stdlib, key).toContain(key);
   }
