@@ -11,8 +11,20 @@ concurrency:
 
 jobs:
   test:
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      # Three jobs in parallel: the conformance job (about 2 minutes) sets the wall time, so a third test shard would not help.
+      matrix:
+        include:
+          - name: conformance
+            run: pnpm typecheck && pnpm verify:conformance && pnpm conformance
+          - name: test 1/2
+            run: pnpm test --shard=1/2
+          - name: test 2/2
+            run: pnpm test --shard=2/2
     steps:
       - uses: actions/checkout@v4
       - name: Install native & Wasm toolchains
@@ -25,7 +37,4 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm typecheck
-      - run: pnpm verify:conformance
-      - run: pnpm conformance
-      - run: pnpm test
+      - run: ${{ matrix.run }}
