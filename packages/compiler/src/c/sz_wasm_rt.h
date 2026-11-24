@@ -119,9 +119,44 @@ typedef struct sz_blk {
 } sz_blk;
 _Static_assert(sizeof(sz_blk) == 16, "sz_blk must be 16 bytes");
 
+typedef struct {
+  sz_blk *fprev;
+  sz_blk *fnext;
+} sz_fnode;
+_Static_assert(sizeof(sz_fnode) <= 16, "sz_fnode must fit in minimum 16-byte payload");
+_Static_assert(_Alignof(sz_fnode) <= 16, "sz_fnode alignment must not exceed 16");
+
 static uint8_t *sz_heap_cur = 0;
 static sz_blk *sz_heap_head = 0;
 static sz_blk *sz_heap_tail = 0;
+static sz_blk *sz_free_bins[32];
+static uint32_t sz_free_mask = 0;
+
+static inline sz_fnode *sz_fn(sz_blk *b) { return (sz_fnode *)(b + 1); }
+
+static inline uint32_t sz_bin(uint32_t s) {
+  return s <= 112u ? (s >> 4) - 1u : 31u - (uint32_t)__builtin_clz(s);
+}
+
+static void sz_free_add(sz_blk *b) {
+  uint32_t k = sz_bin(b->size);
+  sz_blk *head = sz_free_bins[k];
+  sz_fnode *n = sz_fn(b);
+  n->fprev = NULL;
+  n->fnext = head;
+  if (head) sz_fn(head)->fprev = b;
+  sz_free_bins[k] = b;
+  sz_free_mask |= 1u << k;
+}
+
+static void sz_free_del(sz_blk *b) {
+  uint32_t k = sz_bin(b->size);
+  sz_fnode *n = sz_fn(b);
+  if (n->fprev) sz_fn(n->fprev)->fnext = n->fnext;
+  else sz_free_bins[k] = n->fnext;
+  if (n->fnext) sz_fn(n->fnext)->fprev = n->fprev;
+  if (!sz_free_bins[k]) sz_free_mask &= ~(1u << k);
+}
 
 static void sz_heap_init(void) {
   if (sz_heap_cur) return;
@@ -139,21 +174,38 @@ static void *sz_malloc(size_t n) {
   if (!sz_heap_cur) return NULL;
   if (n > (size_t)UINT32_MAX - 16u) return NULL;
   uint32_t req = n == 0 ? 16u : (uint32_t)((n + 15u) & ~(size_t)15u);
-  for (sz_blk *b = sz_heap_head; b; b = b->next) {
-    if (b->free && b->size >= req) {
-      if (b->size >= req + 32u) {
-        sz_blk *rem = (sz_blk *)((uint8_t *)(b + 1) + req);
-        rem->size = b->size - req - 16u;
-        rem->free = 1;
-        rem->prev = b;
-        rem->next = b->next;
-        if (b->next) b->next->prev = rem; else sz_heap_tail = rem;
-        b->next = rem;
-        b->size = req;
+  uint32_t k = sz_bin(req);
+  sz_blk *b = NULL;
+  if (sz_free_mask & (1u << k)) {
+    if (k < 7u) {
+      b = sz_free_bins[k];
+    } else {
+      // shortcut: scans at most 16 blocks in the same non-exact size bin before checking a larger bin, upgrade to TLSF sub-bins if fragmentation matters
+      uint32_t lim = 16u;
+      for (sz_blk *c = sz_free_bins[k]; c && lim; c = sz_fn(c)->fnext, lim--) {
+        if (c->size >= req) { b = c; break; }
       }
-      b->free = 0;
-      return b + 1;
     }
+  }
+  if (!b && k < 31u) {
+    uint32_t hi = sz_free_mask & (~0u << (k + 1u));
+    if (hi) b = sz_free_bins[(uint32_t)__builtin_ctz(hi)];
+  }
+  if (b) {
+    sz_free_del(b);
+    if (b->size - req >= 32u) {
+      sz_blk *rem = (sz_blk *)((uint8_t *)(b + 1) + req);
+      rem->size = b->size - req - 16u;
+      rem->free = 1;
+      rem->prev = b;
+      rem->next = b->next;
+      if (b->next) b->next->prev = rem; else sz_heap_tail = rem;
+      b->next = rem;
+      b->size = req;
+      sz_free_add(rem);
+    }
+    b->free = 0;
+    return b + 1;
   }
   uint64_t total = (uint64_t)(uintptr_t)sz_heap_cur + 16ull + req;
   if (total > (uint64_t)UINT32_MAX) return NULL;
@@ -162,7 +214,7 @@ static void *sz_malloc(size_t n) {
     uint64_t need = ((total - have) + 65535ull) >> 16;
     if (need > (uint64_t)SIZE_MAX || __builtin_wasm_memory_grow(0, (size_t)need) == (size_t)-1) return NULL;
   }
-  sz_blk *b = (sz_blk *)sz_heap_cur;
+  b = (sz_blk *)sz_heap_cur;
   sz_heap_cur += 16u + req;
   b->size = req;
   b->free = 0;
@@ -187,12 +239,14 @@ static void sz_free(void *p) {
   b->free = 1;
   while (b->next && b->next->free) {
     sz_blk *nx = b->next;
+    sz_free_del(nx);
     b->size += 16u + nx->size;
     b->next = nx->next;
     if (b->next) b->next->prev = b; else sz_heap_tail = b;
   }
   while (b->prev && b->prev->free) {
     sz_blk *pv = b->prev;
+    sz_free_del(pv);
     pv->size += 16u + b->size;
     pv->next = b->next;
     if (pv->next) pv->next->prev = pv; else sz_heap_tail = pv;
@@ -202,6 +256,8 @@ static void sz_free(void *p) {
     sz_heap_cur = (uint8_t *)b;
     sz_heap_tail = b->prev;
     if (sz_heap_tail) sz_heap_tail->next = NULL; else sz_heap_head = NULL;
+  } else {
+    sz_free_add(b);
   }
 }
 
