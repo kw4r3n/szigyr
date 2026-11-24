@@ -412,7 +412,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     const thisOk = n.kind === K.ArrowFunction ? fc.thisOk : n.kind === K.Constructor || (kind === "method" && !n.modifiers?.some((m) => m.kind === K.StaticKeyword));
     const isTestCb = (n.kind === K.ArrowFunction || n.kind === K.FunctionExpression) && n.parent?.kind === K.CallExpression &&
       allowedCalls.has(n.parent) && (n.parent as ts.CallExpression).arguments[1] === n;
-    const inTest = (n.kind === K.ArrowFunction || n.kind === K.FunctionExpression) && (fc.inTest || isTestCb);
+    const inTest = isFnExprLike && (fc.inTest || isTestCb);
     const fnLayer = kind === "function" && n.body?.kind === K.Block
       ? peekLayer((n.body as ts.Block).statements, true).layer
       : undefined;
@@ -848,7 +848,15 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       }
       case K.EnumDeclaration: at("E1000", s, "'enum' is not allowed; use a string literal union type (e.g. 'type Kind = \"a\" | \"b\"')", { kind: "enum" }); return;
       case K.EmptyStatement: e1000(s, "empty statement ';'", { kind: "empty-statement" }); return;
-      case K.FunctionDeclaration: e1000(s, "nested function declaration", { kind: "nested-function" }); return;
+      case K.FunctionDeclaration: {
+        const fd = s as ts.FunctionDeclaration;
+        const inStmtList = !!s.parent && (s.parent.kind === K.Block || s.parent.kind === K.CaseClause || s.parent.kind === K.DefaultClause);
+        if (!inStmtList) { e1000(s, "function declaration outside a block"); return; }
+        if (!fd.name) { e1000(fd, "unnamed function declaration"); return; }
+        bind(fd.name);
+        fn(fd, "other");
+        return;
+      }
       case K.ClassDeclaration: e1000(s, "nested class declaration", { kind: "nested-class" }); return;
       case K.InterfaceDeclaration: e1000(s, "nested interface declaration", { kind: "nested-interface" }); return;
       case K.TypeAliasDeclaration: e1000(s, "nested type alias", { kind: "nested-type" }); return;

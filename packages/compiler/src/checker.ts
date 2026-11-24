@@ -1,9 +1,9 @@
 // P2 checker (D012): declarations, statements, control flow, narrowing. Expressions live in expr.ts.
 import { NodeFlags, SyntaxKind as K, hasMod, isId, isParamProp, type Node, type ts } from "./parse.ts";
-import { Program, declBindings, legalUnion, type CStructSym, type ClassValueSym, type FnSym, type Layer, type LocalSym, type Module, type ValueSym } from "./modules.ts";
+import { Program, declBindings, legalUnion, tparamShells, type CStructSym, type ClassValueSym, type FnSym, type Layer, type LocalSym, type Module, type TypeEnv, type ValueSym } from "./modules.ts";
 import { PROMISE_CONTAINERS, assignTarget, checkTo, exprTypes, hasPromise, cond, expr, isLitOnly, localOf, promiseOk, usingInitExprs, type FnArgRef } from "./expr.ts";
 import {
-  ASYNC_DISPOSABLE, AUTHORITIES, DISPOSABLE, ERROR, NEVER, NULL, STR, VOID, assignable, hasAuthority, hasTParam, hasPtr, layerOk, crossOk, ptrTargetOk, field, isBool, isCopy, isErr, isInt, isNull, isTaggedUnion, isVoid, kindOf, nonNull, parseExactInt, restElem, same, show, subst, bindTParams, tuple, unref, union, subUnion,
+  ASYNC_DISPOSABLE, AUTHORITIES, DISPOSABLE, ERROR, NEVER, NULL, STR, VOID, assignable, fn, hasAuthority, hasTParam, hasPtr, layerOk, crossOk, ptrTargetOk, field, isBool, isCopy, isErr, isInt, isNull, isTaggedUnion, isVoid, kindOf, nonNull, parseExactInt, restElem, same, show, subst, bindTParams, tuple, unref, union, subUnion,
   type Capability, type ClassSym, type FnType, type TParam, type Type,
   hasLoneSurrogate,
 } from "./types.ts";
@@ -117,7 +117,8 @@ export class Checker {
     return sym;
   }
   value(name: string): ValueSym | undefined { return this.scope.lookup(name) ?? this.prog.lookupValue(this.fx.mod, name); }
-  typeOf(t: ts.TypeNode, voidOk = false): Type { return this.prog.typeOf(t, { mod: this.fx.mod, tparams: this.fx.tparams }, voidOk); }
+  private typeEnv(tparams = this.fx.tparams): TypeEnv { return { mod: this.fx.mod, tparams }; }
+  typeOf(t: ts.TypeNode, voidOk = false): Type { return this.prog.typeOf(t, this.typeEnv(), voidOk); }
 
   // ---- narrowing (Q025): keys are `<local id>` or `this`, then `.field` for readonly fields
   keyOf(e: ts.Expression): { key: string; type: Type } | undefined {
@@ -739,10 +740,68 @@ export class Checker {
         return true;
       }
       case K.SwitchStatement: return this.switchStmt(s as ts.SwitchStatement);
+      case K.FunctionDeclaration: this.nestedFn(s as ts.FunctionDeclaration); return true;
       case K.BreakStatement: case K.ContinueStatement: return false;
       case K.ReturnStatement: this.returnStmt(s as ts.ReturnStatement); return false;
     }
     return false; // P1 reports bad statement syntax; avoid false missing-return cascade
+  }
+
+  private nestedFn(d: ts.FunctionDeclaration): void {
+    if (!d.name || !d.body) return;
+    if (this.fx.layer !== "managed") {
+      this.at("E4003", d, `a nested function declaration cannot be written in ${this.fx.layer} code; define a top-level function instead`, { layer: this.fx.layer, kind: "strict-arrow" });
+    }
+    const tps = tparamShells(d.typeParameters, "managed", true);
+    const outerTps = this.fx.tparams;
+    this.fx.tparams = new Map([...outerTps, ...tps.map((p) => [p.name, p] as const)]);
+    d.typeParameters?.forEach((tp, i) => {
+      if (tp.constraint) this.prog.resolveConstraint(tp.constraint, tps[i]!, this.typeEnv());
+    });
+    const params: Type[] = [];
+    let rest: Type | undefined;
+    for (let i = 0; i < d.parameters.length; i++) {
+      const p = d.parameters[i]!;
+      if (p.dotDotDotToken) {
+        let rt: Type;
+        if (!p.type) { this.at("E2006", p.name, "parameter needs a type annotation"); rt = ERROR; }
+        else {
+          this.walkTypePos(p.type, "sig", { unsafe: this.fx.unsafe, cdecl: false });
+          rt = this.typeOf(p.type);
+          const u = unref(rt);
+          if (!isErr(u) && !restElem(u)) {
+            this.at("E2002", p.type, `rest parameter must have type 'Array<T>' or 'ReadonlyArray<T>', got '${show(rt)}'`, { kind: "bad-rest-type", actual: show(rt) });
+            rt = ERROR;
+          }
+        }
+        if (i === d.parameters.length - 1) rest = rt;
+        continue;
+      }
+      if (!p.type) { this.at("E2006", p.name, "parameter needs a type annotation"); params.push(ERROR); }
+      else {
+        this.walkTypePos(p.type, "sig", { unsafe: this.fx.unsafe, cdecl: false });
+        params.push(this.typeOf(p.type));
+      }
+    }
+    const ret = d.type ? (this.walkTypePos(d.type, "sig", { unsafe: this.fx.unsafe, cdecl: false }), this.typeOf(d.type, true)) : undefined;
+    this.fx.tparams = outerTps;
+    const firstDef = d.parameters.findIndex((p) => !p.dotDotDotToken && !!p.initializer);
+    const baseSig = (r: Type): FnType => ({ ...fn(params, r, tps, rest), ...(firstDef >= 0 ? { min: firstDef } : {}) });
+    if (ret !== undefined) {
+      const sig = baseSig(ret);
+      this.declare(d.name, sig, { mutable: false });
+      this.fnBody(d, sig, { inferRet: false });
+      return;
+    }
+    if (hasFreeValueRef(d, d.name.text)) {
+      this.at("E2006", d.name, `recursive nested function '${d.name.text}' needs a return type annotation`);
+      const sig = baseSig(ERROR);
+      this.declare(d.name, sig, { mutable: false });
+      this.fnBody(d, sig, { inferRet: false });
+      return;
+    }
+    const got = this.fnBody(d, baseSig(ERROR), { inferRet: true });
+    this.declare(d.name, baseSig(got), { mutable: false });
   }
 
   /** An expression whose value is dropped. Q125: a dropped Promise would lose its trap, so it is an error. */
@@ -1526,6 +1585,90 @@ export function mutable(t: Type): boolean {
   }
 }
 
+const TYPE_NODE_SKIP = new Set<K>([
+  K.TypeParameter, K.TypeReference, K.TypeLiteral, K.FunctionType, K.ArrayType, K.TupleType, K.UnionType,
+  K.IntersectionType, K.TypeOperator, K.LiteralType, K.ParenthesizedType, K.TypeQuery, K.IndexedAccessType,
+  K.ConditionalType, K.MappedType, K.TypePredicate, K.TypeAliasDeclaration, K.InterfaceDeclaration, K.QualifiedName,
+]);
+
+/** True if `d` contains a free value reference to `target` (used to require explicit return type on self-recursive nested functions). */
+function hasFreeValueRef(d: ts.FunctionDeclaration, target: string): boolean {
+  let found = false;
+  const bindNames = (n: ts.BindingName | undefined, sc: Set<string>): void => {
+    if (!n) return;
+    if (isId(n)) sc.add(n.text);
+    else if (n.kind === K.ObjectBindingPattern) for (const el of (n as ts.ObjectBindingPattern).elements) bindNames(el.name, sc);
+    else if (n.kind === K.ArrayBindingPattern) for (const el of (n as ts.ArrayBindingPattern).elements) if (el.name) bindNames(el.name, sc);
+  };
+  const walk = (n: Node | undefined, sc: Set<string>): void => {
+    if (!n || found || TYPE_NODE_SKIP.has(n.kind)) return;
+    if (FN_KINDS.has(n.kind)) {
+      const f = n as ts.FunctionLikeDeclaration;
+      const next = new Set(sc);
+      if ((n.kind === K.FunctionDeclaration || n.kind === K.FunctionExpression) && (n as ts.FunctionDeclaration).name) {
+        next.add((n as ts.FunctionDeclaration).name!.text);
+      }
+      for (const p of f.parameters) {
+        walk(p.initializer, next);
+        bindNames(p.name, next);
+      }
+      walk(f.body, next);
+      return;
+    }
+    switch (n.kind) {
+      case K.Block: { const next = new Set(sc); n.forEachChild((ch) => walk(ch, next)); return; }
+      case K.ForStatement: {
+        const x = n as ts.ForStatement, next = new Set(sc);
+        walk(x.initializer, next); walk(x.condition, next); walk(x.incrementor, next); walk(x.statement, next);
+        return;
+      }
+      case K.ForOfStatement: {
+        const x = n as ts.ForOfStatement, next = new Set(sc);
+        walk(x.expression, sc); walk(x.initializer, next); walk(x.statement, next);
+        return;
+      }
+      case K.SwitchStatement: {
+        const x = n as ts.SwitchStatement;
+        walk(x.expression, sc); walk(x.caseBlock, new Set(sc));
+        return;
+      }
+      case K.VariableDeclaration: {
+        const v = n as ts.VariableDeclaration;
+        walk(v.initializer, sc);
+        bindNames(v.name, sc);
+        return;
+      }
+      case K.CallExpression: case K.NewExpression: {
+        const c = n as ts.CallExpression | ts.NewExpression;
+        walk(c.expression, sc);
+        for (const a of c.arguments ?? []) walk(a, sc);
+        return;
+      }
+      case K.PropertyAccessExpression: walk((n as ts.PropertyAccessExpression).expression, sc); return;
+      case K.PropertyAssignment: {
+        const pa = n as ts.PropertyAssignment;
+        if (pa.name.kind === K.ComputedPropertyName) walk((pa.name as ts.ComputedPropertyName).expression, sc);
+        walk(pa.initializer, sc);
+        return;
+      }
+      case K.BindingElement: walk((n as ts.BindingElement).initializer, sc); return;
+      case K.LabeledStatement: walk((n as ts.LabeledStatement).statement, sc); return;
+      case K.BreakStatement: case K.ContinueStatement: return;
+      case K.Identifier:
+        if ((n as ts.Identifier).text === target && !sc.has(target)) found = true;
+        return;
+    }
+    n.forEachChild((ch) => walk(ch, sc));
+  };
+  const top = new Set<string>();
+  for (const p of d.parameters) {
+    walk(p.initializer, top);
+    bindNames(p.name, top);
+  }
+  walk(d.body, top);
+  return found;
+}
+
 const FN_KINDS = new Set<K>([K.FunctionDeclaration, K.MethodDeclaration, K.Constructor, K.ArrowFunction, K.FunctionExpression]);
 interface LexScope { parent?: LexScope; fn?: Node; vars: Map<string, { id: ts.Identifier; fn: Node }> }
 /**
@@ -1549,6 +1692,8 @@ export function capturedAssigned(root: Node): Set<Node> {
     if (!n) return;
     if (FN_KINDS.has(n.kind)) {
       const f = n as ts.FunctionLikeDeclaration, next: LexScope = { parent: sc, fn: n, vars: new Map() };
+      if (n.kind === K.FunctionDeclaration && sc && (n as ts.FunctionDeclaration).name) bind((n as ts.FunctionDeclaration).name, sc);
+      if ((n.kind === K.FunctionDeclaration || n.kind === K.FunctionExpression) && (n as ts.FunctionDeclaration).name) bind((n as ts.FunctionDeclaration).name, next);
       for (const p of f.parameters) {
         walk(p.initializer, next);
         bind(p.name, next);

@@ -1,0 +1,12 @@
+// expect: E1000 @ 8:14
+// stage: 1
+// open-question: Q320
+export class C {
+  readonly x: i32 = 1;
+  m(): i32 {
+    function g(): i32 {
+      return this.x;
+    }
+    return g();
+  }
+}

@@ -53,7 +53,6 @@ const ENTRIES: Record<string, ExplainEntry> = Object.fromEntries([
     "break-outside-loop": "Place 'break' only inside a loop or 'switch' case.",
     "continue-outside-loop": "Place 'continue' only inside a 'for', 'while', 'do-while', or 'for..of' loop.",
     "empty-statement": "Remove stray ';' empty statements.",
-    "nested-function": "Move nested 'function' declarations to module level or use an arrow function in managed code.",
     "nested-class": "Declare classes at module top level instead of inside blocks or functions.",
     "nested-interface": "Declare interfaces at module top level instead of inside blocks or functions.",
     "nested-type": "Declare type aliases at module top level instead of inside blocks or functions.",
