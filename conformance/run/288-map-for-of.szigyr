@@ -1,0 +1,24 @@
+// expect-output: a:10,b:20,c:30|a:10,b:20,c:30|a:10,b:20,c:30|let=60
+// stage: 1
+export function main(sys: System): void {
+  const m = new Map<string, i32>();
+  m.set("a", 10);
+  m.set("b", 20);
+  m.set("c", 30);
+
+  const directPairs: Array<string> = [];
+  for (const [k, v] of m) directPairs.push(`${k}:${v}`);
+
+  const directTuples: Array<string> = [];
+  for (const e of m) directTuples.push(`${e[0]}:${e[1]}`);
+
+  const entryPairs: Array<string> = [];
+  for (const [k, v] of m.entries()) entryPairs.push(`${k}:${v}`);
+
+  let sum: i32 = 0;
+  for (let [k, v] of m) {
+    if (k !== "") sum += v;
+  }
+
+  sys.log.info(`${directPairs.join(",")}|${directTuples.join(",")}|${entryPairs.join(",")}|let=${sum}`);
+}

@@ -1,0 +1,19 @@
+// expect: ok
+// stage: 1
+export function sumEntries(m: Map<string, i32>): i32 {
+  let total: i32 = 0;
+  for (const [k, v] of m) {
+    if (k !== "") total += v;
+  }
+  for (let [k, v] of m) {
+    v += 1;
+    if (k === "a") total += v;
+  }
+  for (const e of m) {
+    total += e[1];
+  }
+  for (const e: [string, i32] of m) {
+    total += e[1];
+  }
+  return total;
+}

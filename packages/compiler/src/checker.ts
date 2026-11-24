@@ -3,7 +3,7 @@ import { NodeFlags, SyntaxKind as K, hasMod, isId, isParamProp, type Node, type 
 import { Program, declBindings, legalUnion, type CStructSym, type ClassValueSym, type FnSym, type Layer, type LocalSym, type Module, type ValueSym } from "./modules.ts";
 import { PROMISE_CONTAINERS, assignTarget, checkTo, exprTypes, hasPromise, cond, expr, isLitOnly, localOf, promiseOk, usingInitExprs, type FnArgRef } from "./expr.ts";
 import {
-  ASYNC_DISPOSABLE, AUTHORITIES, DISPOSABLE, ERROR, NEVER, NULL, STR, VOID, assignable, hasAuthority, hasTParam, hasPtr, layerOk, crossOk, ptrTargetOk, field, isBool, isCopy, isErr, isInt, isNull, isTaggedUnion, isVoid, kindOf, nonNull, parseExactInt, restElem, same, show, subst, bindTParams, unref, union, subUnion,
+  ASYNC_DISPOSABLE, AUTHORITIES, DISPOSABLE, ERROR, NEVER, NULL, STR, VOID, assignable, hasAuthority, hasTParam, hasPtr, layerOk, crossOk, ptrTargetOk, field, isBool, isCopy, isErr, isInt, isNull, isTaggedUnion, isVoid, kindOf, nonNull, parseExactInt, restElem, same, show, subst, bindTParams, tuple, unref, union, subUnion,
   type Capability, type ClassSym, type FnType, type TParam, type Type,
   hasLoneSurrogate,
 } from "./types.ts";
@@ -706,6 +706,7 @@ export class Checker {
         const t = unref(expr(this, x.expression));
         let elem: Type = ERROR;
         if (t.k === "gen" && (t.name === "Array" || t.name === "ReadonlyArray" || t.name === "Set")) elem = t.args[0]!;
+        else if (t.k === "gen" && t.name === "Map") elem = tuple([t.args[0]!, t.args[1]!]);
         else if (t.k === "iter") elem = t.elem;
         else if (t.k !== "error") this.at("E2002", x.expression, `cannot iterate over '${show(t)}'`);
         const saved = this.scope;
