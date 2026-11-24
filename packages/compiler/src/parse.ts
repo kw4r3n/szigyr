@@ -146,6 +146,9 @@ export function createParser(sources?: Record<string, string>): Parser {
     close() {
       snap?.dispose();
       snap = undefined;
+      // Q318: api.close() sends SIGTERM, and the child can answer it by writing "context canceled" to the stderr it inherited. SIGKILL first: nothing is left to flush.
+      // shortcut: reaches the client's private fields (typescript 7.0.2); if they move this does nothing, drop it once close() is silent upstream
+      try { (api as unknown as { client?: { channel?: { child?: { kill(signal: string): boolean } } } } | undefined)?.client?.channel?.child?.kill("SIGKILL"); } catch { /* already gone */ }
       api?.close();
       api = undefined;
       vfsFiles.clear();
