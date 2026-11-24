@@ -21,6 +21,7 @@ accept/193-traps-t015-literal.szigyr
 accept/194-key-equality-and-codec-generics.szigyr
 accept/195-ts-acceptance-part-b.szigyr
 accept/196-logical-assign-and-labels.szigyr
+accept/197-do-while-continue-with-return.szigyr
 accept/20-template-strings.szigyr
 accept/21-imports
 accept/22-class-across-files
@@ -241,6 +242,9 @@ reject/E2002-ctor-this-escapes-before-init.szigyr
 reject/E2002-decode-map-target.szigyr
 reject/E2002-detmath-arg-type.szigyr
 reject/E2002-detmath-not-called.szigyr
+reject/E2002-do-while-continue-missing-return.szigyr
+reject/E2002-do-while-labeled-continue-missing-return.szigyr
+reject/E2002-do-while-strict-continue-missing-return.szigyr
 reject/E2002-ensures-void-with-parameter.szigyr
 reject/E2002-eq-need-through-record-authority.szigyr
 reject/E2002-eq-need-through-record-fn.szigyr

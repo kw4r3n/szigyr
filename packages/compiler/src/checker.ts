@@ -683,7 +683,7 @@ export class Checker {
         this.loopEntry(x.statement, x.expression);
         const r = this.loopBody(x.statement, new Map());
         cond(this, x.expression);
-        return (r && !isTrue(x.expression)) || hasBreak(x.statement, false, lbl);
+        return ((r || hasContinue(x.statement, lbl)) && !isTrue(x.expression)) || hasBreak(x.statement, false, lbl);
       }
       case K.ForStatement: {
         const x = s as ts.ForStatement;
@@ -1466,6 +1466,24 @@ function hasBreak(n: Node, isSwitch = false, label?: string): boolean {
     x.forEachChild((c) => walk(c, nested || isNest));
   };
   if (isSwitch) n.forEachChild((c) => walk(c, false)); else walk(n, false);
+  return found;
+}
+
+function hasContinue(n: Node, label?: string): boolean {
+  let found = false;
+  const walk = (x: Node, nestedLoop: boolean): void => {
+    if (found) return;
+    if (x.kind === K.ContinueStatement) {
+      const l = (x as ts.ContinueStatement).label;
+      if (l ? l.text === label : !nestedLoop) found = true;
+      return;
+    }
+    if (x.kind === K.ArrowFunction || x.kind === K.FunctionExpression) return;
+    const isLoop = x.kind === K.WhileStatement || x.kind === K.DoStatement || x.kind === K.ForStatement || x.kind === K.ForOfStatement;
+    if (isLoop && !label) return;
+    x.forEachChild((c) => walk(c, nestedLoop || isLoop));
+  };
+  walk(n, false);
   return found;
 }
 

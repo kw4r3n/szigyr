@@ -1,0 +1,45 @@
+// expect: ok
+// stage: 1
+function unlabeledWithTrailingReturn(c: boolean): i32 {
+  do {
+    if (c) continue;
+    return 1;
+  } while (false);
+  return 2;
+}
+function labeledWithTrailingReturn(c: boolean): i32 {
+  outer: do {
+    while (true) {
+      continue outer;
+    }
+  } while (c);
+  return 3;
+}
+function infiniteDoTrue(): i32 {
+  do {
+    continue;
+  } while (true);
+}
+function switchInDoWithTrailingReturn(x: i32): i32 {
+  do {
+    switch (x) {
+      case 0:
+        continue;
+      default:
+        return x;
+    }
+  } while (false);
+  return -1;
+}
+function innerLoopDoesNotLeakUnlabeledContinue(): i32 {
+  do {
+    do {
+      continue;
+    } while (true);
+  } while (false);
+}
+export function main(): void {
+  const _a = unlabeledWithTrailingReturn(true);
+  const _b = labeledWithTrailingReturn(false);
+  const _c = switchInDoWithTrailingReturn(0);
+}
