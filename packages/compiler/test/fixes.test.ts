@@ -159,10 +159,31 @@ it("attaches concrete-type, resource-escape, conflictAt, cycle, and CLI kind/mis
 
   const mutRecFile = join(dir, "mut-rec.szigyr");
   writeFileSync(mutRecFile, "function f(p: { x: i32; y: i32 }): i32 {\n  \"use owned\";\n  return p.x + p.y;\n}\n");
+  const mrBefore = check(mutRecFile);
+  expect(mrBefore).toHaveLength(1);
+  expect(mrBefore[0]).toMatchObject({ code: "E4002", data: { kind: "mutable-record" } });
+  expect(mrBefore[0]!.fixes).toBeUndefined();
   const mrRc = await cliMain(["check", "--fix", mutRecFile], () => {}, () => {});
-  expect(mrRc).toBe(0);
-  expect(readFileSync(mutRecFile, "utf8")).toContain("readonly x: i32; readonly y: i32");
-  expect(check(mutRecFile)).toEqual([]);
+  expect(mrRc).toBe(1);
+  expect(check(mutRecFile)).toEqual(mrBefore);
+
+  // Mutable strict record with field assignment (like fix-r1) and managed caller passing mutable record (like fix-c1):
+  // check --fix must not introduce new E2002 diagnostics.
+  const mutatedRecFile = join(dir, "mut-rec-write.szigyr");
+  writeFileSync(mutatedRecFile, "function f(r: { a: i32 }): i32 {\n  \"use owned\";\n  r.a = 5;\n  return r.a;\n}\nexport function main(sys: System): void { sys.log.info(\"x\"); }\n");
+  const r1Before = check(mutatedRecFile);
+  expect(r1Before.map((d) => d.code)).toEqual(["E4002"]);
+  expect(r1Before[0]!.fixes).toBeUndefined();
+  expect(await cliMain(["check", "--fix", mutatedRecFile], () => {}, () => {})).toBe(1);
+  expect(check(mutatedRecFile)).toEqual(r1Before);
+
+  const managedCallerRecFile = join(dir, "mut-rec-caller.szigyr");
+  writeFileSync(managedCallerRecFile, "function f(r: { a: i32 }): i32 {\n  \"use owned\";\n  return r.a;\n}\nexport function main(sys: System): void {\n  const r: { a: i32 } = { a: 1 };\n  const n = f(r);\n  r.a = 7;\n  sys.log.info(`${n}${f(r)}`);\n}\n");
+  const c1Before = check(managedCallerRecFile);
+  expect(c1Before.map((d) => d.code)).toEqual(["E4002"]);
+  expect(c1Before[0]!.fixes).toBeUndefined();
+  expect(await cliMain(["check", "--fix", managedCallerRecFile], () => {}, () => {})).toBe(1);
+  expect(check(managedCallerRecFile)).toEqual(c1Before);
 });
 
 it("rejects rest/extra-default builtin callbacks with E2002 callback-extra-params and fixes non-inline callbacks", async () => {

@@ -306,16 +306,6 @@ export class Checker {
       this.at("E4002", node, `'${show(t)}' cannot be used in ${layer} code; use 'Vec<T>', 'Ref<Slice<T>>', or 'Mut<Slice<T>>'`, { layer, actual: show(t), kind: "managed-array" });
     } else if (u.k === "record" && !u.struct && u.fields.some((f) => !f.readonly)) {
       this.at("E4002", node, `'${show(t)}' cannot be used in ${layer} code; mark fields 'readonly' or wrap in 'OwnedStruct<{ ... }>'`, { layer, actual: show(t), kind: "mutable-record" });
-      if (node.kind === K.TypeLiteral && u.fields.every((f) => isCopy(f.type) && layerOk(f.type))) {
-        const edits = (node as ts.TypeLiteralNode).members
-          .filter((m): m is ts.PropertySignatureDeclaration => m.kind === K.PropertySignature)
-          .filter((m) => !m.modifiers?.some((x) => x.kind === K.ReadonlyKeyword))
-          .map((m) => {
-            const p = this.mod.pf.position(m.name.getStart(this.mod.sf));
-            return { range: { start: p, end: p }, newText: "readonly " };
-          });
-        if (edits.length) this.prog.rep.out.at(-1)!.fixes = [{ title: "mark record fields 'readonly'", edits }];
-      }
     } else if (u.k === "prim" && u.name === "string") {
       this.at("E4002", node, `'${show(t)}' cannot be used in ${layer} code`, { layer, actual: show(t), kind: "managed-string" });
     } else {
