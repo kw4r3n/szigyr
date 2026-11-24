@@ -333,6 +333,8 @@ static sz_vec *sz_vec_in(sz_val o, uint32_t es, const char *desc) {
   return v;
 }
 static sz_vec *sz_vec_create(sz_val alloc, uint32_t cap, const char *elem, uint32_t es, int pos) {
+  uint32_t acap = cap < 4u ? 4u : cap;
+  if ((uint64_t)acap * es >= 0x100000000ULL) sz_trap(6, pos);
   sz_val r = sz_js_vec_create(alloc, cap, elem, pos);
   return sz_vec_in(r, es, elem);
 }
@@ -340,6 +342,7 @@ static void sz_vec_grow(sz_vec *v, int pos) {
   if (v->len == UINT32_MAX) sz_trap(6, pos);
   uint64_t c = (uint64_t)v->len * 2;
   uint32_t cap = c > UINT32_MAX ? UINT32_MAX : c < 4 ? 4 : (uint32_t)c;
+  if ((uint64_t)cap * v->esize >= 0x100000000ULL) sz_trap(6, pos);
   uint32_t out[2];
   sz_js_vec_grow(v->obj, v->data, cap, v->len, v->esize, pos, out);
   v->data = (void *)(uintptr_t)out[0];

@@ -5,7 +5,7 @@ const inBounds = (i: number, len: number): boolean => Number.isInteger(i) && i >
 
 type Buf<T> = T[] | Float64Array | Float32Array | Int8Array | Int16Array | Int32Array | Uint8Array | Uint16Array | Uint32Array | BigInt64Array | BigUint64Array;
 export type TypedArray = Exclude<Buf<never>, never[]>;
-type TypedCtor = new (n: number) => TypedArray;
+type TypedCtor = { new (n: number): TypedArray; readonly BYTES_PER_ELEMENT: number };
 const TYPED: Record<NumType, TypedCtor> = {
   i8: Int8Array, i16: Int16Array, i32: Int32Array, i64: BigInt64Array,
   u8: Uint8Array, u16: Uint16Array, u32: Uint32Array, u64: BigUint64Array,
@@ -142,6 +142,8 @@ export function checkSlices(entries: readonly (readonly [Slice, boolean, Pos?])[
   }
 }
 
+const VEC_MAX_BYTES = 0x1_0000_0000; // 2^32 bytes (SPEC §6)
+
 export class Vec<T = unknown> {
   private len = 0;
   private buf: Buf<T>;
@@ -151,8 +153,16 @@ export class Vec<T = unknown> {
   /** `alloc` is accepted for the signature only. */
   static create<T>(_alloc: unknown, capacity: number, elem: ElemKind = "other"): Vec<T> {
     if (elem === "other") return new Vec<T>([], elem);
-    if (elem.startsWith("{")) { const c = codecOf(elem); return new Vec<T>(new Uint8Array(Math.max(capacity, 4) * c.z) as Buf<T>, elem, c); }
-    return new Vec<T>(new TYPED[elem as NumType](Math.max(capacity, 4)), elem);
+    if (elem.startsWith("{")) {
+      const c = codecOf(elem);
+      const bytes = Math.max(capacity, 4) * c.z;
+      if (bytes >= VEC_MAX_BYTES) throw new RangeError("Vec allocation exceeds 2^32 bytes");
+      return new Vec<T>(new Uint8Array(bytes) as Buf<T>, elem, c);
+    }
+    const Ctor = TYPED[elem as NumType];
+    const n = Math.max(capacity, 4);
+    if (n * Ctor.BYTES_PER_ELEMENT >= VEC_MAX_BYTES) throw new RangeError("Vec allocation exceeds 2^32 bytes");
+    return new Vec<T>(new Ctor(n), elem);
   }
   static filled<T>(_alloc: unknown, length: number, init: T, elem: ElemKind = "other"): Vec<T> {
     if (elem === "other") {
@@ -175,6 +185,8 @@ export class Vec<T = unknown> {
   /** C boundary growth (D106): a bigger buffer of the same representation holding the first `len` elements. Allocation failure throws RangeError (T006). */
   reserve(cap: number, len: number): void {
     const z = this.cod ? this.cod.z : 1;
+    const elemBytes = this.cod ? this.cod.z : TYPED[this.elem as NumType].BYTES_PER_ELEMENT;
+    if (cap * elemBytes >= VEC_MAX_BYTES) throw new RangeError("Vec allocation exceeds 2^32 bytes");
     const bigger = this.cod ? new Uint8Array(cap * z) : new TYPED[this.elem as NumType](cap);
     bigger.set((this.buf as Uint8Array).subarray(0, len * z) as never);
     this.buf = bigger as Buf<T>;
@@ -193,13 +205,22 @@ export class Vec<T = unknown> {
   push(x: T): void {
     const c = this.cod;
     if (c) {
-      if ((this.len + 1) * c.z > this.buf.length) { const bigger = new Uint8Array(Math.max(this.len * 2, 4) * c.z); bigger.set(this.buf as Uint8Array); this.buf = bigger as Buf<T>; }
+      if ((this.len + 1) * c.z > this.buf.length) {
+        if (this.len >= 0xffffffff) throw new RangeError("Vec allocation exceeds 2^32 bytes");
+        const nextCap = Math.min(Math.max(this.len * 2, 4), 0xffffffff);
+        if (nextCap * c.z >= VEC_MAX_BYTES) throw new RangeError("Vec allocation exceeds 2^32 bytes");
+        const bigger = new Uint8Array(nextCap * c.z); bigger.set(this.buf as Uint8Array); this.buf = bigger as Buf<T>;
+      }
       this.len++;
       this.set(this.len - 1, x);
       return;
     }
     if (this.elem !== "other" && this.len === this.buf.length) {
-      const bigger = new TYPED[this.elem as NumType](Math.max(this.len * 2, 4)); // an unpacked empty Vec has a 0-length buffer (§15.2)
+      if (this.len >= 0xffffffff) throw new RangeError("Vec allocation exceeds 2^32 bytes");
+      const Ctor = TYPED[this.elem as NumType];
+      const nextCap = Math.min(Math.max(this.len * 2, 4), 0xffffffff);
+      if (nextCap * Ctor.BYTES_PER_ELEMENT >= VEC_MAX_BYTES) throw new RangeError("Vec allocation exceeds 2^32 bytes");
+      const bigger = new Ctor(nextCap); // an unpacked empty Vec has a 0-length buffer (§15.2)
       bigger.set(this.buf as never);
       this.buf = bigger as Buf<T>;
     }

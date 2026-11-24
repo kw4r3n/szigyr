@@ -55,3 +55,28 @@ Pre-fix Wasm `alloc_small` quadratic scaling inside one strict call:
 - 10,000: 275 ms
 - 20,000: 1,003 ms
 - 40,000: 3,934 ms
+
+
+## Post-Stage-1 (`agy/native-alloc-stage1-20261125` / `D188`, 2026-11-25)
+
+Measured via `pnpm bench:workloads` after Stage 1 (C native `Vec` chunked bump + `malloc`/`realloc`, non-idle machine, `load average: 15.96`, ratios in parentheses relative to `rust-same` in the same run):
+
+| Task | checksum | szigyr C dev | szigyr C release | szigyr Wasm | rust-same | rust-idiom |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| t1 tokenizer (16,000,000 B) | 1282472460 | 86.0 ms (1.24x) | 86.0 ms (1.24x) | 134.0 ms (1.94x) | 69.2 ms | 79.8 ms (1.15x) |
+| t2 word frequency (4,000,000 words) | 4274193343 | 81.0 ms (1.05x) | 83.0 ms (1.08x) | 101.0 ms (1.31x) | 77.2 ms | 193.7 ms (2.51x) |
+| t3 binary search tree (800,000 keys) | 2574783783 | 184.0 ms (0.96x) | 180.0 ms (0.94x) | 213.0 ms (1.11x) | 192.1 ms | 476.9 ms (2.48x) |
+| t4 grouping (8,000,000 pairs) | 2207450853 | 43.0 ms (1.09x) | 40.0 ms (1.01x) | 65.0 ms (1.65x) | 39.4 ms | 110.6 ms (2.80x) |
+| t5 event merge (2 x 4,000,000 events) | 3321175533 | 64.0 ms (0.92x) | 65.0 ms (0.94x) | 112.0 ms (1.61x) | 69.5 ms | 72.5 ms (1.04x) |
+
+Allocation and boundary (`m`), Stage 1:
+
+| Measurement | n | szigyr C | szigyr Wasm | Rust |
+| --- | ---: | ---: | ---: | ---: |
+| `alloc_small` | 1,000,000 | 51.00 ns (51 ms) | 1,661.0 ns (1,661 ms) | 7.76 ns (7.756 ms) |
+| `push_grow` | 20,000,000 | 1.05 ns (21 ms) | 8.45 ns (169 ms) | 1.01 ns (20.131 ms) |
+| `call_scalar` | 2,000,000 | 43.00 ns (86 ms) | 245.0 ns (490 ms) | n/a |
+| `call_slice_small` | 1,000,000 | 452.0 ns (452 ms) | 493.0 ns (493 ms) | 2.84 ns (2.838 ms) |
+| `call_slice_large` | 200 | 0.00 ns (0 ms) | 3,095,000.0 ns (619 ms) | 3.71 ns (0.001 ms) |
+
+Stage 1 Wasm `alloc_small` scaling: `10,000` `25 ms` (`1.00x`), `20,000` `51 ms` (`2.04x`), `40,000` `96 ms` (`3.84x`), `1,000,000` `1,661 ms` (`66.44x`).

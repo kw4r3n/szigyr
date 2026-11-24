@@ -1,0 +1,11 @@
+// expect-trap: T006 @ 6:17
+// stage: 2
+// Vec allocation >= 2^32 bytes (536870912 * 8B = 4 GiB) traps T006 at the call across JS, C, and Wasm.
+function big(alloc: Alloc): usize {
+  "use owned";
+  const v = Vec.create<f64>(alloc, 536870912);
+  return v.length;
+}
+export function main(sys: System): void {
+  sys.log.info(`${big(sys.alloc)}`);
+}

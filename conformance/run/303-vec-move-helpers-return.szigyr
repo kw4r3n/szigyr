@@ -1,0 +1,32 @@
+// expect-output: 22:10:183:300
+// stage: 2
+function makeSeed(alloc: Alloc): Vec<i32> {
+  "use owned";
+  const v = Vec.create<i32>(alloc, 2);
+  v.push(10);
+  v.push(20);
+  return v;
+}
+function appendMany(v: Vec<i32>): Vec<i32> {
+  "use owned";
+  for (let i: i32 = 0; i < 18; i += 1) v.push(i);
+  return v;
+}
+function finishVec(v: Vec<i32>): Vec<i32> {
+  "use owned";
+  let total: i32 = 0;
+  for (let i: usize = 0; i < v.length; i += 1) total += v[i];
+  v.push(total);
+  return v;
+}
+function buildChain(alloc: Alloc): Vec<i32> {
+  "use owned";
+  const a = makeSeed(alloc);
+  const b = appendMany(a);
+  return finishVec(b);
+}
+export function main(sys: System): void {
+  const c = buildChain(sys.alloc);
+  c.push(300);
+  sys.log.info(`${c.length}:${c[0]}:${c[20]}:${c[21]}`);
+}

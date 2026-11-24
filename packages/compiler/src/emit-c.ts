@@ -471,7 +471,7 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
     if (isNull(t)) return `((void)(${v}), sz_mknull())`;
     if (t.k === "lit" || (t.k === "union" && t.members.every((m) => m.k === "lit"))) return `sz_mklit(${v})`;
     if (isStruct(t) || (t.k === "union" && isTaggedUnion(t))) return `out_${needConv(ctype(t, where))}(${v})`;
-    if (isGen(t, "Vec")) return `(${v})->obj`;
+    if (isGen(t, "Vec")) return target === "wasm" ? `(${v})->obj` : `sz_vec_out(${v}, ${cstr(elemDesc(elemOf(t)))})`;
     if (isGen(t, "Pool")) return `(${v})->obj`;
     if (isGen(t, "RingTx") || isGen(t, "RingRx")) return `(${v}).obj`;
     if (isGen(t, "Ptr") || isGen(t, "ConstPtr") || isGen(t, "CHandle")) return `sz_ptr_out((void *)(uintptr_t)(${v}))`;
@@ -574,7 +574,7 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
     });
     return [
       `static napi_value w_${i.name}(napi_env env, napi_callback_info info) {`,
-      `  sz_env = env; sz_depth = 0; sz_err = 0; sz_nvecs = 0;`,
+      `  sz_env = env; sz_depth = 0; sz_err = 0; sz_vec_enter();`,
       `  size_t argc = ${n}; napi_value argv[${Math.max(n, 1)}]; napi_get_cb_info(env, info, &argc, argv, 0, 0);`,
       `  struct { int ok; ${frame.join(" ")} } *volatile fr = calloc(1, sizeof *fr);`,
       `  if (!fr) { sz_err = "out of memory"; return sz_throw(); }`, // no jump target yet, so not sz_fail
@@ -1859,9 +1859,12 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
         switch (m) {
           case "push": {
             const x = this.t(s.et, this.conv(this.ex(e.arguments[0]!), this.typeOf(e.arguments[0]!), s.et), e);
-            this.emit(`if (${s.vec}->len == ${s.vec}->cap) sz_vec_grow(${s.vec}, ${this.pos(p.name)});`);
-            this.emit(el.st(`${s.vec}->data`, `${s.vec}->len`, x));
-            this.emit(`${s.vec}->len++;`);
+            const sv = `t${this.tmp++}`, lv = `t${this.tmp++}`;
+            this.emit(`sz_vec *${sv} = ${s.vec};`);
+            this.emit(`uint32_t ${lv} = ${sv}->len;`);
+            this.emit(`if (__builtin_expect(${lv} == ${sv}->cap, 0)) sz_vec_grow(${sv}, ${this.pos(p.name)});`);
+            this.emit(el.st(`${sv}->data`, lv, x));
+            this.emit(`${sv}->len = ${lv} + 1;`);
             return stmt ? undefined : "0";
           }
           case "pop": {
@@ -2112,7 +2115,7 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
         `  free(ctx);`,
         `}`,
         `static napi_value sz_audio_open_${id}(napi_env env, napi_callback_info info) {`,
-        `  sz_env = env; sz_depth = 0; sz_err = 0; sz_nvecs = 0;`,
+        `  sz_env = env; sz_depth = 0; sz_err = 0; sz_vec_enter();`,
         `  size_t argc = 3; napi_value argv[3]; napi_get_cb_info(env, info, &argc, argv, 0, 0);`,
         `  uint32_t rate = 0, ch = 0; napi_get_value_uint32(env, argv[0], &rate); napi_get_value_uint32(env, argv[1], &ch);`,
         `  if (rate == 0 || ch == 0 || ch > 32) return sz_audio_err(env, "EINVAL", "invalid audio config");`,
@@ -2147,7 +2150,7 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
         `  return 0;`,
         `}`,
         `static napi_value sz_audio_fake_init_${id}(napi_env env, napi_callback_info info) {`,
-        `  sz_env = env; sz_depth = 0; sz_err = 0; sz_nvecs = 0;`,
+        `  sz_env = env; sz_depth = 0; sz_err = 0; sz_vec_enter();`,
         `  size_t argc = 1; napi_value argv[1]; napi_get_cb_info(env, info, &argc, argv, 0, 0);`,
         `  sz_ACtx_${id} *volatile ctx = calloc(1, sizeof *ctx);`,
         `  if (!ctx) { sz_err = "out of memory"; return sz_throw(); }`,
@@ -2163,7 +2166,7 @@ export function emitC(prog: Program, target: CTarget = "native", opts?: { proved
         `  return ext;`,
         `}`,
         `static napi_value sz_audio_fake_render_${id}(napi_env env, napi_callback_info info) {`,
-        `  sz_env = env; sz_depth = 0; sz_err = 0; sz_nvecs = 0;`,
+        `  sz_env = env; sz_depth = 0; sz_err = 0; sz_vec_enter();`,
         `  size_t argc = 3; napi_value argv[3];`,
         `  if (napi_get_cb_info(env, info, &argc, argv, 0, 0) != napi_ok || argc < 3) { sz_err = "bad audio render args"; return sz_throw(); }`,
         `  void *p = 0;`,
@@ -2278,7 +2281,8 @@ static napi_value sz_audio_err(napi_env env, const char *code, const char *msg) 
 }`;
 
 const THROW = `static napi_value sz_throw(void) {
-  if (!sz_err && sz_trap_code >= 1) { int fc, fp; if (sz_take_ftrap(&fc, &fp)) { sz_trap_code = fc; sz_trap_pos = fp; } } // §15.4: the first trap to claim the record is the reported one
+  if (!sz_err && (sz_trap_code >= 1 || sz_trap_code == -6)) { int fc, fp; if (sz_take_ftrap(&fc, &fp)) { sz_trap_code = fc; sz_trap_pos = fp; } } // §15.4: the first trap to claim the record is the reported one
+  if (!sz_err && sz_trap_code == -6) { napi_throw_range_error(sz_env, NULL, "out of memory"); return 0; }
   if (sz_err) { napi_throw_error(sz_env, "SZ_INTERNAL", sz_err); return 0; }
   napi_value host, f, args[4], r;
   napi_get_reference_value(sz_env, sz_host, &host); napi_get_named_property(sz_env, host, "trap", &f);

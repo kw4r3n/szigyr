@@ -1,0 +1,40 @@
+// expect-output: 2:7:2.5:true:255:-1.25:false|2:-5000000000:5000000000|0|3:11:err:-9
+// stage: 2
+type Item = { readonly tag: u8; readonly val: f64; readonly ok: boolean };
+function mkPacked(alloc: Alloc): Vec<Item> {
+  "use owned";
+  const v = Vec.create<Item>(alloc, 2);
+  v.push({ tag: 7, val: 2.5, ok: true });
+  v.push({ tag: 255, val: -1.25, ok: false });
+  return v;
+}
+function mkI64(alloc: Alloc): Vec<i64> {
+  "use owned";
+  const v = Vec.create<i64>(alloc, 2);
+  v.push(-5000000000);
+  v.push(5000000000);
+  return v;
+}
+function mkEmpty(alloc: Alloc): Vec<u32> {
+  "use owned";
+  return Vec.create<u32>(alloc, 0);
+}
+function mkMaybe(alloc: Alloc, some: boolean): Result<Vec<u32>, i32> {
+  "use owned";
+  if (!some) return Result.err(-9);
+  const v = Vec.create<u32>(alloc, 4);
+  v.push(11);
+  v.push(22);
+  v.push(33);
+  return Result.ok(v);
+}
+export function main(sys: System): void {
+  const p = mkPacked(sys.alloc);
+  const i64v = mkI64(sys.alloc);
+  const z = mkEmpty(sys.alloc);
+  const m1 = mkMaybe(sys.alloc, true);
+  const m0 = mkMaybe(sys.alloc, false);
+  const m1s = m1.kind === "ok" ? `${m1.value.length}:${m1.value[0]}` : "err";
+  const m0s = m0.kind === "err" ? `err:${m0.error}` : `${m0.value.length}`;
+  sys.log.info(`${p.length}:${p[0].tag}:${p[0].val}:${p[0].ok}:${p[1].tag}:${p[1].val}:${p[1].ok}|${i64v.length}:${i64v[0]}:${i64v[1]}|${z.length}|${m1s}:${m0s}`);
+}
