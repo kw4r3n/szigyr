@@ -209,4 +209,59 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
       expect(ds[0]!.message).not.toContain("§");
     }
   });
+
+  it("rejects spread arguments in non-rest builtins and new with E2002 spread-non-rest and never emits internal-error-type", () => {
+    const spreadCases = [
+      "export function f(a: Array<f64>): i32 { return i32(...a); }\n",
+      "export function f(n: Array<i32>): i32 { return wrapAdd(...n); }\n",
+      "export function f(n: Array<i32>): i32 { return wrapAdd(1, ...n); }\n",
+      "export function f(n: Array<i32>): i32 { return rem(...n); }\n",
+      "export function f(n: Array<i32>): i32 { return divTrunc(4, ...n); }\n",
+      "export function f(s: Array<string>): void { panic(...s); }\n",
+      "export function f(a: Array<f64>): Result<i32, CastError> { return cast<i32>(...a); }\n",
+      "export function f(a: Array<f64>): f64 { return Math.abs(...a); }\n",
+      "export function f(a: Array<f64>): f64 { return Math.abs(-2.0, ...a); }\n",
+      "export function f(a: Array<f64>): boolean { return Number.isFinite(...a); }\n",
+      "export function f(n: Array<i32>): Result<i32, string> { return Result.ok(...n); }\n",
+      "export function f(n: Array<i32>): void { const r = Result.ok(...n); }\n",
+      "export function f(a: Alloc, xs: Array<i32>): void { using r = Resource.own(...xs); }\n",
+      "export function f(sys: System, xs: Array<i32>): void { sys.spawn.isolate(...xs); }\n",
+      "export function f(sys: System, xs: Array<i32>): void { sys.audio.open(...xs); }\n",
+      "export function f(s: Array<string>): Map<string, i32> { return new Map<string, i32>(...s); }\n",
+      "export function f(s: Array<string>): Set<string> { return new Set<string>(...s); }\n",
+      "export function f(s: Array<string>): void { const r = new RegExp(...s); }\n",
+    ];
+    for (const src of spreadCases) {
+      const ds = checkSrc(src).diags;
+      expect(ds.length, src).toBeGreaterThan(0);
+      expect(ds.some((d) => d.data?.kind === "internal-error-type"), src).toBe(false);
+      expect(ds[0]).toMatchObject({ code: "E2002", data: { kind: "spread-non-rest" } });
+    }
+
+    // Non-callable targets with spread must not emit internal-error-type
+    const nonCallableSpread = [
+      "export function f(a: Array<i32>): void { const x: i32 = 1; x(...a); }\n",
+      "class C { readonly x: i32 = 1; }\nexport function f(a: Array<i32>): void { C(...a); }\n",
+      "export function f(a: Array<i32>): void { const x: i32 = 1; new x(...a); }\n",
+    ];
+    for (const src of nonCallableSpread) {
+      const ds = checkSrc(src).diags;
+      expect(ds.length, src).toBeGreaterThan(0);
+      expect(ds.some((d) => d.data?.kind === "internal-error-type"), src).toBe(false);
+    }
+
+    // Spread in strict/rt builtins reports E4001 (managed-only)
+    const strictSpread = [
+      "export function f(s: Ref<Slice<f64>>): i32 { \"use owned\"; return i32(...s); }\n",
+      "export function f(s: Ref<Slice<f64>>): f64 { \"use owned\"; return Math.abs(...s); }\n",
+      "export function f(s: Ref<Slice<i32>>): Result<i32, i32> { \"use owned\"; return Result.ok(...s); }\n",
+    ];
+    for (const src of strictSpread) {
+      const ds = checkSrc(src).diags;
+      expect(ds[0]).toMatchObject({ code: "E4001", data: { callerLayer: "strict", calleeLayer: "managed" } });
+    }
+
+    // Allowed variadic/rest spreads keep working
+    expect(checkSrc("export function f(xs: Array<f64>, ys: Array<i32>): f64 {\n  const a = Math.min(...xs) + Math.max(...xs);\n  const b = ys.splice(0, 1, ...[2, 3]);\n  return a + f64(b.length);\n}\n").diags).toEqual([]);
+  });
 });

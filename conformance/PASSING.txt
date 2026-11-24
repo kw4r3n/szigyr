@@ -351,6 +351,10 @@ reject/E2002-set-element-null-union.szigyr
 reject/E2002-set-element-record.szigyr
 reject/E2002-shift-non-numeric-rhs.szigyr
 reject/E2002-slice-to-vec-param.szigyr
+reject/E2002-spread-builtin-fn.szigyr
+reject/E2002-spread-conversion.szigyr
+reject/E2002-spread-namespace.szigyr
+reject/E2002-spread-new.szigyr
 reject/E2002-string-lit-union-plus-assign.szigyr
 reject/E2002-string-plus-number.szigyr
 reject/E2002-stringify-map.szigyr

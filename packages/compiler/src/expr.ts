@@ -1210,11 +1210,33 @@ export const audioOpenCalls = new WeakMap<Node, { path: string; name: string; ke
 /** §16.1: `forAll(f)` calls the checker accepted: parameter types and whether `false` return is a failure. Read by the emitter. */
 export const forAllMeta = new WeakMap<Node, { params: Type[]; checkBool: boolean }>();
 
+/** Rejects spread arguments (`...`) in calls/`new` without a rest parameter (or before `restAt`), and outside managed code. */
+function rejectSpread(c: Checker, args: readonly ts.Expression[] | undefined, restAt?: number): boolean {
+  const firstSpread = args?.findIndex((a) => a.kind === K.SpreadElement) ?? -1;
+  if (firstSpread < 0) return false;
+  const sp = args![firstSpread]!;
+  if (!c.callAllowed("managed")) {
+    c.at("E4001", sp, "call spread '...' is managed-only", { callerLayer: c.fx.layer, calleeLayer: "managed" });
+    return true;
+  }
+  if (restAt === undefined || firstSpread < restAt) {
+    c.at(
+      "E2002",
+      sp,
+      restAt !== undefined ? "spread argument '...' cannot appear before fixed parameters" : "spread argument '...' is only valid for a rest parameter",
+      { kind: "spread-non-rest" },
+    );
+    return true;
+  }
+  return false;
+}
+
 /** §15.5 (Q283): `audio.open<S>(config, state, render)`. `render` is a module-level non-generic safe
  * `"use rt"` function taking `(st: Mut<S> | S, out: Mut<Slice<f32>>, frames: usize): void`. */
 function audioOpenCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpression): Type {
   if (!c.callAllowed("managed")) c.at("E4001", p.name, `'open' is managed-only`, { callerLayer: c.fx.layer, calleeLayer: "managed" });
   const args = e.arguments;
+  if (rejectSpread(c, args)) return ERROR;
   if (args.length !== 3) { c.at("E2013", p.name, `'open' takes 3 arguments (config, state, render)`, { reason: "arity" }); return ERROR; }
   let S: Type | undefined;
   if (e.typeArguments) {
@@ -1267,6 +1289,7 @@ function resourceCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpr
   if (c.fx.contract) c.at("E6002", p.name, "contracts cannot construct a Resource");
   if (!usingInitExprs.has(e)) c.at("E3004", p.name, `'Resource.${m}' can only be used as the initializer of a 'using' declaration`);
   const args = e.arguments;
+  if (rejectSpread(c, args)) return ERROR;
   const wantArgs = m === "own" ? 2 : 3;
   const maxTArgs = m === "own" ? 1 : 2;
   if (args.length !== wantArgs) { c.at("E2002", p.name, `'Resource.${m}' takes ${wantArgs} argument(s)`); return ERROR; }
@@ -1389,6 +1412,7 @@ function resultCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpres
     c.at("E2001", p.name, `'Result' has no member '${m}'${didYouMean(suggestions)}`, { receiver: "Result", member: m, ...(suggestions.length ? { suggestions } : {}) });
     return ERROR;
   }
+  if (rejectSpread(c, e.arguments)) return ERROR;
   if (e.typeArguments) { c.at("E2002", p.name, "expects 0 type argument(s)"); return ERROR; }
   if (e.arguments.length !== 1) { c.at("E2002", p.name, `'Result.${m}' takes 1 argument(s)`); return ERROR; }
   if (!want) { c.at("E2006", p.name, `cannot infer the Result type of 'Result.${m}'`); return ERROR; }
@@ -1403,6 +1427,7 @@ function resultCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpres
  * `(port: Port<R, S>, alloc: Alloc): void | Promise<void>`; any other expression or signature is E2011
  * at the argument. Explicit type arguments name the caller's `Port<S, R>` and must match the entry's own parameter. */
 function isolateCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpression): Type {
+  if (rejectSpread(c, e.arguments)) return ERROR;
   if (e.arguments.length !== 1) { c.at("E2011", p.name, `'isolate' takes one argument: the entry function's name`, { reason: "arity" }); return ERROR; }
   const a = e.arguments[0]!;
   const bad = (msg: string, reason = "invalid-entry"): Type => { c.at("E2011", a, msg, { reason }); return ERROR; };
@@ -1606,11 +1631,13 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
     }
     if (m.kind === "method") {
       if (ns === "Math" && MATH_POLY.has(p.name.text)) {
+        if (rejectSpread(c, e.arguments)) return ERROR;
         if (e.arguments.length !== 1) { c.at("E2002", p.name, `expects 1 argument(s), got ${e.arguments.length}`); return ERROR; }
         if (e.typeArguments) { c.at("E2002", p.name, "expects 0 type argument(s)"); return ERROR; }
         return floatPolyArg(c, e.arguments[0]!, wantFloatType(want));
       }
       if (ns === "Number" && NUMBER_POLY.has(p.name.text)) {
+        if (rejectSpread(c, e.arguments)) return ERROR;
         if (e.arguments.length !== 1) { c.at("E2002", p.name, `expects 1 argument(s), got ${e.arguments.length}`); return ERROR; }
         if (e.typeArguments) { c.at("E2002", p.name, "expects 0 type argument(s)"); return ERROR; }
         floatPolyArg(c, e.arguments[0]!, F64 as FloatNum);
@@ -1698,17 +1725,7 @@ function call(c: Checker, e: ts.CallExpression, want: Type | undefined): Type {
 function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpression, anchor: Node, want: Type | undefined, q189?: Layer): Type {
   const args = e.arguments ?? ([] as unknown as ts.NodeArray<ts.Expression>);
   callSigs.set(e, sig);
-  const firstSpread = args.findIndex((a) => a.kind === K.SpreadElement);
-  if (firstSpread >= 0) {
-    if (!c.callAllowed("managed")) {
-      c.at("E4001", args[firstSpread]!, "call spread '...' is managed-only", { callerLayer: c.fx.layer, calleeLayer: "managed" });
-      return ERROR;
-    }
-    if (!sig.rest || firstSpread < sig.params.length) {
-      c.at("E2002", args[firstSpread]!, sig.rest ? "spread argument '...' cannot appear before fixed parameters" : "spread argument '...' is only valid for a rest parameter", { kind: "spread-non-rest" });
-      return ERROR;
-    }
-  }
+  if (rejectSpread(c, args, sig.rest ? sig.params.length : undefined)) return ERROR;
   const min = sig.min ?? sig.params.length;
   if (args.length < min || (!sig.rest && args.length > sig.params.length)) {
     const expStr = sig.rest ? `at least ${min}` : (min === sig.params.length ? `${min}` : `${min}-${sig.params.length}`);
@@ -1952,6 +1969,7 @@ function exactIntLit(c: Checker, e: ts.Expression, target: NumName): boolean {
 function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, want: Type | undefined): Type {
   const name = callee.text;
   const args = e.arguments;
+  if (rejectSpread(c, args)) return ERROR;
   const arity = (n: number): boolean => {
     if (args.length === n) return true;
     c.at("E2002", callee, `'${name}' expects ${n} argument(s)`);
@@ -2225,6 +2243,7 @@ function newExpr(c: Checker, e: ts.NewExpression, want: Type | undefined): Type 
   }
   if ((id.text === "Map" || id.text === "Set") && !c.scope.lookup(id.text)) { // Q029
     const args = e.arguments ?? ([] as unknown as ts.NodeArray<ts.Expression>);
+    if (rejectSpread(c, args)) return ERROR;
     if (id.text === "Map" || !args.length) {
       if (args.length) { c.at("E2001", id, `'new ${id.text}' takes no arguments`); return ERROR; }
       const n = id.text === "Map" ? 2 : 1;
@@ -2243,7 +2262,6 @@ function newExpr(c: Checker, e: ts.NewExpression, want: Type | undefined): Type 
     }
     if (args.length > 1) { c.at("E2002", id, `'new Set' expects at most 1 argument(s), got ${args.length}`); return ERROR; }
     const a = args[0]!;
-    if (a.kind === K.SpreadElement) { c.at("E2002", a, "'new Set' does not accept spread arguments"); return ERROR; }
     const checkSetArg = (elemT: Type): void => {
       if (a.kind === K.ArrayLiteralExpression) { checkTo(c, a, gen("ReadonlyArray", elemT)); return; }
       const at = expr(c, a);
@@ -2273,6 +2291,7 @@ function newExpr(c: Checker, e: ts.NewExpression, want: Type | undefined): Type 
     return gen("Set", elemT);
   }
   if (id.text === "RegExp" && !c.scope.lookup(id.text)) {
+    if (rejectSpread(c, e.arguments)) return ERROR;
     c.at("E2002", id, `'new RegExp(...)' is not allowed; use a regex literal '/.../' or 'RegExp.compile(pattern, flags)'`);
     return ERROR;
   }
