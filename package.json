@@ -9,6 +9,7 @@
   "scripts": {
     "test": "vitest run --config vitest.config.ts",
     "conformance": "vitest run --config vitest.conformance.config.ts",
+    "conformance:asan": "CC='cc -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g' LD_PRELOAD=$(cc -print-file-name=libasan.so) ASAN_OPTIONS=detect_leaks=0:halt_on_error=1:allocator_may_return_null=1 UBSAN_OPTIONS=print_stacktrace=1 pnpm conformance",
     "typecheck": "tsc --noEmit",
     "verify:conformance": "node scripts/verify-conformance.mjs",
     "conformance:update-passing": "node scripts/update-passing.mjs reject/E1 reject/E2 reject/E3 reject/E4 reject/E5001 reject/E5002 reject/E6001 reject/E6002 reject/E6003 reject/E6004 reject/E6005 reject/E7001 reject/E7002 accept/ run/",
