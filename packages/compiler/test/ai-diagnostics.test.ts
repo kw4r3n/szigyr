@@ -646,16 +646,34 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
     assertUbd("export function f(x: i32): i32 {\n  requires(x > k);\n  const k: i32 = 0;\n  return x + k;\n}\n", "k", 3);
     assertUbd("const x: i32 = 1;\nexport function f(x: i32 = x): i32 { return x; }\n", "x", 2);
 
-    // Own type parameter shadowing a later local type in the enclosing block stays valid
+    // Own type parameter shadowing a later local type in the enclosing block stays valid (including inside CHandle/walkTypePos)
     expect(checkSrc([
       "export function f(): i32 {",
       "  type A<P> = { readonly v: P };",
+      "  type H<P extends Copy & Native> = CHandle<P>;",
       "  function g<P>(x: P): P { return x; }",
       "  const h = <P>(x: P): P => x;",
       "  const a: A<i32> = { v: g<i32>(1) + h<i32>(2) };",
       "  type P = string;",
       "  const s: P = \"ok\";",
       "  return a.v + i32(s.length);",
+      "}",
+      "",
+    ].join("\n")).diags).toEqual([]);
+    expect(checkSrc([
+      "export function main(sys: System): void {",
+      "  type B<P extends Copy & Native> = CHandle<P>;",
+      "  type P = i32;",
+      "  const x: P = 7;",
+      "  sys.log.info(`${x}`);",
+      "}",
+      "",
+    ].join("\n")).diags).toEqual([]);
+    expect(checkSrc([
+      "export function f<T extends Copy & Native>(x: T): T {",
+      "  type B<T extends Copy & Native> = CHandle<T>;",
+      "  type T = i32;",
+      "  return x;",
       "}",
       "",
     ].join("\n")).diags).toEqual([]);
@@ -680,6 +698,18 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
       "}",
       "",
     ].join("\n"), "T");
+
+    // CHandle<T> with outer tparam shadowed by module-level non-Native type T emits only E2000 outer-type-param (no spurious E4007)
+    const chDs = checkSrc([
+      "type T = string;",
+      "export function f<T extends Copy & Native>(x: T): void {",
+      "  type B = CHandle<T>;",
+      "}",
+      "",
+    ].join("\n")).diags;
+    expect(chDs).toHaveLength(1);
+    expect(chDs[0]).toMatchObject({ code: "E2000", data: { kind: "outer-type-param", name: "T" } });
+    expect(chDs[0]!.fixes).toBeUndefined();
 
     // Existing E2000-local-type-outer-tparam shape (no module-level T)
     assertOuterTp([

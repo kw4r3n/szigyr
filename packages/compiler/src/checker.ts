@@ -832,7 +832,9 @@ export class Checker {
     });
     const savedTps = this.fx.tparams;
     this.fx.tparams = new Map((sym.tparams ?? []).map((p) => [p.name, p]));
-    this.walkTypePos(d.type, "alias", { unsafe: false, cdecl: false });
+    this.withTParamScope(sym.tparams ?? [], () => {
+      this.walkTypePos(d.type, "alias", { unsafe: false, cdecl: false, ...(savedTps.size ? { outerTParams: savedTps } : {}) });
+    });
     this.fx.tparams = savedTps;
   }
 
@@ -1464,7 +1466,9 @@ export class Checker {
   }
 
   /** One written type node in position `place`. `ptrarg`: the argument of Ptr / ConstPtr; `chandlearg`: of CHandle. */
-  walkTypePos(node: ts.TypeNode, place: "sig" | "local" | "alias" | "field" | "cstructfield" | "typearg" | "ptrarg" | "chandlearg", ctx: { unsafe: boolean; cdecl: boolean }): void {
+  walkTypePos(node: ts.TypeNode, place: "sig" | "local" | "alias" | "field" | "cstructfield" | "typearg" | "ptrarg" | "chandlearg", ctx: { unsafe: boolean; cdecl: boolean; outerTParams?: ReadonlyMap<string, TParam> }): void {
+    const typeOfArg = (arg: ts.TypeNode): Type =>
+      this.prog.typeOf(arg, { ...this.typeEnv(), ...(ctx.outerTParams ? { outerTParams: ctx.outerTParams } : {}) }, true);
     switch (node.kind) {
       case K.TypeReference: {
         const r = node as ts.TypeReferenceNode;
@@ -1482,7 +1486,7 @@ export class Checker {
           }
           if (arg) {
             if (!ctx.cdecl) {
-              const t = this.typeOf(arg, true); // a pointee may be void (§14.4)
+              const t = typeOfArg(arg); // a pointee may be void (§14.4)
               if (t.k === "fn") { if (name === "ConstPtr") this.at("E4007", arg, "a function type can only sit behind Ptr"); }
               else if (t.k !== "error" && !ptrTargetOk(t)) this.at("E4007", arg, `'${show(t)}' cannot sit behind ${name}`);
             }
@@ -1501,7 +1505,7 @@ export class Checker {
         }
         if (name === "CHandle") {
           if (arg) {
-            const t = this.typeOf(arg, true);
+            const t = typeOfArg(arg);
             if (t.k === "fn" || hasPtr(t)) this.at("E4008", findPtrRef(arg) ?? arg, "'CHandle' cannot wrap a function type or a type holding Ptr / ConstPtr");
             else if (t.k !== "error" && !ptrTargetOk(t)) this.at("E4007", arg, `'${show(t)}' cannot sit inside CHandle`);
             this.walkTypePos(arg, "chandlearg", ctx);
@@ -1537,8 +1541,18 @@ export class Checker {
         return;
       case K.FunctionType: {
         const f = node as ts.FunctionTypeNode;
-        for (const p of f.parameters) if (p.type) this.walkTypePos(p.type, place, ctx);
-        if (f.type) this.walkTypePos(f.type, place, ctx);
+        const tps = f.typeParameters?.length ? tparamShells(f.typeParameters) : [];
+        const savedTps = this.fx.tparams;
+        if (tps.length) this.fx.tparams = new Map([...savedTps, ...tps.map((p) => [p.name, p] as const)]);
+        this.withTParamScope(tps, () => {
+          if (tps.length) {
+            const env = { ...this.typeEnv(), ...(ctx.outerTParams ? { outerTParams: ctx.outerTParams } : {}) };
+            f.typeParameters?.forEach((tp, i) => { if (tp.constraint) this.prog.resolveConstraint(tp.constraint, tps[i]!, env); });
+          }
+          for (const p of f.parameters) if (p.type) this.walkTypePos(p.type, place, ctx);
+          if (f.type) this.walkTypePos(f.type, place, ctx);
+        });
+        this.fx.tparams = savedTps;
         return;
       }
       case K.ParenthesizedType: this.walkTypePos((node as ts.ParenthesizedTypeNode).type, place, ctx); return;
