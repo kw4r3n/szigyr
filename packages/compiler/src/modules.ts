@@ -827,9 +827,21 @@ export class Program {
         return ERROR;
       case K.UnknownKeyword: return builtinType("unknown")!;
       case K.NeverKeyword: return builtinType("never")!;
-      case K.BigIntKeyword: case K.UndefinedKeyword: {
+      case K.BigIntKeyword: {
         const name = t.getText(e.mod.sf);
         this.rep.at(e.mod, "E2000", t, `'${name}' does not exist`, { name });
+        return ERROR;
+      }
+      case K.UndefinedKeyword: {
+        const before = this.rep.out.length;
+        this.rep.at(e.mod, "E2000", t, "'undefined' does not exist; use 'null'", { kind: "js-global", name: "undefined" });
+        if (this.rep.out.length > before) {
+          const s = t.getStart(e.mod.sf);
+          this.rep.out.at(-1)!.fixes = [{
+            title: "use 'null'",
+            edits: [{ range: { start: e.mod.pf.position(s), end: e.mod.pf.position(t.end) }, newText: "null" }],
+          }];
+        }
         return ERROR;
       }
       case K.LiteralType: {

@@ -181,25 +181,62 @@ export function checkTo(c: Checker, e: ts.Expression, want: Type, arg = false): 
   const t = expr(c, e, want);
   return reportMismatch(c, e, t, want, arg) ? t : ERROR;
 }
-function attachNonNullCondFix(c: Checker, e: ts.Expression, t: Type): void {
+const LOOSE_BIN = new Set<K>([
+  K.AmpersandAmpersandToken, K.BarBarToken, K.QuestionQuestionToken,
+  K.EqualsToken, K.AmpersandAmpersandEqualsToken, K.BarBarEqualsToken, K.QuestionQuestionEqualsToken,
+]);
+const STRUCTURAL_GENS = new Set(["Array", "ReadonlyArray", "Vec", "Slice", "Map", "Set"]);
+
+function wrapOperand(sf: ts.SourceFile, e: ts.Expression): string {
+  const txt = sf.text.slice(e.getStart(sf), e.end);
+  return e.kind === K.BinaryExpression || e.kind === K.ConditionalExpression ? `(${txt})` : txt;
+}
+function wrapNotFix(u: ts.PrefixUnaryExpression, exprStr: string): string {
+  const p = u.parent;
+  if (!p) return exprStr;
+  if (p.kind === K.BinaryExpression && LOOSE_BIN.has((p as ts.BinaryExpression).operatorToken.kind)) return exprStr;
+  if (
+    p.kind === K.PrefixUnaryExpression || p.kind === K.BinaryExpression || p.kind === K.PostfixUnaryExpression ||
+    p.kind === K.PropertyAccessExpression || p.kind === K.ElementAccessExpression || p.kind === K.CallExpression
+  ) return `(${exprStr})`;
+  return exprStr;
+}
+function attachFix(c: Checker, before: number, start: number, end: number, title: string, newText: string): void {
+  if (c.prog.rep.out.length <= before) return;
+  c.prog.rep.out.at(-1)!.fixes = [{
+    title,
+    edits: [{ range: { start: c.fx.mod.pf.position(start), end: c.fx.mod.pf.position(end) }, newText }],
+  }];
+}
+function attachNonNullCondFix(c: Checker, before: number, e: ts.Expression, t: Type): void {
   const nn = nonNull(t);
   if (!nn || isBool(nn)) return;
-  const d = c.prog.rep.out.at(-1);
-  if (d?.code !== "E2004") return;
-  const sf = c.fx.mod.sf, s = e.getStart(sf), txt = sf.text.slice(s, e.end);
-  const wrapped = e.kind === K.BinaryExpression || e.kind === K.ConditionalExpression ? `(${txt})` : txt;
-  d.fixes = [{
-    title: "compare with '!== null'",
-    edits: [{ range: { start: c.fx.mod.pf.position(s), end: c.fx.mod.pf.position(e.end) }, newText: `${wrapped} !== null` }],
-  }];
+  const sf = c.fx.mod.sf;
+  attachFix(c, before, e.getStart(sf), e.end, "compare with '!== null'", `${wrapOperand(sf, e)} !== null`);
+}
+function truthyHint(t: Type, neg: boolean): { hint: string; cmp?: string } {
+  const op = neg ? "===" : "!==";
+  if (isStr(t)) { const cmp = `${op} ""`; return { hint: `; compare with '${cmp}'`, cmp }; }
+  if (isInt(t)) { const cmp = `${op} 0`; return { hint: `; compare with '${cmp}'`, cmp }; }
+  if (isNum(t)) {
+    const cmp = `${op} 0`;
+    return { hint: `; compare with '${cmp}' (note: for 'NaN', 'n ${cmp}' is ${neg ? "false" : "true"}, whereas JS treats 'NaN' as falsy)` };
+  }
+  return { hint: "" };
 }
 
 /** E2004: conditions are boolean only (§3.1). */
 export function cond(c: Checker, e: ts.Expression): void {
   const t = expr(c, e);
   if (!isBool(t) && !isErr(t)) {
-    c.at("E2004", e, `condition must be boolean, got '${show(t)}'`, { actual: show(t) });
-    attachNonNullCondFix(c, e, t);
+    const before = c.prog.rep.out.length;
+    const { hint, cmp } = truthyHint(t, false);
+    c.at("E2004", e, `condition must be boolean, got '${show(t)}'${hint}`, { kind: "truthiness", actual: show(t) });
+    attachNonNullCondFix(c, before, e, t);
+    if (cmp) {
+      const sf = c.fx.mod.sf;
+      attachFix(c, before, e.getStart(sf), e.end, `compare with '${cmp}'`, `${wrapOperand(sf, e)} ${cmp}`);
+    }
   }
 }
 
@@ -274,7 +311,14 @@ function exprUnrecorded(c: Checker, e: ts.Expression, want?: Type): Type {
     case K.TemplateExpression:
       for (const sp of (e as ts.TemplateExpression).templateSpans) {
         const t = expr(c, sp.expression);
-        if (!isErr(t) && !isStr(t) && !isNum(t) && !isBool(t)) c.at("E2002", sp.expression, `cannot embed '${show(t)}' in a template`); // Q027
+        if (!isErr(t) && !isStr(t) && !isNum(t) && !isBool(t)) {
+          const nn = nonNull(t);
+          if (nn && (isStr(nn) || isNum(nn) || isBool(nn))) {
+            c.at("E2002", sp.expression, `cannot embed '${show(t)}' in a template; narrow with '!== null' first or provide a fallback with '??'`, { kind: "template-nullable", actual: show(t) });
+          } else {
+            c.at("E2002", sp.expression, `cannot embed '${show(t)}' in a template`); // Q027
+          }
+        }
       }
       return STR;
     case K.AwaitExpression: {
@@ -377,6 +421,17 @@ function ident(c: Checker, id: ts.Identifier): Type {
   return ERROR;
 }
 
+const JS_GLOBAL_HINTS: Record<string, { msg: string; fixTitle?: string; fixText?: string }> = {
+  NaN: { msg: "'NaN' is not defined; use 'Number.NaN'", fixTitle: "use 'Number.NaN'", fixText: "Number.NaN" },
+  Infinity: { msg: "'Infinity' is not defined; use 'Number.POSITIVE_INFINITY'", fixTitle: "use 'Number.POSITIVE_INFINITY'", fixText: "Number.POSITIVE_INFINITY" },
+  isNaN: { msg: "'isNaN' is not defined; use 'Number.isNaN(x)'", fixTitle: "use 'Number.isNaN'", fixText: "Number.isNaN" },
+  parseFloat: { msg: "'parseFloat' is not defined; use 'Number.parseFloat(s)'", fixTitle: "use 'Number.parseFloat'", fixText: "Number.parseFloat" },
+  undefined: { msg: "'undefined' does not exist; use 'null'", fixTitle: "use 'null'", fixText: "null" },
+  parseInt: { msg: "'parseInt' is not defined; use 'Number.parseI32(s)' (returns 'Result')" },
+  Object: { msg: "'Object' is not defined; list fields explicitly or use 'Map<K, V>'" },
+  Array: { msg: "'Array' cannot be used as a value; use '[...xs]' to copy an array" },
+};
+
 /** E2000 / E5001 for a name that is not declared (Q006, Q011, Q034). */
 function unresolved(c: Checker, id: ts.Identifier): void {
   const name = id.text;
@@ -389,8 +444,22 @@ function unresolved(c: Checker, id: ts.Identifier): void {
   if (name === "Resource") { c.at("E2002", id, "'Resource' is a namespace", { name }); return; }
   if (name === "Result") { c.at("E2002", id, "'Result' is a namespace", { name }); return; }
   if (name === "ok" || name === "err") { c.at("E2000", id, `unknown name '${name}'; use 'Result.${name}(...)'`, { name }); return; }
+  if (name === "Number") {
+    c.at("E2000", id, "'Number' can only be used as a member access receiver; use 'Number.parseFloat(s)' for strings or 'f64(x)' for numbers", { kind: "js-global", name });
+    return;
+  }
   if (NAMESPACES.has(name) && !RESERVED.has(name)) { c.at("E2000", id, `'${name}' can only be used as a member access receiver`, { name }); return; }
   if (BUILTIN_FUNCTIONS.has(name)) { c.at("E2002", id, `builtin '${name}' can only be called`, { name }); return; }
+  const hint = JS_GLOBAL_HINTS[name];
+  if (hint) {
+    const before = c.prog.rep.out.length;
+    c.at("E2000", id, hint.msg, { kind: "js-global", name });
+    if (hint.fixTitle && hint.fixText !== undefined) {
+      const sf = c.fx.mod.sf;
+      attachFix(c, before, id.getStart(sf), id.end, hint.fixTitle, hint.fixText);
+    }
+    return;
+  }
   c.at("E2000", id, `unknown name '${name}'`, { name });
 }
 
@@ -960,12 +1029,12 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
     if (isErr(lt)) { c.branch(() => expr(c, b.right)); return ERROR; }
     if (!isBool(lt)) {
       const hint = k === K.BarBarEqualsToken ? "; for nullish fallback use '??='" : "";
-      c.at("E2004", b.left, `'${op}' expects 'boolean' left operand, got '${show(lt)}'${hint}`, { actual: show(lt) });
+      c.at("E2004", b.left, `'${op}' expects 'boolean' left operand, got '${show(lt)}'${hint}`, { kind: "truthiness", actual: show(lt) });
       c.branch(() => expr(c, b.right));
       return ERROR;
     }
     const rt = c.branch(() => expr(c, b.right, BOOL));
-    if (!isErr(rt) && !isBool(rt)) c.at("E2004", b.right, `'${op}' expects 'boolean' right operand, got '${show(rt)}'`, { actual: show(rt) });
+    if (!isErr(rt) && !isBool(rt)) c.at("E2004", b.right, `'${op}' expects 'boolean' right operand, got '${show(rt)}'`, { kind: "truthiness", actual: show(rt) });
     return BOOL;
   }
   const base = COMPOUND[k];
@@ -996,10 +1065,19 @@ function binary(c: Checker, b: ts.BinaryExpression, want: Type | undefined): Typ
   switch (k) {
     case K.AmpersandAmpersandToken: case K.BarBarToken: {
       const m0 = c.mark();
+      const checkOp = (n: ts.Expression, t: Type): void => {
+        if (isBool(t) || isErr(t)) return;
+        const before = c.prog.rep.out.length;
+        const defaultHint = k === K.BarBarToken && (isNum(t) || isStr(t))
+          ? "; for a default value, use '??' on 'T | null' or a conditional expression"
+          : "";
+        c.at("E2004", n, `operand must be boolean, got '${show(t)}'${defaultHint}`, { kind: "truthiness", actual: show(t) });
+        attachNonNullCondFix(c, before, n, t);
+      };
       const lt = expr(c, b.left);
-      if (!isBool(lt) && !isErr(lt)) { c.at("E2004", b.left, "operand must be boolean", { actual: show(lt) }); attachNonNullCondFix(c, b.left, lt); }
+      checkOp(b.left, lt);
       const rt = c.branch(() => expr(c, b.right), c.facts(b.left, k === K.AmpersandAmpersandToken), m0);
-      if (!isBool(rt) && !isErr(rt)) { c.at("E2004", b.right, "operand must be boolean", { actual: show(rt) }); attachNonNullCondFix(c, b.right, rt); }
+      checkOp(b.right, rt);
       return BOOL;
     }
     case K.QuestionQuestionToken: {
@@ -1105,6 +1183,11 @@ function equality(c: Checker, op: Node, lt: Type, rt: Type): void {
   const a = nonNull(lt) ?? lt, b = nonNull(rt) ?? rt;
   if (isNum(a) && isNum(b)) { if (a.name !== b.name) c.at("E2003", op, `cannot compare '${a.name}' and '${b.name}'`, { left: a.name, right: b.name }); return; }
   if ((isBool(a) && isBool(b)) || (isStr(a) && isStr(b)) || ((a.k === "class" || (a.k === "gen" && a.name === "Handle") || (a.k === "tparam" && tparamHasCap(a.p, "Key"))) && same(a, b))) return;
+  const isStructType = (t: Type): boolean => t.k === "record" || t.k === "tuple" || (t.k === "gen" && STRUCTURAL_GENS.has(t.name));
+  if (isStructType(a) && isStructType(b)) {
+    c.at("E2002", op, `cannot compare '${show(lt)}' and '${show(rt)}' structurally; compare elements or fields explicitly (in tests, use 't.eq(a, b)')`, { kind: "compare-structural", left: show(lt), right: show(rt) });
+    return;
+  }
   c.at("E2002", op, `cannot compare '${show(lt)}' and '${show(rt)}'`);
 }
 
@@ -1117,7 +1200,15 @@ function prefix(c: Checker, u: ts.PrefixUnaryExpression, want: Type | undefined)
   }
   if (u.operator === K.ExclamationToken) {
     const t = expr(c, u.operand);
-    if (!isBool(t) && !isErr(t)) c.at("E2004", u.operand, "operand must be boolean", { actual: show(t) });
+    if (!isBool(t) && !isErr(t)) {
+      const before = c.prog.rep.out.length;
+      const { hint, cmp } = truthyHint(t, true);
+      c.at("E2004", u.operand, `operand must be boolean, got '${show(t)}'${hint}`, { kind: "truthiness", actual: show(t) });
+      if (cmp) {
+        const sf = c.fx.mod.sf;
+        attachFix(c, before, u.getStart(sf), u.end, `compare with '${cmp}'`, wrapNotFix(u, `${wrapOperand(sf, u.operand)} ${cmp}`));
+      }
+    }
     return BOOL;
   }
   const t = expr(c, u.operand, want);

@@ -15,6 +15,12 @@ const E1000_TYPE_NAMES = new Set([
   "ConstructorParameters", "ReturnType", "InstanceType", "ThisParameterType", "OmitThisParameter", "ThisType", "Awaited",
   "Uppercase", "Lowercase", "Capitalize", "Uncapitalize", "NoInfer",
 ]);
+const E1000_TYPE_HINTS: Record<string, string> = {
+  Record: "use 'Map<K, V>', or a closed record type when keys are fixed",
+  Partial: "declare a record type with each field typed as 'T | null'",
+  Readonly: "mark each field with 'readonly'",
+  Pick: "declare a record type with only the required fields",
+};
 /** Q123: names the emitted strict-mode ESM cannot bind (reserved words, `eval` / `arguments`). */
 const RESERVED_WORDS = new Set(["implements", "interface", "let", "package", "private", "protected", "public", "static", "yield", "await", "enum", "using", "eval", "arguments"]);
 /** Q123: member names with a special meaning on JS objects and classes. */
@@ -491,7 +497,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
           for (const c of (p.constraint as ts.IntersectionTypeNode).types) type(c);
         } else e1000(p.constraint, "this type parameter constraint");
       }
-      if (p.defaultType) e1000(p.defaultType, "default type argument");
+      if (p.defaultType) at("E1000", p.defaultType, "default type argument is not allowed; pass type arguments explicitly at the call site", { kind: "type-param-default" });
     }
   }
 
@@ -565,7 +571,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
     if (c.name) declName(c.name);
     typeParams(c.typeParameters);
     for (const h of c.heritageClauses ?? []) {
-      if (h.token !== K.ImplementsKeyword) { e1000(h, "'extends' on a class", { kind: "class-extends" }); continue; }
+      if (h.token !== K.ImplementsKeyword) { at("E1000", h, "'extends' on a class is not allowed; use 'implements' and hold the base in a field", { kind: "class-extends" }); continue; }
       for (const t of h.types) {
         const exp = t.expression;
         const ok = isId(exp) || (exp.kind === K.PropertyAccessExpression && isId((exp as ts.PropertyAccessExpression).expression) && isId((exp as ts.PropertyAccessExpression).name));
@@ -627,7 +633,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       for (const h of d.heritageClauses ?? []) e1000(h, "'extends' on a method interface", { kind: "interface-extends" });
       for (const m of d.members) {
         if (m.kind === K.PropertySignature) {
-          at("E1000", m, "interface cannot mix fields and methods", { kind: "interface-mixed" });
+          at("E1000", m, "interface cannot mix fields and methods; split into a field-only interface and a method-only interface, or use a 'class'", { kind: "interface-mixed" });
           continue;
         }
         if (m.kind !== K.MethodSignature) { e1000(m, "interface member other than a method signature"); continue; }
@@ -683,7 +689,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         if (isId(d.name)) { declName(d.name); bind(d.name); }
         else e1000(d.name, "this destructuring");
         if (d.type) type(d.type);
-        if (!d.initializer) { e1000(d.name, "declaration without initializer"); continue; }
+        if (!d.initializer) { at("E1000", d.name, "declaration without initializer is not allowed; initialize at declaration, or use a conditional expression for branched values", { kind: "no-initializer" }); continue; }
         expr(d.initializer);
       }
       return;
@@ -703,7 +709,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       else if (d.name.kind === K.ArrayBindingPattern && (where === "local" || where === "for-of")) arrayBindingPattern(d.name as ts.ArrayBindingPattern);
       else e1000(d.name, "this destructuring");
       if (d.type) type(d.type);
-      if (!d.initializer) { if (where !== "for-of") e1000(d.name, "declaration without initializer"); continue; }
+      if (!d.initializer) { if (where !== "for-of") at("E1000", d.name, "declaration without initializer is not allowed; initialize at declaration, or use a conditional expression for branched values", { kind: "no-initializer" }); continue; }
       if (where === "module" && !immutable(d.initializer, d.type)) at("E5002", d.initializer, "module-level const must be an immutable literal", { kind: "module-nonliteral-const" });
       expr(d.initializer);
     }
@@ -933,9 +939,11 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
           const repStr = op.kind === K.EqualsEqualsToken ? "===" : "!==";
           at("E1002", op, "use '===' / '!=='", { op: opStr });
           fix(`use '${repStr}'`, op.getStart(sf), op.end, repStr);
+        } else if (op.kind === K.InstanceOfKeyword) {
+          at("E1000", op, "operator 'instanceof' is not allowed; discriminate a tagged union with '.kind === \"...\"'", { kind: "instanceof", op: "instanceof" });
         } else if (!BINARY_OPS.has(op.kind)) {
           const opText = op.getText(sf);
-          e1000(op, `operator '${opText}'`, { kind: op.kind === K.InstanceOfKeyword ? "instanceof" : "operator", op: opText });
+          e1000(op, `operator '${opText}'`, { kind: "operator", op: opText });
         }
         let lhs = b.left;
         while (lhs.kind === K.ParenthesizedExpression) lhs = (lhs as ts.ParenthesizedExpression).expression;
@@ -953,7 +961,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
               at("E1000", u, `'${op}' is only allowed as a statement or for-loop incrementor`, { kind: "inc-dec", op });
             }
           } else if (u.operator === K.PlusToken) {
-            e1000(u, "unary '+'", { kind: "unary-operator", op: "+" });
+            at("E1000", u, "unary '+' is not allowed; remove '+', or use 'Number.parseFloat(s)' to parse a string", { kind: "unary-operator", op: "+" });
           } else {
             e1000(u, "this unary operator");
           }
@@ -1033,7 +1041,17 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       case K.FunctionExpression: fn(e as ts.FunctionExpression, "other"); return;
       case K.AsExpression: {
         const a = e as ts.AsExpression;
-        const s = pf.tokenAfter(a.expression.end); report("E1005", s, s + 2, "'as' is not allowed", { syntax: "as" }); // including `as const` (Q026)
+        const s = pf.tokenAfter(a.expression.end);
+        const isAsConst = a.type.getText(sf) === "const";
+        report(
+          "E1005",
+          s,
+          s + 2,
+          isAsConst
+            ? "'as const' is not allowed; annotate the binding with a 'readonly' type or string-literal union"
+            : "'as' is not allowed; for numeric conversion call the type name as a function (e.g. 'i32(x)', 'f64(x)'), for 'unknown' use 'cast<T>(x)', otherwise use a type annotation",
+          { kind: isAsConst ? "as-const" : "as", syntax: "as" },
+        ); // including `as const` (Q026)
         expr(a.expression);
         return;
       }
@@ -1079,7 +1097,7 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
         }
         return;
       }
-      case K.TypeOfExpression: e1000(e, "'typeof' operator", { kind: "typeof" }); return;
+      case K.TypeOfExpression: at("E1000", e, "'typeof' operator is not allowed; narrow a tagged union via '.kind', or use 'cast<T>(x)' for 'unknown'", { kind: "typeof" }); return;
       case K.DeleteExpression: e1000(e, "'delete' operator", { kind: "delete" }); return;
       case K.VoidExpression: e1000(e, "'void' operator", { kind: "void" }); return;
       case K.TaggedTemplateExpression: e1000(e, "tagged template expression", { kind: "tagged-template" }); return;
@@ -1101,14 +1119,20 @@ export function checkSyntax(pf: ParsedFile, file: string = pf.path): Diagnostic[
       case K.BigIntKeyword: case K.UndefinedKeyword: return; // names, not syntax: E2000 in P2 (Q011)
       case K.LiteralType: {
         const l = (t as ts.LiteralTypeNode).literal;
-        if (l.kind !== K.StringLiteral && l.kind !== K.NullKeyword) e1000(t, "this literal type");
+        if (l.kind !== K.StringLiteral && l.kind !== K.NullKeyword) {
+          at("E1000", t, "this literal type is not allowed; use a numeric type (such as 'i32') or 'boolean' and express range bounds with 'requires'", { kind: "literal-type" });
+        }
         return;
       }
       case K.TypeReference: {
         const r = t as ts.TypeReferenceNode;
         const qOk = r.typeName.kind === K.QualifiedName && isId((r.typeName as ts.QualifiedName).left) && isId((r.typeName as ts.QualifiedName).right);
         if (!isId(r.typeName) && !qOk) e1000(r.typeName, "qualified type name");
-        else if (isId(r.typeName) && E1000_TYPE_NAMES.has(r.typeName.text)) e1000(r.typeName, `'${r.typeName.text}'`);
+        else if (isId(r.typeName) && E1000_TYPE_NAMES.has(r.typeName.text)) {
+          const name = r.typeName.text;
+          const hint = E1000_TYPE_HINTS[name];
+          at("E1000", r.typeName, hint ? `'${name}' is not allowed; ${hint}` : `'${name}' is not allowed`, { kind: "utility-type", name });
+        }
         for (const a of r.typeArguments ?? []) type(a);
         return;
       }

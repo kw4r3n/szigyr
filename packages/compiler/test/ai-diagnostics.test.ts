@@ -44,9 +44,10 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
     const ifaceMixed = checkSrc("interface Foo { readonly x: i32; m(): void; }\n").diags[0]!;
     expect(ifaceMixed).toMatchObject({
       code: "E1000",
-      message: "interface cannot mix fields and methods",
       data: { kind: "interface-mixed" },
     });
+    expect(ifaceMixed.message).toContain("interface cannot mix fields and methods");
+    expect(ifaceMixed.message).toContain("class");
 
     const forIn = checkSrc("export function f(xs: Array<i32>): void { for (const k in xs) {} }\n").diags[0]!;
     expect(forIn).toMatchObject({ code: "E1000", message: "'for..in' is not allowed; use 'for..of' or an index loop", data: { kind: "for-in" } });
@@ -371,5 +372,80 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
       { kind: "unsigned-compare-zero", type: "usize", always: false },
     ]);
     expect(explainCode("E2002")?.kinds?.["unsigned-compare-zero"]).toContain("i > 0");
+  });
+
+  it("includes replacement hints, data.kind, and safe fixes for common JS/TS mistakes", () => {
+    const checkOne = (src: string, code: string, kind: string, hints: string[], hasFix: boolean) => {
+      const ds = checkSrc(src).diags;
+      const d = ds.find((x) => x.code === code)!;
+      expect(d, src).toMatchObject({ code, data: { kind } });
+      for (const h of hints) expect(d.message, `${src} -> ${h}`).toContain(h);
+      if (hasFix) expect(d.fixes?.length ?? 0, src).toBeGreaterThan(0);
+      else expect(d.fixes, src).toBeUndefined();
+      return { ds, d };
+    };
+
+    checkOne("export function f(x: number): i32 { return x as i32; }\n", "E1005", "as", ["i32(x)", "cast<T>(x)"], false);
+    checkOne('export function f(): Array<string> { const y = ["a", "b"] as const; return y; }\n', "E1005", "as-const", ["readonly"], false);
+    checkOne("export function f(v: Array<number>): string { return `${v.find((n) => n > 1)}`; }\n", "E2002", "template-nullable", ["!== null", "??"], false);
+    checkOne('export function f(m: Map<string, number>, k: string): string { return `${m.get(k)}`; }\n', "E2002", "template-nullable", ["!== null", "??"], false);
+    checkOne('export function f(s: string): string { return `${s.indexOf("a")}`; }\n', "E2002", "template-nullable", ["!== null", "??"], false);
+
+    checkOne("export function f(): number { return NaN; }\n", "E2000", "js-global", ["Number.NaN"], true);
+    checkOne("export function f(): number { return Infinity; }\n", "E2000", "js-global", ["Number.POSITIVE_INFINITY"], true);
+    checkOne("export function f(x: number): boolean { return isNaN(x); }\n", "E2000", "js-global", ["Number.isNaN(x)"], true);
+    checkOne("export function f(s: string): number { return parseFloat(s); }\n", "E2000", "js-global", ["Number.parseFloat(s)"], true);
+    checkOne("export function f(x: number | null): boolean { return x === undefined; }\n", "E2000", "js-global", ["null"], true);
+    checkOne("export function f(x: number | undefined): i32 { return x === null ? 0 : 1; }\n", "E2000", "js-global", ["null"], true);
+    checkOne("export function f(s: string): i32 { return parseInt(s, 10); }\n", "E2000", "js-global", ["Number.parseI32(s)", "Result"], false);
+    checkOne("export function f(s: string): number { return Number(s); }\n", "E2000", "js-global", ["Number.parseFloat(s)", "f64(x)"], false);
+    checkOne("export function f(r: Map<string, number>): Array<string> { return Object.keys(r); }\n", "E2000", "js-global", ["Map<K, V>"], false);
+    checkOne("export function f(xs: Array<number>): Array<number> { return Array.from(xs); }\n", "E2000", "js-global", ["[...xs]"], false);
+
+    const mathVal = checkSrc("export function f(): number { return Math; }\n").diags[0]!;
+    expect(mathVal).toMatchObject({ code: "E2000", data: { name: "Math" } });
+    expect(mathVal.data?.kind).toBeUndefined();
+
+    checkOne("export function f(s: string): i32 { if (s) return 1; return 0; }\n", "E2004", "truthiness", ['!== ""'], true);
+    checkOne("export function f(i: i32): i32 { if (i) return 1; return 0; }\n", "E2004", "truthiness", ["!== 0"], true);
+    checkOne("export function f(n: number): i32 { if (n) return 1; return 0; }\n", "E2004", "truthiness", ["!== 0", "NaN"], false);
+    checkOne("export function f(s: string): boolean { return !s; }\n", "E2004", "truthiness", ['=== ""'], true);
+    checkOne("export function f(i: i32): boolean { return !i; }\n", "E2004", "truthiness", ["=== 0"], true);
+    checkOne("export function f(n: number): boolean { return !n; }\n", "E2004", "truthiness", ["=== 0", "NaN"], false);
+    expect(applyFirstFix("export function f(i: i32): boolean { return !i === false; }\n").fixed).toContain("(i === 0) === false");
+
+    const orNum = checkOne("export function f(a: number, b: number): number { return a || b; }\n", "E2004", "truthiness", ["??", "T | null"], false);
+    expect(orNum.ds.map((d) => d.code)).toEqual(["E2004", "E2004", "E2002"]);
+
+    checkOne("export function f(r: Record<string, number>): i32 { return 1; }\n", "E1000", "utility-type", ["Map<K, V>"], false);
+    checkOne("type T = { readonly a: number }; export function f(r: Partial<T>): i32 { return 1; }\n", "E1000", "utility-type", ["T | null"], false);
+    checkOne("type T = { a: number }; export function f(r: Readonly<T>): i32 { return 1; }\n", "E1000", "utility-type", ["readonly"], false);
+    checkOne('type T = { a: number; b: number }; export function f(r: Pick<T, "a">): i32 { return 1; }\n', "E1000", "utility-type", ["record"], false);
+    checkOne('type T = { a: number; b: number }; export function f(r: Omit<T, "b">): i32 { return 1; }\n', "E1000", "utility-type", ["'Omit'"], false);
+
+    checkOne("class A { x: i32 = 1; } class B extends A {}\n", "E1000", "class-extends", ["implements"], false);
+    checkOne('export function f(x: unknown): boolean { return typeof x === "string"; }\n', "E1000", "typeof", [".kind", "cast<T>(x)"], false);
+    checkOne("class C { x: i32 = 1; } export function f(x: unknown): boolean { return x instanceof C; }\n", "E1000", "instanceof", [".kind ==="], false);
+    checkOne("export function f(n: number): number { return +n; }\n", "E1000", "unary-operator", ["Number.parseFloat(s)"], false);
+    checkOne("export function f(): i32 { let x: i32; x = 1; return x; }\n", "E1000", "no-initializer", ["initialize"], false);
+    checkOne("type D = 1 | 2 | 3;\n", "E1000", "literal-type", ["i32", "requires"], false);
+    checkOne("export function f<T = number>(x: T): T { return x; }\n", "E1000", "type-param-default", ["explicitly"], false);
+    checkOne("export function f(s: string): i32 { let n: i32 = 0; for (const ch of s) { n += 1; } return n; }\n", "E2002", "iterate-string", ["s.charCodeAt(i)", "s.codePointAt(i)"], false);
+    checkOne("export function f(a: Array<i32>, b: Array<i32>): boolean { return a === b; }\n", "E2002", "compare-structural", ["t.eq(a, b)"], false);
+    checkOne("type R = { a: i32 }; export function f(a: R, b: R): boolean { return a === b; }\n", "E2002", "compare-structural", ["t.eq(a, b)"], false);
+
+    for (const [code, ks] of [
+      ["E1000", ["utility-type", "no-initializer", "literal-type", "type-param-default"]],
+      ["E1005", ["as", "as-const"]],
+      ["E2000", ["js-global"]],
+      ["E2002", ["template-nullable", "iterate-string", "compare-structural"]],
+      ["E2004", ["truthiness"]],
+    ] as const) {
+      for (const k of ks) {
+        const msg = explainCode(code)?.kinds?.[k] ?? "";
+        expect(msg.length, `${code}.${k}`).toBeGreaterThan(0);
+        expect(msg).not.toMatch(/§|SPEC|Q\d{2,3}|use strict|\b(Eq|Hash|Ord)\b/);
+      }
+    }
   });
 });

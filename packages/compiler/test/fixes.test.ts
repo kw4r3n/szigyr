@@ -45,6 +45,17 @@ const cases: [string, string, string, string][] = [
   ["E2003", "export function f(a: i32, b: f64): i32 {\n  return a + b;\n}\n", "i32(b)", "a + b"],
   ["E2003", "export function f(a: i32, b: f64): i32 {\n  let x: i32 = a;\n  x += b;\n  return x;\n}\n", "i32(b)", "+= b"],
   ["E2005", 'type Color = "red" | "green" | "blue";\nexport function f(c: Color): i32 {\n  switch (c) {\n    case "red": return 1;\n  }\n}\n', 'case "green": panic("unhandled");', "E2005"],
+  ["E2000", "export function f(): f64 {\n  return NaN;\n}\n", "Number.NaN", "NaN"],
+  ["E2000", "export function f(): f64 {\n  return Infinity;\n}\n", "Number.POSITIVE_INFINITY", "Infinity"],
+  ["E2000", "export function f(x: f64): boolean {\n  return isNaN(x);\n}\n", "Number.isNaN", "isNaN"],
+  ["E2000", "export function f(s: string): f64 {\n  return parseFloat(s);\n}\n", "Number.parseFloat", "parseFloat"],
+  ["E2000", "export function f(x: f64 | null): boolean {\n  return x === undefined;\n}\n", "x === null", "undefined"],
+  ["E2000", "export function f(x: number | undefined): number {\n  if (x === null) return 0;\n  return x;\n}\n", "number | null", "undefined"],
+  ["E2004", "export function f(s: string): i32 {\n  if (s) return 1;\n  return 0;\n}\n", 's !== ""', "if (s)"],
+  ["E2004", "export function f(i: i32): i32 {\n  if (i) return 1;\n  return 0;\n}\n", "i !== 0", "if (i)"],
+  ["E2004", "export function f(a: usize, b: usize): i32 {\n  if (a + b) return 1;\n  return 0;\n}\n", "(a + b) !== 0", "if (a + b)"],
+  ["E2004", "export function f(s: string): boolean {\n  return !s;\n}\n", 's === ""', "!s"],
+  ["E2004", "export function f(i: i32): boolean {\n  return !i;\n}\n", "i === 0", "!i"],
 ];
 
 for (const [code, src, has, _] of cases) {
@@ -85,7 +96,7 @@ export function f(a: i32, b: i32, c: f64, col: Color): i32 {
   expect(byCode("E7001")?.fixes?.[0]?.edits[0]?.newText).toBe('"./dep.szigyr"');
   expect(byCode("E2002")?.data).toEqual({ expected: "i32", actual: "boolean" });
   expect(byCode("E2003")?.data).toEqual({ left: "i32", right: "f64" });
-  expect(byCode("E2004")?.data).toEqual({ actual: "i32" });
+  expect(byCode("E2004")?.data).toEqual({ kind: "truthiness", actual: "i32" });
   expect(byCode("E2005")?.data).toEqual({ missing: ["green", "blue"] });
   const e2007 = byCode("E2007");
   expect(e2007?.data).toEqual({ type: "i32" });
