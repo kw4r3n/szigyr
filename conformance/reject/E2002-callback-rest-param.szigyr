@@ -1,0 +1,9 @@
+// expect: E2002 @ 8:16
+// stage: 1
+// open-question: Q310
+function cnt(...xs: Array<usize>): usize {
+  return xs.length;
+}
+export function f(a: Array<usize>): Array<usize> {
+  return a.map(cnt);
+}

@@ -1,0 +1,9 @@
+// expect: E2002 @ 8:16
+// stage: 1
+// open-question: Q310
+function pick(x: usize, i: usize, z: i32 = 5): i32 {
+  return z;
+}
+export function f(a: Array<usize>): Array<i32> {
+  return a.map(pick);
+}

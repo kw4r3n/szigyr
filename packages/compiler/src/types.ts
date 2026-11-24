@@ -23,9 +23,9 @@ export interface TParam {
   name: string; id: number; constraint?: Type; caps?: Set<Capability>;
   owner?: "managed" | "strict" | "rt"; allowOwned?: boolean; inParam?: boolean; noPromise?: boolean;
 }
-/** `min`: builtin optional trailing parameters (Q032). `prefix`: a builtin callback may take a prefix of the parameters. */
+/** `min`: builtin optional trailing parameters (Q032). `prefix`: a builtin callback may take a prefix of the parameters. `builtinCb`: fixed-arity builtin/host callback rejecting `...rest` or extra params. */
 export interface FnType {
-  k: "fn"; tparams: TParam[]; params: Type[]; rest?: Type; ret: Type; min?: number; prefix?: boolean;
+  k: "fn"; tparams: TParam[]; params: Type[]; rest?: Type; ret: Type; min?: number; prefix?: boolean; builtinCb?: boolean;
   /** Builtin call-site conditions: `cast` / `codec` / `owned` / `eq` / `copy` constrain the first type argument (Q084, Q086); `trap` checks the code literal (Q058). */
   /** `box` / `chandle` / `castptr`: the §14.4 / §14.5 conditions on the type argument. */
   tcheck?: "cast" | "codec" | "jsonstringify" | "owned" | "eq" | "copy" | "trap" | "box" | "chandle" | "castptr" | "ring" | "alloc" | "ptrnull" | "ptrsizeof";
@@ -223,6 +223,7 @@ export function assignable(s: Type, t: Type, arg = false): boolean {
   if (s.k === "tuple" && t.k === "tuple") return s.elems.length === t.elems.length && s.elems.every((e, i) => assignable(e, t.elems[i]!));
   if (s.k === "tuple" && t.k === "gen" && t.name === "ReadonlyArray") return s.elems.every((e) => assignable(e, t.args[0]!));
   if (s.k === "fn" && t.k === "fn") {
+    if (t.builtinCb && !t.rest && (s.rest !== undefined || s.params.length > t.params.length)) return false;
     const sMin = s.min ?? s.params.length;
     if (sMin > t.params.length) return false;
     if (t.rest) {

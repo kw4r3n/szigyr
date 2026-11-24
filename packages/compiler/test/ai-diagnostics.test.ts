@@ -169,4 +169,44 @@ describe("AI-friendly diagnostics, quick fixes, and suggestions", () => {
     const cascade = checkSrc("function f(xs: Array<i32>): usize {\n  \"use owned\";\n  return xs.length + xs.length + xs.length;\n}\n");
     expect(cascade.diags.filter((d) => d.code === "E4002")).toHaveLength(1);
   });
+
+  it("rejects rest/extra-default callbacks on host/builtin APIs while allowing them on user HOFs", () => {
+    expect(explainCode("E2002")?.kinds?.["callback-extra-params"]).toBeTruthy();
+
+    // User HOFs still allow contravariant rest & trailing default callbacks
+    const userHof = checkSrc([
+      "function apply(f: (x: i32) => i32): i32 { return f(1); }",
+      "function withDef(x: i32, z: i32 = 5): i32 { return x + z; }",
+      "function withRest(...xs: Array<i32>): i32 { return i32(xs.length); }",
+      "export function ok(): i32 { return apply(withDef) + apply(withRest); }",
+      "",
+    ].join("\n"));
+    expect(userHof.diags).toEqual([]);
+
+    // Host and special builtin callbacks reject rest and extra defaults
+    const badHostCases = [
+      "export async function s1(sys: System): Promise<void> { const _ = await sys.net.serve({ host: \"127.0.0.1\", port: 0 }, async (req: HttpServerRequest, z: i32 = 1): Promise<HttpServerResponse> => ({ status: 200, headers: [], body: \"ok\" })); }\n",
+      "export async function s2(sys: System): Promise<void> { const _ = await sys.net.serveRaw({ host: \"127.0.0.1\", port: 0 }, async (...xs: Array<HttpServerRequest>): Promise<HttpServerRawResponse> => ({ status: 200, headers: [], body: { kind: \"text\", value: \"ok\" } })); }\n",
+      "export function j1(js: Js): JsRef { return js.callback<i32>((r: Result<i32, CastError>, z: i32 = 1): void => {}); }\n",
+      "export function j2(js: Js): JsRef { return js.fn((...xs: Array<JsRef>): JsRef => xs[0]); }\n",
+      "test(\"t1\", (t: Test) => { t.traps(\"T006\", (...xs: Array<i32>): void => {}); });\n",
+      "test(\"t2\", async (t: Test) => { await t.trapsAsync(\"T006\", async (z: i32 = 1): Promise<void> => {}); });\n",
+      "export function fp1(fp: FakeProc): void { fp.onRun((req: ProcRequest, z: i32 = 1): Result<ProcOutput, IoError> => Result.err({ code: \"E\", message: \"m\" })); }\n",
+      "export function fn1(fn: FakeNet): void { fn.onFetch((...xs: Array<HttpClientRequest>): Result<HttpResponse, IoError> => Result.err({ code: \"E\", message: \"m\" })); }\n",
+      "export function oc1(a: Alloc): usize { const c = OwnedCell.create(Vec.create<i32>(a, 1)); return c.withRef((v: Ref<Vec<i32>>, z: i32 = 1): usize => v.length); }\n",
+      "export function oc2(a: Alloc): void { const c = OwnedCell.create(Vec.create<i32>(a, 1)); c.withMut((...xs: Array<Mut<Vec<i32>>>): void => {}); }\n",
+      "export function r1(a: Alloc): void { using r = Resource.own(Vec.create<i32>(a, 1), (v: Vec<i32>, z: i32 = 1): void => {}); }\n",
+      "function dropRest(v: Vec<i32>, ...xs: Array<i32>): void {}\nexport function r2(a: Alloc): void { using r = Resource.own(Vec.create<i32>(a, 1), dropRest); }\n",
+      "test(\"bad rest test\", (...t: Array<Test>): void => {});\n",
+      "export function ens1(x: i32): i32 { ensures((r: i32, z: i32 = 1): boolean => r > 0); return x; }\n",
+      "test(\"fa1\", (t: Test) => { forAll((x: i32 = 1): boolean => x > 0); });\n",
+    ];
+    for (const src of badHostCases) {
+      const ds = checkSrc(src).diags;
+      expect(ds.length, src).toBeGreaterThan(0);
+      expect(ds[0]!.code, src).toBe("E2002");
+      expect(ds[0]!.message).not.toMatch(/Q\d{2,3}/);
+      expect(ds[0]!.message).not.toContain("§");
+    }
+  });
 });

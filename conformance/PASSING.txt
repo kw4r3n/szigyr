@@ -217,6 +217,8 @@ reject/E2002-bit-compound-i32-ushr.szigyr
 reject/E2002-bit-compound-u32-shr.szigyr
 reject/E2002-bitop-non-numeric-rhs.szigyr
 reject/E2002-call-spread-non-rest.szigyr
+reject/E2002-callback-extra-default.szigyr
+reject/E2002-callback-rest-param.szigyr
 reject/E2002-cast-class-target.szigyr
 reject/E2002-cast-of-result.szigyr
 reject/E2002-cast-type-parameter.szigyr

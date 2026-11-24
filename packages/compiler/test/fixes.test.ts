@@ -164,3 +164,75 @@ it("attaches concrete-type, resource-escape, conflictAt, cycle, and CLI kind/mis
   expect(readFileSync(mutRecFile, "utf8")).toContain("readonly x: i32; readonly y: i32");
   expect(check(mutRecFile)).toEqual([]);
 });
+
+it("rejects rest/extra-default builtin callbacks with E2002 callback-extra-params and fixes non-inline callbacks", async () => {
+  const dir = mkdtempSync(join(tmpdir(), `${CLI_NAME}-cb-`));
+
+  // Non-inline rest callback (m4/m8 shape) gets arrow-wrap --fix that makes check clean
+  const restFile = join(dir, "cb-rest.szigyr");
+  writeFileSync(restFile, [
+    "function cnt(...xs: Array<usize>): usize { return xs.length; }",
+    "export function main(sys: System): void {",
+    "  const a: Array<usize> = [10, 20, 30];",
+    "  const r = a.map(cnt);",
+    "  sys.log.info(`${r.join(\",\")}`);",
+    "}",
+    "",
+  ].join("\n"));
+  const restDiag = check(restFile)[0];
+  expect(restDiag?.code).toBe("E2002");
+  expect(restDiag?.data).toMatchObject({ kind: "callback-extra-params" });
+  expect(restDiag?.fixes?.[0]?.title).toBe("wrap in arrow function");
+  expect(await cliMain(["check", "--fix", restFile], () => {}, () => {})).toBe(0);
+  expect(readFileSync(restFile, "utf8")).toContain("a.map((p0, p1) => cnt(p0, p1))");
+  expect(check(restFile)).toEqual([]);
+
+  // Non-inline trailing-default callback (m6 shape) gets arrow-wrap --fix that makes check clean
+  const defFile = join(dir, "cb-def.szigyr");
+  writeFileSync(defFile, [
+    "function g(x: usize, i: usize, z: i32 = 5): i32 { return z; }",
+    "export function main(sys: System): void {",
+    "  const a: Array<usize> = [10, 20, 30];",
+    "  const r = a.map(g);",
+    "  sys.log.info(`${r.length}`);",
+    "}",
+    "",
+  ].join("\n"));
+  const defDiag = check(defFile)[0];
+  expect(defDiag?.code).toBe("E2002");
+  expect(defDiag?.data).toMatchObject({ kind: "callback-extra-params" });
+  expect(defDiag?.fixes?.[0]?.title).toBe("wrap in arrow function");
+  expect(await cliMain(["check", "--fix", defFile], () => {}, () => {})).toBe(0);
+  expect(readFileSync(defFile, "utf8")).toContain("a.map((p0, p1) => g(p0, p1))");
+  expect(check(defFile)).toEqual([]);
+
+  // 0-arg host callback (Test.traps) gets `() => fn()` fix
+  const trapFile = join(dir, "cb-zero.szigyr");
+  writeFileSync(trapFile, [
+    "function helper(x: i32 = 5): void { panic(\"boom\"); }",
+    "test(\"zero-arg wrap\", (t: Test) => {",
+    "  t.traps(\"T006\", helper);",
+    "});",
+    "",
+  ].join("\n"));
+  const trapDiag = check(trapFile)[0];
+  expect(trapDiag?.code).toBe("E2002");
+  expect(trapDiag?.data).toMatchObject({ kind: "callback-extra-params" });
+  expect(await cliMain(["check", "--fix", trapFile], () => {}, () => {})).toBe(0);
+  expect(readFileSync(trapFile, "utf8")).toContain("t.traps(\"T006\", () => helper())");
+  expect(check(trapFile)).toEqual([]);
+
+  // Inline arrow with rest/extra-default gets E2002 callback-extra-params with NO fix
+  const inlineFile = join(dir, "cb-inline.szigyr");
+  writeFileSync(inlineFile, [
+    "export function main(sys: System): void {",
+    "  const s = new Set<string>([\"a\"]);",
+    "  s.forEach((...xs: Array<string>): void => { sys.log.info(`${xs.length}`); });",
+    "}",
+    "",
+  ].join("\n"));
+  const inlineDiag = check(inlineFile)[0];
+  expect(inlineDiag?.code).toBe("E2002");
+  expect(inlineDiag?.data).toMatchObject({ kind: "callback-extra-params" });
+  expect(inlineDiag?.fixes).toBeUndefined();
+});

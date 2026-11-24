@@ -81,14 +81,56 @@ function attachConvertFix(c: Checker, e: ts.Expression, t: Type, want: Type): vo
   }];
 }
 
+function reportMismatch(c: Checker, e: ts.Expression, t: Type, want: Type, arg = false): boolean {
+  if (assignable(t, want, arg)) return true;
+  if (
+    t.k === "fn" && want.k === "fn" && want.builtinCb && !want.rest &&
+    (t.rest !== undefined || t.params.length > want.params.length) &&
+    assignable(t, { ...want, builtinCb: false }, arg)
+  ) {
+    const extraDesc = t.rest !== undefined ? "a rest parameter" : `${t.params.length} parameters`;
+    const inner = assignTarget(e);
+    const isInline = isFnExpr(inner);
+    const arityStr = want.params.length === 0 ? "0 parameters" : `at most ${want.params.length} parameter(s)`;
+    const hint = isInline ? `use ${arityStr}` : `wrap in an arrow function taking ${want.params.length} parameter(s)`;
+    c.at("E2002", e, `callback '${show(t)}' accepts ${extraDesc}, exceeding expected '${show(want)}' (${hint})`, {
+      kind: "callback-extra-params",
+      expected: show(want),
+      actual: show(t),
+    });
+    if (!isInline && c.fx.layer === "managed") {
+      const d = c.prog.rep.out.at(-1);
+      if (d?.code === "E2002") {
+        const sf = c.fx.mod.sf;
+        const s = e.getStart(sf);
+        const raw = sf.text.slice(s, e.end);
+        const calleeText = inner.kind === K.Identifier || inner.kind === K.PropertyAccessExpression ||
+          inner.kind === K.ElementAccessExpression || inner.kind === K.CallExpression || e.kind === K.ParenthesizedExpression
+          ? raw : `(${raw})`;
+        const pNames: string[] = [];
+        for (let i = 0, idx = 0; i < want.params.length; i++) {
+          while (c.scope.lookup(`p${idx}`) || c.prog.lookupValue(c.mod, `p${idx}`) || c.mod.nsImports.has(`p${idx}`)) idx++;
+          pNames.push(`p${idx++}`);
+        }
+        const newText = pNames.length === 0
+          ? `() => ${calleeText}()`
+          : `(${pNames.join(", ")}) => ${calleeText}(${pNames.join(", ")})`;
+        d.fixes = [{
+          title: "wrap in arrow function",
+          edits: [{ range: { start: c.fx.mod.pf.position(s), end: c.fx.mod.pf.position(e.end) }, newText }],
+        }];
+      }
+    }
+    return false;
+  }
+  c.at("E2002", e, `expected '${show(want)}', got '${show(t)}'`, { expected: show(want), actual: show(t) });
+  attachConvertFix(c, e, t, want);
+  return false;
+}
+
 export function checkTo(c: Checker, e: ts.Expression, want: Type, arg = false): Type {
   const t = expr(c, e, want);
-  if (!assignable(t, want, arg)) {
-    c.at("E2002", e, `expected '${show(want)}', got '${show(t)}'`, { expected: show(want), actual: show(t) });
-    attachConvertFix(c, e, t, want);
-    return ERROR;
-  }
-  return t;
+  return reportMismatch(c, e, t, want, arg) ? t : ERROR;
 }
 function attachNonNullCondFix(c: Checker, e: ts.Expression, t: Type): void {
   const nn = nonNull(t);
@@ -1196,7 +1238,7 @@ function audioOpenCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExp
   if (sym.sig.tparams.length) return bad(`the audio callback '${sym.name}' cannot be generic`);
   if (sym.layer !== "rt") return bad(`the audio callback '${sym.name}' must be a 'use rt' function (got ${sym.layer})`);
   if (sym.unsafe) return bad(`the audio callback '${sym.name}' cannot use 'use unsafe'`);
-  if (sym.sig.min !== undefined) return bad(`the audio callback '${sym.name}' cannot have default parameters`);
+  if (sym.sig.min !== undefined || sym.sig.rest) return bad(`the audio callback '${sym.name}' cannot have default or rest parameters`);
   if (isErr(st)) return ERROR;
   const sig = sym.sig;
   const wantSt = isOwned(st) ? gen("Mut", st) : st;
@@ -1237,7 +1279,7 @@ function resourceCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpr
   let v0 = valArg;
   while (v0.kind === K.ParenthesizedExpression) v0 = (v0 as ts.ParenthesizedExpression).expression;
   const valParamIdx = m === "own" ? 0 : 1;
-  const valParamT = fnRef.sym && fnRef.sym.sig.tparams.length === 0 && fnRef.sym.sig.params.length === wantArgs - 1
+  const valParamT = fnRef.sym && fnRef.sym.sig.tparams.length === 0 && !fnRef.sym.sig.rest && fnRef.sym.sig.min === undefined && fnRef.sym.sig.params.length === wantArgs - 1
     ? fnRef.sym.sig.params[valParamIdx]
     : undefined;
   let T: Type;
@@ -1274,6 +1316,8 @@ function resourceCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpr
     } else if (
       fnRef.sym &&
       fnRef.sym.sig.tparams.length === 0 &&
+      !fnRef.sym.sig.rest &&
+      fnRef.sym.sig.min === undefined &&
       fnRef.sym.sig.params.length === 2 &&
       !isErr(fnRef.sym.sig.params[0]!) &&
       !(fnRef.sym.sig.params[0]!.k === "gen" && (fnRef.sym.sig.params[0]!.name === "Ref" || fnRef.sym.sig.params[0]!.name === "Mut"))
@@ -1304,7 +1348,7 @@ function resourceCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpr
   let cleanupFn: FnSym | undefined;
   const checkCleanupSym = (sym: FnSym): FnSym | undefined => {
     if (sym.sig.tparams.length) { c.at("E4003", cleanupArg, `the generic function '${sym.name}' cannot be used as a cleanup callback`); return undefined; }
-    if (sym.sig.min !== undefined) { c.at("E2002", cleanupArg, `cleanup function '${sym.name}' cannot have default parameters`); return undefined; }
+    if (sym.sig.min !== undefined || sym.sig.rest) { c.at("E2002", cleanupArg, `cleanup function '${sym.name}' cannot have default or rest parameters`); return undefined; }
     if (!c.callCheck(sym)) {
       const calleeTag = sym.layer === "rt" && sym.unsafe ? "rt+unsafe" : sym.layer;
       c.at("E4001", cleanupArg, `a ${c.fx.layer} function cannot use the ${calleeTag} function '${sym.name}' as cleanup`, { callerLayer: c.fx.layer, calleeLayer: calleeTag });
@@ -1329,7 +1373,7 @@ function resourceCall(c: Checker, e: ts.CallExpression, p: ts.PropertyAccessExpr
   } else if (c.fx.layer !== "managed") {
     c.at("E4003", cleanupArg, "cleanup must be the name of a module-level strict / rt function");
   } else {
-    checkTo(c, cleanupArg, fn(expParams, VOID));
+    checkTo(c, cleanupArg, { ...fn(expParams, VOID), builtinCb: true });
   }
 
   if (isErr(T)) return ERROR;
@@ -1829,7 +1873,7 @@ function callSig(c: Checker, sig: FnType, e: ts.CallExpression | ts.NewExpressio
     const t = later[i];
     if (!t || isErr(t)) return;
     const p = unref(subst(paramType(a, i), m));
-    if (!assignable(t, p, true)) c.at("E2002", argNode(a), `expected '${show(p)}', got '${show(t)}'`);
+    reportMismatch(c, argNode(a), t, p, true);
   });
   for (const { a, t, i } of fnChecks) { // Q189 (b): parameter and return types must match exactly
     const p = unref(subst(sig.params[i]!, m));
@@ -1951,7 +1995,7 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
       }
       const sym = fnRef.sym;
       if (sym.sig.tparams.length) { c.at("E4003", a, `'cfn' cannot take the generic function '${sym.name}'`, { kind: "generic-fn", name: sym.name }); return ERROR; }
-      if (sym.sig.min !== undefined) { c.at("E4003", a, `'cfn' cannot take '${sym.name}' because it has default parameters`); return ERROR; }
+      if (sym.sig.min !== undefined || sym.sig.rest) { c.at("E4003", a, `'cfn' cannot take '${sym.name}' because it has default or rest parameters`); return ERROR; }
       if (sym.layer !== "rt") { c.at("E4001", a, `'cfn' takes an rt function, not the ${sym.layer} function '${sym.name}'`, { callerLayer: c.fx.layer, calleeLayer: sym.layer }); return ERROR; }
       if (sym.sig.params.some((p) => !boundary(p)) || !(boundary(sym.sig.ret) || (sym.sig.ret.k === "prim" && sym.sig.ret.name === "void"))) {
         c.at("E4007", a, `the signature of '${sym.name}' cannot cross the C boundary`, { actual: show(sym.sig) });
@@ -1992,12 +2036,12 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
       if (name === "ensures") {
         const a = args[0]!;
         const r = c.fx.ret ?? ERROR;
-        const pred = r.k === "prim" && r.name === "void" ? fn([], BOOL) : fn([r], BOOL); // Q129: a void function's ensures takes no argument
+        const pred: FnType = { ...fn(r.k === "prim" && r.name === "void" ? [] : [r], BOOL), builtinCb: true }; // Q129: a void function's ensures takes no argument
         if (!isFnExpr(a)) c.at("E2002", a, `ensures takes '${show(pred)}'`);
         else {
           ensuresArgs.add(a);
           const t = checkArrow(c, a, pred, false);
-          if (!assignable(t, pred)) c.at("E2002", a, `expected '${show(pred)}'`);
+          reportMismatch(c, a, t, pred);
         }
       } else checkTo(c, args[0]!, BOOL);
       c.fx.contract = saved;
@@ -2008,7 +2052,10 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
       if (!arity(2)) return VOID;
       if (args[0]!.kind !== K.StringLiteral && args[0]!.kind !== K.NoSubstitutionTemplateLiteral) c.at("E2002", args[0]!, "test name must be a string literal");
       const f = args[1]!;
-      if (!isFnExpr(f) || f.parameters.length !== 1) { c.at("E2002", f, "test body must be '(t: Test) => { ... }'"); return VOID; }
+      if (!isFnExpr(f) || f.parameters.length !== 1 || !!f.parameters[0]?.dotDotDotToken || !!f.parameters[0]?.initializer) {
+        c.at("E2002", f, "test body must be '(t: Test) => { ... }'");
+        return VOID;
+      }
       const t = checkArrow(c, f, fn([opaque("Test")], VOID), true);
       if (!isErr(t.params[0]!) && !same(t.params[0]!, opaque("Test"))) c.at("E2002", f.parameters[0]!.type ?? f, "test body takes 't: Test'");
       return VOID;
@@ -2034,7 +2081,7 @@ function builtinCall(c: Checker, e: ts.CallExpression, callee: ts.Identifier, wa
         if (a.typeParameters?.length) { c.at("E2002", a, "'forAll' callback cannot be generic"); return VOID; }
         if (!a.parameters.length) { c.at("E2002", a, "'forAll' function must have at least one parameter"); return VOID; }
         const sig = checkArrow(c, a, undefined, true);
-        if (sig.rest) { c.at("E2002", a, "'forAll' does not support rest parameters"); return VOID; }
+        if (sig.rest || sig.min !== undefined) { c.at("E2002", a, `'forAll' does not support ${sig.rest ? "rest" : "default"} parameters`); return VOID; }
         if (!isErr(sig.ret) && !isBool(sig.ret) && !(sig.ret.k === "prim" && sig.ret.name === "void")) {
           c.at("E2002", a, `'forAll' callback must return 'boolean' or 'void', got '${show(sig.ret)}'`);
           return VOID;

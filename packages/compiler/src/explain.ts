@@ -62,6 +62,7 @@ const ENTRIES: Record<string, ExplainEntry> = Object.fromEntries([
     "concrete-type-required": "Provide a concrete type argument without unresolved type parameters here.",
     "missing-capability": "Ensure the type satisfies the required capability (Copy, Native, Owned, Send, Key, or Codec).",
     "json-int64": "Convert 'i64'/'u64' fields to 'f64' or 'string' before calling 'JSON.stringify'.",
+    "callback-extra-params": "Wrap the function in an arrow function forwarding only the expected callback arguments (e.g. '(x, i) => fn(x, i)'), or remove trailing default / '...rest' parameters from an inline callback.",
   }),
   e("E2003", "P2", "Mixed numeric types in operator", "Arithmetic, comparison, bitwise, or equality operators require both operands to share the same exact numeric type (i8..f64).", "Explicitly convert one side (e.g. 'f64(x)', 'i32(y)') or annotate the 'let' variable with the matching numeric type."),
   e("E2004", "P2", "Condition must be boolean", "Conditionals (if, while, do-while, for, ?:, &&, ||, !) only accept 'boolean', not truthy/falsy values.", "Compare explicitly (e.g. 'x !== 0', 's.length > 0', 'v !== null')."),

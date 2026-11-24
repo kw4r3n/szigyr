@@ -1992,3 +1992,11 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
   - (a) `i64`/`u64` への `.toFixed()` は実装せず（`E2001`）、`i64`/`u64` には JS の `BigInt.prototype.toString` と一致する `.toString(radix?)` のみを許可する。`toSorted` は `Array.sort` に揃えて比較関数 `(a: T, b: T) => f64` 必須とする。
   - (b) `i64`/`u64` 用に独自 `.toFixed` を実装し、引数なし `toSorted()` を辞書順または数値別オーバーロードで導入する。
 - 既定案: (a)。
+
+### Q310 組み込み・ホストコールバックへの残余引数（`...rest`）および契約超の既定引数の渡し方
+- 関連: §3.5、§12、Q300
+- 状況: `Array` の高階メソッド（`map` / `filter` / `forEach` / `reduce` / `find` / `findIndex` / `some` / `every` / `sort` / `toSorted`）、`Map.forEach`、`Set.forEach`、`Net.serve` / `serveRaw`、`Js.callback` / `fn`、`Test.traps` / `trapsAsync`、`FakeProc.onRun`、`FakeNet.onFetch`、`OwnedCell.withRef` / `withMut`、`Resource.own` / `ownWith`、`ensures`、`test`、`forAll` などの組み込み・ホストコールバックに対し、従来の `assignable` は `...rest` 引数や契約の個数を超える末尾の既定引数を受け入れていた。JS ランタイムでは `Array.prototype.map` や `Set.prototype.forEach` 等が第 3 引数（配列や `Set` 本体）等を渡すため、`...xs: Array<usize>` や `z: i32 = 5` に配列本体等の不正な値が流入する問題があった。
+- 選択肢:
+  - (a) 型検査で拒否する（`FnType.builtinCb` および特殊組み込みの個別検査で `...rest` と契約超の引数を `E2002` `data.kind = "callback-extra-params"` で拒否し、非インライン引数には契約どおりの個数だけ転送する矢印関数 `(p0, ...) => fn(p0, ...)` / `() => fn()` への `--fix` を付与する。ユーザー定義の高階関数は呼び出し側が契約個数しか渡さないため従来の反変・共変規則を維持）。
+  - (b) 呼び出しの出力側で契約個数だけ渡すラッパ関数で包む。
+- 既定案: (a)。既存の `conformance/accept/`・`conformance/run/` に違反するケースはなく、暗黙に引数を切り捨てるより型検査で明示して矢印関数ラッパを `fixes` で提案するほうが健全であるため。
