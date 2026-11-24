@@ -420,7 +420,8 @@ it("CC may carry arguments; an unwritable cache directory is a CBuildError, exit
   const cache = mkdtempSync(join(tmpdir(), "szigyr-d150-"));
   const ok = spawnSync("node", [CLI, "run", "--backend=c", f], { encoding: "utf8", env: { ...process.env, XDG_CACHE_HOME: cache, CC: "cc -O1 -DSZ_D150" } });
   expect(ok).toMatchObject({ status: 0, stdout: "2\n" });
-  const bad = spawnSync("node", [CLI, "run", "--backend=c", f], { encoding: "utf8", env: { ...process.env, XDG_CACHE_HOME: "/proc/nope" } });
+  // not a /proc path (Q317): recursive mkdirSync never returns there on Node 24 (Node 26 throws ENOENT), and spawnSync would wait forever
+  const bad = spawnSync("node", [CLI, "run", "--backend=c", f], { encoding: "utf8", env: { ...process.env, XDG_CACHE_HOME: "/dev/null" } });
   expect(bad.status).toBe(2);
   expect(bad.stderr).toContain("cache directory");
   expect(bad.stderr).not.toContain("    at ");

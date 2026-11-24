@@ -2093,3 +2093,12 @@ SPEC §14、§15 を Q192〜Q201 の決定から書いたときに、決定だ�
   - (c) 関数型に省略できる引数を持たせない。既定値は関数を名前で直接呼ぶときだけ使える。`Q315` の `?` の表示は要らなくなる。試していない。
   - (d) 配列リテラル、`??`、型引数の単一化でも、条件式と同じく必須の側の型に合流させる。`let` への再代入と `push` の形は直らない。試していない。
 - 既定案・扱い: 1 はオーナーの了承を得て直した（2026-11-24）。`Q189` (b) が完全一致を求めるのはパラメータの型と戻り値の型で、既定値の有無は含めない。実引数の関数の `min` がパラメータの型の `min` 以下なら受理する（§3.5 Subtyping と同じ向き）。関数型には省略できる引数を書けない（`E1008`）ので、パラメータを通した呼び出しは常にすべての引数を渡す。パラメータの数が違う関数は、多いぶんに既定値があっても `E2002` のままにする。ケースは `conformance/run/286-fn-default-arg-rt.szigyr`、`conformance/run/287-fn-default-arg-owned.szigyr`、`conformance/reject/E2002-fn-default-arg-extra-param.szigyr`。2 と 3 は (a) のまま進め、オーナーの判断を待つ。`Q315` の `?` の表示は、この論点が決まるまで決定として記録しない。
+
+### Q317 Node 24 で `XDG_CACHE_HOME` が `/proc` の下を指すと、C バックエンドが終わらない
+- 関連: `D150`、`packages/compiler/src/native.ts` の `ensurePrivateCacheDir`
+- 状況: Node 24.22.1 では `fs.mkdirSync("/proc/nope/x", { recursive: true })` が例外を投げず、戻らない。Node 26.13.1 は `ENOENT` を投げる。`ensurePrivateCacheDir` はこの呼び出しでキャッシュのディレクトリを作る。そのため `XDG_CACHE_HOME=/proc/nope` で `run --backend=c` を実行すると、Node 24.22.1 では `D150` の `CBuildError` にならず、プロセスが終わらない。`engines` は Node 24 以上である。CI（Node 24.22.3）では `cli.test.ts` が結果を出さず、`pnpm test` が 20 分の上限で打ち切られていた。手元の Node 24.22.1 では、この形を使うテストで止まることを再現した。Node 24.22.1 で試した範囲では、戻らないのは `/proc` の下だけだった。壊れたシンボリックリンクの先は `ENOENT`、通常のファイルの下は `ENOTDIR`、`/sys` の下は `EACCES` で例外になる。
+- 選択肢:
+  - (a) コンパイラは変えない。テストは `/dev/null` を使う（Node 24.22.1 と 26.13.1 のどちらでも `ENOTDIR` で失敗する）。
+  - (b) `ensurePrivateCacheDir` で再帰的な `mkdirSync` をやめ、親から順に 1 段ずつ作る。試していない。
+  - (c) `engines` の下限を、この挙動が直った Node のバージョンに上げる。どのバージョンで直ったかは調べていない。
+- 既定案・扱い: (a) で進める（Claude の既定案）。`cli.test.ts` のテストと `D150` の例を `/dev/null` に変えた（2026-11-24）。コンパイラは変えていないので、Node 24.22.1 で `/proc` の下を指定すると今も終わらない。
