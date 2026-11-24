@@ -119,7 +119,7 @@ const ENTRIES: Record<string, ExplainEntry> = Object.fromEntries([
     "concrete-type-required": "Provide a concrete type argument without unresolved type parameters here.",
     "missing-capability": "Ensure the type satisfies the required capability (Copy, Native, Owned, Send, Key, or Codec).",
     "json-int64": "Convert 'i64'/'u64' fields to 'f64' or 'string' before calling 'JSON.stringify'.",
-    "callback-extra-params": "Wrap the function in an arrow function forwarding only the expected callback arguments (e.g. '(x, i) => fn(x, i)'), or remove trailing default / '...rest' parameters from an inline callback.",
+    "callback-extra-params": "Wrap the function in an arrow function forwarding only the expected arguments (e.g. '(x, i) => fn(x, i)'), or remove trailing default / '...rest' parameters from an inline function expression.",
     "int-pow": "Convert integer operands to 'f64' or call 'Math.pow(base, exp)' instead of using '**' on integers.",
     "cyclic-interface": "Break the inheritance cycle so no interface extends itself directly or transitively.",
     "interface-extends-target": "Extend only field-only interfaces or record types in an interface 'extends' clause.",

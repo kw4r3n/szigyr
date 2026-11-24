@@ -991,8 +991,10 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 | `!` 後置非 null 表明（`E1006`） | 健全性 | 健全性のため検査なしの null 除去を禁止（`Szigyr-design-v0.md:158`、`SPEC.md` §3.5、`syntax.ts:expr`、`explain.ts` `E1006`） |
 | `throw` / `try` / `catch` / `finally`（`E1007`） | 健全性 | 効果の明示（失敗しうる関数を `Result<T, E>` として型に表す）（`Szigyr-design-v0.md:165`、`EVALUATION.md` §3、`syntax.ts:stmt` `kind: "throw"` / `"try"`、`explain.ts` `E1007`） |
 | 可変モジュール状態 `let` 等（`E5002`） | 健全性 | 大域状態をなくす（`Szigyr-design-v0.md:172`、`Q054`、`SPEC.md` §3.5/§10、`syntax.ts:varList` `kind: "module-let"`、`explain.ts` `E5002`） |
+| `declare`（`declare module "c:..."` 以外、`E1000`） | 健全性 | `docs/SPEC.md` §0 の 5（`SPEC.md:10`「No ambient globals」）に基づく（Claude の既定案、`SPEC.md` §3.5、`Q004`、`Q011`、`syntax.ts:moduleDecl` `kind: "ambient-module"`） |
 | `var`（`E1001`） | 曖昧さ | 関数ホイスティングの罠を避け `const`/`let` に限定（`SPEC.md` §3.5、`explain.ts` `E1001`、`syntax.ts:varList` / `syntax.ts:moduleDecl`） |
 | `==` / `!=`（`E1002`） | 曖昧さ | 暗黙型変換を含む等価比較を禁止し `===`/`!==` に統一（`SPEC.md` §3.5、`explain.ts` `E1002`、`syntax.ts:expr`） |
+| 暗黙の truthiness（`E2004`） | 曖昧さ | `CLAUDE.md:79`（「やらないこと：暗黙の型変換や曖昧な糖衣構文」）に基づく（`==` / `!=` と同扱い、Claude の既定案、`SPEC.md` §4、`explain.ts` `E2004`、`expr.ts:cond`） |
 | `?` 省略可能プロパティ・引数・タプル要素、`undefined`（`E1008` / `E2000`） | 曖昧さ | 書き方を 1 通りに統一し `undefined` と `null` の二重化を排除（`Szigyr-design-v0.md:163`、`EVALUATION.md` §3；構文・診断は `syntax.ts:params` `kind: "optional-param"`、`syntax.ts:memberName` `kind: "optional-member"`、`syntax.ts:type` `kind: "optional-tuple-elem"`、`modules.ts:typeOf`；※ `Q005` は `E1008` コード割当のみで理由の根拠ではない） |
 | 分割代入の既定値 `{ a = 1 }` / `[a = 1]`・非末尾/シグネチャ既定引数（`E1008`） | 曖昧さ | 書き方を 1 通りに統一する方針（`?` / `undefined` との関連：`EVALUATION.md` §3、`Szigyr-design-v0.md:163`；構文は `syntax.ts:bindingPattern` / `syntax.ts:arrayBindingPattern` `kind: "destructure-default"`、`syntax.ts:params` `kind: "default-param"` / `"non-trailing-default"`；`Q005` はコード割当） |
 | 正規表現の `imsu` 以外のフラグ・重複フラグ（`E1000`） | 曖昧さ | `g` / `y` を持たないステートレス `RegExp` として設計（`STDLIB.md:94`「stateless — no `g`/`y`」、`syntax.ts:expr` `kind: "regex-flag"`；重複フラグやその他フラグの個別理由は未記録） |
@@ -1008,9 +1010,7 @@ CLAUDE.md の「各コミットで全テストが通る」と、ROADMAP 段階 0
 | `typeof` 演算子（`E1000`） | 実装都合・バックエンド | 静的型付けによりランタイム `typeof` を持たず tagged union 等を使う（`SPEC.md` §3.5、`explain.ts` `E1000` `typeof`、`syntax.ts:expr` `kind: "typeof"`） |
 | 構造的部分型（レコードの幅部分型、`E2002`） | 実装都合・バックエンド（managed 不整合） | 固定レイアウトのため閉じた厳密オブジェクト型を採用（`Szigyr-design-v0.md:161`）；ただし `EVALUATION.md` §3 指摘のとおり `managed` 層には固定レイアウト根拠が当てはまらない（`Q306f`） |
 | `class extends`・`get`/`set` アクセサ・インデクサ（`E1000`） | 実装都合・バックエンド（managed 不整合） | `Szigyr-design-v0.md:161,164` で固定レイアウト・動的 `this`/getter/setter 排除由来だが、`EVALUATION.md` §3 指摘のとおり `class` は `managed` 専用のため根拠と不整合（`Q306c`・`Q306d`、`syntax.ts:classDecl` `kind: "class-extends"` / `"class-accessor"` / `"index-signature"`、`syntax.ts:type` `TypeLiteral`） |
-| 暗黙の truthiness（`E2004`） | 理由なし | `SPEC.md` §4・`explain.ts` `E2004`・`expr.ts:cond` に「条件式は `boolean` のみ」の規定はあるが、設計上の禁止理由は未記録 |
 | `bigint` 型・`1n` リテラル（`E2000` / `E1000`） | 理由なし | §13・`Q011`・`Q015`・`Q231` に禁止・コード割当はあるが、設計上の禁止理由は未記録（`Szigyr-design-v0.md:166` は strict 整数型の速度記載のみ） |
-| `declare`（`declare module "c:..."` 以外、`E1000`） | 理由なし | `SPEC.md` §3.5・`Q004`・`Q011` に禁止規定はあるが、設計上の禁止理由は未記録（`Szigyr-design-v0.md:182,275` は大域権限排除と `.d.ts` 実行時検査のみ記載） |
 | `abstract`・`#private`・`public` 修飾子（`E1000`） | 理由なし | `class` メンバは既定で公開である旨の案内のみあり（`explain.ts` `"public-modifier"`）、禁止理由自体の設計記録なし（`syntax.ts:mods` `kind: "public-modifier"` / `"modifier"`、`syntax.ts:classDecl` `kind: "private-name"` / `"class-member"`） |
 | `object` 型（`E1000`） | 理由なし | §3.5 および `Q004` の閉じた拒否表にあるが設計理由の記録なし（`SPEC.md` §3.5、`syntax.ts:type` `kind: "object-type"`） |
 | `Function` 型（`E1000`） | 理由なし | §3.5 および `Q004` の閉じた拒否表にあるが設計理由の記録なし（`SPEC.md` §3.5、`syntax.ts:E1000_TYPE_NAMES`、`syntax.ts:type`） |

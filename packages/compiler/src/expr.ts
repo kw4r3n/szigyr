@@ -81,12 +81,57 @@ function attachConvertFix(c: Checker, e: ts.Expression, t: Type, want: Type): vo
   }];
 }
 
-function isPureRef(e: ts.Expression): boolean {
+function isStableRef(c: Checker, e: ts.Expression): boolean {
   const inner = assignTarget(e);
-  if (inner.kind === K.Identifier || inner.kind === K.ThisKeyword) return true;
+  if (inner.kind === K.ThisKeyword) return !c.fx.inCtor;
+  if (inner.kind === K.Identifier) {
+    const name = (inner as ts.Identifier).text;
+    const local = c.scope.lookup(name);
+    if (local) return !local.mutable && !local.param;
+    const sym = c.prog.lookupValue(c.mod, name);
+    return !!sym && (sym.k === "fn" || sym.k === "const");
+  }
   if (inner.kind === K.PropertyAccessExpression) {
     const p = inner as ts.PropertyAccessExpression;
-    return !p.questionDotToken && isPureRef(p.expression);
+    if (p.questionDotToken) return false;
+    const base = assignTarget(p.expression);
+    if (base.kind === K.Identifier && !c.scope.lookup((base as ts.Identifier).text)) {
+      const ns = c.mod.nsImports.get((base as ts.Identifier).text);
+      if (ns && !ns.typeOnly) {
+        const sym = c.prog.lookupExportedValue(ns.mod, p.name.text);
+        return !!sym && (sym.k === "fn" || sym.k === "const");
+      }
+      const vsym = c.prog.lookupValue(c.mod, (base as ts.Identifier).text);
+      if (vsym?.k === "class") {
+        const cf = vsym.cls.fields.get(p.name.text);
+        return !!cf && cf.static && cf.readonly;
+      }
+      return false;
+    }
+    if (base.kind === K.PropertyAccessExpression && isId((base as ts.PropertyAccessExpression).expression)) {
+      const outer = base as ts.PropertyAccessExpression;
+      const ns = lookupNs(c, outer.expression as ts.Identifier);
+      if (ns && !outer.questionDotToken && !ns.typeOnly) {
+        const sym = c.prog.lookupExportedValue(ns.mod, outer.name.text);
+        if (sym?.k === "class") {
+          const cf = sym.cls.fields.get(p.name.text);
+          return !!cf && cf.static && cf.readonly;
+        }
+      }
+    }
+    if (!isStableRef(c, p.expression)) return false;
+    const rt0 = exprTypes.get(p.expression) ?? exprTypes.get(base);
+    if (!rt0) return false;
+    const rt = unref(rt0);
+    if (rt.k === "record") return !!field(rt, p.name.text)?.readonly;
+    if (rt.k === "class") {
+      const cf = rt.cls.fields.get(p.name.text);
+      return !!cf && !cf.static && cf.readonly;
+    }
+    if (rt.k === "union" && isTaggedUnion(rt)) {
+      return rt.members.every((m) => !!field(m, p.name.text)?.readonly);
+    }
+    return false;
   }
   return false;
 }
@@ -100,12 +145,12 @@ function reportMismatch(c: Checker, e: ts.Expression, t: Type, want: Type, arg =
     const isInline = isFnExpr(assignTarget(e));
     const arityStr = wantFn.params.length === 0 ? "0 parameters" : `at most ${wantFn.params.length} parameter(s)`;
     const hint = isInline ? `use ${arityStr}` : `wrap in an arrow function taking ${wantFn.params.length} parameter(s)`;
-    c.at("E2002", e, `callback '${show(t)}' accepts ${extraDesc}, exceeding expected '${show(wantFn)}' (${hint})`, {
+    c.at("E2002", e, `function '${show(t)}' accepts ${extraDesc}, exceeding expected '${show(wantFn)}' (${hint})`, {
       kind: "callback-extra-params",
       expected: show(wantFn),
       actual: show(t),
     });
-    if (isPureRef(e) && c.fx.layer === "managed") {
+    if (isStableRef(c, e) && c.fx.layer === "managed") {
       const d = c.prog.rep.out.at(-1);
       if (d?.code === "E2002") {
         const sf = c.fx.mod.sf;

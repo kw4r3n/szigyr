@@ -305,8 +305,75 @@ it("rejects rest/extra-default builtin callbacks with E2002 callback-extra-param
   const memberDiag = check(memberFile)[0];
   expect(memberDiag?.code).toBe("E2002");
   expect(memberDiag?.data).toMatchObject({ kind: "callback-extra-params" });
+  expect(memberDiag?.message).toMatch(/^function '/);
   expect(memberDiag?.fixes?.[0]?.title).toBe("wrap in arrow function");
   expect(await cliMain(["check", "--fix", memberFile], () => {}, () => {})).toBe(0);
   expect(readFileSync(memberFile, "utf8")).toContain("const cb: CB | null = (p0, p1) => o.f(p0, p1);");
   expect(check(memberFile)).toEqual([]);
+
+  // Reassignable let local (fx2 shape), mutable field (fx3 shape), field on let, and param get NO fix
+  const unstableSources = [
+    [
+      "function cnt(...xs: Array<usize>): usize { return xs.length; }",
+      "function one(...xs: Array<usize>): usize { return 100 + xs.length; }",
+      "export function main(sys: System): void {",
+      "  const a: Array<usize> = [10, 20, 30];",
+      "  let f = cnt;",
+      "  const cb: (x: usize, i: usize) => usize = f;",
+      "  f = one;",
+      "  sys.log.info(`${a.map(cb).join(\",\")}`);",
+      "}",
+      "",
+    ].join("\n"),
+    [
+      "function cnt(...xs: Array<usize>): usize { return xs.length; }",
+      "function one(...xs: Array<usize>): usize { return 100 + xs.length; }",
+      "export function main(sys: System): void {",
+      "  const a: Array<usize> = [10, 20, 30];",
+      "  const o: { f: (...xs: Array<usize>) => usize } = { f: cnt };",
+      "  const cb: (x: usize, i: usize) => usize = o.f;",
+      "  o.f = one;",
+      "  sys.log.info(`${a.map(cb).join(\",\")}`);",
+      "}",
+      "",
+    ].join("\n"),
+    [
+      "function cnt(...xs: Array<usize>): usize { return xs.length; }",
+      "export function main(sys: System): void {",
+      "  let o: { readonly f: (...xs: Array<usize>) => usize } = { f: cnt };",
+      "  const cb: (x: usize, i: usize) => usize = o.f;",
+      "  sys.log.info(`${cb(1, 2)}`);",
+      "}",
+      "",
+    ].join("\n"),
+    [
+      "export function wrap(a: Array<usize>, f: (...xs: Array<usize>) => usize): Array<usize> { return a.map(f); }",
+      "",
+    ].join("\n"),
+  ];
+  for (let i = 0; i < unstableSources.length; i++) {
+    const f = join(dir, `cb-unstable-${i}.szigyr`);
+    writeFileSync(f, unstableSources[i]!);
+    const diag = check(f)[0];
+    expect(diag?.code, unstableSources[i]).toBe("E2002");
+    expect(diag?.data).toMatchObject({ kind: "callback-extra-params" });
+    expect(diag?.message).toMatch(/^function '/);
+    expect(diag?.fixes).toBeUndefined();
+  }
+
+  // Immutable local const gets arrow-wrap fix and becomes clean
+  const constLocalFile = join(dir, "cb-const-local.szigyr");
+  writeFileSync(constLocalFile, [
+    "function cnt(...xs: Array<usize>): usize { return xs.length; }",
+    "export function main(sys: System): void {",
+    "  const f = cnt;",
+    "  const cb: (x: usize, i: usize) => usize = f;",
+    "  sys.log.info(`${cb(1, 2)}`);",
+    "}",
+    "",
+  ].join("\n"));
+  const constDiag = check(constLocalFile)[0];
+  expect(constDiag?.fixes?.[0]?.title).toBe("wrap in arrow function");
+  expect(await cliMain(["check", "--fix", constLocalFile], () => {}, () => {})).toBe(0);
+  expect(check(constLocalFile)).toEqual([]);
 });
